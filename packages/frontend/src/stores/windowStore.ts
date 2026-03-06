@@ -449,7 +449,7 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
           title: w.title,
           position,
           size,
-          zIndex: i + 1,
+          zIndex: w.zIndex || (i + 1),
           minimized: w.minimized,
           maximized: w.maximized,
           collapsed: w.collapsed,
@@ -460,7 +460,7 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
 
       set({
         windows: windowStates,
-        nextZIndex: windowStates.length + 1,
+        nextZIndex: Math.max(1, ...windowStates.map((w) => w.zIndex)) + 1,
       });
     } catch (e) {
       console.warn('Failed to load visitor windows:', e);
