@@ -12,6 +12,8 @@
     "build": "npm run build --workspace=@eternalos/frontend",
     "build:worker": "npm run deploy --workspace=@eternalos/worker",
     "lint": "npm run lint --workspace=@eternalos/frontend",
-    "preview": "npm run preview --workspace=@eternalos/frontend"
+    "preview": "npm run preview --workspace=@eternalos/frontend",
+    "test:worker": "npm run test --workspace=@eternalos/worker",
+    "coverage:worker": "npm run coverage --workspace=@eternalos/worker"
   }
 }

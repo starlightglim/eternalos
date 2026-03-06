@@ -150,6 +150,7 @@ export interface JWTPayload {
   username: string;
   iat: number;
   exp: number;
+  jti?: string;
 }
 
 export interface PasswordResetRecord {

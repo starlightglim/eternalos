@@ -58,6 +58,7 @@ export async function signJWT(
     ...payload,
     iat: now,
     exp: now + expiresInSeconds,
+    jti: crypto.randomUUID(),
   };
 
   const header = { alg: 'HS256', typ: 'JWT' };
