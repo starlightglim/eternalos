@@ -67,7 +67,7 @@
   z-index: 9999;
   pointer-events: none;
   /* GPU acceleration hints for smooth dragging with 30+ items */
-  will-change: transform, left, top;
+  will-change: transform;
   /* Force GPU layer for smoother animations */
   transform: translateZ(0);
 }

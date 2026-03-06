@@ -40,6 +40,9 @@ function StickerInner({
   const dragStartMouse = useRef({ x: 0, y: 0 });
   const [dragStartPos, setDragStartPos] = useState({ x: item.position.x, y: item.position.y });
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number } | null>(null);
+  const capturedElementRef = useRef<HTMLElement | null>(null);
+  const capturedPointerIdRef = useRef<number | null>(null);
+  const dragActiveRef = useRef(false);
 
   // Resize state
   const isResizing = useRef(false);
@@ -63,7 +66,11 @@ function StickerInner({
     setDragStartPos({ x: item.position.x, y: item.position.y });
     setDragOffset(null);
 
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    const element = e.currentTarget as HTMLElement;
+    element.setPointerCapture(e.pointerId);
+    capturedElementRef.current = element;
+    capturedPointerIdRef.current = e.pointerId;
+    dragActiveRef.current = true;
   }, [isOwner, item.id, item.position, onSelect]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
@@ -74,7 +81,13 @@ function StickerInner({
     }
   }, [isDragging]);
 
-  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+  const finishDrag = useCallback(() => {
+    if (!dragActiveRef.current && !isDragging) {
+      return;
+    }
+
+    dragActiveRef.current = false;
+
     if (isDragging && dragOffset) {
       const newX = Math.max(0, dragStartPos.x + dragOffset.x);
       const newY = Math.max(0, dragStartPos.y + dragOffset.y);
@@ -82,12 +95,31 @@ function StickerInner({
     }
     setIsDragging(false);
     setDragOffset(null);
-    try {
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {
-      // Ignore
+
+    if (capturedElementRef.current && capturedPointerIdRef.current !== null) {
+      try {
+        if (capturedElementRef.current.hasPointerCapture(capturedPointerIdRef.current)) {
+          capturedElementRef.current.releasePointerCapture(capturedPointerIdRef.current);
+        }
+      } catch {
+        // Ignore
+      }
     }
+    capturedElementRef.current = null;
+    capturedPointerIdRef.current = null;
   }, [item.id, dragOffset, dragStartPos, isDragging, onMove]);
+
+  const handlePointerUp = useCallback(() => {
+    finishDrag();
+  }, [finishDrag]);
+
+  const handlePointerCancel = useCallback(() => {
+    finishDrag();
+  }, [finishDrag]);
+
+  const handleLostPointerCapture = useCallback(() => {
+    finishDrag();
+  }, [finishDrag]);
 
   // --- Resize handlers ---
   const handleResizeStart = useCallback((e: React.PointerEvent) => {
@@ -162,6 +194,8 @@ function StickerInner({
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerCancel}
+      onLostPointerCapture={handleLostPointerCapture}
       onContextMenu={handleContextMenu}
     >
       {imageUrl && (

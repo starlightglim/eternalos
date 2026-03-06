@@ -138,15 +138,30 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
 
   // Drag state
   const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [dragOffset, setDragOffset] = useState<{ x: number; y: number } | null>(null);
   const dragStartPos = useRef<{ x: number; y: number } | null>(null);
   const dragItemStartGridPos = useRef<{ x: number; y: number } | null>(null);
+  const dragPointerOffset = useRef<{ x: number; y: number } | null>(null);
+  const latestDragPointer = useRef<{ x: number; y: number } | null>(null);
   const hasDragged = useRef(false);
   const rafId = useRef<number | null>(null); // For requestAnimationFrame throttling
   // Multi-select drag: store starting positions of all selected items
   const draggedItemsStartPos = useRef<Map<string, { x: number; y: number }> | null>(null);
   // Track if drag is still active (guards against stale RAF callbacks)
   const isDraggingRef = useRef(false);
+  const desktopRef = useRef<HTMLDivElement>(null);
+  const trashRef = useRef<HTMLDivElement>(null);
+  const desktopRectRef = useRef<DOMRect | null>(null);
+  const trashRectRef = useRef<DOMRect | null>(null);
+  const folderHitTargetsRef = useRef<Array<{
+    id: string;
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+  }>>([]);
+  const isDropTargetRef = useRef(false);
+  const folderDropTargetIdRef = useRef<string | null>(null);
+  const folderWindowDropTargetIdRef = useRef<string | null>(null);
 
   // Trash state
   const [trashSelected, setTrashSelected] = useState(false);
@@ -598,6 +613,27 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
     [openWindow]
   );
 
+  const updateTrashDropTarget = useCallback((nextValue: boolean) => {
+    if (isDropTargetRef.current !== nextValue) {
+      isDropTargetRef.current = nextValue;
+      setIsDropTarget(nextValue);
+    }
+  }, []);
+
+  const updateFolderDropTarget = useCallback((nextValue: string | null) => {
+    if (folderDropTargetIdRef.current !== nextValue) {
+      folderDropTargetIdRef.current = nextValue;
+      setFolderDropTargetId(nextValue);
+    }
+  }, []);
+
+  const updateFolderWindowDropTarget = useCallback((nextValue: string | null) => {
+    if (folderWindowDropTargetIdRef.current !== nextValue) {
+      folderWindowDropTargetIdRef.current = nextValue;
+      setFolderWindowDropTargetId(nextValue);
+    }
+  }, []);
+
   // Drag start
   const handleDragStart = useCallback(
     (id: string, e: React.PointerEvent) => {
@@ -626,13 +662,39 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
         draggedItemsStartPos.current = null;
       }
 
-      // Initial visual position in pixels
-      setDragOffset({
-        x: item.position.x * GRID_CELL_SIZE,
-        y: item.position.y * GRID_CELL_SIZE,
-      });
+      desktopRectRef.current = desktopRef.current?.getBoundingClientRect() ?? null;
+      trashRectRef.current = trashRef.current?.getBoundingClientRect() ?? null;
+      latestDragPointer.current = { x: e.clientX, y: e.clientY };
+
+      if (desktopRectRef.current) {
+        dragPointerOffset.current = {
+          x: e.clientX - (desktopRectRef.current.left + item.position.x * GRID_CELL_SIZE),
+          y: e.clientY - (desktopRectRef.current.top + item.position.y * GRID_CELL_SIZE),
+        };
+
+        const draggedIds = draggedItemsStartPos.current
+          ? new Set(draggedItemsStartPos.current.keys())
+          : new Set([id]);
+
+        folderHitTargetsRef.current = rootItems
+          .filter((candidate) => candidate.type === 'folder' && !draggedIds.has(candidate.id))
+          .map((candidate) => {
+            const left = desktopRectRef.current!.left + candidate.position.x * GRID_CELL_SIZE;
+            const top = desktopRectRef.current!.top + candidate.position.y * GRID_CELL_SIZE;
+            return {
+              id: candidate.id,
+              left,
+              top,
+              right: left + GRID_CELL_SIZE,
+              bottom: top + GRID_CELL_SIZE,
+            };
+          });
+      } else {
+        dragPointerOffset.current = null;
+        folderHitTargetsRef.current = [];
+      }
     },
-    [items, selectedIds]
+    [items, rootItems, selectedIds]
   );
 
   // Drag move - throttled with requestAnimationFrame for smooth performance
@@ -640,13 +702,10 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
     (e: React.PointerEvent) => {
       if (!draggingId || !dragStartPos.current || !dragItemStartGridPos.current) return;
 
-      // Capture values immediately (events are pooled in React)
-      const clientX = e.clientX;
-      const clientY = e.clientY;
+      latestDragPointer.current = { x: e.clientX, y: e.clientY };
 
-      // Cancel any pending animation frame
       if (rafId.current !== null) {
-        cancelAnimationFrame(rafId.current);
+        return;
       }
 
       // Schedule state update for next frame
@@ -657,6 +716,14 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
           return;
         }
 
+        const pointer = latestDragPointer.current;
+        if (!pointer) {
+          rafId.current = null;
+          return;
+        }
+
+        const { x: clientX, y: clientY } = pointer;
+
         const deltaX = clientX - dragStartPos.current!.x;
         const deltaY = clientY - dragStartPos.current!.y;
 
@@ -665,55 +732,33 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
           hasDragged.current = true;
         }
 
-        // Calculate new visual position
-        const startPixelX = dragItemStartGridPos.current!.x * GRID_CELL_SIZE;
-        const startPixelY = dragItemStartGridPos.current!.y * GRID_CELL_SIZE;
-
-        setDragOffset({
-          x: startPixelX + deltaX,
-          y: startPixelY + deltaY,
-        });
-
         // Check if over trash
-        const trashRect = document.querySelector('[data-trash]')?.getBoundingClientRect();
+        const trashRect = trashRectRef.current;
         if (trashRect) {
           const isOverTrash =
             clientX >= trashRect.left &&
             clientX <= trashRect.right &&
             clientY >= trashRect.top &&
             clientY <= trashRect.bottom;
-          setIsDropTarget(isOverTrash);
+          updateTrashDropTarget(isOverTrash);
+        } else {
+          updateTrashDropTarget(false);
         }
 
         // Check if over a folder icon (for drag-to-folder)
         let foundFolderTarget: string | null = null;
-        for (const item of rootItems) {
-          // Skip if dragging over itself or non-folders
-          if (item.id === draggingId || item.type !== 'folder') continue;
-
-          // Calculate folder's pixel bounds
-          const folderX = item.position.x * GRID_CELL_SIZE;
-          const folderY = item.position.y * GRID_CELL_SIZE;
-          const desktopEl = document.querySelector('[data-desktop]');
-          if (desktopEl) {
-            const desktopRect = desktopEl.getBoundingClientRect();
-            const folderLeft = desktopRect.left + folderX;
-            const folderTop = desktopRect.top + folderY;
-            const folderRight = folderLeft + GRID_CELL_SIZE;
-            const folderBottom = folderTop + GRID_CELL_SIZE;
-
-            if (
-              clientX >= folderLeft &&
-              clientX <= folderRight &&
-              clientY >= folderTop &&
-              clientY <= folderBottom
-            ) {
-              foundFolderTarget = item.id;
-              break;
-            }
+        for (const target of folderHitTargetsRef.current) {
+          if (
+            clientX >= target.left &&
+            clientX <= target.right &&
+            clientY >= target.top &&
+            clientY <= target.bottom
+          ) {
+            foundFolderTarget = target.id;
+            break;
           }
         }
-        setFolderDropTargetId(foundFolderTarget);
+        updateFolderDropTarget(foundFolderTarget);
 
         // Check if over an open folder window (for drag-into-window)
         let foundFolderWindowTarget: string | null = null;
@@ -735,12 +780,12 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
             }
           }
         }
-        setFolderWindowDropTargetId(foundFolderWindowTarget);
+        updateFolderWindowDropTarget(foundFolderWindowTarget);
 
         rafId.current = null;
       });
     },
-    [draggingId, rootItems]
+    [draggingId, updateFolderDropTarget, updateFolderWindowDropTarget, updateTrashDropTarget]
   );
 
   // Helper to reset all drag state
@@ -752,15 +797,19 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
     }
     isDraggingRef.current = false;
     setDraggingId(null);
-    setDragOffset(null);
-    setIsDropTarget(false);
-    setFolderDropTargetId(null);
-    setFolderWindowDropTargetId(null);
+    updateTrashDropTarget(false);
+    updateFolderDropTarget(null);
+    updateFolderWindowDropTarget(null);
     dragStartPos.current = null;
     dragItemStartGridPos.current = null;
+    dragPointerOffset.current = null;
+    latestDragPointer.current = null;
     draggedItemsStartPos.current = null;
+    desktopRectRef.current = null;
+    trashRectRef.current = null;
+    folderHitTargetsRef.current = [];
     hasDragged.current = false;
-  }, []);
+  }, [updateFolderDropTarget, updateFolderWindowDropTarget, updateTrashDropTarget]);
 
   // Drag end
   const handleDragEnd = useCallback(
@@ -799,37 +848,40 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
         }
       }
 
+      const currentFolderDropTargetId = folderDropTargetIdRef.current;
+      const currentFolderWindowDropTargetId = folderWindowDropTargetIdRef.current;
+
       // Check if dropped on a folder icon (move into folder)
-      if (folderDropTargetId && hasDragged.current) {
+      if (currentFolderDropTargetId && hasDragged.current) {
         const { updateItem, getNextAvailablePositionsInFolder } = useDesktopStore.getState();
         // Get available positions in the target folder, excluding the items being moved
-        const positions = getNextAvailablePositionsInFolder(folderDropTargetId, draggedItemIds.length, draggedItemIds);
+        const positions = getNextAvailablePositionsInFolder(currentFolderDropTargetId, draggedItemIds.length, draggedItemIds);
         // Move all dragged items into the folder at available positions
         draggedItemIds.forEach((id, index) => {
-          updateItem(id, { parentId: folderDropTargetId, position: positions[index] });
+          updateItem(id, { parentId: currentFolderDropTargetId, position: positions[index] });
         });
         resetDragState();
         return;
       }
 
       // Check if dropped on an open folder window (move into folder)
-      if (folderWindowDropTargetId && hasDragged.current) {
+      if (currentFolderWindowDropTargetId && hasDragged.current) {
         const { updateItem, getNextAvailablePositionsInFolder } = useDesktopStore.getState();
         // Get available positions in the target folder, excluding the items being moved
-        const positions = getNextAvailablePositionsInFolder(folderWindowDropTargetId, draggedItemIds.length, draggedItemIds);
+        const positions = getNextAvailablePositionsInFolder(currentFolderWindowDropTargetId, draggedItemIds.length, draggedItemIds);
         // Move all dragged items into the folder at available positions
         draggedItemIds.forEach((id, index) => {
-          updateItem(id, { parentId: folderWindowDropTargetId, position: positions[index] });
+          updateItem(id, { parentId: currentFolderWindowDropTargetId, position: positions[index] });
         });
         resetDragState();
         return;
       }
 
       // Calculate new grid positions if we actually dragged
-      if (hasDragged.current && dragOffset && dragItemStartGridPos.current) {
+      if (hasDragged.current && dragStartPos.current && dragItemStartGridPos.current) {
         // Calculate delta in grid units
-        const deltaGridX = Math.round(dragOffset.x / GRID_CELL_SIZE) - dragItemStartGridPos.current.x;
-        const deltaGridY = Math.round(dragOffset.y / GRID_CELL_SIZE) - dragItemStartGridPos.current.y;
+        const deltaGridX = Math.round((e.clientX - dragStartPos.current.x) / GRID_CELL_SIZE);
+        const deltaGridY = Math.round((e.clientY - dragStartPos.current.y) / GRID_CELL_SIZE);
 
         if (isDraggingMultiple) {
           // Move all selected items by the same delta, checking for overlaps
@@ -875,8 +927,15 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
           });
         } else {
           // Single item drag - use existing logic
-          let newGridX = Math.round(dragOffset.x / GRID_CELL_SIZE);
-          let newGridY = Math.round(dragOffset.y / GRID_CELL_SIZE);
+          const desktopRect = desktopRectRef.current ?? desktopRef.current?.getBoundingClientRect();
+          const pointerOffset = dragPointerOffset.current;
+          if (!desktopRect || !pointerOffset) {
+            resetDragState();
+            return;
+          }
+
+          let newGridX = Math.round((e.clientX - desktopRect.left - pointerOffset.x) / GRID_CELL_SIZE);
+          let newGridY = Math.round((e.clientY - desktopRect.top - pointerOffset.y) / GRID_CELL_SIZE);
           newGridX = Math.max(0, newGridX);
           newGridY = Math.max(0, newGridY);
           const finalPos = findNearestAvailablePosition(newGridX, newGridY, draggingId);
@@ -886,7 +945,7 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
 
       resetDragState();
     },
-    [draggingId, dragOffset, moveItem, moveToTrash, findNearestAvailablePosition, occupiedPositions, folderDropTargetId, folderWindowDropTargetId, resetDragState]
+    [draggingId, moveItem, moveToTrash, findNearestAvailablePosition, occupiedPositions, resetDragState]
   );
 
   // Safety: Clean up stale drag state if component becomes unfocused during drag
@@ -1726,6 +1785,7 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
       {!isVisitorMode && <MenuBar />}
 
       <div
+        ref={desktopRef}
         data-desktop
         eos-name="desktop"
         className={`${styles.desktop} user-desktop ${isFileDragOver ? styles.dragOver : ''} ${isDesktopDropTarget ? styles.desktopDropTarget : ''} ${profile?.wallpaper?.startsWith('custom:') ? '' : `wallpaper-${profile?.wallpaper || 'default'}`}`}
@@ -1766,7 +1826,6 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
           onDragMove={dragMoveHandler}
           onDragEnd={dragEndHandler}
           isDragging={draggingId === item.id}
-          dragOffset={draggingId === item.id ? dragOffset ?? undefined : undefined}
           isDropTarget={item.type === 'folder' && folderDropTargetId === item.id}
           isCut={cutItemIds.has(item.id)}
         />
@@ -1774,7 +1833,7 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
 
       {/* Trash Icon - hidden in visitor mode */}
       {!isVisitorMode && (
-        <div data-trash>
+        <div ref={trashRef} data-trash>
           <Trash
             isFull={trashedItemCount > 0}
             isSelected={trashSelected}

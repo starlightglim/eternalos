@@ -334,6 +334,15 @@ export function FolderView({ folderId, visitorItems, isVisitorMode = false, isDr
     [draggingId, folderId, releasePointerCapture]
   );
 
+  const handleLostPointerCapture = useCallback(
+    (e: React.PointerEvent) => {
+      if (draggingId || hasDragged.current) {
+        handlePointerCancel(e);
+      }
+    },
+    [draggingId, handlePointerCancel]
+  );
+
   // Clean up pointer capture on unmount
   useEffect(() => {
     return () => {
@@ -629,6 +638,7 @@ export function FolderView({ folderId, visitorItems, isVisitorMode = false, isDr
       onPointerMove={draggingId ? handlePointerMove : undefined}
       onPointerUp={draggingId ? handlePointerUp : undefined}
       onPointerCancel={draggingId ? handlePointerCancel : undefined}
+      onLostPointerCapture={draggingId ? handleLostPointerCapture : undefined}
     >
       {breadcrumbBar}
       <div className={styles.itemGrid}>

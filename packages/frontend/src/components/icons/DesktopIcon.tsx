@@ -18,7 +18,6 @@ interface DesktopIconProps {
   onDragMove?: (e: React.PointerEvent) => void;
   onDragEnd?: (e: React.PointerEvent) => void;
   isDragging: boolean;
-  dragOffset?: { x: number; y: number };
   isDropTarget?: boolean;
   isCut?: boolean; // Item is cut and pending paste (shows faded)
 }
@@ -42,7 +41,6 @@ function DesktopIconInner({
   onDragMove,
   onDragEnd,
   isDragging,
-  dragOffset,
   isDropTarget,
   isCut,
 }: DesktopIconProps) {
@@ -51,14 +49,12 @@ function DesktopIconInner({
   const iconRef = useRef<HTMLDivElement>(null);
   // Track the pointer ID we captured so we can release it reliably
   const capturedPointerIdRef = useRef<number | null>(null);
+  const dragStartClientRef = useRef<{ x: number; y: number } | null>(null);
+  const dragActiveRef = useRef(false);
 
   // Calculate pixel position from grid position
   const pixelX = item.position.x * gridCellSize;
   const pixelY = item.position.y * gridCellSize;
-
-  // If dragging, use the drag offset for visual position
-  const displayX = isDragging && dragOffset ? dragOffset.x : pixelX;
-  const displayY = isDragging && dragOffset ? dragOffset.y : pixelY;
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -73,6 +69,8 @@ function DesktopIconInner({
 
       // Start drag (if handler provided)
       if (onDragStart && iconRef.current) {
+        dragStartClientRef.current = { x: e.clientX, y: e.clientY };
+        dragActiveRef.current = true;
         onDragStart(item.id, e);
         // Capture pointer on the icon element (not e.target which could be a child)
         iconRef.current.setPointerCapture(e.pointerId);
@@ -84,50 +82,72 @@ function DesktopIconInner({
 
   const handlePointerMove = useCallback(
     (e: React.PointerEvent) => {
+      if (isDragging && dragStartClientRef.current && iconRef.current) {
+        const deltaX = e.clientX - dragStartClientRef.current.x;
+        const deltaY = e.clientY - dragStartClientRef.current.y;
+        iconRef.current.style.transform = `translate3d(${deltaX}px, ${deltaY}px, 0)`;
+      }
+
       if (onDragMove) {
         onDragMove(e);
       }
     },
-    [onDragMove]
+    [isDragging, onDragMove]
   );
 
-  const handlePointerUp = useCallback(
-    (e: React.PointerEvent) => {
-      if (onDragEnd) {
-        onDragEnd(e);
-      }
-      // Release pointer capture from the element that captured it
-      if (iconRef.current && capturedPointerIdRef.current !== null) {
-        try {
+  const finishDrag = useCallback((e: React.PointerEvent) => {
+    if (!dragActiveRef.current) {
+      return;
+    }
+
+    dragActiveRef.current = false;
+
+    if (onDragEnd) {
+      onDragEnd(e);
+    }
+
+    if (iconRef.current) {
+      iconRef.current.style.transform = '';
+    }
+    dragStartClientRef.current = null;
+
+    if (iconRef.current && capturedPointerIdRef.current !== null) {
+      try {
+        if (iconRef.current.hasPointerCapture(capturedPointerIdRef.current)) {
           iconRef.current.releasePointerCapture(capturedPointerIdRef.current);
-        } catch {
-          // Ignore - pointer may already be released
         }
-        capturedPointerIdRef.current = null;
+      } catch {
+        // Ignore - pointer may already be released
       }
-    },
-    [onDragEnd]
-  );
+    }
+    capturedPointerIdRef.current = null;
+  }, [onDragEnd]);
 
-  // Handle pointer cancel (when browser/OS interrupts the drag)
-  const handlePointerCancel = useCallback(
-    (e: React.PointerEvent) => {
-      // Treat cancel the same as end to clean up state
-      if (onDragEnd) {
-        onDragEnd(e);
-      }
-      capturedPointerIdRef.current = null;
-    },
-    [onDragEnd]
-  );
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    finishDrag(e);
+  }, [finishDrag]);
+
+  const handlePointerCancel = useCallback((e: React.PointerEvent) => {
+    finishDrag(e);
+  }, [finishDrag]);
+
+  const handleLostPointerCapture = useCallback((e: React.PointerEvent) => {
+    finishDrag(e);
+  }, [finishDrag]);
 
   // Clean up pointer capture if component unmounts during drag
   useEffect(() => {
     const iconElement = iconRef.current;
     return () => {
+      if (iconElement) {
+        iconElement.style.transform = '';
+      }
+      dragActiveRef.current = false;
       if (iconElement && capturedPointerIdRef.current !== null) {
         try {
-          iconElement.releasePointerCapture(capturedPointerIdRef.current);
+          if (iconElement.hasPointerCapture(capturedPointerIdRef.current)) {
+            iconElement.releasePointerCapture(capturedPointerIdRef.current);
+          }
         } catch {
           // Ignore - pointer may already be released
         }
@@ -135,6 +155,12 @@ function DesktopIconInner({
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!isDragging && iconRef.current) {
+      iconRef.current.style.transform = '';
+    }
+  }, [isDragging]);
 
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
@@ -180,8 +206,8 @@ function DesktopIconInner({
       eos-name={slugify(item.name)}
       eos-type={item.type}
       style={{
-        left: displayX,
-        top: displayY,
+        left: pixelX,
+        top: pixelY,
         width: gridCellSize,
         height: gridCellSize,
         touchAction: 'none', // Prevent browser handling of touch gestures during drag
@@ -190,6 +216,7 @@ function DesktopIconInner({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
+      onLostPointerCapture={handleLostPointerCapture}
       onClick={handleClick}
       onContextMenu={onContextMenu}
     >
@@ -258,8 +285,6 @@ export const DesktopIcon = memo(DesktopIconInner, (prevProps, nextProps) => {
     prevProps.isDragging === nextProps.isDragging &&
     prevProps.isDropTarget === nextProps.isDropTarget &&
     prevProps.isCut === nextProps.isCut &&
-    prevProps.dragOffset?.x === nextProps.dragOffset?.x &&
-    prevProps.dragOffset?.y === nextProps.dragOffset?.y &&
     prevProps.gridCellSize === nextProps.gridCellSize
     // Note: callback props (onSelect, onDoubleClick, etc.) are not compared
     // because they should be stable useCallback refs from the parent

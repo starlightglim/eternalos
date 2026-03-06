@@ -98,6 +98,38 @@ async function createDesktopItem(token, item) {
   });
 }
 
+async function patchProfile(token, updates) {
+  return expectOk('/api/profile', {
+    method: 'PATCH',
+    headers: authHeaders(token, JSON_HEADERS),
+    body: JSON.stringify(updates),
+  });
+}
+
+async function loginUser(email, password) {
+  return expectOk('/api/auth/login', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+async function waitFor(assertion, { timeoutMs = 1500, intervalMs = 50 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+
+  while (Date.now() < deadline) {
+    try {
+      return await assertion();
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  throw lastError ?? new Error('Timed out waiting for condition');
+}
+
 function createPngFile(name = 'pixel.png') {
   return new File([PNG_BYTES], name, { type: 'image/png' });
 }
@@ -175,6 +207,51 @@ describe('worker integration', () => {
     assert.equal(reusedRefresh.response.status, 401);
   });
 
+  it('resets passwords, invalidates old sessions, and logs out new sessions', async () => {
+    const user = await signupUser();
+    const newPassword = 'BetterPass123';
+
+    const forgotPassword = await expectOk('/api/auth/forgot-password', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ email: user.email }),
+    });
+    assert.ok(forgotPassword.resetToken);
+
+    await expectOk('/api/auth/reset-password', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        token: forgotPassword.resetToken,
+        newPassword,
+      }),
+    });
+
+    const oldSession = await fetchJson('/api/desktop', {
+      headers: authHeaders(user.token),
+    });
+    assert.equal(oldSession.response.status, 401);
+
+    const oldPasswordLogin = await fetchJson('/api/auth/login', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ email: user.email, password: user.password }),
+    });
+    assert.equal(oldPasswordLogin.response.status, 401);
+
+    const freshLogin = await loginUser(user.email, newPassword);
+
+    await expectOk('/api/auth/logout', {
+      method: 'POST',
+      headers: authHeaders(freshLogin.token),
+    });
+
+    const loggedOutSession = await fetchJson('/api/desktop', {
+      headers: authHeaders(freshLogin.token),
+    });
+    assert.equal(loggedOutSession.response.status, 401);
+  });
+
   it('removes newly-private items from the visitor snapshot cache immediately', async () => {
     const user = await signupUser();
 
@@ -233,6 +310,62 @@ describe('worker integration', () => {
 
     const afterTrash = await worker.fetch(`${BASE_URL}${filePath}`);
     assert.equal(afterTrash.status, 403);
+  });
+
+  it('tracks opted-in analytics with per-IP deduplication', async () => {
+    const user = await signupUser();
+
+    await patchProfile(user.token, { analyticsEnabled: true });
+
+    await expectOk(`/api/visit/${user.user.username}`, {
+      headers: { 'CF-Connecting-IP': '1.1.1.1' },
+    });
+    await expectOk(`/api/visit/${user.user.username}`, {
+      headers: { 'CF-Connecting-IP': '1.1.1.1' },
+    });
+    await expectOk(`/api/visit/${user.user.username}`, {
+      headers: { 'CF-Connecting-IP': '2.2.2.2' },
+    });
+
+    const analytics = await waitFor(async () => {
+      const result = await expectOk('/api/analytics', {
+        headers: authHeaders(user.token),
+      });
+      assert.equal(result.totalViews, 2);
+      return result;
+    });
+
+    assert.equal(analytics.dailyViews[0].count, 2);
+  });
+
+  it('returns an SVG og:image for public desktops', async () => {
+    const user = await signupUser();
+
+    await patchProfile(user.token, {
+      desktopColor: '#4A6FA5',
+      shareDescription: 'A quiet corner of the web',
+    });
+
+    const response = await worker.fetch(`${BASE_URL}/api/og/${user.user.username}.png`);
+    const svg = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('Content-Type'), 'image/svg+xml');
+    assert.match(svg, /A quiet corner of the web/);
+    assert.match(svg, /#4A6FA5/i);
+  });
+
+  it('rejects assistant requests without a message before calling AI', async () => {
+    const user = await signupUser();
+
+    const { response, body } = await fetchJson('/api/assistant', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ message: '' }),
+    });
+
+    assert.equal(response.status, 400);
+    assert.equal(body.error, 'Message is required');
   });
 
   it('counts wallpaper, icon, css asset, and file uploads toward quota usage', async () => {
