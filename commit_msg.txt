@@ -1,9 +1,0 @@
-Add AppearancePanel for custom color customization
-
-Implement Layer 1 of the customization engine - Visual Identity:
-- Create AppearancePanel component with Colors, Fonts, Preview tabs
-- Add accent/desktop/window color pickers with presets and custom input
-- Create appearanceStore with live CSS variable updates
-- Add appearance settings to Special menu
-
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
