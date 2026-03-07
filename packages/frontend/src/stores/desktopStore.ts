@@ -372,13 +372,13 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
     if (!item || item.type !== 'image' || !isApiConfigured) return;
 
     set((state) => {
-      const newItems = state.items.map((currentItem) =>
+      const newItems: DesktopItem[] = state.items.map((currentItem) =>
         currentItem.id === id
           ? {
               ...currentItem,
               imageAnalysis: {
                 ...(currentItem.imageAnalysis || {}),
-                status: 'pending',
+                status: 'pending' as const,
                 error: undefined,
               },
               updatedAt: Date.now(),
@@ -395,13 +395,13 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
     } catch (error) {
       console.error('Failed to start image analysis:', error);
       set((state) => {
-        const newItems = state.items.map((currentItem) =>
+        const newItems: DesktopItem[] = state.items.map((currentItem) =>
           currentItem.id === id
             ? {
                 ...currentItem,
                 imageAnalysis: {
                   ...(currentItem.imageAnalysis || {}),
-                  status: 'failed',
+                  status: 'failed' as const,
                   error: error instanceof Error ? error.message : 'Failed to start image analysis',
                 },
                 updatedAt: Date.now(),

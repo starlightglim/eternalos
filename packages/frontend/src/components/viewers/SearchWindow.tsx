@@ -40,7 +40,7 @@ interface QueryTerm {
   variants: string[];
 }
 
-function tokenizeQuery(query: string): QueryTerm[] {
+function tokenizeQuery(query: string): string[] {
   return query
     .toLowerCase()
     .split(/\s+/)
