@@ -165,6 +165,65 @@
   padding: 1px 4px;
 }
 
+.historyList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.historyItem {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  background: var(--platinum);
+  border: 1px solid var(--shadow);
+}
+
+.historyInfo {
+  min-width: 0;
+}
+
+.historyTitle {
+  font-family: var(--font-chicago);
+  font-size: 11px;
+  color: var(--text-color);
+}
+
+.historyMeta {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-color-secondary);
+}
+
+.historyButton {
+  padding: 4px 10px;
+  font-family: var(--font-geneva);
+  font-size: 10px;
+  background: var(--white);
+  border: 1px solid var(--black);
+  cursor: pointer;
+  color: var(--window-text-color, var(--black));
+}
+
+.historyButton:hover:not(:disabled) {
+  background: var(--highlight);
+}
+
+.historyButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.historyError {
+  padding: 8px;
+  background: #ffeeee;
+  border: 1px solid #cc0000;
+  color: #cc0000;
+  font-size: 10px;
+}
+
 /* ============================================
    EDITOR AREA
    ============================================ */
@@ -271,9 +330,42 @@
   border-top: 1px solid var(--shadow);
 }
 
+.actionLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
 .actionButtons {
   display: flex;
   gap: 8px;
+}
+
+.saveState {
+  font-family: var(--font-geneva);
+  font-size: 10px;
+  color: var(--text-color-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.saveStateUnsaved {
+  color: #8a5a00;
+}
+
+.saveStateSaving {
+  color: var(--shadow);
+  font-style: italic;
+}
+
+.saveStateSaved {
+  color: #2d8a2d;
+}
+
+.saveStateError {
+  color: #cc0000;
 }
 
 .resetButton {

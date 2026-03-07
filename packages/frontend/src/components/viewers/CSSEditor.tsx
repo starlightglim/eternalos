@@ -15,8 +15,11 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { listCSSVersions, revertCSSVersion } from '../../services/api';
+import type { CustomCSSVersion } from '../../services/api';
 import { useAppearanceStore } from '../../stores/appearanceStore';
 import { useCSSPickerStore } from '../../stores/cssPickerStore';
+import { normalizeCSSSelectorAliases } from '../../utils/cssSelectorAliases';
 import { CSSAssetPanel } from './CSSAssetPanel';
 import styles from './CSSEditor.module.css';
 
@@ -63,6 +66,8 @@ interface ValidationResult {
   valid: boolean;
   error?: string;
 }
+
+type SaveState = 'idle' | 'unsaved' | 'saving' | 'saved' | 'error';
 
 /**
  * Validate CSS for dangerous patterns and url() values
@@ -173,15 +178,16 @@ function scopeCSS(css: string): string {
 const CSS_REFERENCE = [
   { selector: '.user-desktop', description: 'The entire desktop area' },
   { selector: '.window', description: 'Window containers' },
-  { selector: '.titleBar', description: 'Window title bars' },
-  { selector: '.titleText', description: 'Title bar text' },
-  { selector: '.closeBox', description: 'Window close button' },
-  { selector: '.zoomBox', description: 'Window zoom button' },
-  { selector: '.collapseBox', description: 'Window collapse button' },
-  { selector: '.windowContent', description: 'Window content area' },
+  { selector: '[eos-part="titlebar"]', description: 'Window title bars' },
+  { selector: '[eos-part="title"]', description: 'Window title text' },
+  { selector: '[eos-part="close"]', description: 'Window close button' },
+  { selector: '[eos-part="zoom"]', description: 'Window zoom button' },
+  { selector: '[eos-part="collapse"]', description: 'Window collapse button' },
+  { selector: '[eos-part="content"]', description: 'Window content area' },
+  { selector: '[eos-part="icon"]', description: 'File or item icon artwork' },
+  { selector: '[eos-part="label"]', description: 'File or item labels' },
   { selector: '.resizeHandle', description: 'Window resize corner' },
-  { selector: '.desktopIcon', description: 'Desktop icons' },
-  { selector: '.iconLabel', description: 'Icon text labels' },
+  { selector: '.desktopIcon', description: 'Desktop icon containers' },
   { selector: '.menuBar', description: 'The menu bar at top' },
   { selector: '.sticker', description: 'Sticker decorations' },
   { selector: '.folder-view', description: 'Folder window contents' },
@@ -190,6 +196,7 @@ const CSS_REFERENCE = [
   { selector: '[eos-name="..."]', description: 'Target a specific item by name' },
   { selector: '[eos-type="folder"]', description: 'All folders' },
   { selector: '[eos-type="image"]', description: 'All images' },
+  { selector: '[eos-extension="gif"]', description: 'Files with a specific extension (if available)' },
   { selector: '[eos-type="text"]', description: 'All text files' },
   { selector: '[eos-type="link"]', description: 'All links' },
   { selector: '[eos-type="sticker"]', description: 'All stickers' },
@@ -426,17 +433,33 @@ const CSS_EXAMPLES = [
 ];
 
 export function CSSEditor() {
-  const { appearance, setCustomCSS, saveAppearance, isLoading } = useAppearanceStore();
+  const {
+    appearance,
+    customCSSPreview,
+    customCSSPreviewSummary,
+    setCustomCSS,
+    saveAppearance,
+    clearCustomCSSPreview,
+    isLoading,
+  } = useAppearanceStore();
   const { isActive: pickerActive, activate: activatePicker, deactivate: deactivatePicker } = useCSSPickerStore();
   const [cssDraft, setCssDraft] = useState<string | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [showReference, setShowReference] = useState(false);
   const [showAssets, setShowAssets] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [previewActive, setPreviewActive] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [saveState, setSaveState] = useState<SaveState>('idle');
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [history, setHistory] = useState<CustomCSSVersion[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+  const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const previewStyleRef = useRef<HTMLStyleElement | null>(null);
-  const cssInput = cssDraft ?? appearance.customCSS ?? '';
+  const saveStateTimerRef = useRef<number | null>(null);
+  const cssInput = cssDraft ?? customCSSPreview ?? appearance.customCSS ?? '';
 
   // Cleanup preview style on unmount
   useEffect(() => {
@@ -444,13 +467,44 @@ export function CSSEditor() {
       if (previewStyleRef.current) {
         previewStyleRef.current.remove();
       }
+      if (saveStateTimerRef.current !== null) {
+        window.clearTimeout(saveStateTimerRef.current);
+      }
     };
+  }, []);
+
+  const loadHistory = useCallback(async () => {
+    setIsHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      setHistory(await listCSSVersions());
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : 'Failed to load custom CSS history');
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showHistory) {
+      void loadHistory();
+    }
+  }, [loadHistory, showHistory]);
+
+  const setEditorDirty = useCallback(() => {
+    if (saveStateTimerRef.current !== null) {
+      window.clearTimeout(saveStateTimerRef.current);
+      saveStateTimerRef.current = null;
+    }
+    setHasUnsavedChanges(true);
+    setSaveState('unsaved');
+    setSaveError(null);
   }, []);
 
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
     setCssDraft(value);
-    setHasUnsavedChanges(true);
+    setEditorDirty();
 
     // Validate on change
     const result = validateCSS(value);
@@ -464,7 +518,7 @@ export function CSSEditor() {
         previewStyleRef.current = null;
       }
     }
-  }, [previewActive]);
+  }, [previewActive, setEditorDirty]);
 
   const handlePreview = useCallback(() => {
     const result = validateCSS(cssInput);
@@ -473,7 +527,7 @@ export function CSSEditor() {
       return;
     }
 
-    const scopedCSS = scopeCSS(cssInput);
+    const scopedCSS = scopeCSS(normalizeCSSSelectorAliases(cssInput));
 
     if (previewStyleRef.current) {
       previewStyleRef.current.remove();
@@ -499,24 +553,44 @@ export function CSSEditor() {
       previewStyleRef.current = null;
     }
 
-    setCustomCSS(cssInput);
-    await saveAppearance();
-    setCssDraft(null);
-    setHasUnsavedChanges(false);
-    setPreviewActive(false);
-  }, [cssInput, setCustomCSS, saveAppearance]);
+    const normalizedCSS = normalizeCSSSelectorAliases(cssInput);
+
+    setSaveState('saving');
+    setSaveError(null);
+    setCustomCSS(normalizedCSS);
+    try {
+      await saveAppearance();
+      await loadHistory();
+      clearCustomCSSPreview();
+      setCssDraft(null);
+      setHasUnsavedChanges(false);
+      setPreviewActive(false);
+      setSaveState('saved');
+
+      if (saveStateTimerRef.current !== null) {
+        window.clearTimeout(saveStateTimerRef.current);
+      }
+      saveStateTimerRef.current = window.setTimeout(() => {
+        setSaveState('idle');
+        saveStateTimerRef.current = null;
+      }, 2500);
+    } catch (error) {
+      setSaveState('error');
+      setSaveError(error instanceof Error ? error.message : 'Failed to save custom CSS');
+    }
+  }, [clearCustomCSSPreview, cssInput, loadHistory, saveAppearance, setCustomCSS]);
 
   const handleReset = useCallback(() => {
     setCssDraft('');
     setValidationError(null);
-    setHasUnsavedChanges(true);
+    setEditorDirty();
     setPreviewActive(false);
 
     if (previewStyleRef.current) {
       previewStyleRef.current.remove();
       previewStyleRef.current = null;
     }
-  }, []);
+  }, [setEditorDirty]);
 
   const handleInsertExample = useCallback((css: string) => {
     const textarea = textareaRef.current;
@@ -529,14 +603,14 @@ export function CSSEditor() {
     const newCSS = before + (before && !before.endsWith('\n') ? '\n\n' : '') + css + after;
 
     setCssDraft(newCSS);
-    setHasUnsavedChanges(true);
+    setEditorDirty();
 
     setTimeout(() => {
       textarea.focus();
       const newPos = start + css.length + (before && !before.endsWith('\n') ? 2 : 0);
       textarea.setSelectionRange(newPos, newPos);
     }, 0);
-  }, [cssInput]);
+  }, [cssInput, setEditorDirty]);
 
   const handleInsertAssetUrl = useCallback((urlPath: string) => {
     const textarea = textareaRef.current;
@@ -550,14 +624,14 @@ export function CSSEditor() {
     const newCSS = before + snippet + after;
 
     setCssDraft(newCSS);
-    setHasUnsavedChanges(true);
+    setEditorDirty();
 
     setTimeout(() => {
       textarea.focus();
       const newPos = start + snippet.length;
       textarea.setSelectionRange(newPos, newPos);
     }, 0);
-  }, [cssInput]);
+  }, [cssInput, setEditorDirty]);
 
   // Handle selector chosen from picker — insert CSS rule block at cursor
   const handleSelectorChosen = useCallback((selector: string) => {
@@ -572,7 +646,7 @@ export function CSSEditor() {
     const newCSS = before + (before && !before.endsWith('\n') ? '\n\n' : '') + ruleBlock + after;
 
     setCssDraft(newCSS);
-    setHasUnsavedChanges(true);
+    setEditorDirty();
 
     // Position cursor inside the rule block (on the empty line)
     setTimeout(() => {
@@ -581,7 +655,7 @@ export function CSSEditor() {
       const newPos = start + cursorOffset + selector.length + 4; // after "selector {\n  "
       textarea.setSelectionRange(newPos, newPos);
     }, 0);
-  }, [cssInput]);
+  }, [cssInput, setEditorDirty]);
 
   // Toggle picker
   const handleTogglePicker = useCallback(() => {
@@ -594,6 +668,71 @@ export function CSSEditor() {
     }
   }, [pickerActive, activatePicker, deactivatePicker, handleSelectorChosen]);
 
+  const handleRestoreVersion = useCallback(async (versionId: string) => {
+    setRestoringVersionId(versionId);
+    setSaveState('saving');
+    setSaveError(null);
+    setHistoryError(null);
+
+    if (previewStyleRef.current) {
+      previewStyleRef.current.remove();
+      previewStyleRef.current = null;
+    }
+
+    try {
+      const response = await revertCSSVersion(versionId);
+      if (!response.profile) {
+        throw new Error('Profile response missing after restore');
+      }
+
+      useAppearanceStore.getState().loadAppearance({
+        accentColor: response.profile.accentColor,
+        desktopColor: response.profile.desktopColor,
+        windowBgColor: response.profile.windowBgColor,
+        titleBarBgColor: response.profile.titleBarBgColor,
+        titleBarTextColor: response.profile.titleBarTextColor,
+        windowBorderColor: response.profile.windowBorderColor,
+        buttonBgColor: response.profile.buttonBgColor,
+        buttonTextColor: response.profile.buttonTextColor,
+        buttonBorderColor: response.profile.buttonBorderColor,
+        labelColor: response.profile.labelColor,
+        fontSmoothing: response.profile.fontSmoothing,
+        windowBorderRadius: response.profile.windowBorderRadius,
+        controlBorderRadius: response.profile.controlBorderRadius,
+        windowShadow: response.profile.windowShadow,
+        customCSS: response.profile.customCSS,
+      });
+
+      setCssDraft(null);
+      setValidationError(null);
+      setPreviewActive(false);
+      setHasUnsavedChanges(false);
+      clearCustomCSSPreview();
+      setSaveState('saved');
+
+      if (response.versions) {
+        setHistory(response.versions);
+      } else {
+        await loadHistory();
+      }
+
+      if (saveStateTimerRef.current !== null) {
+        window.clearTimeout(saveStateTimerRef.current);
+      }
+      saveStateTimerRef.current = window.setTimeout(() => {
+        setSaveState('idle');
+        saveStateTimerRef.current = null;
+      }, 2500);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to restore custom CSS version';
+      setSaveState('error');
+      setSaveError(message);
+      setHistoryError(message);
+    } finally {
+      setRestoringVersionId(null);
+    }
+  }, [clearCustomCSSPreview, loadHistory]);
+
   // Deactivate picker on unmount
   useEffect(() => {
     return () => {
@@ -604,6 +743,16 @@ export function CSSEditor() {
   const charCount = cssInput.length;
   const charLimit = MAX_CSS_SIZE;
   const charPercent = Math.round((charCount / charLimit) * 100);
+  const statusText =
+    saveState === 'saving'
+      ? 'Saving custom CSS...'
+      : saveState === 'saved'
+        ? 'Custom CSS saved'
+        : saveState === 'error'
+          ? saveError || 'Failed to save custom CSS'
+          : saveState === 'unsaved'
+            ? 'Unsaved changes'
+            : 'Ready';
 
   return (
     <div className={styles.editor}>
@@ -619,17 +768,42 @@ export function CSSEditor() {
           </button>
           <button
             className={`${styles.toolButton} ${showReference ? styles.toolButtonActive : ''}`}
-            onClick={() => { setShowReference(!showReference); if (!showReference) setShowAssets(false); }}
+            onClick={() => {
+              setShowReference(!showReference);
+              if (!showReference) {
+                setShowAssets(false);
+                setShowHistory(false);
+              }
+            }}
             title="CSS Reference"
           >
             Reference
           </button>
           <button
             className={`${styles.toolButton} ${showAssets ? styles.toolButtonActive : ''}`}
-            onClick={() => { setShowAssets(!showAssets); if (!showAssets) setShowReference(false); }}
+            onClick={() => {
+              setShowAssets(!showAssets);
+              if (!showAssets) {
+                setShowReference(false);
+                setShowHistory(false);
+              }
+            }}
             title="Upload and manage CSS image assets"
           >
             Assets
+          </button>
+          <button
+            className={`${styles.toolButton} ${showHistory ? styles.toolButtonActive : ''}`}
+            onClick={() => {
+              setShowHistory(!showHistory);
+              if (!showHistory) {
+                setShowReference(false);
+                setShowAssets(false);
+              }
+            }}
+            title="Saved custom CSS history"
+          >
+            History
           </button>
         </div>
         <div className={styles.charCount} data-warning={charPercent > 80}>
@@ -679,6 +853,42 @@ export function CSSEditor() {
         <CSSAssetPanel onInsertUrl={handleInsertAssetUrl} />
       )}
 
+      {showHistory && (
+        <div className={styles.referencePanel}>
+          <div className={styles.referenceSection}>
+            <h4>Saved Versions</h4>
+            {isHistoryLoading && <div className={styles.historyMeta}>Loading history...</div>}
+            {!isHistoryLoading && historyError && <div className={styles.historyError}>{historyError}</div>}
+            {!isHistoryLoading && !historyError && history.length === 0 && (
+              <div className={styles.historyMeta}>No saved custom CSS versions yet.</div>
+            )}
+            {!isHistoryLoading && !historyError && history.length > 0 && (
+              <div className={styles.historyList}>
+                {history.map((version, index) => (
+                  <div key={version.id} className={styles.historyItem}>
+                    <div className={styles.historyInfo}>
+                      <div className={styles.historyTitle}>
+                        {version.summary || `Version ${history.length - index}`}
+                      </div>
+                      <div className={styles.historyMeta}>
+                        {new Date(version.createdAt).toLocaleString()} · {version.source}
+                      </div>
+                    </div>
+                    <button
+                      className={styles.historyButton}
+                      onClick={() => void handleRestoreVersion(version.id)}
+                      disabled={restoringVersionId === version.id}
+                    >
+                      {restoringVersionId === version.id ? 'Restoring...' : 'Restore'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Editor area */}
       <div className={styles.editorArea}>
         <textarea
@@ -713,22 +923,41 @@ export function CSSEditor() {
       )}
 
       {/* Preview indicator */}
-      {previewActive && (
+      {(previewActive || !!customCSSPreview) && (
         <div className={styles.previewBar}>
           <span className={styles.previewIcon}>👁</span>
-          Preview active — changes not saved yet
+          {customCSSPreview
+            ? customCSSPreviewSummary || 'Assistant preview active — changes not saved yet'
+            : 'Preview active — changes not saved yet'}
         </div>
       )}
 
       {/* Action bar */}
       <div className={styles.actionBar}>
-        <button
-          className={styles.resetButton}
-          onClick={handleReset}
-          disabled={isLoading || !cssInput}
-        >
-          Clear All
-        </button>
+        <div className={styles.actionLeft}>
+          <button
+            className={styles.resetButton}
+            onClick={handleReset}
+            disabled={isLoading || !cssInput}
+          >
+            Clear All
+          </button>
+          <span
+            className={`${styles.saveState} ${
+              saveState === 'saving'
+                ? styles.saveStateSaving
+                : saveState === 'saved'
+                  ? styles.saveStateSaved
+                  : saveState === 'error'
+                    ? styles.saveStateError
+                    : saveState === 'unsaved'
+                      ? styles.saveStateUnsaved
+                      : ''
+            }`}
+          >
+            {statusText}
+          </span>
+        </div>
         <div className={styles.actionButtons}>
           <button
             className={styles.previewButton}
@@ -742,7 +971,7 @@ export function CSSEditor() {
             onClick={handleApply}
             disabled={isLoading || !!validationError || !hasUnsavedChanges}
           >
-            {isLoading ? 'Saving...' : 'Apply & Save'}
+            {saveState === 'saving' || isLoading ? 'Saving...' : 'Apply & Save'}
           </button>
         </div>
       </div>

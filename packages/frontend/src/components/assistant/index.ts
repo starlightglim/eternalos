@@ -1,1 +1,0 @@
-export { DeskAssistant } from './DeskAssistant';

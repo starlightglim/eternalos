@@ -8,6 +8,7 @@ import {
   createItem as apiCreateItem,
   updateItems as apiUpdateItems,
   deleteItem as apiDeleteItem,
+  analyzeImageItem as apiAnalyzeImageItem,
   uploadFile as apiUploadFile,
   fetchDesktop as apiFetchDesktop,
   emptyTrashApi,
@@ -83,6 +84,7 @@ interface DesktopStore {
   removeItem: (id: string) => void;
   updateItem: (id: string, updates: Partial<DesktopItem>) => void;
   moveItem: (id: string, position: { x: number; y: number }) => void;
+  requestImageAnalysis: (id: string) => Promise<void>;
 
   // Selection
   selectItem: (id: string, addToSelection?: boolean) => void;
@@ -362,6 +364,54 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
       }, 500);
 
       positionUpdateTimers.set(id, timer);
+    }
+  },
+
+  requestImageAnalysis: async (id) => {
+    const item = get().getItem(id);
+    if (!item || item.type !== 'image' || !isApiConfigured) return;
+
+    set((state) => {
+      const newItems = state.items.map((currentItem) =>
+        currentItem.id === id
+          ? {
+              ...currentItem,
+              imageAnalysis: {
+                ...(currentItem.imageAnalysis || {}),
+                status: 'pending',
+                error: undefined,
+              },
+              updatedAt: Date.now(),
+            }
+          : currentItem
+      );
+
+      cacheItems(newItems);
+      return { items: newItems };
+    });
+
+    try {
+      await apiAnalyzeImageItem(id);
+    } catch (error) {
+      console.error('Failed to start image analysis:', error);
+      set((state) => {
+        const newItems = state.items.map((currentItem) =>
+          currentItem.id === id
+            ? {
+                ...currentItem,
+                imageAnalysis: {
+                  ...(currentItem.imageAnalysis || {}),
+                  status: 'failed',
+                  error: error instanceof Error ? error.message : 'Failed to start image analysis',
+                },
+                updatedAt: Date.now(),
+              }
+            : currentItem
+        );
+
+        cacheItems(newItems);
+        return { items: newItems };
+      });
     }
   },
 

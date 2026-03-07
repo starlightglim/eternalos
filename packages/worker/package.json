@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --inspector-port=0",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "WRANGLER_LOG_PATH=../../.wrangler-test.log node --test test/**/*.test.mjs",

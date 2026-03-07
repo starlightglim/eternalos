@@ -133,8 +133,23 @@ async function apiRequest<T>(
       throw new Error('Session expired. Please log in again.');
     }
 
-    const error = await response.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(error.error || `HTTP ${response.status}`);
+    const rawText = await response.text().catch(() => '');
+    let errorMessage = '';
+
+    if (rawText) {
+      try {
+        const parsed = JSON.parse(rawText) as { error?: string };
+        errorMessage = parsed.error || '';
+      } catch {
+        errorMessage = rawText.trim();
+      }
+    }
+
+    if (!errorMessage) {
+      errorMessage = response.statusText || 'Request failed';
+    }
+
+    throw new Error(`${response.status} ${errorMessage}`);
   }
 
   return response.json();
@@ -266,6 +281,12 @@ export async function updateItems(
 export async function deleteItem(id: string): Promise<{ deleted: boolean }> {
   return apiRequest<{ deleted: boolean }>(`/api/desktop/items/${id}`, {
     method: 'DELETE',
+  });
+}
+
+export async function analyzeImageItem(itemId: string): Promise<{ success: boolean; itemId: string; status: string }> {
+  return apiRequest<{ success: boolean; itemId: string; status: string }>(`/api/desktop/items/${itemId}/analyze`, {
+    method: 'POST',
   });
 }
 
@@ -581,39 +602,6 @@ export function getCSSAssetUrl(urlPath: string): string {
   return `${API_URL}${urlPath}`;
 }
 
-// ============ Assistant API ============
-
-export interface AssistantMessage {
-  role: 'user' | 'assistant';
-  content: string;
-}
-
-export interface ToolCall {
-  tool: string;
-  args: Record<string, unknown>;
-}
-
-export interface ToolResult {
-  success: boolean;
-  message: string;
-}
-
-export interface AssistantResponse {
-  response: string;
-  toolCalls?: ToolCall[];
-  toolResults?: ToolResult[];
-}
-
-export async function sendAssistantMessage(
-  message: string,
-  conversationHistory?: AssistantMessage[]
-): Promise<AssistantResponse> {
-  return apiRequest<AssistantResponse>('/api/assistant', {
-    method: 'POST',
-    body: JSON.stringify({ message, conversationHistory }),
-  });
-}
-
 // ============ Profile API ============
 
 export interface ProfileUpdateRequest {
@@ -626,7 +614,17 @@ export interface ProfileUpdateRequest {
   accentColor?: string;
   desktopColor?: string;
   windowBgColor?: string;
+  titleBarBgColor?: string;
+  titleBarTextColor?: string;
+  windowBorderColor?: string;
+  buttonBgColor?: string;
+  buttonTextColor?: string;
+  buttonBorderColor?: string;
+  labelColor?: string;
   fontSmoothing?: boolean;
+  windowBorderRadius?: number;
+  controlBorderRadius?: number;
+  windowShadow?: number;
   // Custom CSS (Layer 4 customization)
   customCSS?: string;
   // Watermark setting
@@ -647,7 +645,17 @@ export interface ProfileUpdateResponse {
     accentColor?: string;
     desktopColor?: string;
     windowBgColor?: string;
+    titleBarBgColor?: string;
+    titleBarTextColor?: string;
+    windowBorderColor?: string;
+    buttonBgColor?: string;
+    buttonTextColor?: string;
+    buttonBorderColor?: string;
+    labelColor?: string;
     fontSmoothing?: boolean;
+    windowBorderRadius?: number;
+    controlBorderRadius?: number;
+    windowShadow?: number;
     customCSS?: string;
     hideWatermark?: boolean;
   };
@@ -657,6 +665,29 @@ export async function updateProfile(updates: ProfileUpdateRequest): Promise<Prof
   return apiRequest<ProfileUpdateResponse>('/api/profile', {
     method: 'PATCH',
     body: JSON.stringify(updates),
+  });
+}
+
+export interface CustomCSSVersion {
+  id: string;
+  css: string;
+  createdAt: number;
+  source: 'manual' | 'assistant' | 'revert';
+  summary?: string;
+}
+
+export async function listCSSVersions(): Promise<CustomCSSVersion[]> {
+  const response = await apiRequest<{ versions: CustomCSSVersion[] }>('/api/css-history');
+  return response.versions;
+}
+
+export async function revertCSSVersion(versionId: string): Promise<{
+  success: boolean;
+  profile?: ProfileUpdateResponse['profile'];
+  versions?: CustomCSSVersion[];
+}> {
+  return apiRequest(`/api/css-history/${versionId}/revert`, {
+    method: 'POST',
   });
 }
 

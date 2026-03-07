@@ -1,64 +1,174 @@
-/**
- * AppearancePanel - Mac OS 8 Appearance Manager style control panel
- *
- * Allows users to customize their desktop appearance:
- * - Colors: Accent color, window background, desktop color
- * - Fonts: Font smoothing toggle (future: custom font selection)
- * - Preview: Live preview of color changes
- *
- * This is Layer 1 of the customization engine (Visual Identity).
- */
-
-import { useState, useCallback, useMemo } from 'react';
-import { useThemeStore, THEMES, type ThemeId } from '../../stores/themeStore';
-import { useAppearanceStore } from '../../stores/appearanceStore';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useAppearanceStore, type CustomAppearance } from '../../stores/appearanceStore';
 import styles from './AppearancePanel.module.css';
 
-type TabId = 'colors' | 'fonts' | 'preview';
+type TabId = 'palette' | 'windows' | 'controls' | 'preview';
 
-// Preset accent colors (classic Mac color palette)
-const ACCENT_PRESETS = [
-  { name: 'Blue', color: '#000080' },
-  { name: 'Purple', color: '#800080' },
-  { name: 'Red', color: '#800000' },
-  { name: 'Orange', color: '#CC6600' },
-  { name: 'Green', color: '#006600' },
-  { name: 'Teal', color: '#008080' },
-  { name: 'Graphite', color: '#666666' },
-  { name: 'Pink', color: '#CC6699' },
+interface ColorControlConfig {
+  key: keyof Pick<
+    CustomAppearance,
+    | 'accentColor'
+    | 'desktopColor'
+    | 'windowBgColor'
+    | 'titleBarBgColor'
+    | 'titleBarTextColor'
+    | 'windowBorderColor'
+    | 'buttonBgColor'
+    | 'buttonTextColor'
+    | 'buttonBorderColor'
+    | 'labelColor'
+  >;
+  label: string;
+  hint: string;
+  fallback: string;
+}
+
+interface SliderControlConfig {
+  key: keyof Pick<CustomAppearance, 'windowBorderRadius' | 'controlBorderRadius' | 'windowShadow'>;
+  label: string;
+  hint: string;
+  min: number;
+  max: number;
+  fallback: number;
+}
+
+const PALETTE_CONTROLS: ColorControlConfig[] = [
+  { key: 'accentColor', label: 'Accent', hint: 'Selections, active states, highlights', fallback: '#000080' },
+  { key: 'desktopColor', label: 'Desktop', hint: 'Main desktop fill under wallpaper and icons', fallback: '#C0C0C0' },
+  { key: 'windowBgColor', label: 'Window Surface', hint: 'Window content backgrounds', fallback: '#FFFFFF' },
+  { key: 'labelColor', label: 'Labels', hint: 'Desktop item labels and similar metadata text', fallback: '#000000' },
 ];
 
-// Preset desktop colors
-const DESKTOP_COLOR_PRESETS = [
-  { name: 'Platinum', color: '#C0C0C0' },
-  { name: 'Blue', color: '#6699CC' },
-  { name: 'Purple', color: '#9966CC' },
-  { name: 'Teal', color: '#669999' },
-  { name: 'Green', color: '#669966' },
-  { name: 'Rose', color: '#CC9999' },
-  { name: 'Warm Gray', color: '#B8A898' },
-  { name: 'Dark', color: '#333333' },
+const WINDOW_CONTROLS: ColorControlConfig[] = [
+  { key: 'titleBarBgColor', label: 'Title Bar', hint: 'Window title strip color', fallback: '#C0C0C0' },
+  { key: 'titleBarTextColor', label: 'Title Text', hint: 'Window title text color', fallback: '#000000' },
+  { key: 'windowBorderColor', label: 'Window Border', hint: 'Window outline and frame color', fallback: '#000000' },
 ];
 
-// Preset window background colors
-const WINDOW_BG_PRESETS = [
-  { name: 'White', color: '#FFFFFF' },
-  { name: 'Cream', color: '#FFFFF0' },
-  { name: 'Light Gray', color: '#F0F0F0' },
-  { name: 'Light Blue', color: '#F0F8FF' },
-  { name: 'Light Green', color: '#F0FFF0' },
-  { name: 'Light Pink', color: '#FFF0F5' },
-  { name: 'Light Yellow', color: '#FFFFD0' },
-  { name: 'Dark', color: '#2A2A2A' },
+const BUTTON_CONTROLS: ColorControlConfig[] = [
+  { key: 'buttonBgColor', label: 'Button Fill', hint: 'Buttons, inputs, selects, and controls', fallback: '#C0C0C0' },
+  { key: 'buttonTextColor', label: 'Button Text', hint: 'Button and control label color', fallback: '#000000' },
+  { key: 'buttonBorderColor', label: 'Button Border', hint: 'Button and control stroke color', fallback: '#000000' },
 ];
+
+const SHAPE_CONTROLS: SliderControlConfig[] = [
+  { key: 'windowBorderRadius', label: 'Window Radius', hint: 'Outer rounding of windows', min: 0, max: 24, fallback: 0 },
+  { key: 'controlBorderRadius', label: 'Control Radius', hint: 'Buttons, fields, and window controls', min: 0, max: 24, fallback: 3 },
+  { key: 'windowShadow', label: 'Window Shadow', hint: 'Depth and shadow softness', min: 0, max: 32, fallback: 2 },
+];
+
+function isHexColor(value: string): boolean {
+  return /^#[0-9A-Fa-f]{6}$/.test(value);
+}
+
+function titleCaseBoolean(value: boolean | undefined): string {
+  return value ? 'Enabled' : 'Disabled';
+}
+
+interface ColorFieldProps {
+  control: ColorControlConfig;
+  appearance: CustomAppearance;
+  updateAppearance: (updates: Partial<CustomAppearance>) => void;
+}
+
+function ColorField({ control, appearance, updateAppearance }: ColorFieldProps) {
+  const value = (appearance[control.key] as string | undefined) ?? control.fallback;
+  const [draftValue, setDraftValue] = useState(value);
+
+  useEffect(() => {
+    setDraftValue(value);
+  }, [value]);
+
+  return (
+    <div className={styles.controlCard}>
+      <div className={styles.controlHeader}>
+        <div>
+          <div className={styles.controlLabel}>{control.label}</div>
+          <div className={styles.controlHint}>{control.hint}</div>
+        </div>
+        <button
+          className={styles.clearButton}
+          onClick={() => updateAppearance({ [control.key]: undefined })}
+          type="button"
+        >
+          Reset
+        </button>
+      </div>
+
+      <div className={styles.colorFieldRow}>
+        <label className={styles.colorSwatchLabel}>
+          <input
+            className={styles.nativeColorInput}
+            type="color"
+            value={value}
+            onChange={(e) => updateAppearance({ [control.key]: e.target.value })}
+          />
+          <span className={styles.colorSwatch} style={{ backgroundColor: value }} />
+        </label>
+
+        <input
+          className={styles.hexInput}
+          type="text"
+          value={draftValue}
+          onChange={(e) => {
+            const nextValue = e.target.value;
+            if (/^#?[0-9A-Fa-f]{0,6}$/.test(nextValue)) {
+              const normalizedValue = nextValue.startsWith('#') ? nextValue : `#${nextValue}`;
+              setDraftValue(normalizedValue);
+            }
+          }}
+          onBlur={(e) => {
+            const normalizedValue = e.target.value.startsWith('#') ? e.target.value : `#${e.target.value}`;
+            if (isHexColor(normalizedValue)) {
+              updateAppearance({ [control.key]: normalizedValue });
+              setDraftValue(normalizedValue);
+            } else {
+              setDraftValue(value);
+            }
+          }}
+          spellCheck={false}
+          maxLength={7}
+        />
+      </div>
+    </div>
+  );
+}
+
+interface SliderFieldProps {
+  control: SliderControlConfig;
+  appearance: CustomAppearance;
+  updateAppearance: (updates: Partial<CustomAppearance>) => void;
+}
+
+function SliderField({ control, appearance, updateAppearance }: SliderFieldProps) {
+  const value = (appearance[control.key] as number | undefined) ?? control.fallback;
+
+  return (
+    <div className={styles.controlCard}>
+      <div className={styles.controlHeader}>
+        <div>
+          <div className={styles.controlLabel}>{control.label}</div>
+          <div className={styles.controlHint}>{control.hint}</div>
+        </div>
+        <div className={styles.sliderValue}>{value}px</div>
+      </div>
+
+      <input
+        className={styles.slider}
+        type="range"
+        min={control.min}
+        max={control.max}
+        value={value}
+        onChange={(e) => updateAppearance({ [control.key]: Number(e.target.value) })}
+      />
+    </div>
+  );
+}
 
 export function AppearancePanel() {
-  const { currentTheme, setTheme } = useThemeStore();
   const {
     appearance,
-    setAccentColor,
-    setDesktopColor,
-    setWindowBgColor,
+    updateAppearance,
     setFontSmoothing,
     resetAppearance,
     saveAppearance,
@@ -66,338 +176,135 @@ export function AppearancePanel() {
     hasUnsavedChanges,
   } = useAppearanceStore();
 
-  const [activeTab, setActiveTab] = useState<TabId>('colors');
-  const [showCustomAccent, setShowCustomAccent] = useState(false);
-  const [showCustomDesktop, setShowCustomDesktop] = useState(false);
-  const [showCustomWindowBg, setShowCustomWindowBg] = useState(false);
-  const [customAccentInput, setCustomAccentInput] = useState<string | null>(null);
-  const [customDesktopInput, setCustomDesktopInput] = useState<string | null>(null);
-  const [customWindowBgInput, setCustomWindowBgInput] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<TabId>('palette');
 
-  const accentInputValue = customAccentInput ?? appearance.accentColor ?? '#000080';
-  const desktopInputValue = customDesktopInput ?? appearance.desktopColor ?? '#C0C0C0';
-  const windowBgInputValue = customWindowBgInput ?? appearance.windowBgColor ?? '#FFFFFF';
-
-  // Check if a preset is selected
-  const isAccentPreset = useMemo(() => {
-    return ACCENT_PRESETS.some(p => p.color.toLowerCase() === appearance.accentColor?.toLowerCase());
-  }, [appearance.accentColor]);
-
-  const isDesktopPreset = useMemo(() => {
-    return !appearance.desktopColor || DESKTOP_COLOR_PRESETS.some(p => p.color.toLowerCase() === appearance.desktopColor?.toLowerCase());
-  }, [appearance.desktopColor]);
-
-  const isWindowBgPreset = useMemo(() => {
-    return !appearance.windowBgColor || WINDOW_BG_PRESETS.some(p => p.color.toLowerCase() === appearance.windowBgColor?.toLowerCase());
-  }, [appearance.windowBgColor]);
-
-  // Handlers
-  const handleAccentPreset = useCallback((color: string) => {
-    setAccentColor(color);
-    setShowCustomAccent(false);
-  }, [setAccentColor]);
-
-  const handleDesktopPreset = useCallback((color: string) => {
-    setDesktopColor(color);
-    setShowCustomDesktop(false);
-  }, [setDesktopColor]);
-
-  const handleWindowBgPreset = useCallback((color: string) => {
-    setWindowBgColor(color);
-    setShowCustomWindowBg(false);
-  }, [setWindowBgColor]);
-
-  const handleCustomAccent = useCallback(() => {
-    if (/^#[0-9A-Fa-f]{6}$/.test(accentInputValue)) {
-      setAccentColor(accentInputValue);
-    }
-  }, [accentInputValue, setAccentColor]);
-
-  const handleCustomDesktop = useCallback(() => {
-    if (/^#[0-9A-Fa-f]{6}$/.test(desktopInputValue)) {
-      setDesktopColor(desktopInputValue);
-    }
-  }, [desktopInputValue, setDesktopColor]);
-
-  const handleCustomWindowBg = useCallback(() => {
-    if (/^#[0-9A-Fa-f]{6}$/.test(windowBgInputValue)) {
-      setWindowBgColor(windowBgInputValue);
-    }
-  }, [windowBgInputValue, setWindowBgColor]);
-
-  const handleSave = useCallback(async () => {
-    await saveAppearance();
-  }, [saveAppearance]);
-
-  const handleReset = useCallback(() => {
-    resetAppearance();
-  }, [resetAppearance]);
-
-  const currentThemeData = THEMES[currentTheme];
+  const previewStyles = useMemo(
+    () => ({
+      backgroundColor: appearance.desktopColor || '#C0C0C0',
+      '--preview-window-bg': appearance.windowBgColor || '#FFFFFF',
+      '--preview-title-bg': appearance.titleBarBgColor || '#C0C0C0',
+      '--preview-title-text': appearance.titleBarTextColor || '#000000',
+      '--preview-border': appearance.windowBorderColor || '#000000',
+      '--preview-button-bg': appearance.buttonBgColor || '#C0C0C0',
+      '--preview-button-text': appearance.buttonTextColor || '#000000',
+      '--preview-button-border': appearance.buttonBorderColor || '#000000',
+      '--preview-label': appearance.labelColor || '#000000',
+      '--preview-accent': appearance.accentColor || '#000080',
+      '--preview-radius': `${appearance.windowBorderRadius ?? 0}px`,
+      '--preview-control-radius': `${appearance.controlBorderRadius ?? 3}px`,
+      '--preview-shadow': `0 ${Math.max(2, (appearance.windowShadow ?? 2) / 2)}px ${Math.max(4, appearance.windowShadow ?? 2)}px rgba(0, 0, 0, ${Math.min(0.45, 0.16 + (appearance.windowShadow ?? 2) / 64)})`,
+    }) as CSSProperties,
+    [appearance]
+  );
 
   return (
     <div className={styles.panel}>
-      {/* Tab bar */}
+      <div className={styles.header}>
+        <div>
+          <div className={styles.eyebrow}>Custom Appearance</div>
+          <h2 className={styles.title}>Build your own chrome</h2>
+          <p className={styles.subtitle}>
+            Direct controls for color, radius, and contrast. No themes, no overlap.
+          </p>
+        </div>
+        <div className={styles.headerMeta}>
+          <span className={styles.statusPill}>{hasUnsavedChanges ? 'Unsaved' : 'Saved'}</span>
+        </div>
+      </div>
+
       <div className={styles.tabBar}>
-        <button
-          className={`${styles.tab} ${activeTab === 'colors' ? styles.activeTab : ''}`}
-          onClick={() => setActiveTab('colors')}
-        >
-          Colors
+        <button className={`${styles.tab} ${activeTab === 'palette' ? styles.activeTab : ''}`} onClick={() => setActiveTab('palette')} type="button">
+          Palette
         </button>
-        <button
-          className={`${styles.tab} ${activeTab === 'fonts' ? styles.activeTab : ''}`}
-          onClick={() => setActiveTab('fonts')}
-        >
-          Fonts
+        <button className={`${styles.tab} ${activeTab === 'windows' ? styles.activeTab : ''}`} onClick={() => setActiveTab('windows')} type="button">
+          Windows
         </button>
-        <button
-          className={`${styles.tab} ${activeTab === 'preview' ? styles.activeTab : ''}`}
-          onClick={() => setActiveTab('preview')}
-        >
+        <button className={`${styles.tab} ${activeTab === 'controls' ? styles.activeTab : ''}`} onClick={() => setActiveTab('controls')} type="button">
+          Controls
+        </button>
+        <button className={`${styles.tab} ${activeTab === 'preview' ? styles.activeTab : ''}`} onClick={() => setActiveTab('preview')} type="button">
           Preview
         </button>
       </div>
 
-      {/* Tab content */}
       <div className={styles.content}>
-        {activeTab === 'colors' && (
-          <div className={styles.colorsTab}>
-            {/* Appearance icon */}
-            <div className={styles.panelIcon}>
-              <svg width="48" height="48" viewBox="0 0 32 32" fill="none">
-                {/* Paint palette icon */}
-                <ellipse cx="16" cy="16" rx="13" ry="11" fill="#DDDDDD" stroke="#000" strokeWidth="1.5" />
-                <circle cx="10" cy="12" r="3" fill={appearance.accentColor || '#000080'} stroke="#000" strokeWidth="1" />
-                <circle cx="17" cy="10" r="3" fill={appearance.desktopColor || '#C0C0C0'} stroke="#000" strokeWidth="1" />
-                <circle cx="23" cy="13" r="3" fill={appearance.windowBgColor || '#FFFFFF'} stroke="#000" strokeWidth="1" />
-                <circle cx="21" cy="20" r="3" fill="#DDAA44" stroke="#000" strokeWidth="1" />
-                <ellipse cx="12" cy="19" rx="3" ry="4" fill="#FFFFFF" stroke="#000" strokeWidth="1" />
-              </svg>
+        {activeTab === 'palette' && (
+          <div className={styles.sectionStack}>
+            <div className={styles.sectionIntro}>
+              <div className={styles.sectionTitle}>Core Colors</div>
+              <div className={styles.sectionHint}>Shape the overall mood of the desktop before refining chrome.</div>
             </div>
-
-            {/* Base Theme */}
-            <div className={styles.section}>
-              <div className={styles.sectionHeader}>
-                <span className={styles.sectionTitle}>Base Theme</span>
-              </div>
-              <div className={styles.themeSelect}>
-                <select
-                  value={currentTheme}
-                  onChange={(e) => setTheme(e.target.value as ThemeId)}
-                  className={styles.select}
-                >
-                  {Object.values(THEMES).map((theme) => (
-                    <option key={theme.id} value={theme.id}>
-                      {theme.name}
-                    </option>
-                  ))}
-                </select>
-                <span className={styles.themeDescription}>{currentThemeData.description}</span>
-              </div>
-            </div>
-
-            {/* Accent Color */}
-            <div className={styles.section}>
-              <div className={styles.sectionHeader}>
-                <span className={styles.sectionTitle}>Accent Color</span>
-                <span className={styles.sectionHint}>Selection, title bars, highlights</span>
-              </div>
-              <div className={styles.colorGrid}>
-                {ACCENT_PRESETS.map((preset) => (
-                  <button
-                    key={preset.name}
-                    className={`${styles.colorSwatch} ${appearance.accentColor?.toLowerCase() === preset.color.toLowerCase() ? styles.selected : ''}`}
-                    style={{ backgroundColor: preset.color }}
-                    onClick={() => handleAccentPreset(preset.color)}
-                    title={preset.name}
-                  />
-                ))}
-                <button
-                  className={`${styles.colorSwatch} ${styles.customSwatch} ${!isAccentPreset && appearance.accentColor ? styles.selected : ''}`}
-                  onClick={() => setShowCustomAccent(!showCustomAccent)}
-                  title="Custom color"
-                >
-                  <span className={styles.customIcon}>+</span>
-                </button>
-              </div>
-              {showCustomAccent && (
-                <div className={styles.customColorRow}>
-                  <input
-                    type="color"
-                    value={accentInputValue}
-                    onChange={(e) => setCustomAccentInput(e.target.value)}
-                    className={styles.colorPicker}
-                  />
-                  <input
-                    type="text"
-                    value={accentInputValue}
-                    onChange={(e) => setCustomAccentInput(e.target.value)}
-                    className={styles.colorInput}
-                    placeholder="#000080"
-                    maxLength={7}
-                  />
-                  <button onClick={handleCustomAccent} className={styles.applyButton}>
-                    Apply
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Desktop Color */}
-            <div className={styles.section}>
-              <div className={styles.sectionHeader}>
-                <span className={styles.sectionTitle}>Desktop Color</span>
-                <span className={styles.sectionHint}>Background behind icons (overrides pattern)</span>
-              </div>
-              <div className={styles.colorGrid}>
-                {DESKTOP_COLOR_PRESETS.map((preset) => (
-                  <button
-                    key={preset.name}
-                    className={`${styles.colorSwatch} ${appearance.desktopColor?.toLowerCase() === preset.color.toLowerCase() ? styles.selected : ''} ${!appearance.desktopColor && preset.color === '#C0C0C0' ? styles.selected : ''}`}
-                    style={{ backgroundColor: preset.color }}
-                    onClick={() => handleDesktopPreset(preset.color)}
-                    title={preset.name}
-                  />
-                ))}
-                <button
-                  className={`${styles.colorSwatch} ${styles.customSwatch} ${!isDesktopPreset ? styles.selected : ''}`}
-                  onClick={() => setShowCustomDesktop(!showCustomDesktop)}
-                  title="Custom color"
-                >
-                  <span className={styles.customIcon}>+</span>
-                </button>
-              </div>
-              {showCustomDesktop && (
-                <div className={styles.customColorRow}>
-                  <input
-                    type="color"
-                    value={desktopInputValue}
-                    onChange={(e) => setCustomDesktopInput(e.target.value)}
-                    className={styles.colorPicker}
-                  />
-                  <input
-                    type="text"
-                    value={desktopInputValue}
-                    onChange={(e) => setCustomDesktopInput(e.target.value)}
-                    className={styles.colorInput}
-                    placeholder="#C0C0C0"
-                    maxLength={7}
-                  />
-                  <button onClick={handleCustomDesktop} className={styles.applyButton}>
-                    Apply
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Window Background */}
-            <div className={styles.section}>
-              <div className={styles.sectionHeader}>
-                <span className={styles.sectionTitle}>Window Background</span>
-                <span className={styles.sectionHint}>Content area inside windows</span>
-              </div>
-              <div className={styles.colorGrid}>
-                {WINDOW_BG_PRESETS.map((preset) => (
-                  <button
-                    key={preset.name}
-                    className={`${styles.colorSwatch} ${appearance.windowBgColor?.toLowerCase() === preset.color.toLowerCase() ? styles.selected : ''} ${!appearance.windowBgColor && preset.color === '#FFFFFF' ? styles.selected : ''}`}
-                    style={{ backgroundColor: preset.color }}
-                    onClick={() => handleWindowBgPreset(preset.color)}
-                    title={preset.name}
-                  />
-                ))}
-                <button
-                  className={`${styles.colorSwatch} ${styles.customSwatch} ${!isWindowBgPreset ? styles.selected : ''}`}
-                  onClick={() => setShowCustomWindowBg(!showCustomWindowBg)}
-                  title="Custom color"
-                >
-                  <span className={styles.customIcon}>+</span>
-                </button>
-              </div>
-              {showCustomWindowBg && (
-                <div className={styles.customColorRow}>
-                  <input
-                    type="color"
-                    value={windowBgInputValue}
-                    onChange={(e) => setCustomWindowBgInput(e.target.value)}
-                    className={styles.colorPicker}
-                  />
-                  <input
-                    type="text"
-                    value={windowBgInputValue}
-                    onChange={(e) => setCustomWindowBgInput(e.target.value)}
-                    className={styles.colorInput}
-                    placeholder="#FFFFFF"
-                    maxLength={7}
-                  />
-                  <button onClick={handleCustomWindowBg} className={styles.applyButton}>
-                    Apply
-                  </button>
-                </div>
-              )}
+            <div className={styles.grid}>
+              {PALETTE_CONTROLS.map((control) => (
+                <ColorField
+                  key={control.key}
+                  control={control}
+                  appearance={appearance}
+                  updateAppearance={updateAppearance}
+                />
+              ))}
             </div>
           </div>
         )}
 
-        {activeTab === 'fonts' && (
-          <div className={styles.fontsTab}>
-            {/* Font icon */}
-            <div className={styles.panelIcon}>
-              <svg width="48" height="48" viewBox="0 0 32 32" fill="none">
-                {/* Typography icon - letter A */}
-                <rect x="4" y="4" width="24" height="24" fill="#FFFFFF" stroke="#000" strokeWidth="1.5" rx="2" />
-                <text x="16" y="24" textAnchor="middle" fontFamily="serif" fontSize="18" fontWeight="bold" fill="#000">A</text>
-              </svg>
+        {activeTab === 'windows' && (
+          <div className={styles.sectionStack}>
+            <div className={styles.sectionIntro}>
+              <div className={styles.sectionTitle}>Window Chrome</div>
+              <div className={styles.sectionHint}>Tune frame colors, corner treatment, and depth.</div>
             </div>
+            <div className={styles.grid}>
+              {WINDOW_CONTROLS.map((control) => (
+                <ColorField
+                  key={control.key}
+                  control={control}
+                  appearance={appearance}
+                  updateAppearance={updateAppearance}
+                />
+              ))}
+              {SHAPE_CONTROLS.map((control) => (
+                <SliderField
+                  key={control.key}
+                  control={control}
+                  appearance={appearance}
+                  updateAppearance={updateAppearance}
+                />
+              ))}
+            </div>
+          </div>
+        )}
 
-            <div className={styles.section}>
-              <div className={styles.sectionHeader}>
-                <span className={styles.sectionTitle}>Font Smoothing</span>
-              </div>
-              <div className={styles.fontOption}>
-                <label className={styles.checkboxLabel}>
+        {activeTab === 'controls' && (
+          <div className={styles.sectionStack}>
+            <div className={styles.sectionIntro}>
+              <div className={styles.sectionTitle}>Buttons & Typography</div>
+              <div className={styles.sectionHint}>Handle button styling and how text is rendered across the UI.</div>
+            </div>
+            <div className={styles.grid}>
+              {BUTTON_CONTROLS.map((control) => (
+                <ColorField
+                  key={control.key}
+                  control={control}
+                  appearance={appearance}
+                  updateAppearance={updateAppearance}
+                />
+              ))}
+              <div className={styles.controlCard}>
+                <div className={styles.controlHeader}>
+                  <div>
+                    <div className={styles.controlLabel}>Font Smoothing</div>
+                    <div className={styles.controlHint}>Crisper retro edges or softer text rendering.</div>
+                  </div>
+                  <div className={styles.sliderValue}>{titleCaseBoolean(appearance.fontSmoothing)}</div>
+                </div>
+                <label className={styles.toggleRow}>
                   <input
                     type="checkbox"
-                    checked={appearance.fontSmoothing ?? currentThemeData.fontSmoothing}
+                    checked={appearance.fontSmoothing ?? false}
                     onChange={(e) => setFontSmoothing(e.target.checked)}
-                    className={styles.checkbox}
                   />
-                  <span>Enable font smoothing (antialiasing)</span>
+                  <span>Use antialiased text</span>
                 </label>
-                <p className={styles.optionDescription}>
-                  When enabled, text appears smoother but less authentic to classic Macintosh.
-                  Recommended for dark themes.
-                </p>
-              </div>
-            </div>
-
-            <div className={styles.section}>
-              <div className={styles.sectionHeader}>
-                <span className={styles.sectionTitle}>System Fonts</span>
-              </div>
-              <div className={styles.fontSamples}>
-                <div className={styles.fontSample}>
-                  <span className={styles.fontName}>Chicago</span>
-                  <span className={styles.fontPreview} style={{ fontFamily: 'var(--font-chicago)' }}>
-                    The quick brown fox jumps over the lazy dog.
-                  </span>
-                  <span className={styles.fontUsage}>Menus, buttons, titles</span>
-                </div>
-                <div className={styles.fontSample}>
-                  <span className={styles.fontName}>Geneva</span>
-                  <span className={styles.fontPreview} style={{ fontFamily: 'var(--font-geneva)' }}>
-                    The quick brown fox jumps over the lazy dog.
-                  </span>
-                  <span className={styles.fontUsage}>Body text, labels</span>
-                </div>
-                <div className={styles.fontSample}>
-                  <span className={styles.fontName}>Monaco</span>
-                  <span className={styles.fontPreview} style={{ fontFamily: 'var(--font-monaco)' }}>
-                    The quick brown fox jumps over the lazy dog.
-                  </span>
-                  <span className={styles.fontUsage}>Code, monospace text</span>
-                </div>
               </div>
             </div>
           </div>
@@ -405,76 +312,75 @@ export function AppearancePanel() {
 
         {activeTab === 'preview' && (
           <div className={styles.previewTab}>
-            <div className={styles.previewDescription}>
-              Preview how your customizations will look. Colors are applied live as you change them.
+            <div className={styles.sectionIntro}>
+              <div className={styles.sectionTitle}>Live Direction</div>
+              <div className={styles.sectionHint}>This mirrors the structured appearance controls that will be saved to your profile.</div>
             </div>
 
-            <div className={styles.previewContainer}>
-              {/* Mini desktop preview */}
-              <div
-                className={styles.previewDesktop}
-                style={{ backgroundColor: appearance.desktopColor || 'var(--platinum)' }}
-              >
-                {/* Preview menu bar */}
-                <div className={styles.previewMenuBar}>
-                  <span>File</span>
-                  <span>Edit</span>
-                  <span>View</span>
-                </div>
+            <div className={styles.previewCanvas} style={previewStyles}>
+              <div className={styles.previewMenuBar}>
+                <span>File</span>
+                <span>Edit</span>
+                <span>View</span>
+                <span>Special</span>
+              </div>
 
-                {/* Preview window */}
-                <div className={styles.previewWindow}>
-                  <div
-                    className={styles.previewTitleBar}
-                    style={{
-                      borderColor: appearance.accentColor || 'var(--selection)',
-                    }}
-                  >
-                    <div className={styles.previewCloseBox} />
-                    <span>Sample Window</span>
+              <div className={styles.previewWindow}>
+                <div className={styles.previewTitleBar}>
+                  <div className={styles.previewControls}>
+                    <span />
+                    <span />
+                    <span />
                   </div>
-                  <div
-                    className={styles.previewContent}
-                    style={{ backgroundColor: appearance.windowBgColor || 'var(--white)' }}
-                  >
-                    <div
-                      className={styles.previewSelection}
-                      style={{ backgroundColor: appearance.accentColor || 'var(--selection)' }}
-                    >
-                      Selected text
+                  <div className={styles.previewWindowTitle}>Appearance Preview</div>
+                </div>
+                <div className={styles.previewBody}>
+                  <div className={styles.previewSidebar}>
+                    <div className={styles.previewLabel}>closing.png</div>
+                    <div className={styles.previewLabel}>Guestbook</div>
+                  </div>
+                  <div className={styles.previewInspector}>
+                    <div className={styles.previewCard}>
+                      <div className={styles.previewCardTitle}>Buttons</div>
+                      <div className={styles.previewButtonRow}>
+                        <button type="button">Apply</button>
+                        <button type="button">Cancel</button>
+                      </div>
                     </div>
-                    <div className={styles.previewText}>
-                      Regular window content appears here.
+                    <div className={styles.previewCard}>
+                      <div className={styles.previewCardTitle}>Inputs</div>
+                      <input type="text" value="#C0C0C0" readOnly />
                     </div>
                   </div>
-                </div>
-
-                {/* Preview icon */}
-                <div className={styles.previewIcon}>
-                  <div className={styles.previewIconImage} />
-                  <span>Folder</span>
                 </div>
               </div>
             </div>
 
-            <div className={styles.previewNote}>
-              Colors are applied in real-time. Use Save to persist your changes.
+            <div className={styles.metricsRow}>
+              <div className={styles.metric}>
+                <span className={styles.metricLabel}>Window Radius</span>
+                <span className={styles.metricValue}>{appearance.windowBorderRadius ?? 0}px</span>
+              </div>
+              <div className={styles.metric}>
+                <span className={styles.metricLabel}>Control Radius</span>
+                <span className={styles.metricValue}>{appearance.controlBorderRadius ?? 3}px</span>
+              </div>
+              <div className={styles.metric}>
+                <span className={styles.metricLabel}>Shadow</span>
+                <span className={styles.metricValue}>{appearance.windowShadow ?? 2}px</span>
+              </div>
             </div>
           </div>
         )}
       </div>
 
-      {/* Action buttons */}
-      <div className={styles.actionBar}>
-        <button onClick={handleReset} className={styles.resetButton} disabled={isLoading}>
-          Reset to Defaults
+      <div className={styles.footer}>
+        <button className={styles.secondaryButton} onClick={resetAppearance} type="button">
+          Reset All
         </button>
-        <button
-          onClick={handleSave}
-          className={styles.saveButton}
-          disabled={isLoading || !hasUnsavedChanges}
-        >
-          {isLoading ? 'Saving...' : 'Save'}
+        <div className={styles.footerCopy}>For advanced selectors and textures, use Custom CSS after you set the base chrome here.</div>
+        <button className={styles.primaryButton} disabled={isLoading || !hasUnsavedChanges} onClick={() => void saveAppearance()} type="button">
+          {isLoading ? 'Saving...' : 'Apply & Save'}
         </button>
       </div>
     </div>

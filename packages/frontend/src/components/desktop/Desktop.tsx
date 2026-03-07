@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { WindowManager } from '../window';
-import { DesktopIcon, Trash, AssistantDesktopIcon } from '../icons';
+import { DesktopIcon, Trash } from '../icons';
 import { Sticker } from './Sticker';
 import { MenuBar } from '../menubar';
 import { UploadProgress } from './UploadProgress';
@@ -167,9 +167,6 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
   const [trashSelected, setTrashSelected] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
   const trashedItemCount = getTrashCount();
-
-  // Assistant icon state
-  const [assistantSelected, setAssistantSelected] = useState(false);
 
   // File drag-drop state
   const [isFileDragOver, setIsFileDragOver] = useState(false);
@@ -463,7 +460,6 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
     setSelectedStickerId(id);
     deselectAll();
     setTrashSelected(false);
-    setAssistantSelected(false);
   }, [deselectAll]);
 
   const handleStickerMove = useCallback((id: string, position: { x: number; y: number }) => {
@@ -497,7 +493,6 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
       if (e.target === e.currentTarget) {
         deselectAll();
         setTrashSelected(false);
-        setAssistantSelected(false);
         setSelectedStickerId(null);
       }
     },
@@ -509,7 +504,6 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
     (id: string, addToSelection: boolean) => {
       selectItem(id, addToSelection);
       setTrashSelected(false);
-      setAssistantSelected(false);
     },
     [selectItem]
   );
@@ -980,7 +974,6 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
   const handleTrashSelect = useCallback(() => {
     deselectAll();
     setTrashSelected(true);
-    setAssistantSelected(false);
   }, [deselectAll]);
 
   const handleTrashDoubleClick = useCallback(() => {
@@ -1006,26 +999,6 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
     setIsDropTarget(false);
     // Handle HTML5 drag drop if needed
   }, []);
-
-  // Assistant handlers
-  const handleAssistantSelect = useCallback(() => {
-    deselectAll();
-    setTrashSelected(false);
-    setAssistantSelected(true);
-  }, [deselectAll]);
-
-  const handleAssistantDoubleClick = useCallback(() => {
-    // Open Desk Assistant window
-    openWindow({
-      id: 'desk-assistant',
-      title: 'Desk Assistant',
-      position: { x: 100, y: 80 },
-      size: { width: 500, height: 400 },
-      minimized: false,
-      maximized: false,
-      contentType: 'assistant',
-    });
-  }, [openWindow]);
 
   // Track selection rectangle pointer capture
   const selectionPointerIdRef = useRef<number | null>(null);
@@ -1859,15 +1832,6 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
           onResize={handleStickerResize}
         />
       ))}
-
-      {/* Desk Assistant Icon - hidden in visitor mode */}
-      {!isVisitorMode && (
-        <AssistantDesktopIcon
-          isSelected={assistantSelected}
-          onSelect={handleAssistantSelect}
-          onDoubleClick={handleAssistantDoubleClick}
-        />
-      )}
 
         {/* Minimized windows dock - shows minimized windows as small title bars at bottom */}
         {windows.filter((w) => w.minimized).length > 0 && (

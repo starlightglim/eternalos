@@ -13,17 +13,15 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useAuthStore } from '../../stores/authStore';
 import { useSoundStore } from '../../stores/soundStore';
 import { fetchAnalytics, type AnalyticsData } from '../../services/api';
-import { useThemeStore, THEMES } from '../../stores/themeStore';
 import { WALLPAPER_OPTIONS, type WallpaperId } from '../desktop/Desktop';
 import { uploadWallpaper, isApiConfigured, getWallpaperUrl, fetchQuota, updateProfile, type QuotaInfo } from '../../services/api';
 import styles from './PreferencesWindow.module.css';
 
-type TabId = 'account' | 'desktop' | 'sound' | 'theme';
+type TabId = 'account' | 'desktop' | 'sound';
 
 export function PreferencesWindow() {
   const { user, profile, setWallpaper, setAnalyticsEnabled } = useAuthStore();
   const { enabled: soundEnabled, volume, setEnabled: setSoundEnabled, setVolume, playSound } = useSoundStore();
-  const { currentTheme, setTheme } = useThemeStore();
   const [activeTab, setActiveTab] = useState<TabId>('account');
   const [displayName, setDisplayName] = useState(profile?.displayName || '');
   const [isEditingName, setIsEditingName] = useState(false);
@@ -239,12 +237,6 @@ export function PreferencesWindow() {
           onClick={() => setActiveTab('sound')}
         >
           Sound
-        </button>
-        <button
-          className={`${styles.tab} ${activeTab === 'theme' ? styles.activeTab : ''}`}
-          onClick={() => setActiveTab('theme')}
-        >
-          Theme
         </button>
       </div>
 
@@ -567,87 +559,6 @@ export function PreferencesWindow() {
           </div>
         )}
 
-        {activeTab === 'theme' && (
-          <div className={styles.themeTab}>
-            {/* Theme icon */}
-            <div className={styles.themeIcon}>
-              <svg width="48" height="48" viewBox="0 0 32 32" fill="none">
-                {/* Paint palette icon */}
-                <ellipse cx="16" cy="16" rx="13" ry="11" fill="#DDDDDD" stroke="#000" strokeWidth="1.5" />
-                <circle cx="10" cy="12" r="3" fill="#CC4444" stroke="#000" strokeWidth="1" />
-                <circle cx="17" cy="10" r="3" fill="#44AA44" stroke="#000" strokeWidth="1" />
-                <circle cx="23" cy="13" r="3" fill="#4488CC" stroke="#000" strokeWidth="1" />
-                <circle cx="21" cy="20" r="3" fill="#DDAA44" stroke="#000" strokeWidth="1" />
-                <ellipse cx="12" cy="19" rx="3" ry="4" fill="#FFFFFF" stroke="#000" strokeWidth="1" />
-              </svg>
-            </div>
-
-            <div className={styles.themeSection}>
-              <div className={styles.sectionHeader}>
-                <span className={styles.sectionTitle}>Appearance Theme</span>
-              </div>
-              <div className={styles.themeGrid}>
-                {Object.values(THEMES).map((theme) => (
-                  <button
-                    key={theme.id}
-                    className={`${styles.themeCard} ${currentTheme === theme.id ? styles.selectedTheme : ''}`}
-                    onClick={() => setTheme(theme.id)}
-                  >
-                    {/* Mini preview of the theme */}
-                    <div
-                      className={styles.themePreview}
-                      style={{ background: theme.colors.platinum }}
-                    >
-                      {/* Mini menu bar */}
-                      <div
-                        className={styles.themeMenuBar}
-                        style={{
-                          background: theme.colors.menuBarBg || theme.colors.white,
-                          color: theme.colors.menuBarText || theme.colors.black,
-                          borderBottom: `1px solid ${theme.colors.black}`,
-                        }}
-                      >
-                        File Edit
-                      </div>
-                      {/* Mini desktop with window */}
-                      <div className={styles.themeDesktop}>
-                        <div
-                          className={styles.themeWindow}
-                          style={{
-                            background: theme.colors.windowBg,
-                            borderColor: theme.colors.black,
-                          }}
-                        >
-                          <div
-                            className={styles.themeWindowTitle}
-                            style={{
-                              background: theme.colors.platinum,
-                              borderBottom: `1px solid ${theme.colors.shadow}`,
-                            }}
-                          >
-                            <div
-                              className={styles.themeWindowTitleDot}
-                              style={{
-                                background: theme.colors.white,
-                                borderColor: theme.colors.black,
-                              }}
-                            />
-                          </div>
-                          <div
-                            className={styles.themeWindowContent}
-                            style={{ background: theme.colors.white }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                    <span className={styles.themeName}>{theme.name}</span>
-                    <span className={styles.themeDescription}>{theme.description}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

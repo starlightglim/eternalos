@@ -8,7 +8,13 @@
  */
 
 import type { Env } from '../index';
-import type { DesktopItem, UserProfile, GuestbookConfig, GuestbookEntry } from '../types';
+import type {
+  CustomCSSVersion,
+  DesktopItem,
+  UserProfile,
+  GuestbookConfig,
+  GuestbookEntry,
+} from '../types';
 import type { CSSAssetMeta } from '../routes/upload';
 
 // Default storage quota: 100MB per user
@@ -42,11 +48,27 @@ export class UserDesktop {
   private profile: UserProfile | null = null;
   private windows: SavedWindowState[] = [];
   private cssAssets: CSSAssetMeta[] = [];
+  private cssHistory: CustomCSSVersion[] = [];
   private initialized = false;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
+  }
+
+  private normalizeUserTags(tags: unknown): string[] {
+    if (!Array.isArray(tags)) return [];
+
+    const normalized = new Set<string>();
+    for (const tag of tags) {
+      if (typeof tag !== 'string') continue;
+      const value = tag.trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 32);
+      if (!value) continue;
+      normalized.add(value);
+      if (normalized.size >= 12) break;
+    }
+
+    return Array.from(normalized);
   }
 
   /**
@@ -71,6 +93,9 @@ export class UserDesktop {
 
     // Load CSS assets
     this.cssAssets = await this.state.storage.get<CSSAssetMeta[]>('css-assets') ?? [];
+
+    // Load custom CSS history
+    this.cssHistory = await this.state.storage.get<CustomCSSVersion[]>('css-history') ?? [];
 
     this.initialized = true;
   }
@@ -235,6 +260,33 @@ export class UserDesktop {
         return Response.json({ success: true });
       }
 
+      // GET /css-history - List saved custom CSS versions
+      if (path === '/css-history' && method === 'GET') {
+        return Response.json({ versions: this.cssHistory });
+      }
+
+      // POST /css-history/save - Save a CSS version with explicit metadata
+      if (path === '/css-history/save' && method === 'POST') {
+        const payload = await request.json() as {
+          css?: string;
+          source?: CustomCSSVersion['source'];
+          summary?: string;
+        };
+        const updatedProfile = await this.saveCustomCSSVersion(
+          payload.css ?? '',
+          payload.source ?? 'assistant',
+          payload.summary
+        );
+        return Response.json({ success: true, profile: updatedProfile, versions: this.cssHistory });
+      }
+
+      // POST /css-history/:versionId/revert - Restore a previous CSS version
+      if (path.startsWith('/css-history/') && path.endsWith('/revert') && method === 'POST') {
+        const versionId = path.slice('/css-history/'.length, -'/revert'.length);
+        const updatedProfile = await this.restoreCustomCSSVersion(versionId);
+        return Response.json({ success: true, profile: updatedProfile, versions: this.cssHistory });
+      }
+
       // POST /guestbook/:itemId - Add guestbook entry
       if (path.startsWith('/guestbook/') && method === 'POST') {
         const itemId = path.slice('/guestbook/'.length);
@@ -281,6 +333,8 @@ export class UserDesktop {
       widgetType: partial.widgetType,
       widgetConfig: partial.widgetConfig,
       stickerConfig: partial.stickerConfig,
+      userTags: partial.userTags === undefined ? undefined : this.normalizeUserTags(partial.userTags),
+      imageAnalysis: partial.imageAnalysis,
     };
 
     this.items.set(item.id, item);
@@ -309,6 +363,8 @@ export class UserDesktop {
       'widgetType',
       'widgetConfig',
       'stickerConfig',
+      'userTags',
+      'imageAnalysis',
       'isTrashed',
       'trashedAt',
       'originalParentId',
@@ -323,7 +379,11 @@ export class UserDesktop {
         const filteredUpdates: Partial<DesktopItem> = {};
         for (const field of ALLOWED_UPDATE_FIELDS) {
           if (updates[field] !== undefined) {
-            (filteredUpdates as Record<string, unknown>)[field] = updates[field];
+            if (field === 'userTags') {
+              (filteredUpdates as Record<string, unknown>)[field] = this.normalizeUserTags(updates[field]);
+            } else {
+              (filteredUpdates as Record<string, unknown>)[field] = updates[field];
+            }
           }
         }
 
@@ -471,6 +531,8 @@ export class UserDesktop {
       return null;
     }
 
+    const currentCustomCSS = this.profile.customCSS ?? '';
+
     // Only allow updating certain fields
     const allowedFields: (keyof UserProfile)[] = [
       'displayName',
@@ -478,7 +540,17 @@ export class UserDesktop {
       'accentColor',
       'desktopColor',
       'windowBgColor',
+      'titleBarBgColor',
+      'titleBarTextColor',
+      'windowBorderColor',
+      'buttonBgColor',
+      'buttonTextColor',
+      'buttonBorderColor',
+      'labelColor',
       'fontSmoothing',
+      'windowBorderRadius',
+      'controlBorderRadius',
+      'windowShadow',
       'customCSS',
       'isNewUser',
       'hideWatermark',
@@ -493,6 +565,41 @@ export class UserDesktop {
     for (const field of allowedFields) {
       if (updates[field] !== undefined) {
         (filteredUpdates as Record<string, unknown>)[field] = updates[field];
+      }
+    }
+
+    const colorFields: (keyof UserProfile)[] = [
+      'accentColor',
+      'desktopColor',
+      'windowBgColor',
+      'titleBarBgColor',
+      'titleBarTextColor',
+      'windowBorderColor',
+      'buttonBgColor',
+      'buttonTextColor',
+      'buttonBorderColor',
+      'labelColor',
+    ];
+
+    for (const field of colorFields) {
+      const value = filteredUpdates[field];
+      if (typeof value === 'string' && !/^#[0-9A-Fa-f]{6}$/.test(value)) {
+        throw new Error(`Invalid ${field} color format`);
+      }
+    }
+
+    const numericFields: Array<[keyof UserProfile, number, number]> = [
+      ['windowBorderRadius', 0, 24],
+      ['controlBorderRadius', 0, 24],
+      ['windowShadow', 0, 32],
+    ];
+
+    for (const [field, min, max] of numericFields) {
+      const value = filteredUpdates[field];
+      if (value !== undefined) {
+        if (typeof value !== 'number' || Number.isNaN(value) || value < min || value > max) {
+          throw new Error(`Invalid ${field} value`);
+        }
       }
     }
 
@@ -573,9 +680,90 @@ export class UserDesktop {
     };
 
     await this.state.storage.put('profile', this.profile);
+    if (typeof filteredUpdates.customCSS === 'string' && filteredUpdates.customCSS !== currentCustomCSS) {
+      await this.recordCustomCSSVersion(filteredUpdates.customCSS, 'manual');
+    }
     await this.syncPublicSnapshot();
     this.broadcastProfile();
     return this.profile;
+  }
+
+  private async persistCSSHistory(): Promise<void> {
+    await this.state.storage.put('css-history', this.cssHistory);
+  }
+
+  private async recordCustomCSSVersion(
+    css: string,
+    source: CustomCSSVersion['source'],
+    summary?: string
+  ): Promise<void> {
+    if (this.cssHistory[0]?.css === css) {
+      return;
+    }
+
+    this.cssHistory = [
+      {
+        id: crypto.randomUUID(),
+        css,
+        createdAt: Date.now(),
+        source,
+        summary,
+      },
+      ...this.cssHistory,
+    ].slice(0, 20);
+
+    await this.persistCSSHistory();
+  }
+
+  private async saveCustomCSSVersion(
+    css: string,
+    source: CustomCSSVersion['source'],
+    summary?: string
+  ): Promise<UserProfile | null> {
+    const updatedProfile = await this.updateProfile({ customCSS: css });
+    if (!updatedProfile) {
+      return null;
+    }
+
+    if (source !== 'manual') {
+      if (this.cssHistory[0]?.source === 'manual' && this.cssHistory[0]?.css === css) {
+        this.cssHistory[0] = {
+          ...this.cssHistory[0],
+          source,
+          summary,
+        };
+      } else {
+        await this.recordCustomCSSVersion(css, source, summary);
+      }
+      await this.persistCSSHistory();
+    }
+
+    return updatedProfile;
+  }
+
+  private async restoreCustomCSSVersion(versionId: string): Promise<UserProfile | null> {
+    const version = this.cssHistory.find((entry) => entry.id === versionId);
+    if (!version) {
+      throw new Error('Custom CSS version not found');
+    }
+
+    const updatedProfile = await this.updateProfile({ customCSS: version.css });
+    if (!updatedProfile) {
+      return null;
+    }
+
+    if (this.cssHistory[0]?.css === version.css) {
+      this.cssHistory[0] = {
+        ...this.cssHistory[0],
+        source: 'revert',
+        summary: `Restored from ${version.id}`,
+      };
+      await this.persistCSSHistory();
+    } else {
+      await this.recordCustomCSSVersion(version.css, 'revert', `Restored from ${version.id}`);
+    }
+
+    return updatedProfile;
   }
 
   /**

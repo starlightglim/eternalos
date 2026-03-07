@@ -123,19 +123,6 @@ export function MenuBar() {
     setActiveMenu(null);
   }, [profile]);
 
-  const handleOpenAssistant = useCallback(() => {
-    openWindow({
-      id: 'desk-assistant',
-      title: 'Desk Assistant',
-      position: { x: 100, y: 80 },
-      size: { width: 500, height: 400 },
-      minimized: false,
-      maximized: false,
-      contentType: 'assistant',
-    });
-    setActiveMenu(null);
-  }, [openWindow]);
-
   const handleOpenCalculator = useCallback(() => {
     openWindow({
       id: 'calculator',
@@ -433,8 +420,8 @@ export function MenuBar() {
     openWindow({
       id: 'find-window',
       title: 'Find',
-      position: { x: 150, y: 100 },
-      size: { width: 400, height: 300 },
+      position: { x: 180, y: 72 },
+      size: { width: 640, height: 420 },
       minimized: false,
       maximized: false,
       contentType: 'search',
@@ -622,7 +609,6 @@ export function MenuBar() {
       { divider: true, label: '' },
       { label: 'Calculator', action: handleOpenCalculator },
       { label: 'Clock', action: handleOpenClock },
-      { label: 'Desk Assistant', action: handleOpenAssistant },
       { divider: true, label: '' },
       { label: 'Appearance...', action: handleOpenAppearance },
       { label: 'Custom CSS...', action: handleOpenCSSEditor },

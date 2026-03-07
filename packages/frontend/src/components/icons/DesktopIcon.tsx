@@ -4,6 +4,7 @@ import { FolderIcon, TextFileIcon, ImageFileIcon, LinkIcon, AudioFileIcon, Video
 import { ThumbnailIcon } from './ThumbnailIcon';
 import { renderCustomIcon, CUSTOM_ICON_LIBRARY, type CustomIconId } from './customIconUtils';
 import { getCustomIconUrl } from '../../services/api';
+import { getItemExtension } from '../../utils/itemSelectors';
 import { slugify } from '../../utils/slugify';
 import styles from './DesktopIcon.module.css';
 
@@ -55,6 +56,7 @@ function DesktopIconInner({
   // Calculate pixel position from grid position
   const pixelX = item.position.x * gridCellSize;
   const pixelY = item.position.y * gridCellSize;
+  const itemExtension = getItemExtension(item);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -202,9 +204,11 @@ function DesktopIconInner({
     <div
       ref={iconRef}
       className={iconClasses}
+      data-item-id={item.id}
       data-item-type={item.type}
       eos-name={slugify(item.name)}
       eos-type={item.type}
+      {...(itemExtension ? { 'eos-extension': itemExtension } : {})}
       style={{
         left: pixelX,
         top: pixelY,
@@ -220,7 +224,7 @@ function DesktopIconInner({
       onClick={handleClick}
       onContextMenu={onContextMenu}
     >
-      <div className={styles.iconImage}>
+      <div className={styles.iconImage} eos-part="icon">
         {/* Custom icon takes precedence if set */}
         {item.customIcon ? (
           // Check if it's an uploaded icon (starts with "upload:") or a library icon
@@ -259,7 +263,7 @@ function DesktopIconInner({
           </>
         )}
       </div>
-      <div className={`${styles.iconLabel} iconLabel ${isSelected ? styles.labelSelected : ''}`}>
+      <div className={`${styles.iconLabel} iconLabel ${isSelected ? styles.labelSelected : ''}`} eos-part="label">
         <span>{item.name}</span>
       </div>
     </div>

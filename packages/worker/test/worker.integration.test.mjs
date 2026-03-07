@@ -106,6 +106,19 @@ async function patchProfile(token, updates) {
   });
 }
 
+async function getCSSHistory(token) {
+  return expectOk('/api/css-history', {
+    headers: authHeaders(token),
+  });
+}
+
+async function revertCSSHistoryVersion(token, versionId) {
+  return expectOk(`/api/css-history/${versionId}/revert`, {
+    method: 'POST',
+    headers: authHeaders(token),
+  });
+}
+
 async function loginUser(email, password) {
   return expectOk('/api/auth/login', {
     method: 'POST',
@@ -355,17 +368,40 @@ describe('worker integration', () => {
     assert.match(svg, /#4A6FA5/i);
   });
 
-  it('rejects assistant requests without a message before calling AI', async () => {
+  it('marks uploaded images for async metadata enrichment', async () => {
     const user = await signupUser();
+    const uploadForm = new FormData();
+    uploadForm.set('file', createPngFile('analyze-me.png'));
 
-    const { response, body } = await fetchJson('/api/assistant', {
+    const upload = await expectOk('/api/upload', {
       method: 'POST',
-      headers: authHeaders(user.token, JSON_HEADERS),
-      body: JSON.stringify({ message: '' }),
+      headers: authHeaders(user.token),
+      body: uploadForm,
     });
 
-    assert.equal(response.status, 400);
-    assert.equal(body.error, 'Message is required');
+    assert.equal(upload.item.type, 'image');
+    assert.deepEqual(upload.item.imageAnalysis, { status: 'pending' });
+  });
+
+  it('stores normalized user tags on items', async () => {
+    const user = await signupUser();
+    const item = await createDesktopItem(user.token, {
+      type: 'image',
+      name: 'Tagged.png',
+      position: { x: 1, y: 1 },
+      isPublic: true,
+    });
+
+    const updatedItems = await patchItems(user.token, [
+      {
+        id: item.id,
+        updates: {
+          userTags: [' Street  ', 'night', 'street', '', 'CITY WALK'],
+        },
+      },
+    ]);
+
+    assert.deepEqual(updatedItems[0].userTags, ['street', 'night', 'city walk']);
   });
 
   it('counts wallpaper, icon, css asset, and file uploads toward quota usage', async () => {
@@ -422,5 +458,24 @@ describe('worker integration', () => {
 
     assert.equal(finalQuota.used - startingQuota.used, expectedIncrease);
     assert.equal(finalQuota.itemCount - startingQuota.itemCount, 4);
+  });
+
+  it('stores custom CSS history and can restore an earlier version', async () => {
+    const user = await signupUser();
+    const firstCSS = '.window { border-radius: 8px; }';
+    const secondCSS = '.window { border-radius: 16px; }';
+
+    await patchProfile(user.token, { customCSS: firstCSS });
+    await patchProfile(user.token, { customCSS: secondCSS });
+
+    const history = await getCSSHistory(user.token);
+    assert.equal(history.versions.length, 2);
+    assert.equal(history.versions[0].css, secondCSS);
+    assert.equal(history.versions[1].css, firstCSS);
+
+    const reverted = await revertCSSHistoryVersion(user.token, history.versions[1].id);
+    assert.equal(reverted.profile.customCSS, firstCSS);
+    assert.equal(reverted.versions[0].source, 'revert');
+    assert.equal(reverted.versions[0].css, firstCSS);
   });
 });

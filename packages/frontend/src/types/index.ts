@@ -64,6 +64,17 @@ export interface StickerConfig {
   opacity: number;    // 0-1
 }
 
+export interface ImageAnalysisMetadata {
+  status: 'pending' | 'complete' | 'failed' | 'skipped';
+  analyzedAt?: number;
+  caption?: string;
+  tags?: string[];
+  detectedText?: string[];
+  dominantColors?: string[];
+  model?: string;
+  error?: string;
+}
+
 /**
  * Profile link for the profile window
  */
@@ -102,6 +113,10 @@ export interface DesktopItem {
   widgetConfig?: WidgetConfig;
   // Sticker fields (Layer 3 decoration)
   stickerConfig?: StickerConfig;
+  // User-curated tags for search and organization
+  userTags?: string[];
+  // AI / metadata enrichment for uploaded images
+  imageAnalysis?: ImageAnalysisMetadata;
 }
 
 /**
@@ -120,7 +135,7 @@ export interface WindowState {
   preMaximizedPosition?: { x: number; y: number };
   preMaximizedSize?: { width: number; height: number };
   // Content information
-  contentType: 'folder' | 'image' | 'text' | 'markdown' | 'code' | 'get-info' | 'about' | 'assistant' | 'wallpaper' | 'welcome' | 'search' | 'preferences' | 'trash' | 'audio' | 'video' | 'pdf' | 'calculator' | 'clock' | 'link' | 'appearance' | 'widget' | 'css-editor' | 'share-dialog' | 'profile';
+  contentType: 'folder' | 'image' | 'text' | 'markdown' | 'code' | 'get-info' | 'about' | 'wallpaper' | 'welcome' | 'search' | 'preferences' | 'trash' | 'audio' | 'video' | 'pdf' | 'calculator' | 'clock' | 'link' | 'appearance' | 'widget' | 'css-editor' | 'share-dialog' | 'profile';
   contentId?: string; // Reference to DesktopItem id if applicable
 }
 
@@ -139,7 +154,17 @@ export interface UserProfile {
   accentColor?: string;     // Hex color for selection, highlights
   desktopColor?: string;    // Hex color for desktop background
   windowBgColor?: string;   // Hex color for window content area
+  titleBarBgColor?: string; // Hex color for title bars and chrome bands
+  titleBarTextColor?: string; // Hex color for window title text
+  windowBorderColor?: string; // Hex color for window borders
+  buttonBgColor?: string;   // Hex color for buttons and controls
+  buttonTextColor?: string; // Hex color for button labels
+  buttonBorderColor?: string; // Hex color for control borders
+  labelColor?: string;      // Hex color for desktop/file labels
   fontSmoothing?: boolean;  // Override theme's font smoothing
+  windowBorderRadius?: number; // Rounded corners for windows
+  controlBorderRadius?: number; // Rounded corners for buttons and inputs
+  windowShadow?: number;    // Shadow intensity (0-32)
   // Custom CSS (Layer 4 customization)
   customCSS?: string;       // User-defined CSS, max 50KB, scoped to .user-desktop
   // Wallpaper display mode

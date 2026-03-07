@@ -2,6 +2,7 @@ import { Window } from './Window';
 import { useWindowStore } from '../../stores/windowStore';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { slugify } from '../../utils/slugify';
+import { getItemExtension } from '../../utils/itemSelectors';
 import { ImageViewer } from '../viewers/ImageViewer';
 import { TextViewer } from '../viewers/TextViewer';
 import { MarkdownViewer } from '../viewers/MarkdownViewer';
@@ -21,7 +22,6 @@ import { AppearancePanel } from '../viewers/AppearancePanel';
 import { CSSEditor } from '../viewers/CSSEditor';
 import { ShareDialog } from '../viewers/ShareDialog';
 import { ProfileWindow } from '../viewers/ProfileWindow';
-import { DeskAssistant } from '../assistant';
 import { FolderView } from './FolderView';
 import { TrashView } from './TrashView';
 import { WidgetRenderer } from '../widgets';
@@ -57,6 +57,7 @@ export function WindowManager({ isVisitorMode = false, visitorItems, folderWindo
         const item = win.contentId ? sourceItems.find((i) => i.id === win.contentId) : undefined;
         const eosName = item ? slugify(item.name) : slugify(win.title);
         const eosType = item?.type || win.contentType;
+        const eosExtension = item ? getItemExtension(item) : undefined;
         const parentItem = item?.parentId ? sourceItems.find((i) => i.id === item.parentId) : undefined;
         const eosFolder = parentItem ? slugify(parentItem.name) : undefined;
 
@@ -72,8 +73,10 @@ export function WindowManager({ isVisitorMode = false, visitorItems, folderWindo
           collapsed={win.collapsed}
           isActive={win.id === activeWindowId}
           contentType={win.contentType}
+          contentId={win.contentId}
           eosName={eosName}
           eosType={eosType}
+          eosExtension={eosExtension}
           eosFolder={eosFolder}
         >
           {/* Window content will be rendered based on contentType */}
@@ -287,9 +290,6 @@ function WindowContent({
           </p>
         </div>
       );
-
-    case 'assistant':
-      return <DeskAssistant isOwner={!isVisitorMode} />;
 
     case 'wallpaper':
       return <WallpaperPicker />;

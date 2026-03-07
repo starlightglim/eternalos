@@ -40,8 +40,10 @@ interface WindowProps {
   collapsed?: boolean;
   isActive: boolean;
   contentType?: string;
+  contentId?: string;
   eosName?: string;
   eosType?: string;
+  eosExtension?: string;
   eosFolder?: string;
   children?: React.ReactNode;
 }
@@ -64,8 +66,10 @@ export function Window({
   collapsed,
   isActive,
   contentType,
+  contentId,
   eosName,
   eosType,
+  eosExtension,
   eosFolder,
   children,
 }: WindowProps) {
@@ -304,9 +308,12 @@ export function Window({
     <div
       ref={windowRef}
       className={windowClasses}
+      data-window-id={id}
+      data-content-id={contentId}
       data-content-type={contentType}
       eos-name={eosName}
       eos-type={eosType}
+      {...(eosExtension ? { 'eos-extension': eosExtension } : {})}
       {...(eosFolder ? { 'eos-folder': eosFolder } : {})}
       style={{
         left: position.x,
@@ -321,6 +328,7 @@ export function Window({
         {/* Title Bar */}
         <div
           className={`${styles.titleBar} titleBar`}
+          eos-part="titlebar"
           onPointerDown={handleDragStart}
           onPointerMove={handleDragMove}
           onPointerUp={handleDragEnd}
@@ -328,6 +336,7 @@ export function Window({
           {/* Close Box */}
           <div
             className={`${styles.closeBox} closeBox`}
+            eos-part="close"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={handleClose}
           />
@@ -336,11 +345,12 @@ export function Window({
           {isActive && <div className={styles.titleBarStripes} />}
 
           {/* Title Text */}
-          <span className={`${styles.titleText} titleText`}>{title}</span>
+          <span className={`${styles.titleText} titleText`} eos-part="title">{title}</span>
 
           {/* Zoom Box (Maximize/Restore) */}
           <div
             className={`${styles.zoomBox} zoomBox`}
+            eos-part="zoom"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={handleZoom}
           />
@@ -348,6 +358,7 @@ export function Window({
           {/* Collapse Box (Window Shade) */}
           <div
             className={`${styles.collapseBox} collapseBox`}
+            eos-part="collapse"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={handleCollapse}
           />
@@ -357,6 +368,7 @@ export function Window({
         {!collapsed && (
           <div
             className={`${styles.content} windowContent`}
+            eos-part="content"
             onPointerDown={handleBodyDragStart}
             onPointerMove={handleDragMove}
             onPointerUp={handleDragEnd}

@@ -9,7 +9,7 @@
 
 import type { Env } from '../index';
 import type { AuthContext } from '../middleware/auth';
-import type { DesktopItem } from '../types';
+import type { DesktopItem, ImageAnalysisMetadata } from '../types';
 import { sanitizeFilename, sanitizeText } from '../utils/sanitize';
 
 // Allowed MIME types for regular file uploads
@@ -61,11 +61,632 @@ const MAX_WALLPAPER_SIZE = 2 * 1024 * 1024;
 
 // Max custom icon size: 50KB
 const MAX_ICON_SIZE = 50 * 1024;
+const MAX_IMAGE_ANALYSIS_SIZE = 2 * 1024 * 1024;
+const IMAGE_ANALYSIS_MODEL_FALLBACKS = [
+  '@cf/meta/llama-3.2-11b-vision-instruct',
+  '@cf/meta/llama-4-scout-17b-16e-instruct',
+  '@cf/google/gemma-3-12b-it',
+  '@cf/mistralai/mistral-small-3.1-24b-instruct',
+] as const;
 
 // Allowed MIME types for custom icons (PNG only for pixel art)
 const ICON_ALLOWED_TYPES: Record<string, string> = {
   'image/png': 'png',
 };
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = '';
+
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return btoa(binary);
+}
+
+function extractAIResponseText(payload: unknown): string | null {
+  if (typeof payload === 'string') {
+    return payload;
+  }
+
+  if (payload && typeof payload === 'object') {
+    if ('response' in payload && typeof payload.response === 'string') {
+      return payload.response;
+    }
+
+    if ('result' in payload && payload.result && typeof payload.result === 'object' && 'response' in payload.result && typeof payload.result.response === 'string') {
+      return payload.result.response;
+    }
+  }
+
+  return null;
+}
+
+function extractAIResponseObject(payload: unknown): Record<string, unknown> | null {
+  const seen = new Set<unknown>();
+
+  function visit(value: unknown): Record<string, unknown> | null {
+    if (!value || seen.has(value)) {
+      return null;
+    }
+    seen.add(value);
+
+    if (typeof value === 'string') {
+      return extractJSONObject(value);
+    }
+
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        const found = visit(entry);
+        if (found) return found;
+      }
+      return null;
+    }
+
+    if (typeof value !== 'object') {
+      return null;
+    }
+
+    const record = value as Record<string, unknown>;
+    if ('caption' in record || 'tags' in record || 'detectedText' in record || 'dominantColors' in record) {
+      return record;
+    }
+
+    for (const nested of Object.values(record)) {
+      const found = visit(nested);
+      if (found) return found;
+    }
+
+    return null;
+  }
+
+  return visit(payload);
+}
+
+function extractJSONObject(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim();
+
+  try {
+    return JSON.parse(trimmed) as Record<string, unknown>;
+  } catch {
+    // Continue to fenced/extracted parsing.
+  }
+
+  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fencedMatch) {
+    try {
+      return JSON.parse(fencedMatch[1]) as Record<string, unknown>;
+    } catch {
+      // Continue to brace extraction.
+    }
+  }
+
+  const objectMatch = trimmed.match(/\{[\s\S]*\}/);
+  if (objectMatch) {
+    try {
+      return JSON.parse(objectMatch[0]) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function normalizeStringList(value: unknown, maxItems: number, maxLength: number, lowercase = false): string[] {
+  if (!Array.isArray(value)) return [];
+
+  const deduped = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== 'string') continue;
+    const normalized = sanitizeText(entry, maxLength).trim();
+    if (!normalized) continue;
+    const finalValue = lowercase ? normalized.toLowerCase() : normalized;
+    deduped.add(finalValue);
+    if (deduped.size >= maxItems) break;
+  }
+
+  return Array.from(deduped);
+}
+
+function normalizeHexColors(value: unknown): string[] {
+  const colors = normalizeStringList(value, 5, 7, false)
+    .map((entry) => entry.toUpperCase())
+    .filter((entry) => /^#[0-9A-F]{6}$/.test(entry));
+
+  return Array.from(new Set(colors));
+}
+
+function normalizeCaption(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = sanitizeText(value, 180).trim();
+  return normalized || undefined;
+}
+
+function readUint32BE(bytes: Uint8Array, offset: number): number {
+  return (
+    (bytes[offset] << 24) |
+    (bytes[offset + 1] << 16) |
+    (bytes[offset + 2] << 8) |
+    bytes[offset + 3]
+  ) >>> 0;
+}
+
+async function inflateZlib(data: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+function paethPredictor(left: number, up: number, upLeft: number): number {
+  const p = left + up - upLeft;
+  const pLeft = Math.abs(p - left);
+  const pUp = Math.abs(p - up);
+  const pUpLeft = Math.abs(p - upLeft);
+
+  if (pLeft <= pUp && pLeft <= pUpLeft) return left;
+  if (pUp <= pUpLeft) return up;
+  return upLeft;
+}
+
+function formatHexColor(r: number, g: number, b: number): string {
+  return `#${[r, g, b].map((value) => Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, '0')).join('').toUpperCase()}`;
+}
+
+function summarizeRgbColors(
+  pixels: Array<{ r: number; g: number; b: number; a?: number }>
+): string[] {
+  if (pixels.length === 0) return [];
+
+  const buckets = new Map<string, { count: number; r: number; g: number; b: number }>();
+  const totalPixels = pixels.length;
+  const stride = Math.max(1, Math.floor(Math.sqrt(totalPixels / 4096)));
+
+  for (let i = 0; i < pixels.length; i += stride) {
+    const pixel = pixels[i];
+    if ((pixel.a ?? 255) < 32) continue;
+
+    const key = [
+      Math.floor(pixel.r / 32),
+      Math.floor(pixel.g / 32),
+      Math.floor(pixel.b / 32),
+    ].join(':');
+
+    const bucket = buckets.get(key) ?? { count: 0, r: 0, g: 0, b: 0 };
+    bucket.count += 1;
+    bucket.r += pixel.r;
+    bucket.g += pixel.g;
+    bucket.b += pixel.b;
+    buckets.set(key, bucket);
+  }
+
+  return Array.from(buckets.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5)
+    .map((bucket) => formatHexColor(bucket.r / bucket.count, bucket.g / bucket.count, bucket.b / bucket.count));
+}
+
+async function extractDecodedFrameDominantColors(fileBuffer: ArrayBuffer, mimeType: string): Promise<string[]> {
+  const ImageDecoderCtor = (globalThis as unknown as { ImageDecoder?: new (init: unknown) => any }).ImageDecoder;
+  if (!ImageDecoderCtor) {
+    return [];
+  }
+
+  const supportsType = typeof (ImageDecoderCtor as any).isTypeSupported === 'function'
+    ? await (ImageDecoderCtor as any).isTypeSupported(mimeType).catch(() => false)
+    : true;
+
+  if (!supportsType) {
+    return [];
+  }
+
+  const decoder = new ImageDecoderCtor({
+    data: new Uint8Array(fileBuffer),
+    type: mimeType,
+  });
+
+  let frame: any;
+
+  try {
+    const decoded = await decoder.decode({ frameIndex: 0 });
+    frame = decoded.image;
+    const width = frame.displayWidth ?? frame.codedWidth;
+    const height = frame.displayHeight ?? frame.codedHeight;
+
+    if (!width || !height) {
+      return [];
+    }
+
+    const rgba = new Uint8Array(width * height * 4);
+    await frame.copyTo(rgba, { format: 'RGBA' });
+
+    const pixels: Array<{ r: number; g: number; b: number; a?: number }> = [];
+    const stride = Math.max(1, Math.floor(Math.sqrt((width * height) / 4096)));
+
+    for (let y = 0; y < height; y += stride) {
+      for (let x = 0; x < width; x += stride) {
+        const offset = (y * width + x) * 4;
+        pixels.push({
+          r: rgba[offset],
+          g: rgba[offset + 1],
+          b: rgba[offset + 2],
+          a: rgba[offset + 3],
+        });
+      }
+    }
+
+    return summarizeRgbColors(pixels);
+  } finally {
+    try {
+      frame?.close?.();
+    } catch {
+      // Ignore cleanup errors.
+    }
+    try {
+      decoder.close?.();
+    } catch {
+      // Ignore cleanup errors.
+    }
+  }
+}
+
+async function extractPngDominantColors(fileBuffer: ArrayBuffer): Promise<string[]> {
+  const bytes = new Uint8Array(fileBuffer);
+  const pngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
+  if (bytes.length < 8 || !pngSignature.every((value, index) => bytes[index] === value)) {
+    return [];
+  }
+
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  let interlaceMethod = 0;
+  let palette: Uint8Array | null = null;
+  const idatChunks: Uint8Array[] = [];
+
+  while (offset + 8 <= bytes.length) {
+    const length = readUint32BE(bytes, offset);
+    offset += 4;
+    const type = String.fromCharCode(bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]);
+    offset += 4;
+
+    if (offset + length + 4 > bytes.length) {
+      return [];
+    }
+
+    const chunk = bytes.slice(offset, offset + length);
+    offset += length + 4; // Skip chunk data + CRC
+
+    if (type === 'IHDR') {
+      width = readUint32BE(chunk, 0);
+      height = readUint32BE(chunk, 4);
+      bitDepth = chunk[8];
+      colorType = chunk[9];
+      interlaceMethod = chunk[12];
+    } else if (type === 'PLTE') {
+      palette = chunk;
+    } else if (type === 'IDAT') {
+      idatChunks.push(chunk);
+    } else if (type === 'IEND') {
+      break;
+    }
+  }
+
+  if (!width || !height || idatChunks.length === 0 || bitDepth !== 8 || interlaceMethod !== 0) {
+    return [];
+  }
+
+  const bytesPerPixel = colorType === 6
+    ? 4
+    : colorType === 2
+      ? 3
+      : colorType === 0
+        ? 1
+        : colorType === 4
+          ? 2
+          : colorType === 3
+            ? 1
+            : 0;
+
+  if (!bytesPerPixel) {
+    return [];
+  }
+
+  const compressed = new Uint8Array(idatChunks.reduce((sum, chunk) => sum + chunk.length, 0));
+  let cursor = 0;
+  for (const chunk of idatChunks) {
+    compressed.set(chunk, cursor);
+    cursor += chunk.length;
+  }
+
+  const inflated = await inflateZlib(compressed);
+  const rowLength = width * bytesPerPixel;
+  const expectedLength = height * (rowLength + 1);
+  if (inflated.length < expectedLength) {
+    return [];
+  }
+
+  const pixels: Array<{ r: number; g: number; b: number; a?: number }> = [];
+  let inflOffset = 0;
+  let previousRow = new Uint8Array(rowLength);
+
+  for (let y = 0; y < height; y++) {
+    const filterType = inflated[inflOffset++];
+    const row = inflated.slice(inflOffset, inflOffset + rowLength);
+    inflOffset += rowLength;
+
+    for (let i = 0; i < row.length; i++) {
+      const left = i >= bytesPerPixel ? row[i - bytesPerPixel] : 0;
+      const up = previousRow[i] ?? 0;
+      const upLeft = i >= bytesPerPixel ? (previousRow[i - bytesPerPixel] ?? 0) : 0;
+
+      if (filterType === 1) row[i] = (row[i] + left) & 0xff;
+      else if (filterType === 2) row[i] = (row[i] + up) & 0xff;
+      else if (filterType === 3) row[i] = (row[i] + Math.floor((left + up) / 2)) & 0xff;
+      else if (filterType === 4) row[i] = (row[i] + paethPredictor(left, up, upLeft)) & 0xff;
+    }
+
+    for (let x = 0; x < width; x++) {
+      const pixelOffset = x * bytesPerPixel;
+
+      if (colorType === 6) {
+        pixels.push({
+          r: row[pixelOffset],
+          g: row[pixelOffset + 1],
+          b: row[pixelOffset + 2],
+          a: row[pixelOffset + 3],
+        });
+      } else if (colorType === 2) {
+        pixels.push({
+          r: row[pixelOffset],
+          g: row[pixelOffset + 1],
+          b: row[pixelOffset + 2],
+        });
+      } else if (colorType === 0) {
+        const value = row[pixelOffset];
+        pixels.push({ r: value, g: value, b: value });
+      } else if (colorType === 4) {
+        const value = row[pixelOffset];
+        pixels.push({ r: value, g: value, b: value, a: row[pixelOffset + 1] });
+      } else if (colorType === 3 && palette) {
+        const index = row[pixelOffset] * 3;
+        if (index + 2 < palette.length) {
+          pixels.push({ r: palette[index], g: palette[index + 1], b: palette[index + 2] });
+        }
+      }
+    }
+
+    previousRow = row;
+  }
+
+  return summarizeRgbColors(pixels);
+}
+
+async function extractDominantColors(fileBuffer: ArrayBuffer, mimeType: string): Promise<string[]> {
+  if (mimeType === 'image/png') {
+    return extractPngDominantColors(fileBuffer);
+  }
+
+  if (mimeType === 'image/jpeg' || mimeType === 'image/webp' || mimeType === 'image/gif') {
+    return extractDecodedFrameDominantColors(fileBuffer, mimeType);
+  }
+
+  return [];
+}
+
+function normalizeAnalysisError(error: unknown): string {
+  if (error instanceof Error) {
+    const message = sanitizeText(error.message, 200);
+    const lower = message.toLowerCase();
+
+    if (lower.includes('not found') || lower.includes('no route for') || lower.includes('unsupported')) {
+      return 'Workers AI image analysis is unavailable. Check that Wrangler is logged into Cloudflare, the AI binding is remote-enabled, and the model is available on your account.';
+    }
+
+    if (lower.includes('agree') || lower.includes('license') || lower.includes('acceptable use')) {
+      return 'Workers AI needs Meta license acceptance before image analysis can run. Accept the Llama 3.2 Vision terms once, then retry.';
+    }
+
+    return message;
+  }
+  return 'Image analysis failed';
+}
+
+function shouldTryNextImageModel(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+
+  const message = error.message.toLowerCase();
+  return (
+    message.includes('not found') ||
+    message.includes('404') ||
+    message.includes('model') ||
+    message.includes('no route for') ||
+    message.includes('unsupported')
+  );
+}
+
+async function patchItemImageAnalysis(
+  stub: DurableObjectStub,
+  itemId: string,
+  imageAnalysis: ImageAnalysisMetadata
+): Promise<void> {
+  const response = await stub.fetch(
+    new Request('http://internal/items', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([{ id: itemId, updates: { imageAnalysis } }]),
+    })
+  );
+
+  if (!response.ok) {
+    throw new Error('Failed to save image analysis metadata');
+  }
+}
+
+async function analyzeUploadedImage(
+  env: Env,
+  stub: DurableObjectStub,
+  itemId: string,
+  mimeType: string,
+  fileBuffer: ArrayBuffer
+): Promise<void> {
+  const analyzedAt = Date.now();
+  const candidateModels = [
+    env.IMAGE_ANALYSIS_MODEL,
+    ...IMAGE_ANALYSIS_MODEL_FALLBACKS,
+  ].filter((value, index, array): value is string => !!value && array.indexOf(value) === index);
+
+  if (fileBuffer.byteLength > MAX_IMAGE_ANALYSIS_SIZE) {
+    await patchItemImageAnalysis(stub, itemId, {
+      status: 'skipped',
+      analyzedAt,
+      model: candidateModels[0],
+      error: `Image exceeds ${MAX_IMAGE_ANALYSIS_SIZE / 1024 / 1024}MB automatic analysis limit`,
+    });
+    return;
+  }
+
+  try {
+    const dominantColors = await extractDominantColors(fileBuffer, mimeType).catch((error) => {
+      console.warn('Dominant color extraction failed:', error);
+      return [];
+    });
+    const dataUrl = `data:${mimeType};base64,${arrayBufferToBase64(fileBuffer)}`;
+    const analysisPrompt = [
+      'Analyze this uploaded image for later search and sorting.',
+      'Describe the visible subject clearly and keep tags specific.',
+      'caption: one short sentence, max 140 characters.',
+      'tags: 3 to 8 short lowercase tags describing the image.',
+      'detectedText: array of visible text strings from the image, empty if none.',
+      'Return JSON only.',
+    ].join(' ');
+    const guidedJson = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['caption', 'tags', 'detectedText'],
+      properties: {
+        caption: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' } },
+        detectedText: { type: 'array', items: { type: 'string' } },
+      },
+    };
+    let resolvedModel = candidateModels[0];
+    let lastError: unknown = null;
+    let parsed: Record<string, unknown> | null = null;
+
+    for (const model of candidateModels) {
+      try {
+        const aiResponse = await env.AI.run(model as keyof AiModels, {
+          messages: [
+            {
+              role: 'system',
+              content: 'You analyze uploaded images for metadata enrichment. Return structured JSON only.',
+            },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: analysisPrompt },
+                { type: 'image_url', image_url: { url: dataUrl } },
+              ],
+            },
+          ],
+          guided_json: guidedJson,
+        });
+        parsed = extractAIResponseObject(aiResponse) ?? (() => {
+          const responseText = extractAIResponseText(aiResponse);
+          if (!responseText) {
+            return null;
+          }
+          return extractJSONObject(responseText);
+        })();
+
+        if (!parsed) {
+          lastError = new Error(`Workers AI returned invalid image analysis JSON for ${model}`);
+          continue;
+        }
+
+        resolvedModel = model;
+        lastError = null;
+        break;
+      } catch (error) {
+        if (
+          model === '@cf/meta/llama-3.2-11b-vision-instruct' &&
+          error instanceof Error &&
+          /agree|license|acceptable use/i.test(error.message)
+        ) {
+          await env.AI.run(model as keyof AiModels, { prompt: 'agree' });
+          const aiResponse = await env.AI.run(model as keyof AiModels, {
+            messages: [
+              {
+                role: 'system',
+                content: 'You analyze uploaded images for metadata enrichment. Return structured JSON only.',
+              },
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: analysisPrompt },
+                  { type: 'image_url', image_url: { url: dataUrl } },
+                ],
+              },
+            ],
+            guided_json: guidedJson,
+          });
+          parsed = extractAIResponseObject(aiResponse) ?? (() => {
+            const responseText = extractAIResponseText(aiResponse);
+            if (!responseText) {
+              return null;
+            }
+            return extractJSONObject(responseText);
+          })();
+
+          if (!parsed) {
+            lastError = new Error(`Workers AI returned invalid image analysis JSON for ${model}`);
+            continue;
+          }
+
+          resolvedModel = model;
+          lastError = null;
+          break;
+        }
+
+        lastError = error;
+        if (!shouldTryNextImageModel(error)) {
+          throw error;
+        }
+      }
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+
+    if (!parsed) {
+      throw new Error('Workers AI returned invalid image analysis JSON');
+    }
+
+    await patchItemImageAnalysis(stub, itemId, {
+      status: 'complete',
+      analyzedAt,
+      model: resolvedModel,
+      caption: normalizeCaption(parsed.caption),
+      tags: normalizeStringList(parsed.tags, 8, 32, true),
+      detectedText: normalizeStringList(parsed.detectedText, 10, 80, false),
+      dominantColors,
+    });
+  } catch (error) {
+    console.error('Image analysis error:', error);
+    await patchItemImageAnalysis(stub, itemId, {
+      status: 'failed',
+      analyzedAt,
+      model: candidateModels[0],
+      error: normalizeAnalysisError(error),
+    });
+  }
+}
 
 /**
  * Handle file upload
@@ -81,7 +702,8 @@ const ICON_ALLOWED_TYPES: Record<string, string> = {
 export async function handleUpload(
   request: Request,
   env: Env,
-  auth: AuthContext
+  auth: AuthContext,
+  ctx: ExecutionContext
 ): Promise<Response> {
   try {
     // Parse multipart form data
@@ -203,6 +825,7 @@ export async function handleUpload(
       r2Key,
       mimeType,
       fileSize: fileBlob.size,
+      imageAnalysis: itemType === 'image' ? { status: 'pending' as const } : undefined,
     };
 
     const doResponse = await stub.fetch(
@@ -224,6 +847,10 @@ export async function handleUpload(
 
     const createdItem = await doResponse.json();
 
+    if (itemType === 'image') {
+      ctx.waitUntil(analyzeUploadedImage(env, stub, itemId, mimeType, fileBuffer));
+    }
+
     return Response.json({
       success: true,
       item: createdItem,
@@ -233,6 +860,51 @@ export async function handleUpload(
     console.error('Upload error:', error);
     return Response.json(
       { error: error instanceof Error ? error.message : 'Upload failed' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function handleAnalyzeImageItem(
+  env: Env,
+  auth: AuthContext,
+  itemId: string,
+  ctx: ExecutionContext
+): Promise<Response> {
+  try {
+    const doId = env.USER_DESKTOP.idFromName(auth.uid);
+    const stub = env.USER_DESKTOP.get(doId);
+    const itemsResponse = await stub.fetch(new Request('http://internal/items'));
+
+    if (!itemsResponse.ok) {
+      return Response.json({ error: 'Failed to load item for analysis' }, { status: 500 });
+    }
+
+    const data = await itemsResponse.json() as { items: DesktopItem[] };
+    const item = data.items.find((candidate) => candidate.id === itemId);
+
+    if (!item) {
+      return Response.json({ error: 'Item not found' }, { status: 404 });
+    }
+
+    if (item.type !== 'image' || !item.r2Key || !item.mimeType) {
+      return Response.json({ error: 'Only uploaded image files can be analyzed' }, { status: 400 });
+    }
+
+    const object = await env.ETERNALOS_FILES.get(item.r2Key);
+    if (!object) {
+      return Response.json({ error: 'Image file not found' }, { status: 404 });
+    }
+
+    const fileBuffer = await object.arrayBuffer();
+    await patchItemImageAnalysis(stub, item.id, { status: 'pending' });
+    ctx.waitUntil(analyzeUploadedImage(env, stub, item.id, item.mimeType, fileBuffer));
+
+    return Response.json({ success: true, itemId: item.id, status: 'pending' });
+  } catch (error) {
+    console.error('Analyze image item error:', error);
+    return Response.json(
+      { error: error instanceof Error ? error.message : 'Failed to start image analysis' },
       { status: 500 }
     );
   }

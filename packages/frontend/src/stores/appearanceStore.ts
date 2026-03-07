@@ -13,12 +13,23 @@
 
 import { create } from 'zustand';
 import { updateProfile, isApiConfigured } from '../services/api';
+import { normalizeCSSSelectorAliases } from '../utils/cssSelectorAliases';
 
 export interface CustomAppearance {
   accentColor?: string; // Hex color, e.g., "#000080"
   desktopColor?: string; // Hex color for desktop background
   windowBgColor?: string; // Hex color for window content area
+  titleBarBgColor?: string; // Hex color for title bars
+  titleBarTextColor?: string; // Hex color for title text
+  windowBorderColor?: string; // Hex color for window borders
+  buttonBgColor?: string; // Hex color for buttons and controls
+  buttonTextColor?: string; // Hex color for button labels
+  buttonBorderColor?: string; // Hex color for button borders
+  labelColor?: string; // Hex color for desktop and file labels
   fontSmoothing?: boolean; // Override theme's font smoothing
+  windowBorderRadius?: number; // Rounded corners for windows
+  controlBorderRadius?: number; // Rounded corners for controls
+  windowShadow?: number; // Shadow intensity (0-32)
   customCSS?: string; // User-defined CSS, max 10KB
 }
 
@@ -154,6 +165,54 @@ export function applyAppearance(appearance: CustomAppearance) {
     const windowTextSecondary = isDarkColor(appearance.windowBgColor) ? '#CCCCCC' : '#666666';
     root.style.setProperty('--window-text-color', windowTextColor);
     root.style.setProperty('--window-text-secondary', windowTextSecondary);
+  } else {
+    root.style.removeProperty('--window-bg');
+    root.style.removeProperty('--window-text-color');
+    root.style.removeProperty('--window-text-secondary');
+  }
+
+  if (appearance.titleBarBgColor) {
+    root.style.setProperty('--title-bar-active', appearance.titleBarBgColor);
+    root.style.setProperty('--title-bar-inactive', adjustColor(appearance.titleBarBgColor, -18));
+  } else {
+    root.style.removeProperty('--title-bar-active');
+    root.style.removeProperty('--title-bar-inactive');
+  }
+
+  if (appearance.titleBarTextColor) {
+    root.style.setProperty('--appearance-title-text', appearance.titleBarTextColor);
+  } else {
+    root.style.removeProperty('--appearance-title-text');
+  }
+
+  if (appearance.windowBorderColor) {
+    root.style.setProperty('--border', appearance.windowBorderColor);
+  } else {
+    root.style.removeProperty('--border');
+  }
+
+  if (appearance.buttonBgColor) {
+    root.style.setProperty('--appearance-button-bg', appearance.buttonBgColor);
+  } else {
+    root.style.removeProperty('--appearance-button-bg');
+  }
+
+  if (appearance.buttonTextColor) {
+    root.style.setProperty('--appearance-button-text', appearance.buttonTextColor);
+  } else {
+    root.style.removeProperty('--appearance-button-text');
+  }
+
+  if (appearance.buttonBorderColor) {
+    root.style.setProperty('--appearance-button-border', appearance.buttonBorderColor);
+  } else {
+    root.style.removeProperty('--appearance-button-border');
+  }
+
+  if (appearance.labelColor) {
+    root.style.setProperty('--appearance-label-color', appearance.labelColor);
+  } else {
+    root.style.removeProperty('--appearance-label-color');
   }
 
   // Apply font smoothing
@@ -167,8 +226,73 @@ export function applyAppearance(appearance: CustomAppearance) {
     }
   }
 
+  applyStructuredAppearanceOverrides(appearance);
+
   // Apply custom CSS
   applyCustomCSS(appearance.customCSS);
+}
+
+function applyStructuredAppearanceOverrides(appearance: CustomAppearance) {
+  const existingStyle = document.getElementById('eternalos-appearance-overrides');
+  if (existingStyle) {
+    existingStyle.remove();
+  }
+
+  const rules: string[] = [];
+  const windowRadius = Math.max(0, Math.min(appearance.windowBorderRadius ?? 0, 24));
+  const controlRadius = Math.max(0, Math.min(appearance.controlBorderRadius ?? 3, 24));
+  const windowShadow = Math.max(0, Math.min(appearance.windowShadow ?? 2, 32));
+
+  if (appearance.windowBorderColor || appearance.windowBorderRadius !== undefined || appearance.windowShadow !== undefined) {
+    const declarations = [
+      appearance.windowBorderColor ? `border-color: ${appearance.windowBorderColor};` : '',
+      appearance.windowBorderRadius !== undefined ? `border-radius: ${windowRadius}px;` : '',
+      appearance.windowShadow !== undefined ? `box-shadow: 0 ${Math.max(2, windowShadow / 2)}px ${Math.max(2, windowShadow)}px rgba(0, 0, 0, ${Math.min(0.45, 0.14 + windowShadow / 64)});` : '',
+    ].filter(Boolean);
+    rules.push(`.user-desktop .window { ${declarations.join(' ')} }`);
+    if (appearance.windowBorderRadius !== undefined) {
+      rules.push(`.user-desktop .windowInner { border-radius: ${Math.max(0, windowRadius - 1)}px; overflow: hidden; }`);
+      rules.push(`.user-desktop .titleBar { border-top-left-radius: ${Math.max(0, windowRadius - 1)}px; border-top-right-radius: ${Math.max(0, windowRadius - 1)}px; }`);
+    }
+  }
+
+  if (appearance.titleBarBgColor || appearance.titleBarTextColor) {
+    const titleBarDeclarations = [
+      appearance.titleBarBgColor ? `background: ${appearance.titleBarBgColor};` : '',
+      appearance.titleBarTextColor ? `color: ${appearance.titleBarTextColor};` : '',
+    ].filter(Boolean);
+    rules.push(`.user-desktop [eos-part="titlebar"] { ${titleBarDeclarations.join(' ')} }`);
+    if (appearance.titleBarTextColor) {
+      rules.push(`.user-desktop [eos-part="title"] { color: ${appearance.titleBarTextColor}; }`);
+    }
+    if (appearance.titleBarBgColor) {
+      rules.push(`.user-desktop .titleBarStripes { opacity: 0.35; }`);
+    }
+  }
+
+  if (appearance.buttonBgColor || appearance.buttonTextColor || appearance.buttonBorderColor || appearance.controlBorderRadius !== undefined) {
+    const controlDeclarations = [
+      appearance.buttonBgColor ? `background: ${appearance.buttonBgColor};` : '',
+      appearance.buttonTextColor ? `color: ${appearance.buttonTextColor};` : '',
+      appearance.buttonBorderColor ? `border-color: ${appearance.buttonBorderColor};` : '',
+      appearance.controlBorderRadius !== undefined ? `border-radius: ${controlRadius}px;` : '',
+    ].filter(Boolean);
+    rules.push(`.user-desktop button, .user-desktop input, .user-desktop select, .user-desktop textarea { ${controlDeclarations.join(' ')} }`);
+    rules.push(`.user-desktop [eos-part="close"], .user-desktop [eos-part="zoom"], .user-desktop [eos-part="collapse"] { ${controlDeclarations.join(' ')} }`);
+  }
+
+  if (appearance.labelColor) {
+    rules.push(`.user-desktop [eos-part="label"] { color: ${appearance.labelColor}; }`);
+  }
+
+  if (rules.length === 0) {
+    return;
+  }
+
+  const style = document.createElement('style');
+  style.id = 'eternalos-appearance-overrides';
+  style.textContent = rules.join('\n');
+  document.head.appendChild(style);
 }
 
 // Allowed url() path prefixes for defense-in-depth sanitization
@@ -248,8 +372,9 @@ export function applyCustomCSS(css: string | undefined) {
 
   if (!css || !css.trim()) return;
 
-  // Defense-in-depth: sanitize url() values before injection
-  const sanitizedCSS = sanitizeCSSUrls(css);
+  // Normalize common selector aliases produced by users/assistant, then sanitize URLs.
+  const normalizedCSS = normalizeCSSSelectorAliases(css);
+  const sanitizedCSS = sanitizeCSSUrls(normalizedCSS);
 
   // Scope the CSS to .user-desktop
   const scopedCSS = scopeCSSToUserDesktop(sanitizedCSS);
@@ -380,10 +505,23 @@ export function clearAppearance() {
   root.style.removeProperty('--window-bg');
   root.style.removeProperty('--window-text-color');
   root.style.removeProperty('--window-text-secondary');
+  root.style.removeProperty('--title-bar-active');
+  root.style.removeProperty('--title-bar-inactive');
+  root.style.removeProperty('--appearance-title-text');
+  root.style.removeProperty('--border');
+  root.style.removeProperty('--appearance-button-bg');
+  root.style.removeProperty('--appearance-button-text');
+  root.style.removeProperty('--appearance-button-border');
+  root.style.removeProperty('--appearance-label-color');
 
   // Clear font smoothing
   document.body.style.removeProperty('-webkit-font-smoothing');
   document.body.style.removeProperty('-moz-osx-font-smoothing');
+
+  const structuredStyle = document.getElementById('eternalos-appearance-overrides');
+  if (structuredStyle) {
+    structuredStyle.remove();
+  }
 
   // Clear custom CSS
   const customStyle = document.getElementById('eternalos-custom-css');
@@ -421,15 +559,20 @@ function saveLocalAppearance(appearance: CustomAppearance) {
 interface AppearanceStore {
   appearance: CustomAppearance;
   originalAppearance: CustomAppearance; // For tracking changes
+  customCSSPreview?: string;
+  customCSSPreviewSummary?: string;
   isLoading: boolean;
   hasUnsavedChanges: boolean;
 
   // Actions
+  updateAppearance: (updates: Partial<CustomAppearance>) => void;
   setAccentColor: (color: string) => void;
   setDesktopColor: (color: string) => void;
   setWindowBgColor: (color: string) => void;
   setFontSmoothing: (enabled: boolean) => void;
   setCustomCSS: (css: string) => void;
+  setCustomCSSPreview: (css: string, summary?: string) => void;
+  clearCustomCSSPreview: () => void;
   resetAppearance: () => void;
   saveAppearance: () => Promise<void>;
   loadAppearance: (appearance: CustomAppearance) => void;
@@ -447,80 +590,73 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => {
   return {
     appearance: initialAppearance,
     originalAppearance: initialAppearance,
+    customCSSPreview: undefined,
+    customCSSPreviewSummary: undefined,
     isLoading: false,
     hasUnsavedChanges: false,
 
-    setAccentColor: (color: string) => {
-      const newAppearance = { ...get().appearance, accentColor: color };
+    updateAppearance: (updates: Partial<CustomAppearance>) => {
+      const newAppearance = { ...get().appearance, ...updates };
       applyAppearance(newAppearance);
       set({
         appearance: newAppearance,
         hasUnsavedChanges: true,
       });
+    },
+
+    setAccentColor: (color: string) => {
+      get().updateAppearance({ accentColor: color });
     },
 
     setDesktopColor: (color: string) => {
-      const newAppearance = { ...get().appearance, desktopColor: color };
-      applyAppearance(newAppearance);
-      set({
-        appearance: newAppearance,
-        hasUnsavedChanges: true,
-      });
+      get().updateAppearance({ desktopColor: color });
     },
 
     setWindowBgColor: (color: string) => {
-      const newAppearance = { ...get().appearance, windowBgColor: color };
-      applyAppearance(newAppearance);
-      set({
-        appearance: newAppearance,
-        hasUnsavedChanges: true,
-      });
+      get().updateAppearance({ windowBgColor: color });
     },
 
     setFontSmoothing: (enabled: boolean) => {
-      const newAppearance = { ...get().appearance, fontSmoothing: enabled };
-      applyAppearance(newAppearance);
+      get().updateAppearance({ fontSmoothing: enabled });
+    },
+
+    setCustomCSS: (css: string) => {
+      const normalizedCSS = normalizeCSSSelectorAliases(css);
+      const newAppearance = { ...get().appearance, customCSS: normalizedCSS };
+      applyCustomCSS(normalizedCSS);
       set({
         appearance: newAppearance,
+        customCSSPreview: undefined,
+        customCSSPreviewSummary: undefined,
         hasUnsavedChanges: true,
       });
     },
 
-    setCustomCSS: (css: string) => {
-      const newAppearance = { ...get().appearance, customCSS: css };
-      applyCustomCSS(css);
+    setCustomCSSPreview: (css: string, summary?: string) => {
+      const normalizedCSS = normalizeCSSSelectorAliases(css);
+      applyCustomCSS(normalizedCSS);
       set({
-        appearance: newAppearance,
-        hasUnsavedChanges: true,
+        customCSSPreview: normalizedCSS,
+        customCSSPreviewSummary: summary,
+      });
+    },
+
+    clearCustomCSSPreview: () => {
+      applyCustomCSS(get().appearance.customCSS);
+      set({
+        customCSSPreview: undefined,
+        customCSSPreviewSummary: undefined,
       });
     },
 
     resetAppearance: () => {
       const defaultAppearance: CustomAppearance = {};
-
-      // Remove custom CSS properties
-      const root = document.documentElement;
-      root.style.removeProperty('--selection');
-      root.style.removeProperty('--selection-text');
-      root.style.removeProperty('--accent');
-      root.style.removeProperty('--custom-desktop-color');
-      root.style.removeProperty('--desktop-text-color');
-      root.style.removeProperty('--window-bg');
-      root.style.removeProperty('--window-text-color');
-      root.style.removeProperty('--window-text-secondary');
-
-      // Reset font smoothing to theme default
-      document.body.style.removeProperty('-webkit-font-smoothing');
-      document.body.style.removeProperty('-moz-osx-font-smoothing');
-
-      // Remove custom CSS
-      const customStyle = document.getElementById('eternalos-custom-css');
-      if (customStyle) {
-        customStyle.remove();
-      }
+      clearAppearance();
 
       set({
         appearance: defaultAppearance,
+        customCSSPreview: undefined,
+        customCSSPreviewSummary: undefined,
         hasUnsavedChanges: true,
       });
     },
@@ -540,13 +676,25 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => {
             accentColor: appearance.accentColor,
             desktopColor: appearance.desktopColor,
             windowBgColor: appearance.windowBgColor,
+            titleBarBgColor: appearance.titleBarBgColor,
+            titleBarTextColor: appearance.titleBarTextColor,
+            windowBorderColor: appearance.windowBorderColor,
+            buttonBgColor: appearance.buttonBgColor,
+            buttonTextColor: appearance.buttonTextColor,
+            buttonBorderColor: appearance.buttonBorderColor,
+            labelColor: appearance.labelColor,
             fontSmoothing: appearance.fontSmoothing,
+            windowBorderRadius: appearance.windowBorderRadius,
+            controlBorderRadius: appearance.controlBorderRadius,
+            windowShadow: appearance.windowShadow,
             customCSS: appearance.customCSS,
           });
         }
 
         set({
           originalAppearance: appearance,
+          customCSSPreview: undefined,
+          customCSSPreviewSummary: undefined,
           hasUnsavedChanges: false,
           isLoading: false,
         });
@@ -563,6 +711,8 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => {
       set({
         appearance,
         originalAppearance: appearance,
+        customCSSPreview: undefined,
+        customCSSPreviewSummary: undefined,
         hasUnsavedChanges: false,
       });
     },

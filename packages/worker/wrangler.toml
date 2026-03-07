@@ -33,6 +33,10 @@ bucket_name = "eternalos-files"
 # Workers AI
 [ai]
 binding = "AI"
+remote = true
+
+# Optional local overrides in .dev.vars:
+# IMAGE_ANALYSIS_MODEL=@cf/meta/llama-3.2-11b-vision-instruct
 
 # JWT_SECRET is set via: wrangler secret put JWT_SECRET
 # For local dev, set JWT_SECRET in .dev.vars file

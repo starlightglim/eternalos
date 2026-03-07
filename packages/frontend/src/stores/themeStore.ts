@@ -193,9 +193,8 @@ const THEME_STORAGE_KEY = 'eternalos-theme';
 // Load theme from localStorage
 function loadSavedTheme(): ThemeId {
   try {
-    const saved = localStorage.getItem(THEME_STORAGE_KEY);
-    if (saved && saved in THEMES) {
-      return saved as ThemeId;
+    if (localStorage.getItem(THEME_STORAGE_KEY)) {
+      localStorage.removeItem(THEME_STORAGE_KEY);
     }
   } catch {
     // Ignore localStorage errors

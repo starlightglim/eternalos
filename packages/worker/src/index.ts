@@ -7,10 +7,9 @@
 
 import { UserDesktop } from './durable-objects/UserDesktop';
 import { handleSignup, handleLogin, handleLogout, handleForgotPassword, handleResetPassword, handleRefreshToken } from './routes/auth';
-import { handleUpload, handleServeFile, handleWallpaperUpload, handleServeWallpaper, handleIconUpload, handleServeIcon, handleCSSAssetUpload, handleServeCSSAsset, handleListCSSAssets, handleDeleteCSSAsset } from './routes/upload';
+import { handleUpload, handleServeFile, handleWallpaperUpload, handleServeWallpaper, handleIconUpload, handleServeIcon, handleCSSAssetUpload, handleServeCSSAsset, handleListCSSAssets, handleDeleteCSSAsset, handleAnalyzeImageItem } from './routes/upload';
 import { handleVisit } from './routes/visit';
 import { handleOgImage } from './routes/ogImage';
-import { handleAssistant } from './routes/assistant';
 import { trackVisitAnalytics, handleGetAnalytics } from './routes/analytics';
 import { requireAuth, authenticate } from './middleware/auth';
 import {
@@ -39,6 +38,7 @@ export interface Env {
   // Secrets
   JWT_SECRET: string;
   RESEND_API_KEY?: string; // For sending transactional emails (password reset, etc.)
+  IMAGE_ANALYSIS_MODEL?: string; // Optional Workers AI model override for image metadata enrichment
 
   // Environment settings
   ENVIRONMENT?: 'development' | 'production';
@@ -387,7 +387,18 @@ export default {
         if (authResult instanceof Response) {
           return withCors(authResult, corsHeaders);
         }
-        response = await handleUpload(request, env, authResult);
+        response = await handleUpload(request, env, authResult, ctx);
+        return withCors(response, corsHeaders);
+      }
+
+      if (path.startsWith('/api/desktop/items/') && path.endsWith('/analyze') && request.method === 'POST') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+
+        const itemId = path.slice('/api/desktop/items/'.length, -'/analyze'.length);
+        response = await handleAnalyzeImageItem(env, authResult, itemId, ctx);
         return withCors(response, corsHeaders);
       }
 
@@ -528,16 +539,6 @@ export default {
         return withCors(response, corsHeaders);
       }
 
-      // Desk assistant (requires auth)
-      if (path === '/api/assistant' && request.method === 'POST') {
-        const authResult = await requireAuth(request, env);
-        if (authResult instanceof Response) {
-          return withCors(authResult, corsHeaders);
-        }
-        response = await handleAssistant(request, env, authResult);
-        return withCors(response, corsHeaders);
-      }
-
       // Profile routes (require auth)
       // GET /api/profile - Get user profile
       if (path === '/api/profile' && request.method === 'GET') {
@@ -565,6 +566,39 @@ export default {
         const doResponse = await stub.fetch(new Request('http://internal/profile', {
           method: 'PATCH',
           body,
+        }));
+        return withCors(doResponse, corsHeaders);
+      }
+
+      // GET /api/css-history - List saved custom CSS versions
+      if (path === '/api/css-history' && request.method === 'GET') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+
+        const doId = env.USER_DESKTOP.idFromName(authResult.uid);
+        const stub = env.USER_DESKTOP.get(doId);
+        const doResponse = await stub.fetch(new Request('http://internal/css-history'));
+        return withCors(doResponse, corsHeaders);
+      }
+
+      // POST /api/css-history/:versionId/revert - Restore a saved custom CSS version
+      if (path.startsWith('/api/css-history/') && path.endsWith('/revert') && request.method === 'POST') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+
+        const versionId = path.slice('/api/css-history/'.length, -'/revert'.length);
+        if (!versionId) {
+          return withCors(Response.json({ error: 'Version ID required' }, { status: 400 }), corsHeaders);
+        }
+
+        const doId = env.USER_DESKTOP.idFromName(authResult.uid);
+        const stub = env.USER_DESKTOP.get(doId);
+        const doResponse = await stub.fetch(new Request(`http://internal/css-history/${versionId}/revert`, {
+          method: 'POST',
         }));
         return withCors(doResponse, corsHeaders);
       }

@@ -113,7 +113,17 @@ export function VisitorPage() {
       accentColor: profile.accentColor,
       desktopColor: profile.desktopColor,
       windowBgColor: profile.windowBgColor,
+      titleBarBgColor: profile.titleBarBgColor,
+      titleBarTextColor: profile.titleBarTextColor,
+      windowBorderColor: profile.windowBorderColor,
+      buttonBgColor: profile.buttonBgColor,
+      buttonTextColor: profile.buttonTextColor,
+      buttonBorderColor: profile.buttonBorderColor,
+      labelColor: profile.labelColor,
       fontSmoothing: profile.fontSmoothing,
+      windowBorderRadius: profile.windowBorderRadius,
+      controlBorderRadius: profile.controlBorderRadius,
+      windowShadow: profile.windowShadow,
       customCSS: profile.customCSS,
     };
 

@@ -1,12 +1,11 @@
 /**
  * QuickStartWizard - First-time user onboarding wizard
  *
- * Shows after signup to let users choose their initial vibe/theme.
- * Applies theme + appearance settings immediately and saves to profile.
+ * Shows after signup to let users choose an initial visual direction.
+ * Applies appearance + wallpaper settings immediately and saves to profile.
  */
 
 import { useState, useCallback } from 'react';
-import { useThemeStore, type ThemeId } from '../../stores/themeStore';
 import { useAppearanceStore } from '../../stores/appearanceStore';
 import { updateProfile } from '../../services/api';
 import styles from './QuickStartWizard.module.css';
@@ -15,7 +14,6 @@ export interface ThemePreset {
   id: string;
   name: string;
   description: string;
-  themeId: ThemeId;
   accentColor: string;
   desktopColor: string;
   windowBgColor?: string;
@@ -28,13 +26,12 @@ export interface ThemePreset {
   };
 }
 
-// Curated theme presets for onboarding
+// Curated visual presets for onboarding
 const THEME_PRESETS: ThemePreset[] = [
   {
     id: 'minimal',
     name: 'Minimal',
     description: 'Clean & classic',
-    themeId: 'macos8',
     accentColor: '#000080',
     desktopColor: '#C0C0C0',
     wallpaper: 'default',
@@ -49,7 +46,6 @@ const THEME_PRESETS: ThemePreset[] = [
     id: 'colorful',
     name: 'Colorful',
     description: 'Bright & playful',
-    themeId: 'system7',
     accentColor: '#FF6B6B',
     desktopColor: '#87CEEB',
     windowBgColor: '#FFF8E7',
@@ -65,7 +61,6 @@ const THEME_PRESETS: ThemePreset[] = [
     id: 'dark',
     name: 'Dark',
     description: 'Easy on the eyes',
-    themeId: 'next',
     accentColor: '#4080C0',
     desktopColor: '#1A1A1A',
     wallpaper: 'default',
@@ -80,7 +75,6 @@ const THEME_PRESETS: ThemePreset[] = [
     id: 'retro',
     name: 'Retro',
     description: 'Vintage vibes',
-    themeId: 'macos9',
     accentColor: '#336699',
     desktopColor: '#668B8B',
     windowBgColor: '#FFFAF0',
@@ -102,7 +96,6 @@ interface QuickStartWizardProps {
 export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isApplying, setIsApplying] = useState(false);
-  const setTheme = useThemeStore((state) => state.setTheme);
   const { setAccentColor, setDesktopColor, setWindowBgColor } = useAppearanceStore();
 
   const handleSelect = useCallback((preset: ThemePreset) => {
@@ -116,9 +109,6 @@ export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps
     setIsApplying(true);
 
     try {
-      // Apply theme
-      setTheme(preset.themeId);
-
       // Apply appearance settings
       setAccentColor(preset.accentColor);
       setDesktopColor(preset.desktopColor);
@@ -137,11 +127,11 @@ export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps
 
       onComplete();
     } catch (error) {
-      console.error('Failed to apply theme preset:', error);
+      console.error('Failed to apply starter preset:', error);
       // Still complete the wizard even if save fails
       onComplete();
     }
-  }, [selectedId, setTheme, setAccentColor, setDesktopColor, setWindowBgColor, onComplete]);
+  }, [selectedId, setAccentColor, setDesktopColor, setWindowBgColor, onComplete]);
 
   const handleSkip = useCallback(async () => {
     setIsApplying(true);

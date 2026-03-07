@@ -7,6 +7,7 @@ import { ThumbnailIcon } from '../icons/ThumbnailIcon';
 import { renderCustomIcon, CUSTOM_ICON_LIBRARY, type CustomIconId } from '../icons/customIconUtils';
 import { getCustomIconUrl } from '../../services/api';
 import { slugify } from '../../utils/slugify';
+import { getItemExtension } from '../../utils/itemSelectors';
 import { getTextFileContentType, type DesktopItem } from '../../types';
 import { ContextMenu, type ContextMenuItem } from '../ui';
 import styles from './FolderView.module.css';
@@ -642,7 +643,10 @@ export function FolderView({ folderId, visitorItems, isVisitorMode = false, isDr
     >
       {breadcrumbBar}
       <div className={styles.itemGrid}>
-        {items.map((item) => (
+        {items.map((item) => {
+          const itemExtension = getItemExtension(item);
+
+          return (
           <div
             key={item.id}
             className={`${styles.item} ${selectedId === item.id ? styles.selected : ''} ${
@@ -650,9 +654,11 @@ export function FolderView({ folderId, visitorItems, isVisitorMode = false, isDr
             } ${item.type === 'folder' && folderDropTargetId === item.id ? styles.dropTarget : ''} ${
               cutItemIds.has(item.id) ? styles.cut : ''
             }`}
+            data-item-id={item.id}
             data-folder-id={item.type === 'folder' ? item.id : undefined}
             eos-name={slugify(item.name)}
             eos-type={item.type}
+            {...(itemExtension ? { 'eos-extension': itemExtension } : {})}
             {...(eosFolderName ? { 'eos-folder': eosFolderName } : {})}
             onClick={(e) => {
               e.stopPropagation();
@@ -662,10 +668,11 @@ export function FolderView({ folderId, visitorItems, isVisitorMode = false, isDr
             onContextMenu={(e) => handleItemContextMenu(item, e)}
             onPointerDown={(e) => handlePointerDown(e, item.id)}
           >
-            <div className={styles.itemIcon}>{getIcon(item)}</div>
-            <span className={styles.itemName}>{item.name}</span>
+            <div className={styles.itemIcon} eos-part="icon">{getIcon(item)}</div>
+            <span className={styles.itemName} eos-part="label">{item.name}</span>
           </div>
-        ))}
+          );
+        })}
       </div>
       {contextMenu && (
         <ContextMenu
