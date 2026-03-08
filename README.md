@@ -355,8 +355,6 @@ Good prompts for reviewing the AI portion:
 
 ## Why This Is A Good Cloudflare Project
 
-This is not just a chat wrapper. The project demonstrates:
-
 - **Durable Object data modeling**
   - canonical user desktop state
   - separate persistent agent state
