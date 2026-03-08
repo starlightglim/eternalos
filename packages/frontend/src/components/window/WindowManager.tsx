@@ -22,6 +22,7 @@ import { AppearancePanel } from '../viewers/AppearancePanel';
 import { CSSEditor } from '../viewers/CSSEditor';
 import { ShareDialog } from '../viewers/ShareDialog';
 import { ProfileWindow } from '../viewers/ProfileWindow';
+import { AgentChatWindow } from '../viewers/AgentChatWindow';
 import { FolderView } from './FolderView';
 import { TrashView } from './TrashView';
 import { WidgetRenderer } from '../widgets';
@@ -413,6 +414,9 @@ function WindowContent({
 
     case 'profile':
       return <ProfileWindow isOwner={!isVisitorMode} />;
+
+    case 'agent-chat':
+      return <AgentChatWindow />;
 
     default:
       return null;

@@ -214,6 +214,19 @@ export function MenuBar() {
     setActiveMenu(null);
   }, [openWindow]);
 
+  const handleOpenAgentChat = useCallback(() => {
+    openWindow({
+      id: 'agent-chat',
+      title: 'Ask Eternal',
+      position: { x: 140, y: 84 },
+      size: { width: 430, height: 380 },
+      minimized: false,
+      maximized: false,
+      contentType: 'agent-chat',
+    });
+    setActiveMenu(null);
+  }, [openWindow]);
+
   const handleOpen = useCallback(() => {
     // Open each selected item
     if (selectedIds.size === 0) return;
@@ -609,6 +622,7 @@ export function MenuBar() {
       { divider: true, label: '' },
       { label: 'Calculator', action: handleOpenCalculator },
       { label: 'Clock', action: handleOpenClock },
+      { label: 'Ask Eternal...', action: handleOpenAgentChat, disabled: !isApiConfigured },
       { divider: true, label: '' },
       { label: 'Appearance...', action: handleOpenAppearance },
       { label: 'Custom CSS...', action: handleOpenCSSEditor },

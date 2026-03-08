@@ -6,12 +6,14 @@
  */
 
 import { UserDesktop } from './durable-objects/UserDesktop';
+import { DesktopChatAgent } from './agents/DesktopChatAgent';
 import { handleSignup, handleLogin, handleLogout, handleForgotPassword, handleResetPassword, handleRefreshToken } from './routes/auth';
 import { handleUpload, handleServeFile, handleWallpaperUpload, handleServeWallpaper, handleIconUpload, handleServeIcon, handleCSSAssetUpload, handleServeCSSAsset, handleListCSSAssets, handleDeleteCSSAsset, handleAnalyzeImageItem } from './routes/upload';
 import { handleVisit } from './routes/visit';
 import { handleOgImage } from './routes/ogImage';
 import { trackVisitAnalytics, handleGetAnalytics } from './routes/analytics';
 import { requireAuth, authenticate } from './middleware/auth';
+import { getAgentByName } from 'agents';
 import {
   checkRateLimit,
   rateLimitResponse,
@@ -31,6 +33,7 @@ export interface Env {
 
   // Durable Objects
   USER_DESKTOP: DurableObjectNamespace;
+  DesktopChatAgent: DurableObjectNamespace<DesktopChatAgent>;
 
   // Workers AI
   AI: Ai;
@@ -39,6 +42,7 @@ export interface Env {
   JWT_SECRET: string;
   RESEND_API_KEY?: string; // For sending transactional emails (password reset, etc.)
   IMAGE_ANALYSIS_MODEL?: string; // Optional Workers AI model override for image metadata enrichment
+  AGENT_CHAT_MODEL?: string; // Optional Workers AI model override for chat agent
 
   // Environment settings
   ENVIRONMENT?: 'development' | 'production';
@@ -47,7 +51,7 @@ export interface Env {
   APP_URL?: string; // Base URL for the app (e.g., "https://eternalos.app")
 }
 
-export { UserDesktop };
+export { UserDesktop, DesktopChatAgent };
 
 // Standard security headers applied to every response
 const SECURITY_HEADERS: Record<string, string> = {
@@ -67,10 +71,12 @@ function withCors(response: Response, corsHeaders: Record<string, string>): Resp
   for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
     newHeaders.set(key, value);
   }
+  const websocket = (response as Response & { webSocket?: WebSocket }).webSocket;
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
     headers: newHeaders,
+    webSocket: websocket,
   });
 }
 
@@ -205,6 +211,23 @@ export default {
     // Health check (no rate limiting)
     if (path === '/api/health') {
       return Response.json({ status: 'ok', timestamp: Date.now() }, { headers: corsHeaders });
+    }
+
+    // Authenticated stateful chat agent routed through a stable API path.
+    // The actual agent instance name is the authenticated uid, not a client-provided value.
+    if (path === '/api/agent/chat' || path.startsWith('/api/agent/chat/')) {
+      const authResult = await requireAuth(request, env);
+      if (authResult instanceof Response) {
+        return withCors(authResult, corsHeaders);
+      }
+
+      const agentStub = await getAgentByName<Env, DesktopChatAgent>(env.DesktopChatAgent, authResult.uid);
+      const forwardUrl = new URL(request.url);
+      const remainder = path.slice('/api/agent/chat'.length);
+      forwardUrl.pathname = remainder || '/';
+
+      const agentResponse = await agentStub.fetch(new Request(forwardUrl.toString(), request));
+      return withCors(agentResponse, corsHeaders);
     }
 
     // WebSocket live-sync for visitors: /api/ws/:username

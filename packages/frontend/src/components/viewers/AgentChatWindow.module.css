@@ -1,0 +1,276 @@
+.chatWindow {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--platinum);
+  color: var(--black);
+  font-family: var(--font-geneva);
+  font-size: 11px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--shadow);
+  background: linear-gradient(to bottom, #dddddd 0%, #c8c8c8 100%);
+}
+
+.title {
+  font-weight: bold;
+  margin-bottom: 2px;
+}
+
+.subtitle {
+  color: var(--shadow);
+  line-height: 1.4;
+  max-width: 320px;
+}
+
+.clearButton,
+.promptButton,
+.sendButton {
+  border: 1px solid var(--black);
+  background: var(--platinum);
+  box-shadow:
+    inset 1px 1px 0 var(--white),
+    inset -1px -1px 0 #808080;
+  font-family: var(--font-geneva);
+  font-size: 11px;
+  color: var(--black);
+}
+
+.clearButton {
+  align-self: flex-start;
+  padding: 4px 8px;
+}
+
+.messages,
+.emptyState {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  background:
+    linear-gradient(to bottom, #efefef 0 1px, transparent 1px) 0 0 / 100% 18px,
+    #f5f5f5;
+}
+
+.emptyState p {
+  margin: 0 0 10px;
+}
+
+.promptGrid {
+  display: grid;
+  gap: 8px;
+}
+
+.promptButton {
+  text-align: left;
+  padding: 8px 10px;
+  background: #f7f7f7;
+}
+
+.userMessage,
+.assistantMessage {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--shadow);
+  box-shadow:
+    inset 1px 1px 0 var(--white),
+    inset -1px -1px 0 #b0b0b0;
+}
+
+.userMessage {
+  background: #f1f1f1;
+}
+
+.assistantMessage {
+  background: #fffef3;
+}
+
+.messageLabel {
+  margin-bottom: 4px;
+  font-weight: bold;
+}
+
+.messageBody {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}
+
+.messageParts {
+  display: grid;
+  gap: 8px;
+}
+
+.messageText {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}
+
+.toolCard {
+  padding: 7px 8px;
+  border: 1px solid #8c8c8c;
+  background: #f8f8ef;
+  box-shadow:
+    inset 1px 1px 0 var(--white),
+    inset -1px -1px 0 #b7b7a8;
+}
+
+.toolTitle {
+  margin-bottom: 4px;
+  font-weight: bold;
+}
+
+.toolBody {
+  line-height: 1.45;
+}
+
+.resultList {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.resultRow {
+  padding-top: 6px;
+  border-top: 1px solid #d0d0c0;
+}
+
+.resultHeading {
+  line-height: 1.4;
+}
+
+.resultType,
+.resultMeta,
+.resultSummary {
+  color: #4e4e4e;
+}
+
+.resultMeta,
+.resultSummary {
+  margin-top: 2px;
+}
+
+.matchPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.matchPill {
+  padding: 1px 5px;
+  border: 1px solid #8f8f8f;
+  background: #ecece0;
+  box-shadow:
+    inset 1px 1px 0 var(--white),
+    inset -1px -1px 0 #b5b5aa;
+  font-size: 10px;
+}
+
+.itemLink {
+  display: inline;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: #003399;
+  text-decoration: underline;
+  font: inherit;
+  cursor: pointer;
+}
+
+.itemLink:disabled {
+  color: var(--shadow);
+  text-decoration: none;
+  cursor: default;
+}
+
+.approvalRow {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.actionButton {
+  min-width: 68px;
+  padding: 4px 8px;
+  border: 1px solid var(--black);
+  background: var(--platinum);
+  box-shadow:
+    inset 1px 1px 0 var(--white),
+    inset -1px -1px 0 #808080;
+  font-family: var(--font-geneva);
+  font-size: 11px;
+  color: var(--black);
+}
+
+.footer {
+  border-top: 1px solid var(--shadow);
+  padding: 10px 12px 12px;
+  background: linear-gradient(to bottom, #d4d4d4 0%, #c4c4c4 100%);
+}
+
+.statusRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 16px;
+  margin-bottom: 8px;
+}
+
+.statusLabel {
+  color: var(--shadow);
+}
+
+.errorText {
+  color: #8b0000;
+}
+
+.form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.input {
+  border: 1px solid var(--black);
+  background: var(--white);
+  box-shadow:
+    inset 1px 1px 0 #808080,
+    inset -1px -1px 0 var(--white);
+  padding: 7px 8px;
+  font-family: var(--font-geneva);
+  font-size: 11px;
+  color: var(--black);
+}
+
+.sendButton {
+  min-width: 80px;
+  padding: 6px 12px;
+}
+
+.sendButton:disabled {
+  color: var(--shadow);
+}
+
+.unavailable {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  padding: 20px;
+  font-family: var(--font-geneva);
+  font-size: 11px;
+  background: var(--platinum);
+}
+
+.unavailable h3,
+.unavailable p {
+  margin: 0;
+}

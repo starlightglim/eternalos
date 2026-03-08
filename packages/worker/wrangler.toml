@@ -3,7 +3,7 @@
 
 name = "eternalos-api"
 main = "src/index.ts"
-compatibility_date = "2024-01-01"
+compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
 # Durable Objects
@@ -11,9 +11,17 @@ compatibility_flags = ["nodejs_compat"]
 name = "USER_DESKTOP"
 class_name = "UserDesktop"
 
+[[durable_objects.bindings]]
+name = "DesktopChatAgent"
+class_name = "DesktopChatAgent"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["UserDesktop"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["DesktopChatAgent"]
 
 # KV Namespaces
 [[kv_namespaces]]
@@ -37,6 +45,7 @@ remote = true
 
 # Optional local overrides in .dev.vars:
 # IMAGE_ANALYSIS_MODEL=@cf/meta/llama-3.2-11b-vision-instruct
+# AGENT_CHAT_MODEL=@cf/zai-org/glm-4.7-flash
 
 # JWT_SECRET is set via: wrangler secret put JWT_SECRET
 # For local dev, set JWT_SECRET in .dev.vars file

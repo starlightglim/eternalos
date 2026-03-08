@@ -1,48 +1,54 @@
-import { useEffect } from 'react'
-import { Routes, Route, Navigate, useSearchParams, useLocation } from 'react-router-dom'
-import { Desktop } from './components/desktop/Desktop'
-import { MobileBrowser } from './components/desktop/MobileBrowser'
-import { LandingPage } from './pages/LandingPage'
-import { LoginPage } from './pages/LoginPage'
-import { SignupPage } from './pages/SignupPage'
-import { ForgotPasswordPage } from './pages/ForgotPasswordPage'
-import { ResetPasswordPage } from './pages/ResetPasswordPage'
-import { VisitorPage } from './pages/VisitorPage'
-import { NotFoundPage } from './pages/NotFoundPage'
-import { LoadingOverlay, AlertDialog, ErrorBoundary } from './components/ui'
-import { useAuthStore } from './stores/authStore'
-import { useAlertStore } from './stores/alertStore'
-import { useIsMobile } from './hooks/useIsMobile'
-import { isApiConfigured } from './services/api'
+import { useEffect } from "react";
+import {
+  Routes,
+  Route,
+  Navigate,
+  useSearchParams,
+  useLocation,
+} from "react-router-dom";
+import { Desktop } from "./components/desktop/Desktop";
+import { MobileBrowser } from "./components/desktop/MobileBrowser";
+import { LandingPage } from "./pages/LandingPage";
+import { LoginPage } from "./pages/LoginPage";
+import { SignupPage } from "./pages/SignupPage";
+import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
+import { ResetPasswordPage } from "./pages/ResetPasswordPage";
+import { VisitorPage } from "./pages/VisitorPage";
+import { NotFoundPage } from "./pages/NotFoundPage";
+import { LoadingOverlay, AlertDialog, ErrorBoundary } from "./components/ui";
+import { useAuthStore } from "./stores/authStore";
+import { useAlertStore } from "./stores/alertStore";
+import { useIsMobile } from "./hooks/useIsMobile";
+import { isApiConfigured } from "./services/api";
 
 /**
  * Global Alert Manager
  * Renders AlertDialog based on alertStore state
  */
 function GlobalAlert() {
-  const { alert, closeAlert } = useAlertStore()
+  const { alert, closeAlert } = useAlertStore();
 
-  if (!alert) return null
+  if (!alert) return null;
 
   // Build button handlers based on alert type
   const handleClose = () => {
-    closeAlert()
-    alert.onCancel?.()
-  }
+    closeAlert();
+    alert.onCancel?.();
+  };
 
   const handleConfirm = () => {
-    closeAlert()
-    alert.onConfirm?.()
-  }
+    closeAlert();
+    alert.onConfirm?.();
+  };
 
   // Generate buttons based on alert type
   const buttons =
-    alert.type === 'confirm'
+    alert.type === "confirm"
       ? [
-          { label: 'Cancel', onClick: handleClose },
-          { label: 'OK', onClick: handleConfirm, primary: true },
+          { label: "Cancel", onClick: handleClose },
+          { label: "OK", onClick: handleConfirm, primary: true },
         ]
-      : [{ label: 'OK', onClick: handleClose, primary: true }]
+      : [{ label: "OK", onClick: handleClose, primary: true }];
 
   return (
     <AlertDialog
@@ -52,58 +58,61 @@ function GlobalAlert() {
       buttons={buttons}
       onClose={handleClose}
     />
-  )
+  );
 }
 
 // Protected route wrapper for authenticated pages
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { user, initialized } = useAuthStore()
+  const { user, initialized } = useAuthStore();
 
   if (!initialized) {
-    return <LoadingOverlay message="Initializing..." />
+    return <LoadingOverlay message="Initializing..." />;
   }
 
   // If API is not configured, allow access to desktop (demo mode)
   if (!isApiConfigured) {
-    return <>{children}</>
+    return <>{children}</>;
   }
 
   if (!user) {
-    return <Navigate to="/login" replace />
+    return <Navigate to="/login" replace />;
   }
 
-  return <>{children}</>
+  return <>{children}</>;
 }
 
 // Responsive wrapper - shows MobileBrowser on small screens
 function ResponsiveDesktop() {
-  const isMobile = useIsMobile()
-  return isMobile ? <MobileBrowser /> : <Desktop />
+  const isMobile = useIsMobile();
+  return isMobile ? <MobileBrowser /> : <Desktop />;
 }
 
 // Smart route that shows owner Desktop or visitor view based on auth
 // Note: React Router v6 doesn't support mixed literal+param segments like /@:username,
 // so we extract the username from window.location.pathname manually.
 function UserDesktopRoute() {
-  const { user, initialized } = useAuthStore()
-  const isMobile = useIsMobile()
-  const [searchParams] = useSearchParams()
-  const username = window.location.pathname.slice(2).split('?')[0] // Remove "/@" and query params
+  const { user, initialized } = useAuthStore();
+  const isMobile = useIsMobile();
+  const [searchParams] = useSearchParams();
+  const username = window.location.pathname.slice(2).split("?")[0]; // Remove "/@" and query params
 
   if (!initialized && isApiConfigured) {
-    return <LoadingOverlay message="Loading..." />
+    return <LoadingOverlay message="Loading..." />;
   }
 
   // Force visitor view when ?visitor=true is set (used by "Preview as Visitor")
-  const forceVisitor = searchParams.get('visitor') === 'true'
+  const forceVisitor = searchParams.get("visitor") === "true";
 
   // If logged in as this user and not forcing visitor mode, show owner's Desktop
-  if (!forceVisitor && user?.username?.toLowerCase() === username.toLowerCase()) {
-    return isMobile ? <MobileBrowser /> : <Desktop />
+  if (
+    !forceVisitor &&
+    user?.username?.toLowerCase() === username.toLowerCase()
+  ) {
+    return isMobile ? <MobileBrowser /> : <Desktop />;
   }
 
   // Otherwise show visitor view (has its own mobile handling)
-  return <VisitorPage />
+  return <VisitorPage />;
 }
 
 /**
@@ -112,28 +121,28 @@ function UserDesktopRoute() {
  * so we handle /@username URLs here by checking the pathname manually.
  */
 function CatchAllRoute() {
-  const location = useLocation()
+  const location = useLocation();
 
   // Handle /@username paths
-  if (location.pathname.startsWith('/@') && location.pathname.length > 2) {
-    return <UserDesktopRoute />
+  if (location.pathname.startsWith("/@") && location.pathname.length > 2) {
+    return <UserDesktopRoute />;
   }
 
   // Everything else → show 404 page
-  return <NotFoundPage />
+  return <NotFoundPage />;
 }
 
 function App() {
-  const { initialize, initialized } = useAuthStore()
+  const { initialize, initialized } = useAuthStore();
 
   useEffect(() => {
-    const unsubscribe = initialize()
-    return () => unsubscribe()
-  }, [initialize])
+    const unsubscribe = initialize();
+    return () => unsubscribe();
+  }, [initialize]);
 
   // Show loading screen while auth initializes
   if (!initialized && isApiConfigured) {
-    return <LoadingOverlay message="Starting EternalOS..." />
+    return <LoadingOverlay message="Starting EternalOS..." />;
   }
 
   return (
@@ -163,7 +172,7 @@ function App() {
         <Route path="*" element={<CatchAllRoute />} />
       </Routes>
     </ErrorBoundary>
-  )
+  );
 }
 
-export default App
+export default App;
