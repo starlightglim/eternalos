@@ -8,6 +8,7 @@ import {
   isApiConfigured,
   setAuthToken,
   setRefreshToken,
+  clearFileToken,
   setSessionExpiredHandler,
   signup as apiSignup,
   login as apiLogin,
@@ -197,6 +198,7 @@ export const useAuthStore = create<AuthStore>()(
           }
           setAuthToken(null);
           setRefreshToken(null);
+          clearFileToken();
           // Clear window state on logout
           useWindowStore.getState().clearWindowState();
           set({
@@ -210,6 +212,7 @@ export const useAuthStore = create<AuthStore>()(
           // Clear state even if logout API fails
           setAuthToken(null);
           setRefreshToken(null);
+          clearFileToken();
           // Clear window state on logout
           useWindowStore.getState().clearWindowState();
           const message = error instanceof Error ? error.message : 'Logout failed';
@@ -321,6 +324,7 @@ export const useAuthStore = create<AuthStore>()(
         setSessionExpiredHandler(() => {
           setAuthToken(null);
           setRefreshToken(null);
+          clearFileToken();
           useWindowStore.getState().clearWindowState();
           set({
             user: null,

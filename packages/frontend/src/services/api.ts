@@ -201,6 +201,7 @@ export async function logout(): Promise<void> {
   await apiRequest('/api/auth/logout', { method: 'POST' });
   setAuthToken(null);
   setRefreshToken(null);
+  clearFileToken();
 }
 
 // ============ Password Reset API ============
@@ -442,12 +443,86 @@ export async function fetchVisitorDesktop(username: string): Promise<VisitorResp
 // ============ File URL ============
 
 /**
+ * Short-lived file token for media src URLs.
+ * Replaces the old approach of putting the full JWT in query params, which
+ * leaked credentials into server logs, browser history, and referrer headers.
+ *
+ * The token is cached and refreshed automatically every 4 minutes (token TTL is 5 min).
+ */
+let cachedFileToken: string | null = null;
+let fileTokenExpiresAt = 0;
+let fileTokenRequest: Promise<string | null> | null = null;
+
+async function fetchFileToken(): Promise<string | null> {
+  if (!authToken) return null;
+
+  // Return cached token if still valid (with 60s buffer)
+  if (cachedFileToken && Date.now() < fileTokenExpiresAt - 60_000) {
+    return cachedFileToken;
+  }
+
+  // Deduplicate concurrent requests
+  if (fileTokenRequest) return fileTokenRequest;
+
+  fileTokenRequest = (async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/file-token`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+      });
+      if (!response.ok) return null;
+      const data = await response.json() as { ft: string };
+      cachedFileToken = data.ft;
+      fileTokenExpiresAt = Date.now() + 5 * 60 * 1000; // 5 min TTL
+      return cachedFileToken;
+    } catch {
+      return null;
+    } finally {
+      fileTokenRequest = null;
+    }
+  })();
+
+  return fileTokenRequest;
+}
+
+/**
+ * Get the current cached file token synchronously.
+ * Returns null if no token is available yet — call ensureFileToken() first.
+ */
+export function getCachedFileToken(): string | null {
+  if (cachedFileToken && Date.now() < fileTokenExpiresAt - 60_000) {
+    return cachedFileToken;
+  }
+  return null;
+}
+
+/**
+ * Ensure a file token is available. Call this before rendering media.
+ * Returns the token (or null if not authenticated).
+ */
+export async function ensureFileToken(): Promise<string | null> {
+  return fetchFileToken();
+}
+
+/**
+ * Clear cached file token (called on logout).
+ */
+export function clearFileToken(): void {
+  cachedFileToken = null;
+  fileTokenExpiresAt = 0;
+}
+
+/**
  * Get the URL for a file stored in R2.
- * Includes auth token as query param since img/video/audio tags can't send headers.
+ * Uses a short-lived file token (not the full JWT) in the query param.
  * @param r2Key - The full R2 key path (e.g., "uid/itemId/filename")
  */
 export function getFileUrl(r2Key: string): string {
-  const tokenParam = authToken ? `?token=${encodeURIComponent(authToken)}` : '';
+  const ft = getCachedFileToken();
+  const tokenParam = ft ? `?ft=${encodeURIComponent(ft)}` : '';
   // Encode each path segment to handle special characters in filenames
   const encodedKey = r2Key.split('/').map(encodeURIComponent).join('/');
   return `${API_URL}/api/files/${encodedKey}${tokenParam}`;

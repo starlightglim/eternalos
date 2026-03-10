@@ -9,7 +9,7 @@
 
 import type { Env } from '../index';
 import type { JWTPayload, SessionRecord, UserRecord } from '../types';
-import { verifyJWT } from '../utils/jwt';
+import { verifyJWT, signFileToken, verifyFileToken } from '../utils/jwt';
 
 export interface AuthContext {
   uid: string;
@@ -24,16 +24,22 @@ export async function authenticate(
   request: Request,
   env: Env
 ): Promise<AuthContext | null> {
-  // Try Authorization header first
   const authHeader = request.headers.get('Authorization');
+
+  // Check for short-lived file token in query param (for img/video/audio src URLs).
+  // File tokens are NOT full JWTs — they only carry uid + expiry and don't need a
+  // KV session lookup, keeping media requests fast and avoiding credential leakage.
+  const url = new URL(request.url);
+  const fileToken = url.searchParams.get('ft');
+  if (fileToken) {
+    return authenticateFileToken(fileToken, env);
+  }
+
+  // Standard Bearer JWT flow
   let token: string | null = null;
 
   if (authHeader?.startsWith('Bearer ')) {
     token = authHeader.slice('Bearer '.length);
-  } else {
-    // Fall back to query parameter (for img/video/audio src URLs)
-    const url = new URL(request.url);
-    token = url.searchParams.get('token');
   }
 
   if (!token) {
@@ -81,6 +87,31 @@ export async function authenticate(
   } catch {
     return null;
   }
+}
+
+/**
+ * Verify a short-lived file token (used for media src URLs).
+ * Returns a minimal AuthContext with uid only (username set to empty string
+ * since file-serving only needs the uid for ownership checks).
+ */
+async function authenticateFileToken(
+  token: string,
+  env: Env
+): Promise<AuthContext | null> {
+  const result = await verifyFileToken(token, env.JWT_SECRET);
+  if (!result) return null;
+  return { uid: result.uid, username: '' };
+}
+
+/**
+ * Issue a short-lived file token for the given auth context.
+ * Called by the /api/file-token endpoint.
+ */
+export async function issueFileToken(
+  env: Env,
+  uid: string
+): Promise<string> {
+  return signFileToken(uid, env.JWT_SECRET);
 }
 
 /**
