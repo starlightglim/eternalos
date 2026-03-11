@@ -3,7 +3,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useAuthStore } from '../stores/authStore';
 import { useDesktopStore } from '../stores/desktopStore';
 import { useAppearanceStore } from '../stores/appearanceStore';
-import { isApiConfigured, fetchDesktop } from '../services/api';
+import { isApiConfigured, fetchDesktop, ensureFileToken } from '../services/api';
 
 /**
  * Hook to synchronize desktop state with API
@@ -93,6 +93,9 @@ export function useDesktopSync() {
     setUid(user.uid);
     setLoading(true);
     fetchedRef.current = user.uid;
+
+    // Pre-fetch a short-lived file token so media URLs are ready immediately
+    ensureFileToken().catch(() => {});
 
     // Fetch items and profile from API
     fetchDesktop()

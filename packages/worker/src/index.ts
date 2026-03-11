@@ -12,7 +12,7 @@ import { handleUpload, handleServeFile, handleWallpaperUpload, handleServeWallpa
 import { handleVisit } from './routes/visit';
 import { handleOgImage } from './routes/ogImage';
 import { trackVisitAnalytics, handleGetAnalytics } from './routes/analytics';
-import { requireAuth, authenticate } from './middleware/auth';
+import { requireAuth, authenticate, issueFileToken } from './middleware/auth';
 import { getAgentByName } from 'agents';
 import {
   checkRateLimit,
@@ -402,6 +402,20 @@ export default {
           body,
         }));
         return withCors(doResponse, corsHeaders);
+      }
+
+      // Short-lived file token for media src URLs (replaces JWT-in-query-param)
+      if (path === '/api/file-token' && request.method === 'POST') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+        const ft = await issueFileToken(env, authResult.uid);
+        response = Response.json({ ft });
+        if (rateLimitResult) {
+          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
+        }
+        return withCors(response, corsHeaders);
       }
 
       // File upload

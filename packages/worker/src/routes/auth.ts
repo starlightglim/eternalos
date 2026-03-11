@@ -116,7 +116,8 @@ export async function handleSignup(request: Request, env: Env): Promise<Response
   try {
     existingUser = await env.AUTH_KV.get(`user:${normalizedEmail}`);
   } catch (e) {
-    return Response.json({ error: 'signup_step_1_check_email', details: String(e) }, { status: 500 });
+    console.error('Signup: check email failed:', e);
+    return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
   }
   if (existingUser) {
     return Response.json({ error: 'Email already registered' }, { status: 409 });
@@ -127,7 +128,8 @@ export async function handleSignup(request: Request, env: Env): Promise<Response
   try {
     existingUsername = await env.AUTH_KV.get(`username:${normalizedUsername}`);
   } catch (e) {
-    return Response.json({ error: 'signup_step_2_check_username', details: String(e) }, { status: 500 });
+    console.error('Signup: check username failed:', e);
+    return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
   }
   if (existingUsername) {
     return Response.json({ error: 'Username already taken' }, { status: 409 });
@@ -139,7 +141,8 @@ export async function handleSignup(request: Request, env: Env): Promise<Response
   try {
     passwordHash = await hashPassword(password);
   } catch (e) {
-    return Response.json({ error: 'signup_step_3_hash_password', details: String(e) }, { status: 500 });
+    console.error('Signup: hash password failed:', e);
+    return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
   }
   const now = Date.now();
 
@@ -156,26 +159,30 @@ export async function handleSignup(request: Request, env: Env): Promise<Response
   try {
     await env.AUTH_KV.put(`user:${normalizedEmail}`, JSON.stringify(userRecord));
   } catch (e) {
-    return Response.json({ error: 'signup_step_4_store_user', details: String(e) }, { status: 500 });
+    console.error('Signup: store user failed:', e);
+    return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
   }
 
   try {
     await env.AUTH_KV.put(`username:${normalizedUsername}`, JSON.stringify({ uid }));
   } catch (e) {
-    return Response.json({ error: 'signup_step_5_store_username', details: String(e) }, { status: 500 });
+    console.error('Signup: store username failed:', e);
+    return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
   }
 
   try {
     await env.AUTH_KV.put(`uid:${uid}`, JSON.stringify({ email: normalizedEmail }));
   } catch (e) {
-    return Response.json({ error: 'signup_step_6_store_uid_index', details: String(e) }, { status: 500 });
+    console.error('Signup: store uid index failed:', e);
+    return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
   }
 
   // Track this user for scheduled jobs (per-user key avoids read-modify-write race)
   try {
     await env.AUTH_KV.put(`user_index:${uid}`, normalizedEmail);
   } catch (e) {
-    return Response.json({ error: 'signup_step_7_update_user_list', details: String(e) }, { status: 500 });
+    console.error('Signup: update user list failed:', e);
+    return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
   }
 
   // Initialize user's Durable Object with profile and default items
@@ -332,7 +339,8 @@ Try saying:
       }));
     }
   } catch (e) {
-    return Response.json({ error: 'signup_step_8_init_durable_object', details: String(e) }, { status: 500 });
+    console.error('Signup: init durable object failed:', e);
+    return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
   }
 
   // Generate JWT
@@ -340,7 +348,8 @@ Try saying:
   try {
     token = await signJWT({ uid, username: normalizedUsername }, env.JWT_SECRET);
   } catch (e) {
-    return Response.json({ error: 'signup_step_9_sign_jwt', details: String(e) }, { status: 500 });
+    console.error('Signup: sign JWT failed:', e);
+    return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
   }
 
   const refreshToken = generateRefreshToken();
@@ -361,7 +370,8 @@ Try saying:
       expirationTtl: accessExpiry,
     });
   } catch (e) {
-    return Response.json({ error: 'signup_step_10_store_session', details: String(e) }, { status: 500 });
+    console.error('Signup: store session failed:', e);
+    return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
   }
 
   // Store refresh token (includes issuedAt for password-change invalidation)
@@ -378,7 +388,8 @@ Try saying:
       expirationTtl: refreshExpiry,
     });
   } catch (e) {
-    return Response.json({ error: 'signup_step_11_store_refresh', details: String(e) }, { status: 500 });
+    console.error('Signup: store refresh token failed:', e);
+    return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
   }
 
   return Response.json({

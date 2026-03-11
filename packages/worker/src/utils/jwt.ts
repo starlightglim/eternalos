@@ -75,6 +75,54 @@ export async function signJWT(
 }
 
 /**
+ * Short-lived file token for media URLs (img/video/audio src attributes).
+ *
+ * Format: base64url(JSON{uid,exp}).base64url(HMAC-SHA256 signature)
+ * Default TTL: 5 minutes — long enough for page loads, short enough to
+ * limit exposure if the URL is logged or leaked.
+ */
+const FILE_TOKEN_TTL_SECONDS = 5 * 60;
+
+export async function signFileToken(uid: string, secret: string): Promise<string> {
+  const exp = Math.floor(Date.now() / 1000) + FILE_TOKEN_TTL_SECONDS;
+  const encoder = new TextEncoder();
+  const payload = base64urlEncode(encoder.encode(JSON.stringify({ uid, exp })));
+  const key = await importKey(secret);
+  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(payload));
+  return `${payload}.${base64urlEncode(signature)}`;
+}
+
+export async function verifyFileToken(
+  token: string,
+  secret: string
+): Promise<{ uid: string } | null> {
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+
+  const [payloadBase64, signatureBase64] = parts;
+
+  try {
+    const encoder = new TextEncoder();
+    const key = await importKey(secret);
+    const signature = base64urlDecode(signatureBase64);
+    const valid = await crypto.subtle.verify('HMAC', key, signature, encoder.encode(payloadBase64));
+    if (!valid) return null;
+
+    const decoder = new TextDecoder();
+    const payload = JSON.parse(decoder.decode(base64urlDecode(payloadBase64))) as {
+      uid: string;
+      exp: number;
+    };
+
+    if (Math.floor(Date.now() / 1000) > payload.exp) return null;
+
+    return { uid: payload.uid };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Verify a JWT and return payload if valid
  */
 export async function verifyJWT(token: string, secret: string): Promise<JWTPayload | null> {
