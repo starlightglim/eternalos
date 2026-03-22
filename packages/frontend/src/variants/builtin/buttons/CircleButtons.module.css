@@ -1,0 +1,59 @@
+/* macOS-style traffic light circle buttons */
+
+.buttonGroup {
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 4px;
+  z-index: 2;
+}
+
+.btn {
+  width: var(--eos-window-button-size, 12px);
+  height: var(--eos-window-button-size, 12px);
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  line-height: 1;
+  color: transparent;
+}
+
+.btn:hover {
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.close {
+  background: #FF5F57;
+}
+
+.close:hover {
+  background: #FF3B30;
+}
+
+.zoom {
+  background: #28C840;
+}
+
+.zoom:hover {
+  background: #1DB93A;
+}
+
+.collapse {
+  background: #FFBD2E;
+}
+
+.collapse:hover {
+  background: #FFA500;
+}
+
+.inactive .btn {
+  background: var(--platinum);
+  border-color: var(--shadow);
+  color: transparent;
+}

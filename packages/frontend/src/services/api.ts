@@ -165,6 +165,7 @@ export interface SignupResponse {
     uid: string;
     username: string;
     email: string;
+    emailVerified?: boolean;
   };
 }
 
@@ -176,6 +177,7 @@ export interface LoginResponse {
     uid: string;
     username: string;
     email: string;
+    emailVerified?: boolean;
   };
 }
 
@@ -232,6 +234,72 @@ export async function resetPassword(
   return apiRequest<ResetPasswordResponse>('/api/auth/reset-password', {
     method: 'POST',
     body: JSON.stringify({ token, newPassword }),
+  });
+}
+
+// ============ Change Password API ============
+
+export interface ChangePasswordResponse {
+  success: boolean;
+  message: string;
+  token: string;
+  refreshToken: string;
+  expiresIn: number;
+}
+
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string
+): Promise<ChangePasswordResponse> {
+  return apiRequest<ChangePasswordResponse>('/api/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+}
+
+// ============ Change Username API ============
+
+export interface ChangeUsernameResponse {
+  success: boolean;
+  message: string;
+  username: string;
+  token: string;
+  refreshToken: string;
+  expiresIn: number;
+}
+
+export async function changeUsername(
+  newUsername: string,
+  password: string
+): Promise<ChangeUsernameResponse> {
+  return apiRequest<ChangeUsernameResponse>('/api/auth/change-username', {
+    method: 'POST',
+    body: JSON.stringify({ newUsername, password }),
+  });
+}
+
+// ============ Email Verification API ============
+
+export interface SendVerificationResponse {
+  success: boolean;
+  message: string;
+}
+
+export async function sendVerificationEmail(): Promise<SendVerificationResponse> {
+  return apiRequest<SendVerificationResponse>('/api/auth/send-verification', {
+    method: 'POST',
+  });
+}
+
+export interface VerifyEmailResponse {
+  success: boolean;
+  message: string;
+}
+
+export async function verifyEmail(token: string): Promise<VerifyEmailResponse> {
+  return apiRequest<VerifyEmailResponse>('/api/auth/verify-email', {
+    method: 'POST',
+    body: JSON.stringify({ token }),
   });
 }
 
@@ -696,10 +764,17 @@ export interface ProfileUpdateRequest {
   buttonTextColor?: string;
   buttonBorderColor?: string;
   labelColor?: string;
+  // Typography
+  systemFont?: string;
+  bodyFont?: string;
+  monoFont?: string;
   fontSmoothing?: boolean;
   windowBorderRadius?: number;
   controlBorderRadius?: number;
   windowShadow?: number;
+  windowOpacity?: number;
+  // Extended design tokens
+  designTokens?: Record<string, string | number | boolean>;
   // Custom CSS (Layer 4 customization)
   customCSS?: string;
   // Watermark setting
@@ -727,10 +802,15 @@ export interface ProfileUpdateResponse {
     buttonTextColor?: string;
     buttonBorderColor?: string;
     labelColor?: string;
+    systemFont?: string;
+    bodyFont?: string;
+    monoFont?: string;
     fontSmoothing?: boolean;
     windowBorderRadius?: number;
     controlBorderRadius?: number;
     windowShadow?: number;
+    windowOpacity?: number;
+    designTokens?: Record<string, string | number | boolean>;
     customCSS?: string;
     hideWatermark?: boolean;
   };

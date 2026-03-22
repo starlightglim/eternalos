@@ -1,19 +1,24 @@
 /**
  * Auth Routes
  *
- * POST /api/auth/signup           - Create account
- * POST /api/auth/login            - Authenticate
- * POST /api/auth/logout           - Invalidate session
- * POST /api/auth/forgot-password  - Request password reset
- * POST /api/auth/reset-password   - Reset password with token
+ * POST /api/auth/signup              - Create account
+ * POST /api/auth/login               - Authenticate
+ * POST /api/auth/logout              - Invalidate session
+ * POST /api/auth/forgot-password     - Request password reset
+ * POST /api/auth/reset-password      - Reset password with token
+ * POST /api/auth/change-password     - Change password (authenticated)
+ * POST /api/auth/change-username     - Change username (authenticated)
+ * POST /api/auth/send-verification   - Send verification email (authenticated)
+ * POST /api/auth/verify-email        - Verify email with token
  */
 
 import type { Env } from '../index';
-import type { UserRecord, SessionRecord, PasswordResetRecord } from '../types';
+import type { UserRecord, SessionRecord, PasswordResetRecord, EmailVerificationRecord } from '../types';
+import type { AuthContext } from '../middleware/auth';
 import { signJWT } from '../utils/jwt';
 import { hashPassword, verifyPassword } from '../utils/password';
 import { sanitizeEmail, sanitizeUsername } from '../utils/sanitize';
-import { sendEmail, getPasswordResetEmail } from '../utils/email';
+import { sendEmail, getPasswordResetEmail, getEmailVerificationEmail, getUsernameChangeEmail } from '../utils/email';
 
 interface SignupBody {
   email: string;
@@ -68,7 +73,7 @@ function validateUsername(username: string): string | null {
     return 'Username can only contain letters, numbers, and underscores';
   }
   // Reserved usernames
-  const reserved = ['admin', 'api', 'www', 'mail', 'root', 'help', 'support'];
+  const reserved = ['admin', 'api', 'www', 'mail', 'root', 'help', 'support', 'system', 'test', 'app', 'docs', 'download', 'downloads', 'static', 'assets', 'public', 'private', 'settings', 'login', 'signup', 'register', 'auth', 'oauth', 'callback', 'webhook', 'webhooks', 'status', 'blog', 'about', 'contact', 'terms', 'privacy', 'security', 'abuse', 'postmaster', 'webmaster', 'hostmaster', 'info', 'billing', 'sales', 'legal', 'noreply', 'no_reply', 'null', 'undefined', 'desktop', 'verify', 'reset', 'forgot', 'password', 'account', 'profile', 'user', 'users', 'moderator', 'mod', 'staff', 'team', 'official', 'eternalos', 'eternal'];
   if (reserved.includes(username.toLowerCase())) {
     return 'This username is reserved';
   }
@@ -392,6 +397,31 @@ Try saying:
     return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
   }
 
+  // Send verification email on signup (non-blocking)
+  if (env.RESEND_API_KEY && env.FROM_EMAIL) {
+    const verifyToken = crypto.randomUUID() + '-' + crypto.randomUUID();
+    const verifyTtlSeconds = 24 * 60 * 60;
+    const verificationRecord: EmailVerificationRecord = {
+      uid,
+      email: normalizedEmail,
+      createdAt: now,
+      expiresAt: now + (verifyTtlSeconds * 1000),
+    };
+    env.AUTH_KV.put(`verify:${verifyToken}`, JSON.stringify(verificationRecord), {
+      expirationTtl: verifyTtlSeconds,
+    }).then(() => {
+      const appUrl = env.APP_URL || 'https://eternalos.app';
+      const verifyUrl = `${appUrl}/verify-email?token=${verifyToken}`;
+      const { html, text } = getEmailVerificationEmail(verifyUrl, normalizedUsername);
+      return sendEmail(env.RESEND_API_KEY!, env.FROM_EMAIL!, {
+        to: normalizedEmail,
+        subject: 'Verify your EternalOS email',
+        html,
+        text,
+      });
+    }).catch((err) => console.error('Failed to send verification email:', err));
+  }
+
   return Response.json({
     token,
     refreshToken,
@@ -400,6 +430,7 @@ Try saying:
       uid,
       username: normalizedUsername,
       email: normalizedEmail,
+      emailVerified: false,
     },
   });
 }
@@ -530,6 +561,7 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
       uid: userRecord.uid,
       username: userRecord.username,
       email: normalizedEmail,
+      emailVerified: userRecord.emailVerified || false,
     },
   });
 }
@@ -744,7 +776,7 @@ export async function handleForgotPassword(request: Request, env: Env): Promise<
   const appUrl = env.APP_URL || 'https://eternalos.app';
   const resetUrl = `${appUrl}/reset-password?token=${resetToken}`;
 
-  const isDev = env.ENVIRONMENT !== 'production';
+  const isDev = env.ENVIRONMENT === 'development';
 
   // Send password reset email (if Resend is configured)
   if (env.RESEND_API_KEY && env.FROM_EMAIL) {
@@ -851,5 +883,373 @@ export async function handleResetPassword(request: Request, env: Env): Promise<R
   return Response.json({
     success: true,
     message: 'Password has been reset successfully. You can now log in with your new password.',
+  });
+}
+
+// ============ Change Password (authenticated) ============
+
+interface ChangePasswordBody {
+  currentPassword: string;
+  newPassword: string;
+}
+
+/**
+ * POST /api/auth/change-password
+ * Change password for authenticated user
+ */
+export async function handleChangePassword(request: Request, env: Env, auth: AuthContext): Promise<Response> {
+  let body: ChangePasswordBody;
+  try {
+    body = await request.json() as ChangePasswordBody;
+  } catch {
+    return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+
+  const { currentPassword, newPassword } = body;
+
+  if (!currentPassword || !newPassword) {
+    return Response.json({ error: 'Current password and new password are required' }, { status: 400 });
+  }
+
+  const passwordError = validatePassword(newPassword);
+  if (passwordError) {
+    return Response.json({ error: passwordError }, { status: 400 });
+  }
+
+  // Look up user by UID
+  const uidIndexJson = await env.AUTH_KV.get(`uid:${auth.uid}`);
+  if (!uidIndexJson) {
+    return Response.json({ error: 'User not found' }, { status: 404 });
+  }
+
+  const { email } = JSON.parse(uidIndexJson) as { email: string };
+  const userJson = await env.AUTH_KV.get(`user:${email}`);
+  if (!userJson) {
+    return Response.json({ error: 'User not found' }, { status: 404 });
+  }
+
+  const userRecord = JSON.parse(userJson) as UserRecord;
+
+  // Verify current password
+  const valid = await verifyPassword(currentPassword, userRecord.passwordHash);
+  if (!valid) {
+    return Response.json({ error: 'Current password is incorrect' }, { status: 401 });
+  }
+
+  // Hash new password and update
+  const newPasswordHash = await hashPassword(newPassword);
+  const now = Date.now();
+
+  const updatedUserRecord: UserRecord = {
+    ...userRecord,
+    passwordHash: newPasswordHash,
+    passwordChangedAt: now,
+  };
+
+  await env.AUTH_KV.put(`user:${email}`, JSON.stringify(updatedUserRecord));
+
+  // Generate new tokens so the user stays logged in
+  const token = await signJWT({ uid: auth.uid, username: userRecord.username }, env.JWT_SECRET);
+  const refreshToken = generateRefreshToken();
+  const accessExpiry = 15 * 60;
+  const refreshExpiry = 7 * 24 * 60 * 60;
+
+  const sessionRecord: SessionRecord = {
+    uid: auth.uid,
+    expiresAt: now + (accessExpiry * 1000),
+    issuedAt: now,
+    refreshToken,
+    refreshExpiresAt: now + (refreshExpiry * 1000),
+  };
+
+  await env.AUTH_KV.put(`session:${token}`, JSON.stringify(sessionRecord), {
+    expirationTtl: accessExpiry,
+  });
+
+  await env.AUTH_KV.put(`refresh:${refreshToken}`, JSON.stringify({
+    uid: auth.uid,
+    username: userRecord.username,
+    accessToken: token,
+    expiresAt: now + (refreshExpiry * 1000),
+    issuedAt: now,
+  }), {
+    expirationTtl: refreshExpiry,
+  });
+
+  return Response.json({
+    success: true,
+    message: 'Password changed successfully.',
+    token,
+    refreshToken,
+    expiresIn: accessExpiry,
+  });
+}
+
+// ============ Change Username (authenticated) ============
+
+interface ChangeUsernameBody {
+  newUsername: string;
+  password: string;
+}
+
+/**
+ * POST /api/auth/change-username
+ * Change username for authenticated user (requires password confirmation)
+ */
+export async function handleChangeUsername(request: Request, env: Env, auth: AuthContext): Promise<Response> {
+  let body: ChangeUsernameBody;
+  try {
+    body = await request.json() as ChangeUsernameBody;
+  } catch {
+    return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+
+  const { newUsername, password } = body;
+
+  if (!newUsername || !password) {
+    return Response.json({ error: 'New username and password are required' }, { status: 400 });
+  }
+
+  const usernameError = validateUsername(newUsername);
+  if (usernameError) {
+    return Response.json({ error: usernameError }, { status: 400 });
+  }
+
+  const normalizedNewUsername = sanitizeUsername(newUsername);
+
+  // Look up user by UID
+  const uidIndexJson = await env.AUTH_KV.get(`uid:${auth.uid}`);
+  if (!uidIndexJson) {
+    return Response.json({ error: 'User not found' }, { status: 404 });
+  }
+
+  const { email } = JSON.parse(uidIndexJson) as { email: string };
+  const userJson = await env.AUTH_KV.get(`user:${email}`);
+  if (!userJson) {
+    return Response.json({ error: 'User not found' }, { status: 404 });
+  }
+
+  const userRecord = JSON.parse(userJson) as UserRecord;
+
+  // Verify password
+  const valid = await verifyPassword(password, userRecord.passwordHash);
+  if (!valid) {
+    return Response.json({ error: 'Password is incorrect' }, { status: 401 });
+  }
+
+  // Check if same as current
+  if (normalizedNewUsername === userRecord.username) {
+    return Response.json({ error: 'New username is the same as current username' }, { status: 400 });
+  }
+
+  // Check if new username is taken
+  const existingUsername = await env.AUTH_KV.get(`username:${normalizedNewUsername}`);
+  if (existingUsername) {
+    return Response.json({ error: 'Username already taken' }, { status: 409 });
+  }
+
+  const oldUsername = userRecord.username;
+
+  // Update user record
+  const updatedUserRecord: UserRecord = {
+    ...userRecord,
+    username: normalizedNewUsername,
+  };
+  await env.AUTH_KV.put(`user:${email}`, JSON.stringify(updatedUserRecord));
+
+  // Update username index: add new, delete old
+  await env.AUTH_KV.put(`username:${normalizedNewUsername}`, JSON.stringify({ uid: auth.uid }));
+  await env.AUTH_KV.delete(`username:${oldUsername}`);
+
+  // Update the user's Durable Object profile with the new username
+  const doId = env.USER_DESKTOP.idFromName(auth.uid);
+  const stub = env.USER_DESKTOP.get(doId);
+  await stub.fetch(new Request('http://internal/profile', {
+    method: 'PATCH',
+    body: JSON.stringify({ username: normalizedNewUsername }),
+  }));
+
+  // Issue new tokens with updated username
+  const now = Date.now();
+  const token = await signJWT({ uid: auth.uid, username: normalizedNewUsername }, env.JWT_SECRET);
+  const refreshToken = generateRefreshToken();
+  const accessExpiry = 15 * 60;
+  const refreshExpiry = 7 * 24 * 60 * 60;
+
+  const sessionRecord: SessionRecord = {
+    uid: auth.uid,
+    expiresAt: now + (accessExpiry * 1000),
+    issuedAt: now,
+    refreshToken,
+    refreshExpiresAt: now + (refreshExpiry * 1000),
+  };
+
+  await env.AUTH_KV.put(`session:${token}`, JSON.stringify(sessionRecord), {
+    expirationTtl: accessExpiry,
+  });
+
+  await env.AUTH_KV.put(`refresh:${refreshToken}`, JSON.stringify({
+    uid: auth.uid,
+    username: normalizedNewUsername,
+    accessToken: token,
+    expiresAt: now + (refreshExpiry * 1000),
+    issuedAt: now,
+  }), {
+    expirationTtl: refreshExpiry,
+  });
+
+  // Send notification email (non-blocking)
+  if (env.RESEND_API_KEY && env.FROM_EMAIL) {
+    const { html, text } = getUsernameChangeEmail(oldUsername, normalizedNewUsername);
+    sendEmail(env.RESEND_API_KEY, env.FROM_EMAIL, {
+      to: email,
+      subject: 'Your EternalOS username has been changed',
+      html,
+      text,
+    }).catch((err) => console.error('Failed to send username change email:', err));
+  }
+
+  return Response.json({
+    success: true,
+    message: 'Username changed successfully.',
+    username: normalizedNewUsername,
+    token,
+    refreshToken,
+    expiresIn: accessExpiry,
+  });
+}
+
+// ============ Email Verification ============
+
+/**
+ * POST /api/auth/send-verification
+ * Send verification email to the authenticated user
+ */
+export async function handleSendVerification(request: Request, env: Env, auth: AuthContext): Promise<Response> {
+  // Look up user by UID
+  const uidIndexJson = await env.AUTH_KV.get(`uid:${auth.uid}`);
+  if (!uidIndexJson) {
+    return Response.json({ error: 'User not found' }, { status: 404 });
+  }
+
+  const { email } = JSON.parse(uidIndexJson) as { email: string };
+  const userJson = await env.AUTH_KV.get(`user:${email}`);
+  if (!userJson) {
+    return Response.json({ error: 'User not found' }, { status: 404 });
+  }
+
+  const userRecord = JSON.parse(userJson) as UserRecord;
+
+  if (userRecord.emailVerified) {
+    return Response.json({ error: 'Email is already verified' }, { status: 400 });
+  }
+
+  // Generate verification token
+  const verifyToken = crypto.randomUUID() + '-' + crypto.randomUUID();
+  const now = Date.now();
+  const ttlSeconds = 24 * 60 * 60; // 24 hours
+
+  const verificationRecord: EmailVerificationRecord = {
+    uid: auth.uid,
+    email,
+    createdAt: now,
+    expiresAt: now + (ttlSeconds * 1000),
+  };
+
+  await env.AUTH_KV.put(`verify:${verifyToken}`, JSON.stringify(verificationRecord), {
+    expirationTtl: ttlSeconds,
+  });
+
+  // Build verification URL
+  const appUrl = env.APP_URL || 'https://eternalos.app';
+  const verifyUrl = `${appUrl}/verify-email?token=${verifyToken}`;
+
+  const isDev = env.ENVIRONMENT === 'development';
+
+  // Send verification email
+  if (env.RESEND_API_KEY && env.FROM_EMAIL) {
+    const { html, text } = getEmailVerificationEmail(verifyUrl, userRecord.username);
+    const sent = await sendEmail(env.RESEND_API_KEY, env.FROM_EMAIL, {
+      to: email,
+      subject: 'Verify your EternalOS email',
+      html,
+      text,
+    });
+
+    if (!sent) {
+      console.error(`Failed to send verification email to ${email}`);
+    }
+  } else if (isDev) {
+    console.log(`[DEV] Email verification URL: ${verifyUrl}`);
+  }
+
+  return Response.json({
+    success: true,
+    message: 'Verification email sent. Please check your inbox.',
+    ...(isDev ? { verifyToken, verifyUrl } : {}),
+  });
+}
+
+/**
+ * POST /api/auth/verify-email
+ * Verify email address using token
+ */
+export async function handleVerifyEmail(request: Request, env: Env): Promise<Response> {
+  let body: { token: string };
+  try {
+    body = await request.json() as { token: string };
+  } catch {
+    return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+
+  const { token } = body;
+
+  if (!token) {
+    return Response.json({ error: 'Verification token is required' }, { status: 400 });
+  }
+
+  // Look up verification token
+  const verifyJson = await env.AUTH_KV.get(`verify:${token}`);
+  if (!verifyJson) {
+    return Response.json({ error: 'Invalid or expired verification token' }, { status: 400 });
+  }
+
+  const verifyRecord = JSON.parse(verifyJson) as EmailVerificationRecord;
+
+  // Check expiry
+  if (Date.now() > verifyRecord.expiresAt) {
+    await env.AUTH_KV.delete(`verify:${token}`);
+    return Response.json({ error: 'Verification token has expired' }, { status: 400 });
+  }
+
+  // Get user record
+  const userJson = await env.AUTH_KV.get(`user:${verifyRecord.email}`);
+  if (!userJson) {
+    await env.AUTH_KV.delete(`verify:${token}`);
+    return Response.json({ error: 'Account no longer exists' }, { status: 400 });
+  }
+
+  const userRecord = JSON.parse(userJson) as UserRecord;
+
+  if (userRecord.emailVerified) {
+    await env.AUTH_KV.delete(`verify:${token}`);
+    return Response.json({ success: true, message: 'Email is already verified.' });
+  }
+
+  // Mark email as verified
+  const updatedUserRecord: UserRecord = {
+    ...userRecord,
+    emailVerified: true,
+    emailVerifiedAt: Date.now(),
+  };
+
+  await env.AUTH_KV.put(`user:${verifyRecord.email}`, JSON.stringify(updatedUserRecord));
+
+  // Delete the verification token (one-time use)
+  await env.AUTH_KV.delete(`verify:${token}`);
+
+  return Response.json({
+    success: true,
+    message: 'Email verified successfully!',
   });
 }

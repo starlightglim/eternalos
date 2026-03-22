@@ -1,0 +1,50 @@
+/* Gradient title bar — two-color gradient */
+
+.titleBar {
+  position: relative;
+  height: var(--eos-titlebar-height, 20px);
+  min-height: var(--eos-titlebar-height, 20px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(
+    180deg,
+    var(--eos-titlebar-gradient-start, #4080C0),
+    var(--eos-titlebar-gradient-end, #1A3050)
+  );
+  border-bottom: 1px solid var(--black);
+  cursor: grab;
+}
+
+.titleBar:active {
+  cursor: grabbing;
+}
+
+.inactive .titleBar {
+  background: var(--platinum);
+}
+
+.titleText {
+  position: relative;
+  z-index: 1;
+  padding: 0 8px;
+  font-family: var(--font-chicago);
+  font-size: 12px;
+  color: #FFFFFF;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: calc(100% - 60px);
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.inactive .titleText {
+  color: var(--shadow);
+  text-shadow: none;
+}
+
+.collapsed .titleBar {
+  border-bottom: none;
+}

@@ -837,3 +837,130 @@
   font-size: 10px;
   color: #990000;
 }
+
+/* ============================================
+   ACCOUNT MANAGEMENT SECTIONS
+   ============================================ */
+
+.accountSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--platinum);
+  border: 1px solid var(--shadow);
+}
+
+.accountSectionTitle {
+  font-weight: bold;
+  color: var(--text-color);
+  font-family: var(--font-chicago);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.accountFormRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.accountFormRow label {
+  flex-shrink: 0;
+  width: 110px;
+  text-align: right;
+  color: var(--text-color-secondary);
+  font-size: 11px;
+}
+
+.accountInput {
+  flex: 1;
+  font-family: var(--font-geneva);
+  font-size: 11px;
+  padding: 3px 6px;
+  border: 1px solid var(--black);
+  background: var(--white);
+  min-width: 0;
+}
+
+.accountInput:focus {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--selection);
+}
+
+.accountButton {
+  padding: 5px 14px;
+  font-family: var(--font-geneva);
+  font-size: 10px;
+  background: var(--platinum);
+  border: 1px solid var(--shadow);
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow:
+    inset 1px 1px 0 var(--highlight),
+    inset -1px -1px 0 var(--shadow);
+}
+
+.accountButton:hover:not(:disabled) {
+  background: var(--highlight);
+}
+
+.accountButton:active:not(:disabled) {
+  background: var(--shadow);
+  color: var(--white);
+  box-shadow:
+    inset -1px -1px 0 var(--highlight),
+    inset 1px 1px 0 var(--shadow);
+}
+
+.accountButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.accountSuccess {
+  font-size: 10px;
+  color: #006600;
+  padding: 4px 8px;
+  background: #CCFFCC;
+  border: 1px solid #006600;
+}
+
+.accountError {
+  font-size: 10px;
+  color: #990000;
+  padding: 4px 8px;
+  background: #FFCCCC;
+  border: 1px solid #990000;
+}
+
+.verificationBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 2px;
+}
+
+.verifiedBadge {
+  composes: verificationBadge;
+  color: #006600;
+  background: #CCFFCC;
+  border: 1px solid #006600;
+}
+
+.unverifiedBadge {
+  composes: verificationBadge;
+  color: #996600;
+  background: #FFF3CC;
+  border: 1px solid #996600;
+}
+
+.verifyButton {
+  composes: accountButton;
+  font-size: 9px;
+  padding: 3px 8px;
+  margin-left: 4px;
+}

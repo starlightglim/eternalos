@@ -1,5 +1,9 @@
 import { useRef, useCallback, useEffect } from 'react';
 import { useWindowStore } from '../../stores/windowStore';
+import { useSlot } from '../../variants/useSlot';
+import type { WindowButtonsSlotProps, ResizeHandleSlotProps } from '../../variants/slots';
+import { WindowChrome } from '../../variants/builtin/chrome/WindowChrome';
+import { WindowTitleBar } from '../../variants/builtin/titlebar/WindowTitleBar';
 import styles from './Window.module.css';
 
 // Tags considered interactive — clicks on these shouldn't trigger body-drag
@@ -49,12 +53,8 @@ interface WindowProps {
 }
 
 /**
- * Classic Mac OS-style Window component
- * Features:
- * - Draggable title bar (pointer events, not HTML5 drag)
- * - Resizable via bottom-right corner
- * - Click-to-focus with z-index stacking
- * - Proper Mac chrome: close box, striped title bar, beveled borders
+ * Window component — renders via the variant slot system.
+ * Chrome, title bar, buttons, and resize handle are all swappable variants.
  */
 export function Window({
   id,
@@ -75,6 +75,12 @@ export function Window({
 }: WindowProps) {
   const { closeWindow, focusWindow, moveWindow, resizeWindow, toggleCollapse, toggleMaximize } = useWindowStore();
 
+  // Resolve active variant components for leaf slots (safe to swap)
+  // Chrome and TitleBar use stable unified components (CSS-driven variants)
+  // to avoid remounting children when variant changes
+  const Buttons = useSlot<WindowButtonsSlotProps>('window.buttons');
+  const Resize = useSlot<ResizeHandleSlotProps>('window.resizeHandle');
+
   const windowRef = useRef<HTMLDivElement>(null);
   const isDragging = useRef(false);
   const isResizing = useRef(false);
@@ -83,7 +89,7 @@ export function Window({
   const lastClickTime = useRef(0);
 
   // Focus window on any click
-  const handleWindowClick = useCallback(() => {
+  const handleWindowClick = useCallback((_e: React.PointerEvent) => {
     focusWindow(id);
   }, [focusWindow, id]);
 
@@ -120,16 +126,13 @@ export function Window({
 
   const handleDragStart = useCallback(
     (e: React.PointerEvent) => {
-      // Only left mouse button
       if (e.button !== 0) return;
 
       e.preventDefault();
       e.stopPropagation();
 
-      // Check for double-click to toggle collapse (window shade)
       const now = Date.now();
       if (now - lastClickTime.current < 300) {
-        // Double-click detected - toggle collapse
         toggleCollapse(id);
         lastClickTime.current = 0;
         return;
@@ -142,10 +145,7 @@ export function Window({
         y: e.clientY - position.y,
       };
 
-      // Focus the window
       focusWindow(id);
-
-      // Capture pointer for smooth dragging outside window
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
     },
     [position, focusWindow, id, toggleCollapse]
@@ -157,35 +157,23 @@ export function Window({
 
       e.preventDefault();
 
-      // Calculate new position
       let newX = e.clientX - dragOffset.current.x;
       let newY = e.clientY - dragOffset.current.y;
 
-      // Constrain to viewport bounds
       const viewportWidth = window.innerWidth;
       const viewportHeight = window.innerHeight;
       const menuBarHeight = 20;
 
-      // Keep at least 50px of window visible on each edge
       newX = Math.max(-size.width + 50, Math.min(newX, viewportWidth - 50));
-      newY = Math.max(0, Math.min(newY, viewportHeight - 30)); // Keep title bar accessible
+      newY = Math.max(0, Math.min(newY, viewportHeight - 30));
 
-      // Snap to edges when within threshold
       const snapThreshold = 10;
 
-      // Snap to left edge
-      if (newX >= 0 && newX <= snapThreshold) {
-        newX = 0;
-      }
-      // Snap to right edge
+      if (newX >= 0 && newX <= snapThreshold) newX = 0;
       if (newX + size.width >= viewportWidth - snapThreshold && newX + size.width <= viewportWidth) {
         newX = viewportWidth - size.width;
       }
-      // Snap to top (below menu bar)
-      if (newY >= menuBarHeight && newY <= menuBarHeight + snapThreshold) {
-        newY = menuBarHeight;
-      }
-      // Snap to bottom
+      if (newY >= menuBarHeight && newY <= menuBarHeight + snapThreshold) newY = menuBarHeight;
       if (newY + size.height >= viewportHeight - snapThreshold && newY + size.height <= viewportHeight) {
         newY = viewportHeight - size.height;
       }
@@ -197,24 +185,19 @@ export function Window({
 
   const handleDragEnd = useCallback((e: React.PointerEvent) => {
     if (!isDragging.current) return;
-
     isDragging.current = false;
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
   }, []);
 
   // ============================================
   // BODY DRAG HANDLING (Content Area)
-  // Click-drag from non-interactive content areas moves the window
   // ============================================
 
   const handleBodyDragStart = useCallback(
     (e: React.PointerEvent) => {
       if (e.button !== 0) return;
-
-      // Don't initiate drag from interactive elements
       if (isInteractiveTarget(e.target, windowRef.current)) return;
 
-      // Don't drag when clicking on a scrollbar
       const el = e.currentTarget as HTMLElement;
       const rect = el.getBoundingClientRect();
       if (e.clientX > rect.left + el.clientWidth) return;
@@ -255,7 +238,6 @@ export function Window({
       };
 
       focusWindow(id);
-
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
     },
     [size, focusWindow, id]
@@ -270,23 +252,20 @@ export function Window({
       const deltaX = e.clientX - resizeStart.current.x;
       const deltaY = e.clientY - resizeStart.current.y;
 
-      const newWidth = resizeStart.current.width + deltaX;
-      const newHeight = resizeStart.current.height + deltaY;
-
-      // Min constraints are enforced in the store
-      resizeWindow(id, { width: newWidth, height: newHeight });
+      resizeWindow(id, {
+        width: resizeStart.current.width + deltaX,
+        height: resizeStart.current.height + deltaY,
+      });
     },
     [resizeWindow, id]
   );
 
   const handleResizeEnd = useCallback((e: React.PointerEvent) => {
     if (!isResizing.current) return;
-
     isResizing.current = false;
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
   }, []);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       isDragging.current = false;
@@ -294,99 +273,62 @@ export function Window({
     };
   }, []);
 
-  const windowClasses = [
-    styles.window,
-    'window', // Plain class for user custom CSS targeting
-    !isActive && styles.inactive,
-    minimized && styles.minimized,
-    collapsed && styles.collapsed,
-  ]
-    .filter(Boolean)
-    .join(' ');
-
   return (
-    <div
-      ref={windowRef}
-      className={windowClasses}
-      data-window-id={id}
-      data-content-id={contentId}
-      data-content-type={contentType}
-      eos-name={eosName}
-      eos-type={eosType}
-      {...(eosExtension ? { 'eos-extension': eosExtension } : {})}
-      {...(eosFolder ? { 'eos-folder': eosFolder } : {})}
-      style={{
-        left: position.x,
-        top: position.y,
-        width: size.width,
-        height: size.height,
-        zIndex,
-      }}
+    <WindowChrome
+      windowRef={windowRef}
+      windowId={id}
+      isActive={isActive}
+      collapsed={!!collapsed}
+      minimized={minimized}
+      position={position}
+      size={size}
+      zIndex={zIndex}
+      contentType={contentType}
+      contentId={contentId}
+      eosName={eosName}
+      eosType={eosType}
+      eosExtension={eosExtension}
+      eosFolder={eosFolder}
       onPointerDown={handleWindowClick}
     >
-      <div className={styles.windowInner}>
-        {/* Title Bar */}
+      <WindowTitleBar
+        title={title}
+        isActive={isActive}
+        collapsed={!!collapsed}
+        onDragStart={handleDragStart}
+        onDragMove={handleDragMove}
+        onDragEnd={handleDragEnd}
+      >
+        <Buttons
+          isActive={isActive}
+          onClose={handleClose}
+          onZoom={handleZoom}
+          onCollapse={handleCollapse}
+        />
+      </WindowTitleBar>
+
+      {/* Content Area (hidden when collapsed) */}
+      {!collapsed && (
         <div
-          className={`${styles.titleBar} titleBar`}
-          eos-part="titlebar"
-          onPointerDown={handleDragStart}
+          className={`${styles.content} windowContent`}
+          eos-part="content"
+          onPointerDown={handleBodyDragStart}
           onPointerMove={handleDragMove}
           onPointerUp={handleDragEnd}
         >
-          {/* Close Box */}
-          <div
-            className={`${styles.closeBox} closeBox`}
-            eos-part="close"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={handleClose}
-          />
-
-          {/* Stripes (only visible when active) */}
-          {isActive && <div className={styles.titleBarStripes} />}
-
-          {/* Title Text */}
-          <span className={`${styles.titleText} titleText`} eos-part="title">{title}</span>
-
-          {/* Zoom Box (Maximize/Restore) */}
-          <div
-            className={`${styles.zoomBox} zoomBox`}
-            eos-part="zoom"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={handleZoom}
-          />
-
-          {/* Collapse Box (Window Shade) */}
-          <div
-            className={`${styles.collapseBox} collapseBox`}
-            eos-part="collapse"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={handleCollapse}
-          />
+          {children}
         </div>
+      )}
 
-        {/* Content Area (hidden when collapsed) — also draggable from non-interactive areas */}
-        {!collapsed && (
-          <div
-            className={`${styles.content} windowContent`}
-            eos-part="content"
-            onPointerDown={handleBodyDragStart}
-            onPointerMove={handleDragMove}
-            onPointerUp={handleDragEnd}
-          >
-            {children}
-          </div>
-        )}
-
-        {/* Resize Handle (hidden when collapsed) */}
-        {!collapsed && (
-          <div
-            className={`${styles.resizeHandle} resizeHandle`}
-            onPointerDown={handleResizeStart}
-            onPointerMove={handleResizeMove}
-            onPointerUp={handleResizeEnd}
-          />
-        )}
-      </div>
-    </div>
+      {/* Resize Handle (hidden when collapsed) */}
+      {!collapsed && (
+        <Resize
+          isActive={isActive}
+          onResizeStart={handleResizeStart}
+          onResizeMove={handleResizeMove}
+          onResizeEnd={handleResizeEnd}
+        />
+      )}
+    </WindowChrome>
   );
 }

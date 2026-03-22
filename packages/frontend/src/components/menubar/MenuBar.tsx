@@ -165,7 +165,7 @@ export function MenuBar() {
   const handleOpenPreferences = useCallback(() => {
     openWindow({
       id: 'preferences-window',
-      title: 'Preferences',
+      title: 'Settings',
       position: { x: 120, y: 80 },
       size: { width: 380, height: 360 },
       minimized: false,
@@ -578,7 +578,7 @@ export function MenuBar() {
     apple: [
       { label: 'About EternalOS...', action: handleAbout },
       { divider: true, label: '' },
-      { label: 'Preferences...', action: handleOpenPreferences },
+      { label: 'Settings...', action: handleOpenPreferences },
     ],
     file: [
       { label: 'New Folder', shortcut: '⌘N', action: handleNewFolder },
@@ -627,7 +627,7 @@ export function MenuBar() {
       { label: 'Appearance...', action: handleOpenAppearance },
       { label: 'Custom CSS...', action: handleOpenCSSEditor },
       { label: 'Desktop Patterns...', action: handleOpenWallpaperPicker },
-      { label: 'Preferences...', action: handleOpenPreferences },
+      { label: 'Settings...', action: handleOpenPreferences },
       { divider: true, label: '' },
       { label: 'Empty Trash...', action: handleEmptyTrash },
       { divider: true, label: '' },

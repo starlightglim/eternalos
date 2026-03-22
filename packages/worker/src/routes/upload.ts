@@ -1018,6 +1018,10 @@ export async function handleServeFile(
     headers.set('Content-Length', object.size.toString());
     headers.set('Cache-Control', 'public, max-age=31536000, immutable');
     headers.set('ETag', object.httpEtag);
+    // Prevent HTML/SVG files from rendering inline to avoid XSS
+    const isInlineSafe = /^(image|video|audio)\//.test(contentType);
+    const disposition = isInlineSafe ? 'inline' : `attachment; filename="${encodeURIComponent(filename)}"`;
+    headers.set('Content-Disposition', disposition);
     // Always indicate we accept ranges for video/audio
     headers.set('Accept-Ranges', 'bytes');
 

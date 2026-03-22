@@ -1,0 +1,31 @@
+/* Hidden buttons — invisible until hover */
+
+.buttonGroup {
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 4px;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+/* Show buttons when hovering the title bar */
+[eos-part="titlebar"]:hover .buttonGroup {
+  opacity: 1;
+}
+
+.btn {
+  width: var(--eos-window-button-size, 11px);
+  height: var(--eos-window-button-size, 11px);
+  background: var(--white);
+  border: 1px solid var(--shadow);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: var(--black);
+}

@@ -14,6 +14,9 @@ import {
   login as apiLogin,
   logout as apiLogout,
   updateProfile as apiUpdateProfile,
+  changePassword as apiChangePassword,
+  changeUsername as apiChangeUsername,
+  sendVerificationEmail as apiSendVerification,
 } from '../services/api';
 import { useWindowStore } from './windowStore';
 
@@ -39,6 +42,10 @@ interface AuthActions {
   setProfileLinks: (links: { title: string; url: string }[]) => void;
   setShareDescription: (desc: string) => void;
   setAnalyticsEnabled: (enabled: boolean) => void;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<{ success: boolean; error?: string }>;
+  changeUsername: (newUsername: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  sendVerificationEmail: () => Promise<{ success: boolean; error?: string }>;
+  setEmailVerified: (verified: boolean) => void;
 }
 
 type AuthStore = AuthState & AuthActions;
@@ -115,6 +122,7 @@ export const useAuthStore = create<AuthStore>()(
             uid: response.user.uid,
             username: response.user.username,
             email: response.user.email,
+            emailVerified: response.user.emailVerified || false,
           };
 
           const profile: UserProfile = {
@@ -163,6 +171,7 @@ export const useAuthStore = create<AuthStore>()(
             uid: response.user.uid,
             username: response.user.username,
             email: response.user.email,
+            emailVerified: response.user.emailVerified || false,
           };
 
           // Note: Full profile would come from desktop fetch
@@ -306,6 +315,76 @@ export const useAuthStore = create<AuthStore>()(
               console.error('Failed to sync analytics setting to backend:', error);
             });
           }
+        }
+      },
+
+      changePassword: async (currentPassword: string, newPassword: string) => {
+        if (!isApiConfigured) return { success: false, error: 'API not configured' };
+
+        try {
+          const response = await apiChangePassword(currentPassword, newPassword);
+
+          // Update tokens
+          setAuthToken(response.token);
+          setRefreshToken(response.refreshToken);
+          set({
+            token: response.token,
+            refreshToken: response.refreshToken,
+          });
+
+          return { success: true };
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : 'Failed to change password';
+          return { success: false, error: message };
+        }
+      },
+
+      changeUsername: async (newUsername: string, password: string) => {
+        if (!isApiConfigured) return { success: false, error: 'API not configured' };
+
+        const usernameError = validateUsername(newUsername);
+        if (usernameError) {
+          return { success: false, error: usernameError };
+        }
+
+        try {
+          const response = await apiChangeUsername(newUsername, password);
+
+          // Update tokens and user/profile
+          setAuthToken(response.token);
+          setRefreshToken(response.refreshToken);
+
+          const { user, profile } = get();
+          set({
+            token: response.token,
+            refreshToken: response.refreshToken,
+            user: user ? { ...user, username: response.username } : null,
+            profile: profile ? { ...profile, username: response.username } : null,
+          });
+
+          return { success: true };
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : 'Failed to change username';
+          return { success: false, error: message };
+        }
+      },
+
+      sendVerificationEmail: async () => {
+        if (!isApiConfigured) return { success: false, error: 'API not configured' };
+
+        try {
+          await apiSendVerification();
+          return { success: true };
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : 'Failed to send verification email';
+          return { success: false, error: message };
+        }
+      },
+
+      setEmailVerified: (verified: boolean) => {
+        const { user } = get();
+        if (user) {
+          set({ user: { ...user, emailVerified: verified } });
         }
       },
 

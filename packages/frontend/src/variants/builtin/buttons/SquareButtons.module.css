@@ -1,0 +1,45 @@
+/* Classic Mac OS square window buttons */
+
+.closeBox,
+.zoomBox,
+.collapseBox {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--eos-window-button-size, 11px);
+  height: var(--eos-window-button-size, 11px);
+  background: var(--white);
+  border: 1px solid var(--black);
+  cursor: pointer;
+  z-index: 2;
+}
+
+.closeBox:hover,
+.zoomBox:hover,
+.collapseBox:hover {
+  background: var(--black);
+}
+
+.closeBox:active,
+.zoomBox:active,
+.collapseBox:active {
+  background: var(--black);
+}
+
+.closeBox {
+  left: 6px;
+}
+
+.zoomBox {
+  right: 22px;
+}
+
+.collapseBox {
+  right: 6px;
+}
+
+.inactive .closeBox,
+.inactive .zoomBox,
+.inactive .collapseBox {
+  background: var(--platinum);
+}

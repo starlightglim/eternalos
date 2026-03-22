@@ -7,7 +7,7 @@
 
 import { UserDesktop } from './durable-objects/UserDesktop';
 import { DesktopChatAgent } from './agents/DesktopChatAgent';
-import { handleSignup, handleLogin, handleLogout, handleForgotPassword, handleResetPassword, handleRefreshToken } from './routes/auth';
+import { handleSignup, handleLogin, handleLogout, handleForgotPassword, handleResetPassword, handleRefreshToken, handleChangePassword, handleChangeUsername, handleSendVerification, handleVerifyEmail } from './routes/auth';
 import { handleUpload, handleServeFile, handleWallpaperUpload, handleServeWallpaper, handleIconUpload, handleServeIcon, handleCSSAssetUpload, handleServeCSSAsset, handleListCSSAssets, handleDeleteCSSAsset, handleAnalyzeImageItem } from './routes/upload';
 import { handleVisit } from './routes/visit';
 import { handleOgImage } from './routes/ogImage';
@@ -60,6 +60,7 @@ const SECURITY_HEADERS: Record<string, string> = {
   'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
   'Referrer-Policy': 'strict-origin-when-cross-origin',
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'",
 };
 
 // Helper to add CORS + security headers to response
@@ -85,12 +86,16 @@ function getCorsHeaders(request: Request, env: Env): Record<string, string> {
   const origin = request.headers.get('Origin') || '';
   const isProduction = env.ENVIRONMENT === 'production';
 
-  // In development, allow all origins
+  // In development, allow known local origins instead of wildcard
   if (!isProduction) {
+    const devOrigins = ['http://localhost:5173', 'http://localhost:8787', 'http://127.0.0.1:5173'];
+    const isDevAllowed = !origin || devOrigins.includes(origin);
     return {
-      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Origin': isDevAllowed ? (origin || '*') : '',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Allow-Credentials': 'true',
+      'Vary': 'Origin',
     };
   }
 
@@ -312,6 +317,54 @@ export default {
 
       if (path === '/api/auth/refresh' && request.method === 'POST') {
         response = await handleRefreshToken(request, env);
+        if (rateLimitResult) {
+          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
+        }
+        return withCors(response, corsHeaders);
+      }
+
+      // Change password (authenticated)
+      if (path === '/api/auth/change-password' && request.method === 'POST') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+        response = await handleChangePassword(request, env, authResult);
+        if (rateLimitResult) {
+          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
+        }
+        return withCors(response, corsHeaders);
+      }
+
+      // Change username (authenticated)
+      if (path === '/api/auth/change-username' && request.method === 'POST') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+        response = await handleChangeUsername(request, env, authResult);
+        if (rateLimitResult) {
+          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
+        }
+        return withCors(response, corsHeaders);
+      }
+
+      // Send verification email (authenticated)
+      if (path === '/api/auth/send-verification' && request.method === 'POST') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+        response = await handleSendVerification(request, env, authResult);
+        if (rateLimitResult) {
+          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
+        }
+        return withCors(response, corsHeaders);
+      }
+
+      // Verify email (token-based, no auth required)
+      if (path === '/api/auth/verify-email' && request.method === 'POST') {
+        response = await handleVerifyEmail(request, env);
         if (rateLimitResult) {
           response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
         }

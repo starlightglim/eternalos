@@ -44,8 +44,17 @@
   min-width: 0;
 }
 
+.nameDisplayRow,
+.nameEditorRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .name {
   display: block;
+  flex: 1;
+  min-width: 0;
   font-family: var(--font-chicago);
   font-size: 12px;
   font-weight: normal;
@@ -66,6 +75,8 @@
 .nameInput {
   display: block;
   width: 100%;
+  flex: 1;
+  min-width: 0;
   font-family: var(--font-chicago);
   font-size: 12px;
   color: var(--window-text-color, var(--black));
@@ -80,6 +91,31 @@
 
 .nameInput:focus {
   box-shadow: 0 0 0 1px var(--selection);
+}
+
+.nameActionButton {
+  flex-shrink: 0;
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid var(--black);
+  background: var(--platinum);
+  color: var(--window-text-color, var(--black));
+  font-family: var(--font-geneva);
+  font-size: 10px;
+  cursor: pointer;
+  box-shadow:
+    inset 1px 1px 0 var(--highlight),
+    inset -1px -1px 0 rgba(0, 0, 0, 0.16);
+}
+
+.nameActionButton:hover {
+  background: var(--highlight);
+}
+
+.nameActionButton:active {
+  box-shadow:
+    inset -1px -1px 0 var(--highlight),
+    inset 1px 1px 0 rgba(0, 0, 0, 0.16);
 }
 
 /* ============================================

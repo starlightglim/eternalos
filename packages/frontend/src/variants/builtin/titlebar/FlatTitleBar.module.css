@@ -1,0 +1,44 @@
+/* Flat title bar — solid color, no stripes */
+
+.titleBar {
+  position: relative;
+  height: var(--eos-titlebar-height, 20px);
+  min-height: var(--eos-titlebar-height, 20px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--title-bar-active, var(--platinum));
+  border-bottom: 1px solid var(--black);
+  cursor: grab;
+}
+
+.titleBar:active {
+  cursor: grabbing;
+}
+
+.inactive .titleBar {
+  background: var(--title-bar-inactive, var(--platinum));
+}
+
+.titleText {
+  position: relative;
+  z-index: 1;
+  padding: 0 8px;
+  font-family: var(--font-chicago);
+  font-size: 12px;
+  color: var(--black);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: calc(100% - 60px);
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+}
+
+.inactive .titleText {
+  color: var(--shadow);
+}
+
+.collapsed .titleBar {
+  border-bottom: none;
+}

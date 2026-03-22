@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { useWindowStore } from '../../stores/windowStore';
 import {
@@ -35,6 +35,7 @@ export function GetInfo({ item, isOwner = true }: GetInfoProps) {
   const [newTagValue, setNewTagValue] = useState('');
   const [editingTagIndex, setEditingTagIndex] = useState<number | null>(null);
   const [editingTagValue, setEditingTagValue] = useState('');
+  const nameInputRef = useRef<HTMLInputElement>(null);
   const { updateItem, items, requestImageAnalysis } = useDesktopStore();
 
   // Get the appropriate icon for this item type
@@ -81,40 +82,63 @@ export function GetInfo({ item, isOwner = true }: GetInfoProps) {
     updateItem(item.id, { isPublic: newValue });
   }, [isOwner, isPublic, updateItem, item.id]);
 
+  useEffect(() => {
+    setName(item.name);
+  }, [item.name]);
+
+  useEffect(() => {
+    setIsPublic(item.isPublic);
+  }, [item.isPublic]);
+
+  useEffect(() => {
+    if (!isEditingName || !nameInputRef.current) return;
+    nameInputRef.current.focus();
+    nameInputRef.current.select();
+  }, [isEditingName]);
+
   // Handle name edit
   const { updateWindowTitle } = useWindowStore();
-  const handleNameBlur = useCallback(() => {
+  const handleNameCommit = useCallback(() => {
     setIsEditingName(false);
     const trimmed = name.trim();
     if (trimmed && trimmed !== item.name) {
       updateItem(item.id, { name: trimmed });
-      // Update the item's content window title (e.g., folder-xxx, text-xxx)
+
       const { windows } = useWindowStore.getState();
-      const itemWindow = windows.find((w) => w.contentId === item.id && w.contentType !== 'get-info');
-      if (itemWindow) {
-        updateWindowTitle(itemWindow.id, trimmed);
-      }
-      // Update the Get Info window title itself
-      const getInfoWindow = windows.find((w) => w.contentId === item.id && w.contentType === 'get-info');
-      if (getInfoWindow) {
-        updateWindowTitle(getInfoWindow.id, `${trimmed} Info`);
-      }
+      windows
+        .filter((window) => window.contentId === item.id)
+        .forEach((window) => {
+          updateWindowTitle(
+            window.id,
+            window.contentType === 'get-info' ? `${trimmed} Info` : trimmed
+          );
+        });
     } else {
       setName(item.name); // Reset if empty
     }
   }, [name, item.name, item.id, updateItem, updateWindowTitle]);
 
+  const handleStartNameEdit = useCallback(() => {
+    if (!isOwner) return;
+    setName(item.name);
+    setIsEditingName(true);
+  }, [isOwner, item.name]);
+
+  const handleCancelNameEdit = useCallback(() => {
+    setName(item.name);
+    setIsEditingName(false);
+  }, [item.name]);
+
   const handleNameKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        handleNameBlur();
+        handleNameCommit();
       } else if (e.key === 'Escape') {
-        setName(item.name);
-        setIsEditingName(false);
+        handleCancelNameEdit();
       }
     },
-    [handleNameBlur, item.name]
+    [handleCancelNameEdit, handleNameCommit]
   );
 
   useEffect(() => {
@@ -219,23 +243,55 @@ export function GetInfo({ item, isOwner = true }: GetInfoProps) {
         </div>
         <div className={styles.nameContainer}>
           {isOwner && isEditingName ? (
-            <input
-              type="text"
-              className={styles.nameInput}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onBlur={handleNameBlur}
-              onKeyDown={handleNameKeyDown}
-              autoFocus
-            />
+            <div className={styles.nameEditorRow}>
+              <input
+                ref={nameInputRef}
+                type="text"
+                className={styles.nameInput}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onBlur={handleNameCommit}
+                onKeyDown={handleNameKeyDown}
+              />
+              <button
+                type="button"
+                className={styles.nameActionButton}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={handleNameCommit}
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                className={styles.nameActionButton}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={handleCancelNameEdit}
+              >
+                Cancel
+              </button>
+            </div>
           ) : (
-            <span
-              className={styles.name}
-              onDoubleClick={() => isOwner && setIsEditingName(true)}
+            <div
+              className={styles.nameDisplayRow}
+              onDoubleClick={handleStartNameEdit}
               title={isOwner ? 'Double-click to edit' : undefined}
             >
-              {item.name}
-            </span>
+              <span
+                className={styles.name}
+              >
+                {item.name}
+              </span>
+              {isOwner && (
+                <button
+                  type="button"
+                  className={styles.nameActionButton}
+                  onDoubleClick={(e) => e.stopPropagation()}
+                  onClick={handleStartNameEdit}
+                >
+                  Rename
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>

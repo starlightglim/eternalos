@@ -16,6 +16,7 @@ import type {
   GuestbookEntry,
 } from '../types';
 import type { CSSAssetMeta } from '../routes/upload';
+import { sanitizeText } from '../utils/sanitize';
 
 // Default storage quota: 100MB per user
 export const DEFAULT_QUOTA_BYTES = 100 * 1024 * 1024;
@@ -535,6 +536,7 @@ export class UserDesktop {
 
     // Only allow updating certain fields
     const allowedFields: (keyof UserProfile)[] = [
+      'username',
       'displayName',
       'wallpaper',
       'accentColor',
@@ -547,10 +549,15 @@ export class UserDesktop {
       'buttonTextColor',
       'buttonBorderColor',
       'labelColor',
+      'systemFont',
+      'bodyFont',
+      'monoFont',
       'fontSmoothing',
       'windowBorderRadius',
       'controlBorderRadius',
       'windowShadow',
+      'windowOpacity',
+      'designTokens',
       'customCSS',
       'isNewUser',
       'hideWatermark',
@@ -568,6 +575,8 @@ export class UserDesktop {
       }
     }
 
+    // Color fields now accept full CSS color values (hex, rgb, hsl, gradients)
+    // Security: block dangerous patterns but allow rich styling
     const colorFields: (keyof UserProfile)[] = [
       'accentColor',
       'desktopColor',
@@ -581,10 +590,42 @@ export class UserDesktop {
       'labelColor',
     ];
 
+    const dangerousCSSPatterns = [
+      /javascript:/i,
+      /expression\s*\(/i,
+      /behavior\s*:/i,
+      /-moz-binding/i,
+      /<script/i,
+      /data:/i,
+      /vbscript:/i,
+    ];
+
     for (const field of colorFields) {
       const value = filteredUpdates[field];
-      if (typeof value === 'string' && !/^#[0-9A-Fa-f]{6}$/.test(value)) {
-        throw new Error(`Invalid ${field} color format`);
+      if (typeof value === 'string') {
+        // Max length to prevent abuse
+        if (value.length > 500) {
+          throw new Error(`${field} value too long`);
+        }
+        // Block dangerous patterns
+        for (const pattern of dangerousCSSPatterns) {
+          if (pattern.test(value)) {
+            throw new Error(`Invalid ${field} value: contains disallowed pattern`);
+          }
+        }
+        // Block url() unless it's a first-party asset
+        const urlMatches = value.match(/url\s*\(/gi);
+        if (urlMatches) {
+          // Only allow url() pointing to our own assets
+          const urlRegex = /url\s*\(\s*['"]?([^)'"]*?)['"]?\s*\)/gi;
+          let match;
+          while ((match = urlRegex.exec(value)) !== null) {
+            const urlValue = match[1].trim();
+            if (!urlValue.startsWith('/api/css-assets/') && !urlValue.startsWith('/api/wallpaper/') && !urlValue.startsWith('/api/icon/')) {
+              throw new Error(`${field} contains disallowed url()`);
+            }
+          }
+        }
       }
     }
 
@@ -592,6 +633,7 @@ export class UserDesktop {
       ['windowBorderRadius', 0, 24],
       ['controlBorderRadius', 0, 24],
       ['windowShadow', 0, 32],
+      ['windowOpacity', 30, 100],
     ];
 
     for (const [field, min, max] of numericFields) {
@@ -599,6 +641,58 @@ export class UserDesktop {
       if (value !== undefined) {
         if (typeof value !== 'number' || Number.isNaN(value) || value < min || value > max) {
           throw new Error(`Invalid ${field} value`);
+        }
+      }
+    }
+
+    // Validate font ID fields (alphanumeric + limited length)
+    const fontFields: (keyof UserProfile)[] = ['systemFont', 'bodyFont', 'monoFont'];
+    for (const field of fontFields) {
+      const value = filteredUpdates[field];
+      if (typeof value === 'string') {
+        if (value.length > 50 || !/^[a-zA-Z0-9]+$/.test(value)) {
+          throw new Error(`Invalid ${field} value`);
+        }
+      }
+    }
+
+    // Server-side validation for designTokens blob
+    if (filteredUpdates.designTokens !== undefined) {
+      const dt = filteredUpdates.designTokens;
+      if (typeof dt !== 'object' || dt === null || Array.isArray(dt)) {
+        throw new Error('Invalid designTokens format');
+      }
+      const dtStr = JSON.stringify(dt);
+      if (dtStr.length > 20 * 1024) {
+        throw new Error('designTokens exceeds 20KB limit');
+      }
+      // Validate each value is a safe primitive (string, number, or boolean)
+      const dangerousTokenPatterns = [
+        /javascript:/i,
+        /expression\s*\(/i,
+        /behavior\s*:/i,
+        /-moz-binding/i,
+        /<script/i,
+      ];
+      for (const [key, value] of Object.entries(dt)) {
+        // Keys must be dot-path identifiers (alphanumeric + dots)
+        if (!/^[a-zA-Z][a-zA-Z0-9.]*$/.test(key) || key.length > 100) {
+          throw new Error(`Invalid designToken key: ${key}`);
+        }
+        // Values must be string, number, or boolean
+        if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+          throw new Error(`Invalid designToken value type for ${key}`);
+        }
+        // String values: check for dangerous patterns and enforce length
+        if (typeof value === 'string') {
+          if (value.length > 500) {
+            throw new Error(`designToken value too long for ${key}`);
+          }
+          for (const pattern of dangerousTokenPatterns) {
+            if (pattern.test(value)) {
+              throw new Error(`designToken value contains disallowed pattern for ${key}`);
+            }
+          }
         }
       }
     }
@@ -629,12 +723,25 @@ export class UserDesktop {
       }
 
       // Validate url() references — only allow first-party asset paths
+      // Normalize (decode) paths before validation to prevent encoded bypasses
       const allowedUrlPrefixes = ['/api/css-assets/', '/api/wallpaper/', '/api/icon/'];
       const urlPattern = /url\s*\(\s*(['"]?)([^'")\s]+)\1\s*\)/gi;
       let urlMatch: RegExpExecArray | null;
       while ((urlMatch = urlPattern.exec(css)) !== null) {
-        const urlValue = urlMatch[2];
-        if (!allowedUrlPrefixes.some((prefix) => urlValue.startsWith(prefix))) {
+        let urlValue = urlMatch[2];
+        // Decode percent-encoded characters to prevent bypass via encoding
+        try { urlValue = decodeURIComponent(urlValue); } catch { /* use as-is */ }
+        // Block path traversal in url() values
+        if (urlValue.includes('..') || urlValue.includes('\\')) {
+          throw new Error('Custom CSS contains disallowed url() references');
+        }
+        // Normalize the URL path using URL parsing to resolve any remaining traversal segments
+        try {
+          const normalized = new URL(urlValue, 'http://localhost').pathname;
+          if (!allowedUrlPrefixes.some((prefix) => normalized.startsWith(prefix))) {
+            throw new Error('Custom CSS contains disallowed url() references');
+          }
+        } catch {
           throw new Error('Custom CSS contains disallowed url() references');
         }
       }
@@ -667,8 +774,14 @@ export class UserDesktop {
           throw new Error('Profile link URL is required');
         }
         try {
-          new URL(link.url);
-        } catch {
+          const parsed = new URL(link.url);
+          if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            throw new Error(`Profile link URL must use http or https protocol: ${link.url}`);
+          }
+        } catch (e) {
+          if (e instanceof Error && e.message.startsWith('Profile link URL must use')) {
+            throw e;
+          }
           throw new Error(`Invalid profile link URL: ${link.url}`);
         }
       }
@@ -966,11 +1079,10 @@ export class UserDesktop {
     const currentConfig = (item.widgetConfig || { entries: [] }) as GuestbookConfig;
     const entries = currentConfig.entries || [];
 
-    // Add new entry — trim + truncate; XSS prevention handled by React's
-    // automatic JSX escaping on the frontend render path
+    // Add new entry — sanitize on write to prevent stored XSS
     const newEntry: GuestbookEntry = {
-      name: entry.name.trim().slice(0, 50),
-      message: entry.message.trim().slice(0, 500),
+      name: sanitizeText(entry.name, 50),
+      message: sanitizeText(entry.message, 500),
       timestamp: Date.now(),
     };
 

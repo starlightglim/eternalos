@@ -1,0 +1,34 @@
+/* Classic Mac OS Window Chrome — beveled frame */
+
+.window {
+  position: absolute;
+  background: var(--white);
+  border: var(--eos-window-border-width, 2px) var(--eos-window-border-style, solid) var(--black);
+  user-select: none;
+  will-change: transform;
+  min-width: 200px;
+  min-height: 150px;
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.3);
+}
+
+.windowInner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  border: 1px solid var(--highlight);
+  border-right-color: var(--shadow);
+  border-bottom-color: var(--shadow);
+}
+
+.minimized {
+  display: none;
+}
+
+.collapsed {
+  height: auto !important;
+  min-height: auto;
+}
+
+.collapsed .windowInner {
+  height: auto;
+}

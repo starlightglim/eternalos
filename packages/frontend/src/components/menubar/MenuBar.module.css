@@ -5,13 +5,27 @@
    Fixed top, 20px tall, white background
    ============================================ */
 
+/*
+ * Pin system chrome to light palette so menus stay readable
+ * regardless of user's active appearance theme.
+ */
 .menuBar {
+  --white: #FFFFFF;
+  --black: #000000;
+  --shadow: #808080;
+  --highlight: #DFDFDF;
+  --selection: #000080;
+  --selection-text: #FFFFFF;
+  --window-text-color: #000000;
+  --window-text-secondary: #666666;
+
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  height: 20px;
-  background: var(--white);
+  height: var(--menu-bar-height, 20px);
+  background: var(--eos-menubar-bg, var(--white));
+  color: var(--eos-menubar-text, inherit);
   border-bottom: 1px solid var(--black);
   display: flex;
   align-items: center;

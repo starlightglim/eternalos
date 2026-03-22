@@ -1,0 +1,33 @@
+/* Floating window chrome — no border, shadow only */
+
+.window {
+  position: absolute;
+  background: var(--white);
+  border: none;
+  border-radius: 8px;
+  user-select: none;
+  will-change: transform;
+  min-width: 200px;
+  min-height: 150px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+.windowInner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.minimized {
+  display: none;
+}
+
+.collapsed {
+  height: auto !important;
+  min-height: auto;
+}
+
+.collapsed .windowInner {
+  height: auto;
+}

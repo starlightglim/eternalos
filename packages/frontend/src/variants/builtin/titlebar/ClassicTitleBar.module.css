@@ -1,0 +1,66 @@
+/* Classic Mac OS Title Bar with stripes */
+
+.titleBar {
+  position: relative;
+  height: var(--eos-titlebar-height, 20px);
+  min-height: var(--eos-titlebar-height, 20px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--white);
+  border-bottom: 1px solid var(--black);
+  cursor: grab;
+}
+
+.titleBar:active {
+  cursor: grabbing;
+}
+
+.titleBarStripes {
+  position: absolute;
+  top: 0;
+  left: 22px;
+  right: 38px;
+  bottom: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 1px,
+    var(--black) 1px,
+    var(--black) 2px
+  );
+  pointer-events: none;
+}
+
+.inactive .titleBarStripes {
+  display: none;
+}
+
+.inactive .titleBar {
+  background: var(--platinum);
+}
+
+.titleText {
+  position: relative;
+  z-index: 1;
+  background: var(--white);
+  padding: 0 8px;
+  font-family: var(--font-chicago);
+  font-size: 12px;
+  color: var(--black);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: calc(100% - 60px);
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+}
+
+.inactive .titleText {
+  background: var(--platinum);
+  color: var(--shadow);
+}
+
+.collapsed .titleBar {
+  border-bottom: none;
+}

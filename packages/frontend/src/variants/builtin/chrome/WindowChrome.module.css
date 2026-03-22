@@ -1,0 +1,58 @@
+/* Unified Window Chrome — variant-driven via CSS classes */
+
+.window {
+  position: absolute;
+  user-select: none;
+  will-change: transform;
+  min-width: 200px;
+  min-height: 150px;
+}
+
+.windowInner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* === Beveled variant (default) === */
+.beveled {
+  background: var(--white);
+  border: var(--eos-window-border-width, 2px) var(--eos-window-border-style, solid) var(--black);
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.3);
+}
+
+.beveled .windowInner {
+  border: 1px solid var(--highlight);
+  border-right-color: var(--shadow);
+  border-bottom-color: var(--shadow);
+}
+
+/* === Flat variant === */
+.flat {
+  background: var(--white);
+  border: var(--eos-window-border-width, 1px) var(--eos-window-border-style, solid) var(--black);
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.3);
+}
+
+/* === Floating variant === */
+.floating {
+  background: var(--white);
+  border: none;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+/* === States === */
+.minimized {
+  display: none;
+}
+
+.collapsed {
+  height: auto !important;
+  min-height: auto;
+}
+
+.collapsed .windowInner {
+  height: auto;
+}

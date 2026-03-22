@@ -2,7 +2,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useAuthStore } from '../stores/authStore';
 import { useDesktopStore } from '../stores/desktopStore';
-import { useAppearanceStore } from '../stores/appearanceStore';
+import { useAppearanceStore, profileToAppearance, profileHasAppearance } from '../stores/appearanceStore';
 import { isApiConfigured, fetchDesktop, ensureFileToken } from '../services/api';
 
 /**
@@ -113,34 +113,11 @@ export function useDesktopSync() {
         if (data.profile) {
           updateProfileFromBackend(data.profile);
 
-          // Sync appearance settings (accent color, custom CSS, etc.) to the appearance store
-          // so they get applied to the DOM. Without this, backend-saved appearance is ignored.
-          const hasAppearance = data.profile.accentColor || data.profile.desktopColor ||
-            data.profile.windowBgColor || data.profile.titleBarBgColor ||
-            data.profile.titleBarTextColor || data.profile.windowBorderColor ||
-            data.profile.buttonBgColor || data.profile.buttonTextColor ||
-            data.profile.buttonBorderColor || data.profile.labelColor ||
-            data.profile.fontSmoothing !== undefined || data.profile.windowBorderRadius !== undefined ||
-            data.profile.controlBorderRadius !== undefined || data.profile.windowShadow !== undefined ||
-            data.profile.customCSS;
-          if (hasAppearance) {
-            useAppearanceStore.getState().loadAppearance({
-              accentColor: data.profile.accentColor,
-              desktopColor: data.profile.desktopColor,
-              windowBgColor: data.profile.windowBgColor,
-              titleBarBgColor: data.profile.titleBarBgColor,
-              titleBarTextColor: data.profile.titleBarTextColor,
-              windowBorderColor: data.profile.windowBorderColor,
-              buttonBgColor: data.profile.buttonBgColor,
-              buttonTextColor: data.profile.buttonTextColor,
-              buttonBorderColor: data.profile.buttonBorderColor,
-              labelColor: data.profile.labelColor,
-              fontSmoothing: data.profile.fontSmoothing,
-              windowBorderRadius: data.profile.windowBorderRadius,
-              controlBorderRadius: data.profile.controlBorderRadius,
-              windowShadow: data.profile.windowShadow,
-              customCSS: data.profile.customCSS,
-            });
+          // Sync appearance settings from backend to the appearance store
+          if (profileHasAppearance(data.profile as unknown as Record<string, unknown>)) {
+            useAppearanceStore.getState().loadAppearance(
+              profileToAppearance(data.profile as unknown as Record<string, unknown>)
+            );
           }
         }
       })

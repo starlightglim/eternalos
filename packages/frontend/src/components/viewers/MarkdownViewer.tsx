@@ -189,6 +189,31 @@ export function MarkdownViewer({
 }
 
 /**
+ * Sanitize a URL to only allow safe protocols (http, https, mailto).
+ * Returns about:blank for any disallowed protocol (e.g. javascript:, data:, vbscript:).
+ */
+function sanitizeUrl(url: string): string {
+  const trimmed = url.trim();
+  // Relative URLs and anchors are safe
+  if (trimmed.startsWith('/') || trimmed.startsWith('#') || trimmed.startsWith('?')) {
+    return trimmed;
+  }
+  try {
+    const parsed = new URL(trimmed, 'https://placeholder.invalid');
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol === 'http:' || protocol === 'https:' || protocol === 'mailto:') {
+      return trimmed;
+    }
+  } catch {
+    // If it doesn't parse as a URL and has no protocol, treat as relative
+    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) {
+      return trimmed;
+    }
+  }
+  return 'about:blank';
+}
+
+/**
  * Simple markdown parser
  * Handles: headers, bold, italic, code blocks, inline code, links, lists, horizontal rules
  */
@@ -234,7 +259,10 @@ function parseMarkdown(text: string): string {
   // Links [text](url)
   html = html.replace(
     /\[([^\]]+)\]\(([^)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+    (_match, text, url) => {
+      const safeUrl = sanitizeUrl(url);
+      return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+    }
   );
 
   // Unordered lists (- item or * item)

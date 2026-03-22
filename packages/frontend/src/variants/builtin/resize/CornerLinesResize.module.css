@@ -1,0 +1,40 @@
+/* Classic Mac OS resize handle — diagonal lines in bottom-right corner */
+
+.resizeHandle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  z-index: 10;
+  background:
+    linear-gradient(
+      135deg,
+      transparent 0%,
+      transparent 50%,
+      var(--shadow) 50%,
+      var(--shadow) 60%,
+      transparent 60%,
+      transparent 70%,
+      var(--shadow) 70%,
+      var(--shadow) 80%,
+      transparent 80%
+    );
+}
+
+.resizeHandle:hover {
+  background:
+    linear-gradient(
+      135deg,
+      transparent 0%,
+      transparent 50%,
+      var(--black) 50%,
+      var(--black) 60%,
+      transparent 60%,
+      transparent 70%,
+      var(--black) 70%,
+      var(--black) 80%,
+      transparent 80%
+    );
+}

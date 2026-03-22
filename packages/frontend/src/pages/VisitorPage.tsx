@@ -11,7 +11,7 @@ import { useDocumentMeta } from '../hooks/useDocumentMeta';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { isApiConfigured, fetchVisitorDesktop, getWallpaperUrl, type SavedWindowState } from '../services/api';
 import { useVisitorSync } from '../hooks/useVisitorSync';
-import { applyAppearance, clearAppearance, useAppearanceStore } from '../stores/appearanceStore';
+import { applyAppearance, clearAppearance, profileToAppearance, profileHasAppearance, useAppearanceStore, APPEARANCE_PROFILE_KEYS } from '../stores/appearanceStore';
 import { getTextFileContentType, type DesktopItem, type UserProfile } from '../types';
 import styles from './VisitorPage.module.css';
 
@@ -109,23 +109,7 @@ export function VisitorPage() {
     const savedAppearance = userAppearance.current;
 
     // Build appearance object from owner's profile (including customCSS)
-    const ownerAppearance = {
-      accentColor: profile.accentColor,
-      desktopColor: profile.desktopColor,
-      windowBgColor: profile.windowBgColor,
-      titleBarBgColor: profile.titleBarBgColor,
-      titleBarTextColor: profile.titleBarTextColor,
-      windowBorderColor: profile.windowBorderColor,
-      buttonBgColor: profile.buttonBgColor,
-      buttonTextColor: profile.buttonTextColor,
-      buttonBorderColor: profile.buttonBorderColor,
-      labelColor: profile.labelColor,
-      fontSmoothing: profile.fontSmoothing,
-      windowBorderRadius: profile.windowBorderRadius,
-      controlBorderRadius: profile.controlBorderRadius,
-      windowShadow: profile.windowShadow,
-      customCSS: profile.customCSS,
-    };
+    const ownerAppearance = profileToAppearance(profile as unknown as Record<string, unknown>);
 
     // Apply owner's appearance settings (including custom CSS)
     applyAppearance(ownerAppearance);
@@ -449,7 +433,9 @@ export function VisitorPage() {
             </div>
           </div>
         </div>
-        {showWatermark && <Watermark />}
+        <div className={styles.bottomBar}>
+          {showWatermark && <Watermark />}
+        </div>
       </div>
     );
   }
@@ -506,8 +492,58 @@ export function VisitorPage() {
         {/* Window Manager - windows can still be moved/resized for browsing */}
         <WindowManager isVisitorMode={true} visitorItems={items} ownerUid={profile?.uid} />
       </div>
-      {showWatermark && <Watermark />}
+      <div className={styles.bottomBar}>
+        {profile && profileHasAppearance(profile as unknown as Record<string, unknown>) && (
+          <StealThemeButton profile={profile} />
+        )}
+        {showWatermark && <Watermark />}
+      </div>
     </div>
+  );
+}
+
+/**
+ * "Steal this theme" button — lets visitors export the owner's appearance
+ */
+function StealThemeButton({ profile }: { profile: UserProfile }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleSteal = () => {
+    const appearance = profileToAppearance(profile as unknown as Record<string, unknown>);
+    // Exclude customCSS from the exported theme
+    const theme: Record<string, unknown> = { _format: 'eternalos-theme-v1' };
+    for (const key of APPEARANCE_PROFILE_KEYS) {
+      if (key === 'customCSS') continue;
+      const value = (appearance as Record<string, unknown>)[key];
+      if (value !== undefined) {
+        theme[key] = value;
+      }
+    }
+
+    const json = JSON.stringify(theme, null, 2);
+    navigator.clipboard.writeText(json).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {
+      // Fallback: download as file
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${profile.username}-theme.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  };
+
+  return (
+    <button
+      className={styles.stealThemeButton}
+      onClick={handleSteal}
+      title="Copy this desktop's theme to your clipboard"
+    >
+      {copied ? 'Copied!' : 'Steal this theme'}
+    </button>
   );
 }
 

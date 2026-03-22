@@ -2,91 +2,24 @@
  * QuickStartWizard - First-time user onboarding wizard
  *
  * Shows after signup to let users choose an initial visual direction.
- * Applies appearance + wallpaper settings immediately and saves to profile.
+ * Applies a complete starter appearance and writes a CSS snapshot into the
+ * user's Custom CSS folder so the preset is visible and reusable.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useAppearanceStore } from '../../stores/appearanceStore';
+import { useDesktopStore } from '../../stores/desktopStore';
+import { useAuthStore } from '../../stores/authStore';
 import { updateProfile } from '../../services/api';
+import {
+  THEME_PRESETS,
+  buildPresetCSSSnapshot,
+  CUSTOM_CSS_FOLDER_NAME,
+  ONBOARDING_THEME_FILENAME,
+  findNextGridPosition,
+  type ThemePreset,
+} from '../../utils/onboardingPresets';
 import styles from './QuickStartWizard.module.css';
-
-export interface ThemePreset {
-  id: string;
-  name: string;
-  description: string;
-  accentColor: string;
-  desktopColor: string;
-  windowBgColor?: string;
-  wallpaper: string;
-  preview: {
-    desktop: string;
-    titleBar: string;
-    window: string;
-    accent: string;
-  };
-}
-
-// Curated visual presets for onboarding
-const THEME_PRESETS: ThemePreset[] = [
-  {
-    id: 'minimal',
-    name: 'Minimal',
-    description: 'Clean & classic',
-    accentColor: '#000080',
-    desktopColor: '#C0C0C0',
-    wallpaper: 'default',
-    preview: {
-      desktop: '#C0C0C0',
-      titleBar: '#E0E0E0',
-      window: '#FFFFFF',
-      accent: '#000080',
-    },
-  },
-  {
-    id: 'colorful',
-    name: 'Colorful',
-    description: 'Bright & playful',
-    accentColor: '#FF6B6B',
-    desktopColor: '#87CEEB',
-    windowBgColor: '#FFF8E7',
-    wallpaper: 'dots',
-    preview: {
-      desktop: '#87CEEB',
-      titleBar: '#FFB6C1',
-      window: '#FFF8E7',
-      accent: '#FF6B6B',
-    },
-  },
-  {
-    id: 'dark',
-    name: 'Dark',
-    description: 'Easy on the eyes',
-    accentColor: '#4080C0',
-    desktopColor: '#1A1A1A',
-    wallpaper: 'default',
-    preview: {
-      desktop: '#1A1A1A',
-      titleBar: '#333333',
-      window: '#2A2A2A',
-      accent: '#4080C0',
-    },
-  },
-  {
-    id: 'retro',
-    name: 'Retro',
-    description: 'Vintage vibes',
-    accentColor: '#336699',
-    desktopColor: '#668B8B',
-    windowBgColor: '#FFFAF0',
-    wallpaper: 'diagonal',
-    preview: {
-      desktop: '#668B8B',
-      titleBar: '#CCCCCC',
-      window: '#FFFAF0',
-      accent: '#336699',
-    },
-  },
-];
 
 interface QuickStartWizardProps {
   username: string;
@@ -94,49 +27,109 @@ interface QuickStartWizardProps {
 }
 
 export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string>(THEME_PRESETS[0].id);
   const [isApplying, setIsApplying] = useState(false);
-  const { setAccentColor, setDesktopColor, setWindowBgColor } = useAppearanceStore();
+  const { loadAppearance, saveAppearance } = useAppearanceStore();
+  const items = useDesktopStore((state) => state.items);
+  const addItem = useDesktopStore((state) => state.addItem);
+  const updateItem = useDesktopStore((state) => state.updateItem);
+  const profile = useAuthStore((state) => state.profile);
+
+  const selectedPreset = useMemo(
+    () => THEME_PRESETS.find((preset) => preset.id === selectedId) ?? THEME_PRESETS[0],
+    [selectedId]
+  );
 
   const handleSelect = useCallback((preset: ThemePreset) => {
     setSelectedId(preset.id);
   }, []);
 
-  const handleApply = useCallback(async () => {
-    const preset = THEME_PRESETS.find((p) => p.id === selectedId);
-    if (!preset) return;
+  const syncCustomCSSWorkspace = useCallback((preset: ThemePreset) => {
+    const existingFolder = items.find(
+      (item) =>
+        item.type === 'folder' &&
+        item.parentId === null &&
+        !item.isTrashed &&
+        item.name.toLowerCase() === CUSTOM_CSS_FOLDER_NAME.toLowerCase()
+    );
 
+    const now = Date.now();
+    const folderId = existingFolder?.id ?? `folder-custom-css-${now}`;
+
+    if (!existingFolder) {
+      addItem({
+        id: folderId,
+        type: 'folder',
+        name: CUSTOM_CSS_FOLDER_NAME,
+        parentId: null,
+        position: findNextGridPosition(items, null),
+        isPublic: false,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    const cssSnapshot = buildPresetCSSSnapshot(preset);
+    const existingThemeFile = items.find(
+      (item) =>
+        item.type === 'text' &&
+        item.parentId === folderId &&
+        !item.isTrashed &&
+        item.name === ONBOARDING_THEME_FILENAME
+    );
+
+    if (existingThemeFile) {
+      updateItem(existingThemeFile.id, {
+        textContent: cssSnapshot,
+      });
+      return;
+    }
+
+    addItem({
+      id: `text-onboarding-theme-${now}`,
+      type: 'text',
+      name: ONBOARDING_THEME_FILENAME,
+      parentId: folderId,
+      position: findNextGridPosition(items, folderId),
+      isPublic: false,
+      textContent: cssSnapshot,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }, [addItem, items, updateItem]);
+
+  const handleApply = useCallback(async () => {
     setIsApplying(true);
 
     try {
-      // Apply appearance settings
-      setAccentColor(preset.accentColor);
-      setDesktopColor(preset.desktopColor);
-      if (preset.windowBgColor) {
-        setWindowBgColor(preset.windowBgColor);
+      loadAppearance({ ...selectedPreset.appearance });
+      await saveAppearance();
+      syncCustomCSSWorkspace(selectedPreset);
+
+      if (profile) {
+        useAuthStore.setState({
+          profile: {
+            ...profile,
+            wallpaper: selectedPreset.wallpaper,
+            isNewUser: false,
+          },
+        });
       }
 
-      // Save to profile
       await updateProfile({
-        wallpaper: preset.wallpaper,
-        accentColor: preset.accentColor,
-        desktopColor: preset.desktopColor,
-        windowBgColor: preset.windowBgColor,
+        wallpaper: selectedPreset.wallpaper,
         isNewUser: false,
       });
-
       onComplete();
     } catch (error) {
       console.error('Failed to apply starter preset:', error);
-      // Still complete the wizard even if save fails
       onComplete();
     }
-  }, [selectedId, setAccentColor, setDesktopColor, setWindowBgColor, onComplete]);
+  }, [loadAppearance, onComplete, profile, saveAppearance, selectedPreset, syncCustomCSSWorkspace]);
 
   const handleSkip = useCallback(async () => {
     setIsApplying(true);
     try {
-      // Just clear the isNewUser flag
       await updateProfile({ isNewUser: false });
     } catch (error) {
       console.error('Failed to update profile:', error);
@@ -149,7 +142,7 @@ export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps
       <div className={styles.wizard}>
         <div className={styles.header}>
           <h1 className={styles.title}>Welcome, {username}!</h1>
-          <p className={styles.subtitle}>What's your vibe?</p>
+          <p className={styles.subtitle}>Pick a starter direction. You can fine-tune every detail afterward.</p>
         </div>
 
         <div className={styles.presets}>
@@ -160,12 +153,10 @@ export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps
               onClick={() => handleSelect(preset)}
               disabled={isApplying}
             >
-              {/* Mini desktop preview */}
               <div
                 className={styles.preview}
                 style={{ backgroundColor: preset.preview.desktop }}
               >
-                {/* Mini window */}
                 <div
                   className={styles.miniWindow}
                   style={{ backgroundColor: preset.preview.window }}
@@ -186,8 +177,7 @@ export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps
                     />
                   </div>
                 </div>
-                {/* Mini icon */}
-                <div className={styles.miniIcon} />
+                <div className={styles.miniIcon} style={{ color: preset.preview.label }} />
               </div>
 
               <div className={styles.presetInfo}>
@@ -196,6 +186,26 @@ export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps
               </div>
             </button>
           ))}
+        </div>
+
+        <div className={styles.selectionSummary}>
+          <div className={styles.summaryHeader}>
+            <div>
+              <div className={styles.summaryEyebrow}>Selected Preset</div>
+              <div className={styles.summaryTitle}>{selectedPreset.name}</div>
+            </div>
+            <div className={styles.summaryMeta}>Wallpaper: {selectedPreset.wallpaper}</div>
+          </div>
+          <div className={styles.highlightList}>
+            {selectedPreset.highlights.map((highlight) => (
+              <span key={highlight} className={styles.highlightChip}>
+                {highlight}
+              </span>
+            ))}
+          </div>
+          <p className={styles.summaryNote}>
+            A <code>{ONBOARDING_THEME_FILENAME}</code> snapshot will be saved in your <code>{CUSTOM_CSS_FOLDER_NAME}</code> folder.
+          </p>
         </div>
 
         <div className={styles.actions}>
@@ -209,7 +219,7 @@ export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps
           <button
             className={styles.applyButton}
             onClick={handleApply}
-            disabled={!selectedId || isApplying}
+            disabled={isApplying}
           >
             {isApplying ? 'Applying...' : 'Apply & Continue'}
           </button>

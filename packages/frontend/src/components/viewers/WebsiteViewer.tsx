@@ -171,7 +171,7 @@ export function WebsiteViewer({ itemId, url: propUrl, name: propName }: WebsiteV
           src={url}
           className={styles.iframe}
           title={siteName}
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+          sandbox="allow-scripts allow-forms allow-popups"
           onLoad={handleLoad}
           onError={handleError}
           style={{ display: error ? 'none' : 'block' }}

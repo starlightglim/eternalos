@@ -1,0 +1,36 @@
+/* Text-based window buttons — Unicode characters */
+
+.buttonGroup {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 2px;
+  z-index: 2;
+}
+
+.btn {
+  width: var(--eos-window-button-size, 16px);
+  height: var(--eos-window-button-size, 16px);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-chicago);
+  font-size: 11px;
+  color: var(--black);
+  opacity: 0.5;
+  padding: 0;
+}
+
+.btn:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.inactive .btn {
+  color: var(--shadow);
+}

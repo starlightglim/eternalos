@@ -131,8 +131,17 @@ export async function checkRateLimit(
     };
 
   } catch (error) {
-    // On error, allow the request (fail open) but log it
+    // On error, fail closed for auth endpoints (prevent brute force),
+    // fail open for general API (preserve availability)
     console.error('Rate limit check error:', error);
+    if (config.keyPrefix === 'ratelimit:auth') {
+      return {
+        allowed: false,
+        remaining: 0,
+        resetAt: now + config.windowMs,
+        retryAfter: Math.ceil(config.windowMs / 1000),
+      };
+    }
     return {
       allowed: true,
       remaining: config.maxRequests,

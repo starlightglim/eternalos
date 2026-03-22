@@ -150,12 +150,42 @@
   font-size: 11px;
 }
 
-/* Made with EternalOS watermark */
-.watermark {
+/* Bottom bar - holds watermark + steal theme button */
+.bottomBar {
   position: fixed;
   bottom: 8px;
   right: 12px;
   z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stealThemeButton {
+  display: flex;
+  align-items: center;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: var(--font-geneva);
+  font-size: 10px;
+  color: var(--shadow);
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.15s ease;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.stealThemeButton:hover {
+  opacity: 1;
+  color: var(--black);
+}
+
+/* Made with EternalOS watermark */
+.watermark {
   display: flex;
   align-items: center;
   gap: 6px;

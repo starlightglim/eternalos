@@ -161,10 +161,17 @@ export interface UserProfile {
   buttonTextColor?: string; // Hex color for button labels
   buttonBorderColor?: string; // Hex color for control borders
   labelColor?: string;      // Hex color for desktop/file labels
+  // Typography
+  systemFont?: string;      // Font catalog ID for UI text (titles, menus)
+  bodyFont?: string;        // Font catalog ID for body text (labels, content)
+  monoFont?: string;        // Font catalog ID for monospace (code, hex values)
   fontSmoothing?: boolean;  // Override theme's font smoothing
   windowBorderRadius?: number; // Rounded corners for windows
+  windowOpacity?: number;     // Window content opacity (30-100 percent)
   controlBorderRadius?: number; // Rounded corners for buttons and inputs
   windowShadow?: number;    // Shadow intensity (0-32)
+  // Extended design tokens (JSON blob for new properties beyond legacy flat fields)
+  designTokens?: Record<string, string | number | boolean>;
   // Custom CSS (Layer 4 customization)
   customCSS?: string;       // User-defined CSS, max 50KB, scoped to .user-desktop
   // Wallpaper display mode
@@ -186,6 +193,7 @@ export interface AuthUser {
   uid: string;
   username: string;
   email: string;
+  emailVerified?: boolean;
 }
 
 /**

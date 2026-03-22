@@ -1,0 +1,86 @@
+/* VariantPicker — compact variant selector */
+
+.variantPicker {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.sectionTitle {
+  font-family: var(--font-geneva);
+  font-size: 10px;
+  font-weight: normal;
+  color: #444;
+}
+
+.activeLabel {
+  font-family: var(--font-geneva);
+  font-size: 9px;
+  color: #888;
+  letter-spacing: 0.02em;
+}
+
+.variantGrid {
+  display: flex;
+  gap: 4px;
+}
+
+.variantCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 2px;
+  border: 1px solid #C0C0C0;
+  background: #FAFAFA;
+  cursor: pointer;
+  font-family: var(--font-geneva), Geneva, sans-serif;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.variantCard:hover {
+  border-color: #888;
+  background: #F0F0F4;
+}
+
+.variantCardActive {
+  border-color: #3366CC;
+  background: #EDF2FC;
+}
+
+.variantCardActive:hover {
+  background: #EDF2FC;
+}
+
+/* Mini preview */
+.preview {
+  width: 44px;
+  height: 24px;
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.preview svg {
+  width: 100%;
+  height: 100%;
+}
+
+.variantLabel {
+  font-size: 9px;
+  text-align: center;
+  line-height: 1;
+  color: #333;
+}
+
+.variantDescription {
+  display: none;
+}

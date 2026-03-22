@@ -13,20 +13,18 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useAuthStore } from '../../stores/authStore';
 import { useSoundStore } from '../../stores/soundStore';
 import { fetchAnalytics, type AnalyticsData } from '../../services/api';
-import { WALLPAPER_OPTIONS, type WallpaperId } from '../desktop/Desktop';
-import { uploadWallpaper, isApiConfigured, getWallpaperUrl, fetchQuota, updateProfile, type QuotaInfo } from '../../services/api';
+import { isApiConfigured, fetchQuota, updateProfile, type QuotaInfo } from '../../services/api';
 import styles from './PreferencesWindow.module.css';
 
-type TabId = 'account' | 'desktop' | 'sound';
+type TabId = 'account' | 'sound';
 
 export function PreferencesWindow() {
-  const { user, profile, setWallpaper, setAnalyticsEnabled } = useAuthStore();
+  const { user, profile, setAnalyticsEnabled, changePassword, changeUsername, sendVerificationEmail } = useAuthStore();
   const { enabled: soundEnabled, volume, setEnabled: setSoundEnabled, setVolume, playSound } = useSoundStore();
   const [activeTab, setActiveTab] = useState<TabId>('account');
   const [displayName, setDisplayName] = useState(profile?.displayName || '');
   const [isEditingName, setIsEditingName] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
+  // uploadProgress and uploadError moved to AppearancePanel
   const [quota, setQuota] = useState<QuotaInfo | null>(null);
   const [quotaLoading, setQuotaLoading] = useState(false);
   const [hideWatermark, setHideWatermark] = useState(profile?.hideWatermark || false);
@@ -34,10 +32,29 @@ export function PreferencesWindow() {
   const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // fileInputRef removed — wallpaper upload moved to AppearancePanel
 
-  const currentWallpaper = profile?.wallpaper || 'default';
-  const isCustomWallpaper = currentWallpaper.startsWith('custom:');
+  // Change password state
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [passwordLoading, setPasswordLoading] = useState(false);
+  const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+
+  // Change username state
+  const [newUsername, setNewUsername] = useState('');
+  const [usernamePassword, setUsernamePassword] = useState('');
+  const [usernameLoading, setUsernameLoading] = useState(false);
+  const [usernameSuccess, setUsernameSuccess] = useState<string | null>(null);
+  const [usernameError, setUsernameError] = useState<string | null>(null);
+
+  // Email verification state
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [verifySuccess, setVerifySuccess] = useState<string | null>(null);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+
+  // Wallpaper state moved to AppearancePanel
 
   // Update display name when profile changes
   useEffect(() => {
@@ -141,58 +158,82 @@ export function PreferencesWindow() {
     }
   }, []);
 
-  const handleSelectWallpaper = useCallback(
-    (id: WallpaperId) => {
-      setWallpaper(id);
-      setUploadError(null);
-    },
-    [setWallpaper]
-  );
+  // Wallpaper handlers moved to AppearancePanel
 
-  const handleWallpaperUpload = useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
+  const handleChangePassword = useCallback(async () => {
+    setPasswordError(null);
+    setPasswordSuccess(null);
 
-      // Validate file type
-      if (!['image/jpeg', 'image/png'].includes(file.type)) {
-        setUploadError('Only JPG and PNG files are allowed');
-        return;
-      }
+    if (!newPassword || !currentPassword) {
+      setPasswordError('Please fill in all fields');
+      return;
+    }
+    if (newPassword.length < 8) {
+      setPasswordError('New password must be at least 8 characters');
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      setPasswordError('New passwords do not match');
+      return;
+    }
 
-      // Validate file size (2MB max)
-      if (file.size > 2 * 1024 * 1024) {
-        setUploadError('File must be smaller than 2MB');
-        return;
-      }
+    setPasswordLoading(true);
+    try {
+      await changePassword(currentPassword, newPassword);
+      setPasswordSuccess('Password changed successfully');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmNewPassword('');
+    } catch (err) {
+      setPasswordError(err instanceof Error ? err.message : 'Failed to change password');
+    } finally {
+      setPasswordLoading(false);
+    }
+  }, [currentPassword, newPassword, confirmNewPassword, changePassword]);
 
-      setUploadError(null);
-      setUploadProgress(0);
+  const handleChangeUsername = useCallback(async () => {
+    setUsernameError(null);
+    setUsernameSuccess(null);
 
-      try {
-        const response = await uploadWallpaper(file, (progress) => {
-          setUploadProgress(progress);
-        });
+    if (!newUsername || !usernamePassword) {
+      setUsernameError('Please fill in all fields');
+      return;
+    }
+    if (newUsername.length < 3 || newUsername.length > 20) {
+      setUsernameError('Username must be 3-20 characters');
+      return;
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(newUsername)) {
+      setUsernameError('Username can only contain letters, numbers, hyphens, and underscores');
+      return;
+    }
 
-        // Update the wallpaper in auth store
-        setWallpaper(response.wallpaper);
-        setUploadProgress(null);
-      } catch (err) {
-        setUploadError(err instanceof Error ? err.message : 'Upload failed');
-        setUploadProgress(null);
-      }
+    setUsernameLoading(true);
+    try {
+      await changeUsername(newUsername, usernamePassword);
+      setUsernameSuccess('Username changed successfully');
+      setNewUsername('');
+      setUsernamePassword('');
+    } catch (err) {
+      setUsernameError(err instanceof Error ? err.message : 'Failed to change username');
+    } finally {
+      setUsernameLoading(false);
+    }
+  }, [newUsername, usernamePassword, changeUsername]);
 
-      // Reset file input
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-    },
-    [setWallpaper]
-  );
-
-  const handleUploadClick = useCallback(() => {
-    fileInputRef.current?.click();
-  }, []);
+  const handleSendVerification = useCallback(async () => {
+    setVerifyError(null);
+    setVerifySuccess(null);
+    setVerifyLoading(true);
+    try {
+      await sendVerificationEmail();
+      setVerifySuccess('Verification email sent! Check your inbox.');
+    } catch (err) {
+      setVerifyError(err instanceof Error ? err.message : 'Failed to send verification email');
+    } finally {
+      setVerifyLoading(false);
+    }
+  }, [sendVerificationEmail]);
 
   const formatDate = (timestamp?: number) => {
     if (!timestamp) return 'Unknown';
@@ -226,12 +267,7 @@ export function PreferencesWindow() {
         >
           Account
         </button>
-        <button
-          className={`${styles.tab} ${activeTab === 'desktop' ? styles.activeTab : ''}`}
-          onClick={() => setActiveTab('desktop')}
-        >
-          Desktop
-        </button>
+{/* Desktop tab moved to Appearance panel */}
         <button
           className={`${styles.tab} ${activeTab === 'sound' ? styles.activeTab : ''}`}
           onClick={() => setActiveTab('sound')}
@@ -400,74 +436,119 @@ export function PreferencesWindow() {
                 )}
               </div>
             )}
-          </div>
-        )}
 
-        {activeTab === 'desktop' && (
-          <div className={styles.desktopTab}>
-            <div className={styles.sectionHeader}>
-              <span className={styles.sectionTitle}>Desktop Pattern</span>
-            </div>
-            <div className={styles.patternGrid}>
-              {WALLPAPER_OPTIONS.map((option) => (
-                <button
-                  key={option.id}
-                  className={`${styles.patternButton} ${currentWallpaper === option.id ? styles.selected : ''}`}
-                  onClick={() => handleSelectWallpaper(option.id)}
-                  title={option.name}
-                >
-                  <div className={`${styles.patternPreview} wallpaper-${option.id}`} />
-                  <span className={styles.patternName}>{option.name}</span>
-                </button>
-              ))}
-            </div>
-
-            {/* Custom Wallpaper Upload Section */}
+            {/* Email Verification */}
             {isApiConfigured && (
-              <div className={styles.customWallpaperSection}>
-                <div className={styles.sectionHeader}>
-                  <span className={styles.sectionTitle}>Custom Wallpaper</span>
+              <div className={styles.accountSection}>
+                <div className={styles.accountSectionTitle}>Email Verification</div>
+                <div className={styles.infoRow}>
+                  <span className={styles.infoLabel}>Status:</span>
+                  <span className={user?.emailVerified ? styles.verifiedBadge : styles.unverifiedBadge}>
+                    {user?.emailVerified ? 'Verified' : 'Not Verified'}
+                  </span>
                 </div>
-
-                {/* Current custom wallpaper preview */}
-                {isCustomWallpaper && (
-                  <div className={styles.customWallpaperPreview}>
-                    <img
-                      src={getWallpaperUrl(currentWallpaper)}
-                      alt="Current custom wallpaper"
-                      className={styles.customWallpaperImage}
-                    />
-                    <span className={styles.customWallpaperLabel}>Current custom wallpaper</span>
-                  </div>
+                {!user?.emailVerified && (
+                  <>
+                    <button
+                      className={styles.accountButton}
+                      onClick={handleSendVerification}
+                      disabled={verifyLoading}
+                    >
+                      {verifyLoading ? 'Sending...' : 'Send Verification Email'}
+                    </button>
+                    {verifySuccess && <div className={styles.accountSuccess}>{verifySuccess}</div>}
+                    {verifyError && <div className={styles.accountError}>{verifyError}</div>}
+                  </>
                 )}
+              </div>
+            )}
 
-                {/* Upload button */}
-                <div className={styles.uploadSection}>
+            {/* Change Password */}
+            {isApiConfigured && (
+              <div className={styles.accountSection}>
+                <div className={styles.accountSectionTitle}>Change Password</div>
+                <div className={styles.accountFormRow}>
+                  <label className={styles.infoLabel}>Current Password:</label>
                   <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/jpeg,image/png"
-                    onChange={handleWallpaperUpload}
-                    className={styles.hiddenFileInput}
+                    type="password"
+                    className={styles.accountInput}
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    placeholder="Current password"
                   />
-                  <button
-                    className={styles.uploadButton}
-                    onClick={handleUploadClick}
-                    disabled={uploadProgress !== null}
-                  >
-                    {uploadProgress !== null ? `Uploading... ${uploadProgress}%` : 'Upload Image'}
-                  </button>
-                  <span className={styles.uploadHint}>JPG or PNG, max 2MB</span>
                 </div>
+                <div className={styles.accountFormRow}>
+                  <label className={styles.infoLabel}>New Password:</label>
+                  <input
+                    type="password"
+                    className={styles.accountInput}
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="New password (min 8 chars)"
+                  />
+                </div>
+                <div className={styles.accountFormRow}>
+                  <label className={styles.infoLabel}>Confirm:</label>
+                  <input
+                    type="password"
+                    className={styles.accountInput}
+                    value={confirmNewPassword}
+                    onChange={(e) => setConfirmNewPassword(e.target.value)}
+                    placeholder="Confirm new password"
+                  />
+                </div>
+                <button
+                  className={styles.accountButton}
+                  onClick={handleChangePassword}
+                  disabled={passwordLoading}
+                >
+                  {passwordLoading ? 'Changing...' : 'Change Password'}
+                </button>
+                {passwordSuccess && <div className={styles.accountSuccess}>{passwordSuccess}</div>}
+                {passwordError && <div className={styles.accountError}>{passwordError}</div>}
+              </div>
+            )}
 
-                {/* Upload error */}
-                {uploadError && (
-                  <div className={styles.uploadError}>{uploadError}</div>
-                )}
+            {/* Change Username */}
+            {isApiConfigured && (
+              <div className={styles.accountSection}>
+                <div className={styles.accountSectionTitle}>Change Username</div>
+                <div className={styles.accountFormRow}>
+                  <label className={styles.infoLabel}>New Username:</label>
+                  <input
+                    type="text"
+                    className={styles.accountInput}
+                    value={newUsername}
+                    onChange={(e) => setNewUsername(e.target.value)}
+                    placeholder="New username"
+                    maxLength={20}
+                  />
+                </div>
+                <div className={styles.accountFormRow}>
+                  <label className={styles.infoLabel}>Password:</label>
+                  <input
+                    type="password"
+                    className={styles.accountInput}
+                    value={usernamePassword}
+                    onChange={(e) => setUsernamePassword(e.target.value)}
+                    placeholder="Confirm your password"
+                  />
+                </div>
+                <button
+                  className={styles.accountButton}
+                  onClick={handleChangeUsername}
+                  disabled={usernameLoading}
+                >
+                  {usernameLoading ? 'Changing...' : 'Change Username'}
+                </button>
+                {usernameSuccess && <div className={styles.accountSuccess}>{usernameSuccess}</div>}
+                {usernameError && <div className={styles.accountError}>{usernameError}</div>}
               </div>
             )}
           </div>
         )}
+
+        {/* Desktop tab removed — wallpaper settings now in Appearance panel */}
 
         {activeTab === 'sound' && (
           <div className={styles.soundTab}>
