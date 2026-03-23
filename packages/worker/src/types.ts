@@ -164,10 +164,17 @@ export interface UserProfile {
   analyticsEnabled?: boolean;      // Opt-in view counter
 }
 
+export interface OAuthProvider {
+  provider: 'google';
+  providerId: string;  // Google subject ID
+  connectedAt: number;
+  email?: string;      // OAuth provider email (for display)
+}
+
 export interface UserRecord {
   uid: string;
   email: string;
-  passwordHash: string;
+  passwordHash?: string; // null for OAuth-only users
   username: string;
   createdAt: number;
   // Session invalidation: tokens issued before this time are invalid
@@ -176,6 +183,8 @@ export interface UserRecord {
   // Email verification
   emailVerified?: boolean;
   emailVerifiedAt?: number;
+  // OAuth providers linked to this account
+  oauthProviders?: OAuthProvider[];
 }
 
 export interface SessionRecord {

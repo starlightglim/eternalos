@@ -7,7 +7,7 @@
 
 import { UserDesktop } from './durable-objects/UserDesktop';
 import { DesktopChatAgent } from './agents/DesktopChatAgent';
-import { handleSignup, handleLogin, handleLogout, handleForgotPassword, handleResetPassword, handleRefreshToken, handleChangePassword, handleChangeUsername, handleSendVerification, handleVerifyEmail } from './routes/auth';
+import { handleSignup, handleLogin, handleLogout, handleForgotPassword, handleResetPassword, handleRefreshToken, handleChangePassword, handleChangeUsername, handleSendVerification, handleVerifyEmail, handleGoogleCallback } from './routes/auth';
 import { handleUpload, handleServeFile, handleWallpaperUpload, handleServeWallpaper, handleIconUpload, handleServeIcon, handleCSSAssetUpload, handleServeCSSAsset, handleListCSSAssets, handleDeleteCSSAsset, handleAnalyzeImageItem } from './routes/upload';
 import { handleVisit } from './routes/visit';
 import { handleOgImage } from './routes/ogImage';
@@ -43,6 +43,10 @@ export interface Env {
   RESEND_API_KEY?: string; // For sending transactional emails (password reset, etc.)
   IMAGE_ANALYSIS_MODEL?: string; // Optional Workers AI model override for image metadata enrichment
   AGENT_CHAT_MODEL?: string; // Optional Workers AI model override for chat agent
+
+  // Google OAuth (optional — enable by setting both)
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string; // Set via `wrangler secret put GOOGLE_CLIENT_SECRET`
 
   // Environment settings
   ENVIRONMENT?: 'development' | 'production';
@@ -293,6 +297,14 @@ export default {
 
       if (path === '/api/auth/logout' && request.method === 'POST') {
         response = await handleLogout(request, env);
+        if (rateLimitResult) {
+          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
+        }
+        return withCors(response, corsHeaders);
+      }
+
+      if (path === '/api/auth/google' && request.method === 'POST') {
+        response = await handleGoogleCallback(request, env);
         if (rateLimitResult) {
           response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
         }

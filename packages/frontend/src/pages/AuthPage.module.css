@@ -206,6 +206,39 @@
   line-height: 1.4;
 }
 
+/* Google OAuth button */
+.googleButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  font-family: var(--font-chicago);
+  font-size: 12px;
+  padding: 8px 16px;
+  background: var(--white);
+  border: 2px solid var(--black);
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow:
+    inset 1px 1px 0 var(--highlight),
+    inset -1px -1px 0 var(--shadow);
+}
+
+.googleButton:hover {
+  background: var(--highlight);
+}
+
+.googleButton:active {
+  background: var(--black);
+  color: var(--white);
+}
+
+.googleIcon {
+  width: 16px;
+  height: 16px;
+}
+
 .devNotice {
   font-family: var(--font-geneva);
   font-size: 10px;

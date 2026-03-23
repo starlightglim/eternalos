@@ -314,12 +314,21 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
 
       const saved = localStorage.getItem(WINDOW_STATE_KEY);
       if (saved) {
-        const parsed = JSON.parse(saved) as {
-          windows: WindowState[];
-          nextZIndex: number;
-        };
-        windows = parsed.windows;
-        nextZIndex = parsed.nextZIndex;
+        const parsed = JSON.parse(saved);
+        // Validate shape: must have windows array and numeric nextZIndex
+        if (
+          parsed &&
+          typeof parsed === 'object' &&
+          Array.isArray(parsed.windows) &&
+          typeof parsed.nextZIndex === 'number'
+        ) {
+          windows = parsed.windows as WindowState[];
+          nextZIndex = parsed.nextZIndex;
+        } else {
+          // Corrupted shape — discard
+          console.warn('Invalid window state shape in localStorage, discarding');
+          localStorage.removeItem(WINDOW_STATE_KEY);
+        }
       }
 
       // Fall back to server windows if localStorage is empty

@@ -51,6 +51,9 @@ export class UserDesktop {
   private cssAssets: CSSAssetMeta[] = [];
   private cssHistory: CustomCSSVersion[] = [];
   private initialized = false;
+  // Track bytes reserved by in-flight uploads (not yet committed as items)
+  // to prevent quota bypass via concurrent uploads.
+  private pendingUploadBytes = 0;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -108,10 +111,13 @@ export class UserDesktop {
     if (!this.profile?.uid) return;
 
     const data = this.getVisitorData();
+    // SECURITY: Use a short TTL (60s) to minimize the window where a
+    // newly-private item might still appear in the cached public snapshot.
+    // The snapshot is also eagerly refreshed on every mutation (see saveItems).
     await this.env.DESKTOP_KV.put(
       `public:${this.profile.uid}`,
       JSON.stringify(data),
-      { expirationTtl: 300 }
+      { expirationTtl: 60 }
     );
   }
 
@@ -149,10 +155,18 @@ export class UserDesktop {
         });
       }
 
-      // POST /items - Create new item
+      // POST /items - Create new item (client-facing, strips r2Key/fileSize/mimeType)
       if (path === '/items' && method === 'POST') {
         const item = await request.json() as Partial<DesktopItem>;
         const newItem = await this.createItem(item);
+        return Response.json(newItem);
+      }
+
+      // POST /items-internal - Create new item (trusted, used by upload handler only)
+      // Allows setting r2Key, fileSize, mimeType which are stripped from /items
+      if (path === '/items-internal' && method === 'POST') {
+        const item = await request.json() as Partial<DesktopItem>;
+        const newItem = await this.createItemInternal(item);
         return Response.json(newItem);
       }
 
@@ -240,6 +254,20 @@ export class UserDesktop {
         return Response.json(result);
       }
 
+      // POST /quota/reserve - Atomically reserve quota for an in-flight upload
+      if (path === '/quota/reserve' && method === 'POST') {
+        const { fileSize } = await request.json() as { fileSize: number };
+        const result = await this.reserveQuota(fileSize);
+        return Response.json(result);
+      }
+
+      // POST /quota/release - Release reserved quota (upload finished or failed)
+      if (path === '/quota/release' && method === 'POST') {
+        const { fileSize } = await request.json() as { fileSize: number };
+        this.releaseQuota(fileSize);
+        return Response.json({ success: true });
+      }
+
       // GET /css-assets - List CSS assets
       if (path === '/css-assets' && method === 'GET') {
         return Response.json({ assets: this.cssAssets });
@@ -312,12 +340,39 @@ export class UserDesktop {
 
   /**
    * Create a new desktop item
-   * If an ID is provided (e.g., for file uploads), use it; otherwise generate one
+   *
+   * SECURITY: r2Key, fileSize, mimeType, and imageAnalysis are set ONLY by
+   * the upload handler via createItemInternal(). The public createItem() strips
+   * them to prevent IDOR attacks where a client supplies another user's R2 key.
+   * Item IDs are always generated server-side to prevent overwrite attacks.
    */
   private async createItem(partial: Partial<DesktopItem>): Promise<DesktopItem> {
+    return this.createItemInternal({
+      ...partial,
+      // Strip server-controlled fields — these are only set by upload handlers
+      id: undefined,
+      r2Key: undefined,
+      fileSize: undefined,
+      mimeType: undefined,
+      imageAnalysis: undefined,
+    });
+  }
+
+  /**
+   * Internal item creation used by upload handlers that need to set r2Key/fileSize/mimeType.
+   * NOT exposed to client input directly.
+   */
+  private async createItemInternal(partial: Partial<DesktopItem>): Promise<DesktopItem> {
     const now = Date.now();
+    const id = partial.id || crypto.randomUUID();
+
+    // Prevent overwriting existing items
+    if (this.items.has(id)) {
+      throw new Error('Item with this ID already exists');
+    }
+
     const item: DesktopItem = {
-      id: partial.id || crypto.randomUUID(),
+      id,
       type: partial.type ?? 'folder',
       name: partial.name ?? 'Untitled',
       parentId: partial.parentId ?? null,
@@ -673,7 +728,11 @@ export class UserDesktop {
         /behavior\s*:/i,
         /-moz-binding/i,
         /<script/i,
+        /@import/i,
       ];
+      // SECURITY: Same url() allowlist used for customCSS — prevents external
+      // resource loading (tracking pixels, data exfiltration) via design tokens
+      const tokenAllowedUrlPrefixes = ['/api/css-assets/', '/api/wallpaper/', '/api/icon/'];
       for (const [key, value] of Object.entries(dt)) {
         // Keys must be dot-path identifiers (alphanumeric + dots)
         if (!/^[a-zA-Z][a-zA-Z0-9.]*$/.test(key) || key.length > 100) {
@@ -683,7 +742,7 @@ export class UserDesktop {
         if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
           throw new Error(`Invalid designToken value type for ${key}`);
         }
-        // String values: check for dangerous patterns and enforce length
+        // String values: check for dangerous patterns, url() references, and enforce length
         if (typeof value === 'string') {
           if (value.length > 500) {
             throw new Error(`designToken value too long for ${key}`);
@@ -691,6 +750,21 @@ export class UserDesktop {
           for (const pattern of dangerousTokenPatterns) {
             if (pattern.test(value)) {
               throw new Error(`designToken value contains disallowed pattern for ${key}`);
+            }
+          }
+          // Validate url() references — only allow first-party asset paths
+          const tokenUrlPattern = /url\s*\(\s*(['"]?)([^'")\s]+)\1\s*\)/gi;
+          let tokenUrlMatch: RegExpExecArray | null;
+          while ((tokenUrlMatch = tokenUrlPattern.exec(value)) !== null) {
+            const rawUrl = tokenUrlMatch[2];
+            const decodedUrl = decodeURIComponent(rawUrl).replace(/\\/g, '/');
+            const isAllowed = tokenAllowedUrlPrefixes.some(prefix => decodedUrl.startsWith(prefix));
+            if (!isAllowed) {
+              throw new Error(`designToken url() must reference first-party assets for ${key}`);
+            }
+            // Block path traversal in allowed URLs
+            if (decodedUrl.includes('..')) {
+              throw new Error(`designToken url() contains path traversal for ${key}`);
             }
           }
         }
@@ -1046,12 +1120,37 @@ export class UserDesktop {
   }
 
   /**
-   * Check if there's enough quota for a file of the given size
+   * Check if there's enough quota for a file of the given size.
+   * Includes bytes reserved by concurrent in-flight uploads to prevent
+   * the quota-check race condition.
    */
   public async checkQuota(fileSize: number): Promise<{ allowed: boolean; quota: QuotaInfo }> {
     const quota = await this.getQuota();
-    const allowed = (quota.used + fileSize) <= quota.limit;
-    return { allowed, quota };
+    // Include pending (in-flight) upload bytes in the usage check
+    const effectiveUsed = quota.used + this.pendingUploadBytes;
+    const allowed = (effectiveUsed + fileSize) <= quota.limit;
+    return { allowed, quota: { ...quota, used: effectiveUsed } };
+  }
+
+  /**
+   * Reserve quota for an in-flight upload. Called before R2 upload begins.
+   * Returns true if reservation succeeded, false if it would exceed quota.
+   */
+  public async reserveQuota(fileSize: number): Promise<{ reserved: boolean; quota: QuotaInfo }> {
+    const quota = await this.getQuota();
+    const effectiveUsed = quota.used + this.pendingUploadBytes;
+    if (effectiveUsed + fileSize > quota.limit) {
+      return { reserved: false, quota: { ...quota, used: effectiveUsed } };
+    }
+    this.pendingUploadBytes += fileSize;
+    return { reserved: true, quota: { ...quota, used: effectiveUsed } };
+  }
+
+  /**
+   * Release reserved quota (called after upload completes or fails).
+   */
+  public releaseQuota(fileSize: number): void {
+    this.pendingUploadBytes = Math.max(0, this.pendingUploadBytes - fileSize);
   }
 
   /**
@@ -1146,8 +1245,13 @@ export class UserDesktop {
 
   // --- WebSocket hibernation handlers ---
 
-  async webSocketMessage(_ws: WebSocket, _message: string | ArrayBuffer): Promise<void> {
-    // Visitors are read-only, ignore all incoming messages
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    // Handle ping/pong heartbeat to detect dead connections
+    if (typeof message === 'string' && message === 'ping') {
+      try { ws.send('pong'); } catch { /* already closed */ }
+      return;
+    }
+    // Visitors are read-only, ignore all other incoming messages
   }
 
   async webSocketClose(ws: WebSocket, code: number, _reason: string, _wasClean: boolean): Promise<void> {

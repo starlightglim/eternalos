@@ -131,21 +131,16 @@ export async function checkRateLimit(
     };
 
   } catch (error) {
-    // On error, fail closed for auth endpoints (prevent brute force),
-    // fail open for general API (preserve availability)
+    // SECURITY: Fail closed on KV outage for ALL endpoints.
+    // Previously only auth endpoints failed closed; API endpoints failed open,
+    // allowing unlimited requests during KV outages. Failing closed is safer —
+    // a brief availability dip is preferable to unbounded access.
     console.error('Rate limit check error:', error);
-    if (config.keyPrefix === 'ratelimit:auth') {
-      return {
-        allowed: false,
-        remaining: 0,
-        resetAt: now + config.windowMs,
-        retryAfter: Math.ceil(config.windowMs / 1000),
-      };
-    }
     return {
-      allowed: true,
-      remaining: config.maxRequests,
+      allowed: false,
+      remaining: 0,
       resetAt: now + config.windowMs,
+      retryAfter: Math.ceil(config.windowMs / 1000),
     };
   }
 }

@@ -14,6 +14,7 @@ import { SignupPage } from "./pages/SignupPage";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
 import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 import { VerifyEmailPage } from "./pages/VerifyEmailPage";
+import { GoogleAuthCallback } from "./pages/GoogleAuthCallback";
 import { VisitorPage } from "./pages/VisitorPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { LoadingOverlay, AlertDialog, ErrorBoundary } from "./components/ui";
@@ -159,6 +160,7 @@ function App() {
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/verify-email" element={<VerifyEmailPage />} />
+        <Route path="/auth/callback" element={<GoogleAuthCallback />} />
 
         {/* Protected routes */}
         <Route

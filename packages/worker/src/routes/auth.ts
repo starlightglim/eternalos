@@ -4,6 +4,7 @@
  * POST /api/auth/signup              - Create account
  * POST /api/auth/login               - Authenticate
  * POST /api/auth/logout              - Invalidate session
+ * POST /api/auth/google              - Google OAuth code exchange
  * POST /api/auth/forgot-password     - Request password reset
  * POST /api/auth/reset-password      - Reset password with token
  * POST /api/auth/change-password     - Change password (authenticated)
@@ -13,7 +14,7 @@
  */
 
 import type { Env } from '../index';
-import type { UserRecord, SessionRecord, PasswordResetRecord, EmailVerificationRecord } from '../types';
+import type { UserRecord, SessionRecord, PasswordResetRecord, EmailVerificationRecord, OAuthProvider } from '../types';
 import type { AuthContext } from '../middleware/auth';
 import { signJWT } from '../utils/jwt';
 import { hashPassword, verifyPassword } from '../utils/password';
@@ -116,67 +117,93 @@ export async function handleSignup(request: Request, env: Env): Promise<Response
   const normalizedEmail = sanitizeEmail(email);
   const normalizedUsername = sanitizeUsername(username);
 
-  // Check if email already exists
-  let existingUser: string | null;
-  try {
-    existingUser = await env.AUTH_KV.get(`user:${normalizedEmail}`);
-  } catch (e) {
-    console.error('Signup: check email failed:', e);
-    return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
-  }
-  if (existingUser) {
-    return Response.json({ error: 'Email already registered' }, { status: 409 });
-  }
+  // SECURITY: Acquire short-lived locks on email + username before the
+  // check-then-write sequence. This prevents concurrent signups from both
+  // passing the existence check and overwriting each other's records.
+  // The lock TTL (30s) is long enough to cover the signup flow and short
+  // enough to auto-expire if a request crashes mid-flow.
+  const emailLockKey = `signup-lock:email:${normalizedEmail}`;
+  const usernameLockKey = `signup-lock:username:${normalizedUsername}`;
+  const lockValue = crypto.randomUUID();
+  const LOCK_TTL_SECONDS = 30;
 
-  // Check if username is taken
-  let existingUsername: string | null;
-  try {
-    existingUsername = await env.AUTH_KV.get(`username:${normalizedUsername}`);
-  } catch (e) {
-    console.error('Signup: check username failed:', e);
-    return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
+  // Try to acquire email lock (put-if-absent pattern using a short TTL)
+  const existingEmailLock = await env.AUTH_KV.get(emailLockKey);
+  if (existingEmailLock) {
+    return Response.json({ error: 'Signup in progress for this email. Please try again.' }, { status: 409 });
   }
-  if (existingUsername) {
-    return Response.json({ error: 'Username already taken' }, { status: 409 });
-  }
+  await env.AUTH_KV.put(emailLockKey, lockValue, { expirationTtl: LOCK_TTL_SECONDS });
 
-  // Generate user ID and hash password
-  const uid = crypto.randomUUID();
-  let passwordHash: string;
-  try {
-    passwordHash = await hashPassword(password);
-  } catch (e) {
-    console.error('Signup: hash password failed:', e);
-    return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
+  // Try to acquire username lock
+  const existingUsernameLock = await env.AUTH_KV.get(usernameLockKey);
+  if (existingUsernameLock) {
+    await env.AUTH_KV.delete(emailLockKey); // Release email lock
+    return Response.json({ error: 'Signup in progress for this username. Please try again.' }, { status: 409 });
   }
-  const now = Date.now();
-
-  // Create user record
-  const userRecord: UserRecord = {
-    uid,
-    email: normalizedEmail,
-    passwordHash,
-    username: normalizedUsername,
-    createdAt: now,
-  };
-
-  // Store user data in KV
-  try {
-    await env.AUTH_KV.put(`user:${normalizedEmail}`, JSON.stringify(userRecord));
-  } catch (e) {
-    console.error('Signup: store user failed:', e);
-    return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
-  }
+  await env.AUTH_KV.put(usernameLockKey, lockValue, { expirationTtl: LOCK_TTL_SECONDS });
 
   try {
-    await env.AUTH_KV.put(`username:${normalizedUsername}`, JSON.stringify({ uid }));
-  } catch (e) {
-    console.error('Signup: store username failed:', e);
-    return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
-  }
+    // Check if email already exists
+    let existingUser: string | null;
+    try {
+      existingUser = await env.AUTH_KV.get(`user:${normalizedEmail}`);
+    } catch (e) {
+      console.error('Signup: check email failed:', e);
+      return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
+    }
+    if (existingUser) {
+      return Response.json({ error: 'Email already registered' }, { status: 409 });
+    }
 
-  try {
-    await env.AUTH_KV.put(`uid:${uid}`, JSON.stringify({ email: normalizedEmail }));
+    // Check if username is taken
+    let existingUsername: string | null;
+    try {
+      existingUsername = await env.AUTH_KV.get(`username:${normalizedUsername}`);
+    } catch (e) {
+      console.error('Signup: check username failed:', e);
+      return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
+    }
+    if (existingUsername) {
+      return Response.json({ error: 'Username already taken' }, { status: 409 });
+    }
+
+    // Generate user ID and hash password
+    const uid = crypto.randomUUID();
+    let passwordHash: string;
+    try {
+      passwordHash = await hashPassword(password);
+    } catch (e) {
+      console.error('Signup: hash password failed:', e);
+      return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
+    }
+    const now = Date.now();
+
+    // Create user record
+    const userRecord: UserRecord = {
+      uid,
+      email: normalizedEmail,
+      passwordHash,
+      username: normalizedUsername,
+      createdAt: now,
+    };
+
+    // Store user data in KV
+    try {
+      await env.AUTH_KV.put(`user:${normalizedEmail}`, JSON.stringify(userRecord));
+    } catch (e) {
+      console.error('Signup: store user failed:', e);
+      return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
+    }
+
+    try {
+      await env.AUTH_KV.put(`username:${normalizedUsername}`, JSON.stringify({ uid }));
+    } catch (e) {
+      console.error('Signup: store username failed:', e);
+      return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
+    }
+
+    try {
+      await env.AUTH_KV.put(`uid:${uid}`, JSON.stringify({ email: normalizedEmail }));
   } catch (e) {
     console.error('Signup: store uid index failed:', e);
     return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
@@ -422,17 +449,24 @@ Try saying:
     }).catch((err) => console.error('Failed to send verification email:', err));
   }
 
-  return Response.json({
-    token,
-    refreshToken,
-    expiresIn: accessExpiry,
-    user: {
-      uid,
-      username: normalizedUsername,
-      email: normalizedEmail,
-      emailVerified: false,
-    },
-  });
+    return Response.json({
+      token,
+      refreshToken,
+      expiresIn: accessExpiry,
+      user: {
+        uid,
+        username: normalizedUsername,
+        email: normalizedEmail,
+        emailVerified: false,
+      },
+    });
+  } finally {
+    // Always release signup locks (they auto-expire too, but clean up eagerly)
+    await Promise.all([
+      env.AUTH_KV.delete(emailLockKey).catch(() => {}),
+      env.AUTH_KV.delete(usernameLockKey).catch(() => {}),
+    ]);
+  }
 }
 
 /**
@@ -476,6 +510,12 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
   } catch (parseError) {
     console.error('Failed to parse user record:', parseError);
     return Response.json({ error: 'Data corruption error' }, { status: 500 });
+  }
+
+  // OAuth-only users have no password — cannot use email/password login
+  if (!userRecord.passwordHash) {
+    const providers = userRecord.oauthProviders?.map(p => p.provider).join(', ') || 'OAuth';
+    return Response.json({ error: `This account uses ${providers} sign-in. Please use that method instead.` }, { status: 400 });
   }
 
   // Verify password
@@ -627,6 +667,8 @@ export async function handleRefreshToken(request: Request, env: Env): Promise<Re
     accessToken: string;
     expiresAt: number;
     issuedAt?: number; // Added for password-change invalidation
+    familyId?: string; // Token family ID for reuse detection
+    consumed?: boolean; // True if token was already used (reuse detection)
   };
 
   // Check if refresh token has expired
@@ -668,8 +710,36 @@ export async function handleRefreshToken(request: Request, env: Env): Promise<Re
     }
   }
 
-  // Delete old refresh token (one-time use for rotation)
-  await env.AUTH_KV.delete(`refresh:${refreshToken}`);
+  // SECURITY: Token family reuse detection.
+  // Each refresh token belongs to a "family" (identified by familyId).
+  // If a refresh token is reused (already consumed), it means the token was
+  // stolen — invalidate the entire family to boot the attacker.
+  const familyId = refreshData.familyId || refreshToken; // backcompat: old tokens without familyId use themselves
+  if (refreshData.consumed) {
+    // This refresh token was already used! Possible token theft.
+    // Invalidate the entire token family by marking a poison flag.
+    await env.AUTH_KV.put(`refresh-family-revoked:${familyId}`, '1', {
+      expirationTtl: 7 * 24 * 60 * 60,
+    });
+    // Clean up old tokens
+    await env.AUTH_KV.delete(`refresh:${refreshToken}`);
+    await env.AUTH_KV.delete(`session:${refreshData.accessToken}`);
+    return Response.json({ error: 'Token reuse detected. All sessions revoked.' }, { status: 401 });
+  }
+
+  // Check if this token's family has been revoked
+  const familyRevoked = await env.AUTH_KV.get(`refresh-family-revoked:${familyId}`);
+  if (familyRevoked) {
+    await env.AUTH_KV.delete(`refresh:${refreshToken}`);
+    await env.AUTH_KV.delete(`session:${refreshData.accessToken}`);
+    return Response.json({ error: 'Session revoked due to suspicious activity.' }, { status: 401 });
+  }
+
+  // Mark old refresh token as consumed (don't delete — keep for reuse detection)
+  const consumedData = { ...refreshData, consumed: true };
+  await env.AUTH_KV.put(`refresh:${refreshToken}`, JSON.stringify(consumedData), {
+    expirationTtl: 60, // Keep for 60s to detect concurrent reuse, then auto-expire
+  });
   // Delete old access token session
   await env.AUTH_KV.delete(`session:${refreshData.accessToken}`);
 
@@ -694,13 +764,14 @@ export async function handleRefreshToken(request: Request, env: Env): Promise<Re
     expirationTtl: accessExpiry,
   });
 
-  // Store new refresh token (includes issuedAt for password-change invalidation)
+  // Store new refresh token (includes familyId for reuse detection)
   const newRefreshData = {
     uid: refreshData.uid,
     username: refreshData.username,
     accessToken: newAccessToken,
     expiresAt: now + (refreshExpiry * 1000),
     issuedAt: now,
+    familyId, // Preserve the family ID across rotations
   };
   await env.AUTH_KV.put(`refresh:${newRefreshToken}`, JSON.stringify(newRefreshData), {
     expirationTtl: refreshExpiry,
@@ -741,6 +812,20 @@ export async function handleForgotPassword(request: Request, env: Env): Promise<
 
   const normalizedEmail = sanitizeEmail(email);
 
+  // SECURITY: Per-address email rate limit — max 3 reset emails per hour
+  // Prevents email bombing and abuse of the email-sending endpoint
+  const emailRateLimitKey = `email-ratelimit:${normalizedEmail}`;
+  const emailRateData = await env.AUTH_KV.get<number[]>(emailRateLimitKey, 'json');
+  const oneHourAgo = Date.now() - 60 * 60 * 1000;
+  const recentSends = (emailRateData || []).filter(ts => ts > oneHourAgo);
+  if (recentSends.length >= 3) {
+    // Still return success to prevent email enumeration
+    return Response.json({
+      success: true,
+      message: 'If an account with that email exists, a reset link has been generated.',
+    });
+  }
+
   // Look up user by email
   const userJson = await env.AUTH_KV.get(`user:${normalizedEmail}`);
 
@@ -753,7 +838,20 @@ export async function handleForgotPassword(request: Request, env: Env): Promise<
     });
   }
 
+  // Track the email send
+  recentSends.push(Date.now());
+  await env.AUTH_KV.put(emailRateLimitKey, JSON.stringify(recentSends), { expirationTtl: 3600 });
+
   const userRecord = JSON.parse(userJson) as UserRecord;
+
+  // OAuth-only users have no password — silently return success
+  // (consistent with the non-enumeration pattern above)
+  if (!userRecord.passwordHash && userRecord.oauthProviders?.length) {
+    return Response.json({
+      success: true,
+      message: 'If an account with that email exists, a reset link has been generated.',
+    });
+  }
 
   // Generate a secure reset token
   const resetToken = crypto.randomUUID() + '-' + crypto.randomUUID();
@@ -930,10 +1028,13 @@ export async function handleChangePassword(request: Request, env: Env, auth: Aut
 
   const userRecord = JSON.parse(userJson) as UserRecord;
 
-  // Verify current password
-  const valid = await verifyPassword(currentPassword, userRecord.passwordHash);
-  if (!valid) {
-    return Response.json({ error: 'Current password is incorrect' }, { status: 401 });
+  // OAuth-only users can set their first password without providing a current one.
+  // Users with an existing password must verify it first.
+  if (userRecord.passwordHash) {
+    const valid = await verifyPassword(currentPassword, userRecord.passwordHash);
+    if (!valid) {
+      return Response.json({ error: 'Current password is incorrect' }, { status: 401 });
+    }
   }
 
   // Hash new password and update
@@ -1031,10 +1132,15 @@ export async function handleChangeUsername(request: Request, env: Env, auth: Aut
 
   const userRecord = JSON.parse(userJson) as UserRecord;
 
-  // Verify password
-  const valid = await verifyPassword(password, userRecord.passwordHash);
-  if (!valid) {
-    return Response.json({ error: 'Password is incorrect' }, { status: 401 });
+  // Verify password (OAuth-only users still need password confirmation if they have one set)
+  if (userRecord.passwordHash) {
+    const valid = await verifyPassword(password, userRecord.passwordHash);
+    if (!valid) {
+      return Response.json({ error: 'Password is incorrect' }, { status: 401 });
+    }
+  } else if (!userRecord.oauthProviders?.length) {
+    // No password and no OAuth — shouldn't happen, but fail safely
+    return Response.json({ error: 'Account configuration error' }, { status: 500 });
   }
 
   // Check if same as current
@@ -1042,81 +1148,97 @@ export async function handleChangeUsername(request: Request, env: Env, auth: Aut
     return Response.json({ error: 'New username is the same as current username' }, { status: 400 });
   }
 
-  // Check if new username is taken
-  const existingUsername = await env.AUTH_KV.get(`username:${normalizedNewUsername}`);
-  if (existingUsername) {
-    return Response.json({ error: 'Username already taken' }, { status: 409 });
+  // SECURITY: Lock the new username to prevent concurrent claims
+  const usernameLockKey = `signup-lock:username:${normalizedNewUsername}`;
+  const lockValue = crypto.randomUUID();
+  const existingLock = await env.AUTH_KV.get(usernameLockKey);
+  if (existingLock) {
+    return Response.json({ error: 'Username claim in progress. Please try again.' }, { status: 409 });
   }
+  await env.AUTH_KV.put(usernameLockKey, lockValue, { expirationTtl: 30 });
 
-  const oldUsername = userRecord.username;
+  try {
+    // Check if new username is taken
+    const existingUsername = await env.AUTH_KV.get(`username:${normalizedNewUsername}`);
+    if (existingUsername) {
+      return Response.json({ error: 'Username already taken' }, { status: 409 });
+    }
 
-  // Update user record
-  const updatedUserRecord: UserRecord = {
-    ...userRecord,
-    username: normalizedNewUsername,
-  };
-  await env.AUTH_KV.put(`user:${email}`, JSON.stringify(updatedUserRecord));
+    const oldUsername = userRecord.username;
 
-  // Update username index: add new, delete old
-  await env.AUTH_KV.put(`username:${normalizedNewUsername}`, JSON.stringify({ uid: auth.uid }));
-  await env.AUTH_KV.delete(`username:${oldUsername}`);
+    // SECURITY: Set usernameChangedAt to invalidate old sessions that carry the stale username.
+    // This prevents confusion if the old username is later claimed by another user.
+    const updatedUserRecord: UserRecord = {
+      ...userRecord,
+      username: normalizedNewUsername,
+      passwordChangedAt: Date.now(), // Reuse passwordChangedAt to invalidate all existing sessions
+    };
+    await env.AUTH_KV.put(`user:${email}`, JSON.stringify(updatedUserRecord));
 
-  // Update the user's Durable Object profile with the new username
-  const doId = env.USER_DESKTOP.idFromName(auth.uid);
-  const stub = env.USER_DESKTOP.get(doId);
-  await stub.fetch(new Request('http://internal/profile', {
-    method: 'PATCH',
-    body: JSON.stringify({ username: normalizedNewUsername }),
-  }));
+    // Update username index: add new, delete old
+    await env.AUTH_KV.put(`username:${normalizedNewUsername}`, JSON.stringify({ uid: auth.uid }));
+    await env.AUTH_KV.delete(`username:${oldUsername}`);
 
-  // Issue new tokens with updated username
-  const now = Date.now();
-  const token = await signJWT({ uid: auth.uid, username: normalizedNewUsername }, env.JWT_SECRET);
-  const refreshToken = generateRefreshToken();
-  const accessExpiry = 15 * 60;
-  const refreshExpiry = 7 * 24 * 60 * 60;
+    // Update the user's Durable Object profile with the new username
+    const doId = env.USER_DESKTOP.idFromName(auth.uid);
+    const stub = env.USER_DESKTOP.get(doId);
+    await stub.fetch(new Request('http://internal/profile', {
+      method: 'PATCH',
+      body: JSON.stringify({ username: normalizedNewUsername }),
+    }));
 
-  const sessionRecord: SessionRecord = {
-    uid: auth.uid,
-    expiresAt: now + (accessExpiry * 1000),
-    issuedAt: now,
-    refreshToken,
-    refreshExpiresAt: now + (refreshExpiry * 1000),
-  };
+    // Issue new tokens with updated username
+    const now = Date.now();
+    const token = await signJWT({ uid: auth.uid, username: normalizedNewUsername }, env.JWT_SECRET);
+    const refreshToken = generateRefreshToken();
+    const accessExpiry = 15 * 60;
+    const refreshExpiry = 7 * 24 * 60 * 60;
 
-  await env.AUTH_KV.put(`session:${token}`, JSON.stringify(sessionRecord), {
-    expirationTtl: accessExpiry,
-  });
+    const sessionRecord: SessionRecord = {
+      uid: auth.uid,
+      expiresAt: now + (accessExpiry * 1000),
+      issuedAt: now,
+      refreshToken,
+      refreshExpiresAt: now + (refreshExpiry * 1000),
+    };
 
-  await env.AUTH_KV.put(`refresh:${refreshToken}`, JSON.stringify({
-    uid: auth.uid,
-    username: normalizedNewUsername,
-    accessToken: token,
-    expiresAt: now + (refreshExpiry * 1000),
-    issuedAt: now,
-  }), {
-    expirationTtl: refreshExpiry,
-  });
+    await env.AUTH_KV.put(`session:${token}`, JSON.stringify(sessionRecord), {
+      expirationTtl: accessExpiry,
+    });
 
-  // Send notification email (non-blocking)
-  if (env.RESEND_API_KEY && env.FROM_EMAIL) {
-    const { html, text } = getUsernameChangeEmail(oldUsername, normalizedNewUsername);
-    sendEmail(env.RESEND_API_KEY, env.FROM_EMAIL, {
-      to: email,
-      subject: 'Your EternalOS username has been changed',
-      html,
-      text,
-    }).catch((err) => console.error('Failed to send username change email:', err));
+    await env.AUTH_KV.put(`refresh:${refreshToken}`, JSON.stringify({
+      uid: auth.uid,
+      username: normalizedNewUsername,
+      accessToken: token,
+      expiresAt: now + (refreshExpiry * 1000),
+      issuedAt: now,
+    }), {
+      expirationTtl: refreshExpiry,
+    });
+
+    // Send notification email (non-blocking)
+    if (env.RESEND_API_KEY && env.FROM_EMAIL) {
+      const { html, text } = getUsernameChangeEmail(oldUsername, normalizedNewUsername);
+      sendEmail(env.RESEND_API_KEY, env.FROM_EMAIL, {
+        to: email,
+        subject: 'Your EternalOS username has been changed',
+        html,
+        text,
+      }).catch((err) => console.error('Failed to send username change email:', err));
+    }
+
+    return Response.json({
+      success: true,
+      message: 'Username changed successfully.',
+      username: normalizedNewUsername,
+      token,
+      refreshToken,
+      expiresIn: accessExpiry,
+    });
+  } finally {
+    // Always release username lock
+    await env.AUTH_KV.delete(usernameLockKey).catch(() => {});
   }
-
-  return Response.json({
-    success: true,
-    message: 'Username changed successfully.',
-    username: normalizedNewUsername,
-    token,
-    refreshToken,
-    expiresIn: accessExpiry,
-  });
 }
 
 // ============ Email Verification ============
@@ -1143,6 +1265,17 @@ export async function handleSendVerification(request: Request, env: Env, auth: A
   if (userRecord.emailVerified) {
     return Response.json({ error: 'Email is already verified' }, { status: 400 });
   }
+
+  // SECURITY: Per-address rate limit — max 3 verification emails per hour
+  const verifyRateLimitKey = `email-ratelimit:verify:${email}`;
+  const verifyRateData = await env.AUTH_KV.get<number[]>(verifyRateLimitKey, 'json');
+  const oneHourAgo = Date.now() - 60 * 60 * 1000;
+  const recentVerifySends = (verifyRateData || []).filter(ts => ts > oneHourAgo);
+  if (recentVerifySends.length >= 3) {
+    return Response.json({ error: 'Too many verification emails sent. Please try again later.' }, { status: 429 });
+  }
+  recentVerifySends.push(Date.now());
+  await env.AUTH_KV.put(verifyRateLimitKey, JSON.stringify(recentVerifySends), { expirationTtl: 3600 });
 
   // Generate verification token
   const verifyToken = crypto.randomUUID() + '-' + crypto.randomUUID();
@@ -1251,5 +1384,274 @@ export async function handleVerifyEmail(request: Request, env: Env): Promise<Res
   return Response.json({
     success: true,
     message: 'Email verified successfully!',
+  });
+}
+
+// ============ Google OAuth ============
+
+interface GoogleCallbackBody {
+  code: string;
+  redirectUri: string;
+}
+
+interface GoogleTokenResponse {
+  access_token: string;
+  id_token: string;
+  expires_in: number;
+  token_type: string;
+  error?: string;
+  error_description?: string;
+}
+
+interface GoogleUserInfo {
+  id: string;       // Google subject ID
+  email: string;
+  verified_email: boolean;
+  name: string;
+  given_name?: string;
+  picture?: string;
+}
+
+/**
+ * POST /api/auth/google
+ * Exchange a Google OAuth authorization code for EternalOS tokens.
+ * - If the email matches an existing user, link the Google provider and log them in.
+ * - If no user exists, create a new account (OAuth-only, no password).
+ */
+export async function handleGoogleCallback(request: Request, env: Env): Promise<Response> {
+  let body: GoogleCallbackBody;
+  try {
+    body = await request.json() as GoogleCallbackBody;
+  } catch {
+    return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+
+  const { code, redirectUri } = body;
+  if (!code || !redirectUri) {
+    return Response.json({ error: 'Authorization code and redirect URI are required' }, { status: 400 });
+  }
+
+  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+    return Response.json({ error: 'Google OAuth is not configured' }, { status: 500 });
+  }
+
+  // Step 1: Exchange authorization code for Google tokens
+  let googleTokens: GoogleTokenResponse;
+  try {
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: env.GOOGLE_CLIENT_ID,
+        client_secret: env.GOOGLE_CLIENT_SECRET,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
+      }),
+    });
+
+    googleTokens = await tokenResponse.json() as GoogleTokenResponse;
+
+    if (googleTokens.error) {
+      console.error('Google token exchange error:', googleTokens.error, googleTokens.error_description);
+      return Response.json({ error: 'Failed to authenticate with Google. Please try again.' }, { status: 401 });
+    }
+  } catch (e) {
+    console.error('Google token exchange failed:', e);
+    return Response.json({ error: 'Failed to connect to Google. Please try again.' }, { status: 502 });
+  }
+
+  // Step 2: Fetch user info from Google
+  let googleUser: GoogleUserInfo;
+  try {
+    const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${googleTokens.access_token}` },
+    });
+
+    if (!userInfoResponse.ok) {
+      return Response.json({ error: 'Failed to get user info from Google' }, { status: 502 });
+    }
+
+    googleUser = await userInfoResponse.json() as GoogleUserInfo;
+  } catch (e) {
+    console.error('Google userinfo fetch failed:', e);
+    return Response.json({ error: 'Failed to get user info from Google' }, { status: 502 });
+  }
+
+  if (!googleUser.email || !googleUser.verified_email) {
+    return Response.json({ error: 'Google account must have a verified email address' }, { status: 400 });
+  }
+
+  const normalizedEmail = googleUser.email.toLowerCase().trim();
+  const now = Date.now();
+
+  // Step 3: Check if user exists by Google provider ID or by email
+  const oauthIndexJson = await env.AUTH_KV.get(`oauth:google:${googleUser.id}`);
+  let userRecord: UserRecord | null = null;
+  let isNewUser = false;
+
+  if (oauthIndexJson) {
+    // Returning Google user — find their account
+    const { uid } = JSON.parse(oauthIndexJson) as { uid: string };
+    const uidIndexJson = await env.AUTH_KV.get(`uid:${uid}`);
+    if (uidIndexJson) {
+      const { email } = JSON.parse(uidIndexJson) as { email: string };
+      const userJson = await env.AUTH_KV.get(`user:${email}`);
+      if (userJson) {
+        userRecord = JSON.parse(userJson) as UserRecord;
+      }
+    }
+  }
+
+  if (!userRecord) {
+    // Check if an email/password user exists with the same email
+    const existingUserJson = await env.AUTH_KV.get(`user:${normalizedEmail}`);
+
+    if (existingUserJson) {
+      // Auto-link: existing user, add Google provider
+      userRecord = JSON.parse(existingUserJson) as UserRecord;
+      const providers = userRecord.oauthProviders || [];
+      const alreadyLinked = providers.some(p => p.provider === 'google' && p.providerId === googleUser.id);
+
+      if (!alreadyLinked) {
+        providers.push({
+          provider: 'google',
+          providerId: googleUser.id,
+          connectedAt: now,
+          email: normalizedEmail,
+        });
+        userRecord.oauthProviders = providers;
+        // Also verify email since Google verified it
+        if (!userRecord.emailVerified) {
+          userRecord.emailVerified = true;
+          userRecord.emailVerifiedAt = now;
+        }
+        await env.AUTH_KV.put(`user:${normalizedEmail}`, JSON.stringify(userRecord));
+        await env.AUTH_KV.put(`oauth:google:${googleUser.id}`, JSON.stringify({ uid: userRecord.uid }));
+      }
+    } else {
+      // New user via Google OAuth — create account
+      isNewUser = true;
+      const uid = crypto.randomUUID();
+
+      // Generate username from Google name
+      let baseUsername = (googleUser.given_name || googleUser.name || 'user')
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, '')
+        .slice(0, 15);
+      if (baseUsername.length < 3) baseUsername = 'user';
+
+      // Ensure uniqueness
+      let username = baseUsername;
+      let suffix = 1;
+      while (await env.AUTH_KV.get(`username:${username}`)) {
+        username = `${baseUsername}${suffix}`;
+        suffix++;
+        if (suffix > 100) {
+          username = `user_${crypto.randomUUID().slice(0, 8)}`;
+          break;
+        }
+      }
+
+      const oauthProvider: OAuthProvider = {
+        provider: 'google',
+        providerId: googleUser.id,
+        connectedAt: now,
+        email: normalizedEmail,
+      };
+
+      userRecord = {
+        uid,
+        email: normalizedEmail,
+        // No passwordHash — OAuth-only account
+        username,
+        createdAt: now,
+        emailVerified: true,
+        emailVerifiedAt: now,
+        oauthProviders: [oauthProvider],
+      };
+
+      // Store user data
+      await env.AUTH_KV.put(`user:${normalizedEmail}`, JSON.stringify(userRecord));
+      await env.AUTH_KV.put(`username:${username}`, JSON.stringify({ uid }));
+      await env.AUTH_KV.put(`uid:${uid}`, JSON.stringify({ email: normalizedEmail }));
+      await env.AUTH_KV.put(`oauth:google:${googleUser.id}`, JSON.stringify({ uid }));
+      await env.AUTH_KV.put(`user_index:${uid}`, normalizedEmail);
+
+      // Initialize Durable Object with profile and default items
+      const doId = env.USER_DESKTOP.idFromName(uid);
+      const stub = env.USER_DESKTOP.get(doId);
+
+      const displayName = googleUser.name || username;
+      await stub.fetch(new Request('http://internal/profile', {
+        method: 'POST',
+        body: JSON.stringify({
+          uid,
+          username,
+          displayName,
+          wallpaper: 'default',
+          createdAt: now,
+          isNewUser: true,
+        }),
+      }));
+
+      // Create a default welcome item
+      await stub.fetch(new Request('http://internal/items', {
+        method: 'POST',
+        body: JSON.stringify({
+          type: 'text',
+          name: 'Welcome.txt',
+          parentId: null,
+          position: { x: 0, y: 0 },
+          isPublic: true,
+          textContent: `Welcome to EternalOS, ${displayName}!\n\nYour personal desktop is ready.\n\n• Double-click items to open them\n• Right-click for context menus\n• Drop files to upload\n• Special menu → Appearance for customization\n\nYour public URL: eternalos.app/@${username}`,
+        }),
+      }));
+    }
+  }
+
+  if (!userRecord) {
+    return Response.json({ error: 'Failed to authenticate. Please try again.' }, { status: 500 });
+  }
+
+  // Step 4: Issue EternalOS tokens (same flow as login/signup)
+  const token = await signJWT({ uid: userRecord.uid, username: userRecord.username }, env.JWT_SECRET);
+  const refreshTokenValue = generateRefreshToken();
+  const accessExpiry = 15 * 60;
+  const refreshExpiry = 7 * 24 * 60 * 60;
+
+  const sessionRecord: SessionRecord = {
+    uid: userRecord.uid,
+    expiresAt: now + (accessExpiry * 1000),
+    issuedAt: now,
+    refreshToken: refreshTokenValue,
+    refreshExpiresAt: now + (refreshExpiry * 1000),
+  };
+
+  await env.AUTH_KV.put(`session:${token}`, JSON.stringify(sessionRecord), {
+    expirationTtl: accessExpiry,
+  });
+
+  await env.AUTH_KV.put(`refresh:${refreshTokenValue}`, JSON.stringify({
+    uid: userRecord.uid,
+    username: userRecord.username,
+    accessToken: token,
+    expiresAt: now + (refreshExpiry * 1000),
+    issuedAt: now,
+  }), {
+    expirationTtl: refreshExpiry,
+  });
+
+  return Response.json({
+    token,
+    refreshToken: refreshTokenValue,
+    expiresIn: accessExpiry,
+    isNewUser,
+    user: {
+      uid: userRecord.uid,
+      username: userRecord.username,
+      email: userRecord.email,
+      emailVerified: userRecord.emailVerified ?? false,
+    },
   });
 }

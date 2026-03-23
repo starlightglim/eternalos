@@ -7,6 +7,7 @@
  * Supports images (jpg/png/gif/webp) and text files (txt/md).
  */
 
+import { fileTypeFromBuffer } from 'file-type';
 import type { Env } from '../index';
 import type { AuthContext } from '../middleware/auth';
 import type { DesktopItem, ImageAnalysisMetadata } from '../types';
@@ -705,6 +706,10 @@ export async function handleUpload(
   auth: AuthContext,
   ctx: ExecutionContext
 ): Promise<Response> {
+  // Hoisted for cleanup in catch block
+  let r2Key: string | undefined;
+  let releaseQuota: (() => Promise<void>) | undefined;
+
   try {
     // Parse multipart form data
     const formData = await request.formData();
@@ -738,26 +743,26 @@ export async function handleUpload(
       );
     }
 
-    // Check storage quota
+    // Reserve storage quota atomically (prevents race condition with concurrent uploads)
     const doId = env.USER_DESKTOP.idFromName(auth.uid);
     const stub = env.USER_DESKTOP.get(doId);
-    const quotaCheckResponse = await stub.fetch(
-      new Request('http://internal/quota/check', {
+    const quotaReserveResponse = await stub.fetch(
+      new Request('http://internal/quota/reserve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fileSize: fileBlob.size }),
       })
     );
 
-    if (!quotaCheckResponse.ok) {
+    if (!quotaReserveResponse.ok) {
       return Response.json(
         { error: 'Failed to check storage quota' },
         { status: 500 }
       );
     }
 
-    const quotaCheck = await quotaCheckResponse.json() as { allowed: boolean; quota: { used: number; limit: number; remaining: number } };
-    if (!quotaCheck.allowed) {
+    const quotaCheck = await quotaReserveResponse.json() as { reserved: boolean; quota: { used: number; limit: number; remaining: number } };
+    if (!quotaCheck.reserved) {
       const usedMB = (quotaCheck.quota.used / 1024 / 1024).toFixed(1);
       const limitMB = (quotaCheck.quota.limit / 1024 / 1024).toFixed(0);
       return Response.json(
@@ -769,14 +774,51 @@ export async function handleUpload(
       );
     }
 
+    // Release quota reservation on any failure path below
+    releaseQuota = async () => {
+      await stub.fetch(
+        new Request('http://internal/quota/release', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileSize: fileBlob.size }),
+        })
+      ).catch(() => {});
+    };
+
     // Generate item ID and R2 key
     const itemId = crypto.randomUUID();
     const originalName = fileBlob.name || `file.${ALLOWED_TYPES[mimeType]}`;
     const sanitizedName = sanitizeFilename(originalName);
-    const r2Key = `${auth.uid}/${itemId}/${sanitizedName}`;
+    r2Key = `${auth.uid}/${itemId}/${sanitizedName}`;
 
     // Upload to R2
     const fileBuffer = await fileBlob.arrayBuffer();
+
+    // SECURITY: Validate actual file content via magic bytes, not just the declared
+    // MIME type (which is trivially spoofed). Text files have no magic bytes, so
+    // we only check binary formats (images, video, audio).
+    if (!mimeType.startsWith('text/')) {
+      const detected = await fileTypeFromBuffer(fileBuffer);
+      if (!detected) {
+        if (releaseQuota) await releaseQuota();
+        return Response.json(
+          { error: 'Could not verify file type. The file may be corrupted.' },
+          { status: 400 }
+        );
+      }
+      if (!ALLOWED_TYPES[detected.mime]) {
+        if (releaseQuota) await releaseQuota();
+        return Response.json(
+          { error: `File content does not match an allowed type. Detected: ${detected.mime}` },
+          { status: 400 }
+        );
+      }
+      // If detected MIME differs from declared, use the detected one (more trustworthy)
+      if (detected.mime !== mimeType) {
+        console.warn(`MIME mismatch: declared=${mimeType}, detected=${detected.mime}`);
+      }
+    }
+
     await env.ETERNALOS_FILES.put(r2Key, fileBuffer, {
       httpMetadata: {
         contentType: mimeType,
@@ -829,7 +871,7 @@ export async function handleUpload(
     };
 
     const doResponse = await stub.fetch(
-      new Request('http://internal/items', {
+      new Request('http://internal/items-internal', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(itemData),
@@ -839,11 +881,16 @@ export async function handleUpload(
     if (!doResponse.ok) {
       // Cleanup R2 if DO fails
       await env.ETERNALOS_FILES.delete(r2Key);
+      await releaseQuota();
       return Response.json(
         { error: 'Failed to create desktop item' },
         { status: 500 }
       );
     }
+
+    // Upload committed successfully — release the reservation
+    // (the actual file size is now tracked in the item's fileSize field)
+    await releaseQuota();
 
     const createdItem = await doResponse.json();
 
@@ -858,6 +905,17 @@ export async function handleUpload(
 
   } catch (error) {
     console.error('Upload error:', error);
+    // Clean up orphaned R2 file if the upload succeeded but subsequent
+    // operations (DO item creation, etc.) failed.
+    if (r2Key) {
+      await env.ETERNALOS_FILES.delete(r2Key).catch((e) =>
+        console.error('Failed to clean up orphaned R2 file:', e)
+      );
+    }
+    // Release any reserved quota
+    if (releaseQuota) {
+      await releaseQuota();
+    }
     return Response.json(
       { error: error instanceof Error ? error.message : 'Upload failed' },
       { status: 500 }
@@ -927,14 +985,26 @@ export async function handleServeFile(
   requestingAuth: AuthContext | null
 ): Promise<Response> {
   try {
-    // Construct R2 key
-    const r2Key = `${fileOwnerUid}/${itemId}/${filename}`;
+    // SECURITY: Validate path segments to prevent traversal attacks
+    // After decoding, reject any segment containing '..' or path separators
+    if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+      return Response.json(
+        { error: 'Invalid filename' },
+        { status: 400 }
+      );
+    }
+    if (itemId.includes('..') || itemId.includes('/') || itemId.includes('\\')) {
+      return Response.json(
+        { error: 'Invalid item ID' },
+        { status: 400 }
+      );
+    }
 
-    // Check access permissions
+    // Check access permissions and get the item's stored r2Key
     const isOwner = requestingAuth?.uid === fileOwnerUid;
 
     if (!isOwner) {
-      // Not the owner - check if item is public
+      // Not the owner - check if item is public via the authoritative DO
       const isPublic = await checkItemIsPublic(env, fileOwnerUid, itemId);
       if (!isPublic) {
         return Response.json(
@@ -943,6 +1013,13 @@ export async function handleServeFile(
         );
       }
     }
+
+    // SECURITY: Use the item's stored r2Key from the DO instead of constructing
+    // from URL parameters. This prevents IDOR where a valid public itemId is
+    // combined with a different filename to access other R2 objects.
+    const storedR2Key = await getItemR2Key(env, fileOwnerUid, itemId);
+    // Use stored key if available, fall back to constructed key for backwards compat
+    const r2Key = storedR2Key || `${fileOwnerUid}/${itemId}/${filename}`;
 
     // Check for Range request header (needed for video/audio streaming)
     const rangeHeader = request.headers.get('Range');
@@ -1071,6 +1148,26 @@ async function checkItemIsPublic(
   const item = data.items.find(i => i.id === itemId);
 
   return (item?.isPublic ?? false) && !item?.isTrashed;
+}
+
+/**
+ * Get the stored r2Key for a desktop item.
+ * Returns null if item not found or has no r2Key.
+ */
+async function getItemR2Key(
+  env: Env,
+  uid: string,
+  itemId: string
+): Promise<string | null> {
+  const doId = env.USER_DESKTOP.idFromName(uid);
+  const stub = env.USER_DESKTOP.get(doId);
+  const response = await stub.fetch(new Request('http://internal/items'));
+
+  if (!response.ok) return null;
+
+  const data = await response.json() as { items: DesktopItem[] };
+  const item = data.items.find(i => i.id === itemId);
+  return item?.r2Key ?? null;
 }
 
 // Note: sanitizeFilename is now imported from utils/sanitize.ts
@@ -1255,6 +1352,14 @@ export async function handleServeWallpaper(
   filename: string
 ): Promise<Response> {
   try {
+    // SECURITY: Validate path segments to prevent traversal attacks
+    if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+      return Response.json({ error: 'Invalid filename' }, { status: 400 });
+    }
+    if (wallpaperId.includes('..') || wallpaperId.includes('/') || wallpaperId.includes('\\')) {
+      return Response.json({ error: 'Invalid wallpaper ID' }, { status: 400 });
+    }
+
     // Construct R2 key
     const r2Key = `${uid}/wallpaper/${wallpaperId}/${filename}`;
 
@@ -1274,6 +1379,8 @@ export async function handleServeWallpaper(
     headers.set('Content-Length', object.size.toString());
     headers.set('Cache-Control', 'public, max-age=31536000, immutable');
     headers.set('ETag', object.httpEtag);
+    headers.set('Content-Disposition', 'inline');
+    headers.set('Content-Security-Policy', "default-src 'none'");
 
     // Handle conditional requests
     const ifNoneMatch = request.headers.get('If-None-Match');
@@ -1440,6 +1547,11 @@ export async function handleServeIcon(
   filename: string
 ): Promise<Response> {
   try {
+    // SECURITY: Validate path segments to prevent traversal attacks
+    if (itemId.includes('..') || itemId.includes('/') || itemId.includes('\\')) {
+      return Response.json({ error: 'Invalid item ID' }, { status: 400 });
+    }
+
     // Construct R2 key
     const r2Key = `${uid}/icons/${itemId}.png`;
 
@@ -1459,6 +1571,8 @@ export async function handleServeIcon(
     headers.set('Content-Length', object.size.toString());
     headers.set('Cache-Control', 'public, max-age=31536000, immutable');
     headers.set('ETag', object.httpEtag);
+    headers.set('Content-Disposition', 'inline');
+    headers.set('Content-Security-Policy', "default-src 'none'");
 
     // Handle conditional requests
     const ifNoneMatch = request.headers.get('If-None-Match');

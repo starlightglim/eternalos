@@ -119,35 +119,12 @@
   -moz-osx-font-smoothing: unset;
 }
 
-/* Syntax highlighting colors */
-.codeContent :global(.keyword) {
-  color: #0000ff;
-  font-weight: bold;
-}
-
-.codeContent :global(.builtin) {
-  color: #008080;
-}
-
-.codeContent :global(.string) {
-  color: #008000;
-}
-
-.codeContent :global(.comment) {
-  color: #808080;
-  font-style: italic;
-}
-
-.codeContent :global(.number) {
-  color: #ff6600;
-}
-
-.codeContent :global(.function) {
-  color: #660066;
-}
-
-.codeContent :global(.empty) {
-  color: var(--shadow);
+/* Syntax highlighting is handled by prism-react-renderer inline styles.
+   These overrides ensure the pre element matches our classic Mac theme. */
+.codeContent pre {
+  background: transparent !important;
+  margin: 0;
+  padding: 0;
 }
 
 /* ============================================

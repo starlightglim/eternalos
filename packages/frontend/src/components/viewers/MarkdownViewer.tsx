@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { marked, type MarkedOptions } from 'marked';
+import DOMPurify from 'dompurify';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { useWindowStore } from '../../stores/windowStore';
 import { ContextMenu, type ContextMenuItem } from '../ui';
@@ -189,117 +191,55 @@ export function MarkdownViewer({
 }
 
 /**
- * Sanitize a URL to only allow safe protocols (http, https, mailto).
- * Returns about:blank for any disallowed protocol (e.g. javascript:, data:, vbscript:).
+ * Configure marked for safe rendering with classic Mac styling.
+ *
+ * Security: DOMPurify sanitizes the final HTML output, providing defense-in-depth
+ * against any parser-level XSS bypasses. This replaces the fragile hand-rolled
+ * regex parser that had multiple XSS vulnerabilities.
  */
-function sanitizeUrl(url: string): string {
-  const trimmed = url.trim();
-  // Relative URLs and anchors are safe
-  if (trimmed.startsWith('/') || trimmed.startsWith('#') || trimmed.startsWith('?')) {
-    return trimmed;
-  }
-  try {
-    const parsed = new URL(trimmed, 'https://placeholder.invalid');
-    const protocol = parsed.protocol.toLowerCase();
-    if (protocol === 'http:' || protocol === 'https:' || protocol === 'mailto:') {
-      return trimmed;
-    }
-  } catch {
-    // If it doesn't parse as a URL and has no protocol, treat as relative
-    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) {
-      return trimmed;
-    }
-  }
-  return 'about:blank';
-}
+const markedOptions: MarkedOptions = {
+  breaks: true, // Convert \n to <br>
+  gfm: true,    // GitHub Flavored Markdown (tables, task lists, strikethrough)
+};
 
-/**
- * Simple markdown parser
- * Handles: headers, bold, italic, code blocks, inline code, links, lists, horizontal rules
- */
+// Configure DOMPurify to allow safe attributes while blocking dangerous ones
+const purifyConfig: DOMPurify.Config = {
+  ALLOWED_TAGS: [
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'p', 'br', 'hr',
+    'strong', 'b', 'em', 'i', 'u', 's', 'del',
+    'a', 'code', 'pre', 'blockquote',
+    'ul', 'ol', 'li',
+    'table', 'thead', 'tbody', 'tr', 'th', 'td',
+    'input', // For task list checkboxes
+    'span',
+  ],
+  ALLOWED_ATTR: [
+    'href', 'target', 'rel',
+    'class',
+    'type', 'checked', 'disabled', // For task list checkboxes
+  ],
+  // Force all links to open in new tab with noopener
+  ADD_ATTR: ['target'],
+};
+
+// Hook: ensure all links open safely in new tabs
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.tagName === 'A') {
+    node.setAttribute('target', '_blank');
+    node.setAttribute('rel', 'noopener noreferrer');
+    // Block javascript: and data: URLs that might slip through
+    const href = node.getAttribute('href') || '';
+    if (!/^(https?:|mailto:|\/|#|\?)/.test(href.trim()) && /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href.trim())) {
+      node.setAttribute('href', 'about:blank');
+    }
+  }
+});
+
 function parseMarkdown(text: string): string {
   if (!text) return '<p style="color: var(--shadow);">No content</p>';
 
-  let html = text;
-
-  // Escape HTML to prevent XSS
-  html = html
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-
-  // Code blocks (``` ... ```) - must be done before other formatting
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, _lang, code) => {
-    return `<pre class="codeBlock">${code.trim()}</pre>`;
-  });
-
-  // Inline code (`code`)
-  html = html.replace(/`([^`]+)`/g, '<code class="inlineCode">$1</code>');
-
-  // Headers (# to ######)
-  html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
-  html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
-  html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
-  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
-
-  // Horizontal rule (--- or ***)
-  html = html.replace(/^---+$/gm, '<hr />');
-  html = html.replace(/^\*\*\*+$/gm, '<hr />');
-
-  // Bold (**text** or __text__)
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
-
-  // Italic (*text* or _text_)
-  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-  html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
-
-  // Links [text](url)
-  html = html.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    (_match, text, url) => {
-      const safeUrl = sanitizeUrl(url);
-      return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${text}</a>`;
-    }
-  );
-
-  // Unordered lists (- item or * item)
-  html = html.replace(/^[-*]\s+(.+)$/gm, '<li>$1</li>');
-  // Wrap consecutive <li> in <ul>
-  html = html.replace(/(<li>.*<\/li>\n?)+/g, (match) => `<ul>${match}</ul>`);
-
-  // Ordered lists (1. item)
-  html = html.replace(/^\d+\.\s+(.+)$/gm, '<li>$1</li>');
-  // Note: This would need more sophisticated handling to wrap in <ol>
-
-  // Blockquotes (> text)
-  html = html.replace(/^&gt;\s+(.+)$/gm, '<blockquote>$1</blockquote>');
-  // Merge consecutive blockquotes
-  html = html.replace(/<\/blockquote>\n<blockquote>/g, '\n');
-
-  // Paragraphs - wrap remaining text blocks
-  // Split by double newlines and wrap non-tag content in <p>
-  const lines = html.split(/\n\n+/);
-  html = lines
-    .map((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) return '';
-      // Don't wrap if already wrapped in a block element
-      if (
-        trimmed.startsWith('<h') ||
-        trimmed.startsWith('<ul') ||
-        trimmed.startsWith('<ol') ||
-        trimmed.startsWith('<pre') ||
-        trimmed.startsWith('<blockquote') ||
-        trimmed.startsWith('<hr')
-      ) {
-        return trimmed;
-      }
-      return `<p>${trimmed.replace(/\n/g, '<br />')}</p>`;
-    })
-    .join('\n');
-
-  return html;
+  // Parse markdown to HTML with marked, then sanitize with DOMPurify
+  const rawHtml = marked.parse(text, markedOptions) as string;
+  return DOMPurify.sanitize(rawHtml, purifyConfig);
 }

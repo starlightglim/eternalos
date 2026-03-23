@@ -12,6 +12,7 @@ import {
   setSessionExpiredHandler,
   signup as apiSignup,
   login as apiLogin,
+  googleLogin as apiGoogleLogin,
   logout as apiLogout,
   updateProfile as apiUpdateProfile,
   changePassword as apiChangePassword,
@@ -33,6 +34,7 @@ interface AuthState {
 interface AuthActions {
   signup: (email: string, password: string, username: string) => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
+  googleLogin: (code: string, redirectUri: string) => Promise<{ isNewUser: boolean }>;
   logout: () => Promise<void>;
   clearError: () => void;
   initialize: () => () => void;
@@ -193,6 +195,46 @@ export const useAuthStore = create<AuthStore>()(
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : 'Login failed';
           set({ loading: false, error: message });
+        }
+      },
+
+      googleLogin: async (code: string, redirectUri: string) => {
+        set({ loading: true, error: null });
+
+        try {
+          const response = await apiGoogleLogin(code, redirectUri);
+
+          setAuthToken(response.token);
+          setRefreshToken(response.refreshToken);
+
+          const user: AuthUser = {
+            uid: response.user.uid,
+            username: response.user.username,
+            email: response.user.email,
+            emailVerified: response.user.emailVerified || false,
+          };
+
+          const profile: UserProfile = {
+            uid: response.user.uid,
+            username: response.user.username,
+            displayName: response.user.username,
+            createdAt: Date.now(),
+          };
+
+          set({
+            user,
+            profile,
+            token: response.token,
+            refreshToken: response.refreshToken,
+            loading: false,
+            initialized: true,
+          });
+
+          return { isNewUser: response.isNewUser };
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : 'Google sign-in failed';
+          set({ loading: false, error: message });
+          throw error;
         }
       },
 

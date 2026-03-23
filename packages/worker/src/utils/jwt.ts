@@ -83,10 +83,14 @@ export async function signJWT(
  */
 const FILE_TOKEN_TTL_SECONDS = 5 * 60;
 
-export async function signFileToken(uid: string, secret: string): Promise<string> {
+export async function signFileToken(uid: string, secret: string, scope?: string): Promise<string> {
   const exp = Math.floor(Date.now() / 1000) + FILE_TOKEN_TTL_SECONDS;
   const encoder = new TextEncoder();
-  const payload = base64urlEncode(encoder.encode(JSON.stringify({ uid, exp })));
+  // SECURITY: scope limits the token to a specific itemId prefix, preventing
+  // a leaked file URL token from being reused to access other files.
+  const payloadObj: { uid: string; exp: number; scope?: string } = { uid, exp };
+  if (scope) payloadObj.scope = scope;
+  const payload = base64urlEncode(encoder.encode(JSON.stringify(payloadObj)));
   const key = await importKey(secret);
   const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(payload));
   return `${payload}.${base64urlEncode(signature)}`;
@@ -95,7 +99,7 @@ export async function signFileToken(uid: string, secret: string): Promise<string
 export async function verifyFileToken(
   token: string,
   secret: string
-): Promise<{ uid: string } | null> {
+): Promise<{ uid: string; scope?: string } | null> {
   const parts = token.split('.');
   if (parts.length !== 2) return null;
 
@@ -112,11 +116,12 @@ export async function verifyFileToken(
     const payload = JSON.parse(decoder.decode(base64urlDecode(payloadBase64))) as {
       uid: string;
       exp: number;
+      scope?: string;
     };
 
     if (Math.floor(Date.now() / 1000) > payload.exp) return null;
 
-    return { uid: payload.uid };
+    return { uid: payload.uid, scope: payload.scope };
   } catch {
     return null;
   }

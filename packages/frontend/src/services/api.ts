@@ -119,9 +119,29 @@ async function apiRequest<T>(
 
   if (!response.ok) {
     if (response.status === 401 && authToken && allowRetry) {
+      // Retry up to 2 times after a successful refresh (covers transient edge cases
+      // where the new token hasn't propagated to KV yet)
       const refreshed = await refreshSession();
       if (refreshed) {
         return apiRequest<T>(path, options, false);
+      }
+    }
+    // If refresh succeeded but the retried request also failed with 401,
+    // try one more refresh (handles edge case where first refresh token
+    // was consumed but response was lost due to network)
+    if (response.status === 401 && authToken && !allowRetry) {
+      const secondRefresh = await refreshSession();
+      if (secondRefresh) {
+        // Final attempt — if this fails, fall through to session expired
+        const retryHeaders: HeadersInit = {
+          'Content-Type': 'application/json',
+          ...options.headers,
+          'Authorization': `Bearer ${authToken}`,
+        };
+        const retryResponse = await fetch(`${API_URL}${path}`, { ...options, headers: retryHeaders });
+        if (retryResponse.ok) {
+          return retryResponse.json() as Promise<T>;
+        }
       }
     }
 
@@ -196,6 +216,17 @@ export async function login(email: string, password: string): Promise<LoginRespo
   return apiRequest<LoginResponse>('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify({ email, password }),
+  });
+}
+
+export interface GoogleLoginResponse extends LoginResponse {
+  isNewUser: boolean;
+}
+
+export async function googleLogin(code: string, redirectUri: string): Promise<GoogleLoginResponse> {
+  return apiRequest<GoogleLoginResponse>('/api/auth/google', {
+    method: 'POST',
+    body: JSON.stringify({ code, redirectUri }),
   });
 }
 
@@ -590,10 +621,16 @@ export function clearFileToken(): void {
  */
 export function getFileUrl(r2Key: string): string {
   const ft = getCachedFileToken();
-  const tokenParam = ft ? `?ft=${encodeURIComponent(ft)}` : '';
   // Encode each path segment to handle special characters in filenames
   const encodedKey = r2Key.split('/').map(encodeURIComponent).join('/');
-  return `${API_URL}/api/files/${encodedKey}${tokenParam}`;
+  const baseUrl = `${API_URL}/api/files/${encodedKey}`;
+  // Only append token param if we actually have a valid token.
+  // An empty/null token would still allow public files to load via the
+  // server's public-item check, but avoids sending a malformed query param.
+  if (ft) {
+    return `${baseUrl}?ft=${encodeURIComponent(ft)}`;
+  }
+  return baseUrl;
 }
 
 /**

@@ -47,8 +47,16 @@ remote = true
 # IMAGE_ANALYSIS_MODEL=@cf/meta/llama-3.2-11b-vision-instruct
 # AGENT_CHAT_MODEL=@cf/zai-org/glm-4.7-flash
 
+# Environment
+[vars]
+ENVIRONMENT = "production"
+
 # JWT_SECRET is set via: wrangler secret put JWT_SECRET
 # For local dev, set JWT_SECRET in .dev.vars file
+
+# Google OAuth (optional — enables "Sign in with Google")
+# GOOGLE_CLIENT_ID = "your-client-id.apps.googleusercontent.com"  # Set in .dev.vars or here
+# GOOGLE_CLIENT_SECRET is set via: wrangler secret put GOOGLE_CLIENT_SECRET
 
 # Scheduled triggers (cron jobs)
 # Clean up old trashed items daily at 3:00 AM UTC
