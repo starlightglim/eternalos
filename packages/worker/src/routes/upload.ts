@@ -52,7 +52,7 @@ const CSS_ASSET_ALLOWED_TYPES: Record<string, string> = {
 const MAX_CSS_ASSET_SIZE = 500 * 1024;
 
 // Max CSS assets per user
-const MAX_CSS_ASSETS_PER_USER = 10;
+const MAX_CSS_ASSETS_PER_USER = 25; // Increased for sprite chrome (frame + titlebar + buttons + resize)
 
 // Max file size: 10MB for regular files
 const MAX_FILE_SIZE = 10 * 1024 * 1024;

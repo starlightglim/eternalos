@@ -7,6 +7,75 @@
  */
 export type WidgetType = 'sticky-note' | 'guestbook' | 'music-player' | 'pixel-canvas' | 'link-board';
 
+// ---------------------------------------------------------------------------
+// Sound & Cursor Skin System
+// ---------------------------------------------------------------------------
+
+/**
+ * All sound types available in the OS.
+ * Each can be mapped to a custom audio file via SoundPack.
+ */
+export type SoundType =
+  | 'click'
+  | 'windowOpen'
+  | 'windowClose'
+  | 'folderOpen'
+  | 'drop'
+  | 'trash'
+  | 'emptyTrash'
+  | 'alert'
+  | 'error'
+  | 'startup'
+  | 'select';
+
+/**
+ * A sound pack maps sound types to custom audio file URLs.
+ * Sounds not in the map fall back to built-in synthesized sounds.
+ */
+export interface SoundPack {
+  name: string; // e.g. "Custom", "Sci-Fi", "Retro"
+  sounds: Partial<Record<SoundType, string>>; // SoundType → URL path
+}
+
+/**
+ * Metadata for an uploaded sound asset stored in R2.
+ */
+export interface SoundAssetMeta {
+  soundId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  uploadedAt: number;
+  soundType?: SoundType; // Which sound slot this is assigned to
+}
+
+/**
+ * Cursor states that can be customized with images.
+ */
+export type CursorState =
+  | 'default'
+  | 'pointer'
+  | 'grab'
+  | 'grabbing'
+  | 'text'
+  | 'wait'
+  | 'move'
+  | 'nwse-resize';
+
+/**
+ * Metadata for an uploaded cursor asset stored in R2.
+ */
+export interface CursorAssetMeta {
+  cursorId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  uploadedAt: number;
+  cursorState?: CursorState; // Which cursor slot this is assigned to
+  hotspotX?: number; // Cursor hotspot X coordinate
+  hotspotY?: number; // Cursor hotspot Y coordinate
+}
+
 /**
  * Sticker configuration (freely placed decoration images)
  */
@@ -162,6 +231,8 @@ export interface UserProfile {
   shareDescription?: string;       // Custom OG description, max 200 chars
   // Analytics
   analyticsEnabled?: boolean;      // Opt-in view counter
+  // Sound customization (Skin system)
+  soundPack?: SoundPack;           // Custom sound mappings
 }
 
 export interface OAuthProvider {
@@ -217,4 +288,29 @@ export interface EmailVerificationRecord {
   email: string;
   createdAt: number;
   expiresAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// Bazaar — Community asset marketplace
+// ---------------------------------------------------------------------------
+
+export type PackType = 'cursor' | 'icon' | 'sound' | 'effect' | 'skin';
+
+export interface BazaarPack {
+  packId: string;
+  type: PackType;
+  name: string;
+  description: string;
+  authorUid: string;
+  authorUsername: string;
+  version: string;
+  previewUrl: string;
+  createdAt: number;
+  updatedAt: number;
+  installs: number;
+  tags: string[];
+  /** Maps asset keys to public R2 URLs (e.g. "default" → "/api/bazaar/assets/packId/default.png") */
+  assets: Record<string, string>;
+  /** Token paths → values to apply on install */
+  config: Record<string, string | number | boolean>;
 }

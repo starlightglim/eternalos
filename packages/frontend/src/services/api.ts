@@ -12,6 +12,11 @@ const API_URL = import.meta.env.VITE_API_URL || '';
 // Check if API is configured
 export const isApiConfigured = !!API_URL;
 
+/** Get full URL for an API-relative path (e.g. /api/bazaar/assets/... → https://api.example.com/api/bazaar/assets/...) */
+export function getApiUrl(path: string): string {
+  return `${API_URL}${path}`;
+}
+
 // Store JWT in memory
 let authToken: string | null = null;
 let refreshToken: string | null = null;
@@ -488,6 +493,12 @@ interface VisitorApiResponse {
   fontSmoothing?: boolean;
   customCSS?: string;
   hideWatermark?: boolean;
+  // Extended design tokens (cursor images, etc.)
+  designTokens?: Record<string, string | number | boolean>;
+  // Variant selections
+  variants?: Record<string, string>;
+  // Sound customization
+  soundPack?: { name: string; sounds: Record<string, string> };
   // Profile fields
   bio?: string;
   profileLinks?: { title: string; url: string }[];
@@ -530,6 +541,8 @@ export async function fetchVisitorDesktop(username: string): Promise<VisitorResp
       fontSmoothing: data.fontSmoothing,
       customCSS: data.customCSS,
       hideWatermark: data.hideWatermark,
+      designTokens: data.designTokens,
+      soundPack: data.soundPack,
       bio: data.bio,
       profileLinks: data.profileLinks,
       shareDescription: data.shareDescription,
@@ -822,6 +835,8 @@ export interface ProfileUpdateRequest {
   shareDescription?: string;
   // Analytics
   analyticsEnabled?: boolean;
+  // Sound customization
+  soundPack?: { name: string; sounds: Partial<Record<string, string>> };
 }
 
 export interface ProfileUpdateResponse {
@@ -987,6 +1002,168 @@ export async function fetchAnalytics(): Promise<AnalyticsData> {
   return apiRequest<AnalyticsData>('/api/analytics');
 }
 
+// ============ Sound Asset API ============
+
+export interface SoundAsset {
+  soundId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  uploadedAt: number;
+  soundType?: string;
+  url: string;
+}
+
+export async function uploadSound(
+  file: File,
+  soundType?: string,
+  onProgress?: (progress: number) => void
+): Promise<{ success: boolean; asset: SoundAsset }> {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (soundType) {
+    formData.append('soundType', soundType);
+  }
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+
+    xhr.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable && onProgress) {
+        const progress = Math.round((event.loaded / event.total) * 100);
+        onProgress(progress);
+      }
+    });
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch {
+          reject(new Error('Invalid response from server'));
+        }
+      } else {
+        try {
+          const error = JSON.parse(xhr.responseText);
+          reject(new Error(error.error || `HTTP ${xhr.status}`));
+        } catch {
+          reject(new Error(`Sound upload failed: HTTP ${xhr.status}`));
+        }
+      }
+    });
+
+    xhr.addEventListener('error', () => reject(new Error('Network error during sound upload')));
+    xhr.addEventListener('abort', () => reject(new Error('Sound upload cancelled')));
+
+    xhr.open('POST', `${API_URL}/api/sounds`);
+    if (authToken) {
+      xhr.setRequestHeader('Authorization', `Bearer ${authToken}`);
+    }
+    xhr.send(formData);
+  });
+}
+
+export async function listSounds(): Promise<SoundAsset[]> {
+  const response = await apiRequest<{ assets: SoundAsset[] }>('/api/sounds');
+  return response.assets;
+}
+
+export async function deleteSound(soundId: string): Promise<{ success: boolean }> {
+  return apiRequest<{ success: boolean }>(`/api/sounds/${soundId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function getSoundUrl(urlPath: string): string {
+  return `${API_URL}${urlPath}`;
+}
+
+// ============ Cursor Asset API ============
+
+export interface CursorAsset {
+  cursorId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  uploadedAt: number;
+  cursorState?: string;
+  hotspotX?: number;
+  hotspotY?: number;
+  url: string;
+}
+
+export async function uploadCursor(
+  file: File,
+  cursorState?: string,
+  hotspotX?: number,
+  hotspotY?: number,
+  onProgress?: (progress: number) => void
+): Promise<{ success: boolean; asset: CursorAsset }> {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (cursorState) {
+    formData.append('cursorState', cursorState);
+  }
+  if (hotspotX !== undefined) {
+    formData.append('hotspotX', String(hotspotX));
+  }
+  if (hotspotY !== undefined) {
+    formData.append('hotspotY', String(hotspotY));
+  }
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+
+    xhr.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable && onProgress) {
+        const progress = Math.round((event.loaded / event.total) * 100);
+        onProgress(progress);
+      }
+    });
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch {
+          reject(new Error('Invalid response from server'));
+        }
+      } else {
+        try {
+          const error = JSON.parse(xhr.responseText);
+          reject(new Error(error.error || `HTTP ${xhr.status}`));
+        } catch {
+          reject(new Error(`Cursor upload failed: HTTP ${xhr.status}`));
+        }
+      }
+    });
+
+    xhr.addEventListener('error', () => reject(new Error('Network error during cursor upload')));
+    xhr.addEventListener('abort', () => reject(new Error('Cursor upload cancelled')));
+
+    xhr.open('POST', `${API_URL}/api/cursors`);
+    if (authToken) {
+      xhr.setRequestHeader('Authorization', `Bearer ${authToken}`);
+    }
+    xhr.send(formData);
+  });
+}
+
+export async function listCursors(): Promise<CursorAsset[]> {
+  const response = await apiRequest<{ assets: CursorAsset[] }>('/api/cursors');
+  return response.assets;
+}
+
+export async function deleteCursor(cursorId: string): Promise<{ success: boolean }> {
+  return apiRequest<{ success: boolean }>(`/api/cursors/${cursorId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function getCursorUrl(urlPath: string): string {
+  return `${API_URL}${urlPath}`;
+}
+
 // ============ Guestbook API ============
 
 export async function postGuestbookEntry(
@@ -1011,5 +1188,92 @@ export async function postGuestbookEntry(
     return { success: false, error: error.error || `HTTP ${response.status}` };
   }
 
+  return response.json();
+}
+
+// ---------------------------------------------------------------------------
+// Bazaar API
+// ---------------------------------------------------------------------------
+
+export interface BazaarPack {
+  packId: string;
+  type: 'cursor' | 'icon' | 'sound' | 'effect' | 'skin';
+  name: string;
+  description: string;
+  authorUid: string;
+  authorUsername: string;
+  version: string;
+  previewUrl: string;
+  createdAt: number;
+  updatedAt: number;
+  installs: number;
+  tags: string[];
+  assets: Record<string, string>;
+  config: Record<string, string | number | boolean>;
+}
+
+/** Browse packs in the Bazaar */
+export async function bazaarBrowse(options?: {
+  type?: string; q?: string; page?: number;
+}): Promise<{ packs: BazaarPack[]; total: number; page: number; pageSize: number }> {
+  const params = new URLSearchParams();
+  if (options?.type) params.set('type', options.type);
+  if (options?.q) params.set('q', options.q);
+  if (options?.page) params.set('page', String(options.page));
+
+  const response = await fetch(`${API_URL}/api/bazaar/browse?${params}`);
+  return response.json();
+}
+
+/** Get a single pack */
+export async function bazaarGetPack(packId: string): Promise<{ pack: BazaarPack }> {
+  const response = await fetch(`${API_URL}/api/bazaar/pack/${packId}`);
+  return response.json();
+}
+
+/** Install a pack (returns the config to apply) */
+export async function bazaarInstall(packId: string): Promise<{ success: boolean; config: Record<string, string | number | boolean>; pack: BazaarPack }> {
+  const response = await fetch(`${API_URL}/api/bazaar/install/${packId}`, {
+    method: 'POST',
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+  });
+  return response.json();
+}
+
+/** Publish a pack to the Bazaar */
+export async function bazaarPublish(
+  manifest: { type: string; name: string; description: string; tags: string[]; config: Record<string, string | number | boolean> },
+  preview: File,
+  assets: Record<string, File>,
+): Promise<{ success: boolean; pack?: BazaarPack; error?: string }> {
+  const formData = new FormData();
+  formData.append('manifest', JSON.stringify(manifest));
+  formData.append('preview', preview);
+  for (const [key, file] of Object.entries(assets)) {
+    formData.append(`asset_${key}`, file);
+  }
+
+  const response = await fetch(`${API_URL}/api/bazaar/publish`, {
+    method: 'POST',
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    body: formData,
+  });
+  return response.json();
+}
+
+/** Delete a pack you published */
+export async function bazaarDelete(packId: string): Promise<{ success: boolean; error?: string }> {
+  const response = await fetch(`${API_URL}/api/bazaar/pack/${packId}`, {
+    method: 'DELETE',
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+  });
+  return response.json();
+}
+
+/** List your own published packs */
+export async function bazaarMyPacks(): Promise<{ packs: BazaarPack[] }> {
+  const response = await fetch(`${API_URL}/api/bazaar/my-packs`, {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+  });
   return response.json();
 }

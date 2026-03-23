@@ -1,0 +1,22 @@
+/* Sprite Resize Handle — custom image (Skin system) */
+
+.resizeHandle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: var(--eos-sprite-resize-width, 16px);
+  height: var(--eos-sprite-resize-height, 16px);
+  cursor: nwse-resize;
+  z-index: 10;
+  background-image: var(--eos-sprite-resize-url, none);
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: bottom right;
+  background-color: transparent;
+  border: none;
+  image-rendering: pixelated;
+}
+
+.resizeHandle:hover {
+  opacity: 0.8;
+}

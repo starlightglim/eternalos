@@ -12,6 +12,7 @@ const VARIANT_CLASS: Record<string, string> = {
   classic: styles.classic,
   flat: styles.flat,
   gradient: styles.gradient,
+  sprite: styles.sprite,
 };
 
 export function WindowTitleBar({

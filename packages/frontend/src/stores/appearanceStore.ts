@@ -201,6 +201,9 @@ const ALLOWED_CSS_URL_PREFIXES = [
   '/api/css-assets/',
   '/api/wallpaper/',
   '/api/icon/',
+  '/api/sounds/',
+  '/api/cursors/',
+  '/api/bazaar/assets/',
 ];
 
 function isAllowedCSSUrl(urlValue: string): boolean {

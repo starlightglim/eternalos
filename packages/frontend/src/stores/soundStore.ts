@@ -1,17 +1,28 @@
 /**
  * Sound Store - Manages desktop sound effects for EternalOS
  *
- * Classic Mac OS-style sounds for:
- * - Window open/close
- * - Folder open
- * - File drop
- * - Trash sounds (drop, empty)
- * - Alert/error beeps
- * - Click feedback
+ * Supports:
+ * - Built-in synthesized sound packs (Classic, Sci-Fi, Typewriter)
+ * - Custom audio file sounds uploaded by the user
+ * - Visitor mode: load another user's sound pack when visiting /@username
+ *
+ * Fallback chain: Custom sound URL → Built-in synthesized → Silence
  */
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import {
+  BUILTIN_PACKS,
+  playSynthSound,
+  type BuiltInPackId,
+  type SynthSoundType,
+} from '../sounds/builtInPacks';
+import {
+  preloadSounds,
+  playPreloadedAudio,
+  releasePreloadedAudio,
+  type PreloadedAudioMap,
+} from '../sounds/audioPreloader';
 
 // Sound types available in the system
 export type SoundType =
@@ -23,15 +34,38 @@ export type SoundType =
   | 'trash'
   | 'emptyTrash'
   | 'alert'
-  | 'error';
+  | 'error'
+  | 'startup'
+  | 'select';
+
+/** Sound pack — maps sound types to custom audio file URLs */
+export interface SoundPack {
+  name: string;
+  sounds: Partial<Record<SoundType, string>>;
+}
 
 interface SoundState {
   enabled: boolean;
   volume: number; // 0-1
+  builtInPack: BuiltInPackId;
+  customSoundPack: SoundPack | null;
+
   // Actions
   setEnabled: (enabled: boolean) => void;
   setVolume: (volume: number) => void;
   playSound: (type: SoundType) => void;
+
+  // Built-in pack selection
+  setBuiltInPack: (pack: BuiltInPackId) => void;
+
+  // Custom sound management
+  setCustomSoundUrl: (type: SoundType, url: string | null) => void;
+  setCustomSoundPack: (pack: SoundPack | null) => void;
+  preloadCustomSounds: () => Promise<void>;
+
+  // Visitor mode
+  loadVisitorSounds: (pack: SoundPack | null) => Promise<void>;
+  clearVisitorSounds: () => void;
 }
 
 // Audio context (lazy initialization)
@@ -58,133 +92,107 @@ function getAudioContext(): AudioContext | null {
   return audioContext;
 }
 
-// Generate simple synthesized sounds (no external files needed)
-function generateBeep(
-  ctx: AudioContext,
-  frequency: number,
-  duration: number,
-  volume: number,
-  type: OscillatorType = 'square'
-): void {
-  const oscillator = ctx.createOscillator();
-  const gainNode = ctx.createGain();
-
-  oscillator.connect(gainNode);
-  gainNode.connect(ctx.destination);
-
-  oscillator.frequency.value = frequency;
-  oscillator.type = type;
-
-  gainNode.gain.setValueAtTime(volume * 0.3, ctx.currentTime);
-  gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
-
-  oscillator.start(ctx.currentTime);
-  oscillator.stop(ctx.currentTime + duration);
-}
-
-// Classic Mac-style click sound
-function playClick(ctx: AudioContext, volume: number): void {
-  generateBeep(ctx, 1000, 0.02, volume, 'square');
-}
-
-// Window open - ascending tone
-function playWindowOpen(ctx: AudioContext, volume: number): void {
-  generateBeep(ctx, 400, 0.05, volume, 'sine');
-  setTimeout(() => generateBeep(ctx, 600, 0.05, volume, 'sine'), 30);
-}
-
-// Window close - descending tone
-function playWindowClose(ctx: AudioContext, volume: number): void {
-  generateBeep(ctx, 600, 0.05, volume, 'sine');
-  setTimeout(() => generateBeep(ctx, 400, 0.05, volume, 'sine'), 30);
-}
-
-// Folder open - soft click
-function playFolderOpen(ctx: AudioContext, volume: number): void {
-  generateBeep(ctx, 800, 0.03, volume, 'triangle');
-}
-
-// Drop sound - thud
-function playDrop(ctx: AudioContext, volume: number): void {
-  generateBeep(ctx, 150, 0.08, volume, 'sine');
-}
-
-// Trash sound - crumple/swoosh
-function playTrash(ctx: AudioContext, volume: number): void {
-  generateBeep(ctx, 300, 0.04, volume, 'sawtooth');
-  setTimeout(() => generateBeep(ctx, 200, 0.06, volume, 'sawtooth'), 40);
-}
-
-// Empty trash - longer swoosh
-function playEmptyTrash(ctx: AudioContext, volume: number): void {
-  for (let i = 0; i < 5; i++) {
-    setTimeout(() => {
-      generateBeep(ctx, 400 - i * 60, 0.04, volume * (1 - i * 0.15), 'sawtooth');
-    }, i * 40);
-  }
-}
-
-// Alert beep - classic Mac sosumi-style
-function playAlert(ctx: AudioContext, volume: number): void {
-  generateBeep(ctx, 880, 0.1, volume, 'sine');
-  setTimeout(() => generateBeep(ctx, 880, 0.1, volume, 'sine'), 150);
-}
-
-// Error sound - low bong
-function playError(ctx: AudioContext, volume: number): void {
-  generateBeep(ctx, 220, 0.2, volume, 'sine');
-}
+// Preloaded custom audio elements (not persisted — rebuilt on load)
+let preloadedAudio: PreloadedAudioMap = new Map();
+// Visitor sounds (separate from user's own sounds)
+let visitorPreloadedAudio: PreloadedAudioMap = new Map();
+let isVisitorMode = false;
 
 export const useSoundStore = create<SoundState>()(
   persist(
     (set, get) => ({
       enabled: true,
       volume: 0.5,
+      builtInPack: 'classic' as BuiltInPackId,
+      customSoundPack: null,
 
       setEnabled: (enabled) => set({ enabled }),
 
       setVolume: (volume) => set({ volume: Math.max(0, Math.min(1, volume)) }),
 
+      setBuiltInPack: (pack) => set({ builtInPack: pack }),
+
+      setCustomSoundUrl: (type, url) => {
+        const { customSoundPack } = get();
+        const current = customSoundPack || { name: 'Custom', sounds: {} };
+
+        if (url) {
+          current.sounds[type] = url;
+        } else {
+          delete current.sounds[type];
+        }
+
+        // If no custom sounds left, clear the pack
+        const hasAnySounds = Object.keys(current.sounds).length > 0;
+        set({ customSoundPack: hasAnySounds ? { ...current } : null });
+      },
+
+      setCustomSoundPack: (pack) => set({ customSoundPack: pack }),
+
+      preloadCustomSounds: async () => {
+        const { customSoundPack } = get();
+        releasePreloadedAudio(preloadedAudio);
+
+        if (customSoundPack?.sounds) {
+          preloadedAudio = await preloadSounds(customSoundPack.sounds);
+        }
+      },
+
+      loadVisitorSounds: async (pack) => {
+        isVisitorMode = true;
+        releasePreloadedAudio(visitorPreloadedAudio);
+
+        if (pack?.sounds) {
+          visitorPreloadedAudio = await preloadSounds(pack.sounds);
+        }
+      },
+
+      clearVisitorSounds: () => {
+        isVisitorMode = false;
+        releasePreloadedAudio(visitorPreloadedAudio);
+      },
+
       playSound: (type) => {
-        const { enabled, volume } = get();
+        const { enabled, volume, builtInPack, customSoundPack } = get();
         if (!enabled || volume === 0) return;
 
+        // Determine which audio map to use
+        const activeAudioMap = isVisitorMode ? visitorPreloadedAudio : preloadedAudio;
+        const activePack = isVisitorMode ? null : customSoundPack;
+
+        // 1. Try custom audio file first
+        const customAudio = activeAudioMap.get(type);
+        if (customAudio) {
+          playPreloadedAudio(customAudio, volume);
+          return;
+        }
+
+        // 2. If there's a custom URL but it's not preloaded, try to play inline
+        //    (this handles the case where preloading hasn't finished yet)
+        const customUrl = activePack?.sounds?.[type];
+        if (customUrl) {
+          try {
+            const audio = new Audio(customUrl);
+            audio.volume = volume;
+            audio.play().catch(() => {});
+          } catch {
+            // Fall through to synthesized
+          }
+          return;
+        }
+
+        // 3. Fall back to built-in synthesized sound
         const ctx = getAudioContext();
         if (!ctx) return;
 
-        // Resume audio context if suspended (browser autoplay policy)
         if (ctx.state === 'suspended') {
           ctx.resume();
         }
 
-        switch (type) {
-          case 'click':
-            playClick(ctx, volume);
-            break;
-          case 'windowOpen':
-            playWindowOpen(ctx, volume);
-            break;
-          case 'windowClose':
-            playWindowClose(ctx, volume);
-            break;
-          case 'folderOpen':
-            playFolderOpen(ctx, volume);
-            break;
-          case 'drop':
-            playDrop(ctx, volume);
-            break;
-          case 'trash':
-            playTrash(ctx, volume);
-            break;
-          case 'emptyTrash':
-            playEmptyTrash(ctx, volume);
-            break;
-          case 'alert':
-            playAlert(ctx, volume);
-            break;
-          case 'error':
-            playError(ctx, volume);
-            break;
+        const pack = BUILTIN_PACKS[builtInPack];
+        const definition = pack[type as SynthSoundType];
+        if (definition) {
+          playSynthSound(ctx, definition, volume);
         }
       },
     }),
@@ -193,6 +201,8 @@ export const useSoundStore = create<SoundState>()(
       partialize: (state) => ({
         enabled: state.enabled,
         volume: state.volume,
+        builtInPack: state.builtInPack,
+        // Don't persist customSoundPack — it's loaded from the profile/API
       }),
     }
   )

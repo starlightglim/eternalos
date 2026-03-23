@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { WindowManager } from '../window';
 import { DesktopIcon, Trash } from '../icons';
 import { Sticker } from './Sticker';
+import { EffectsOverlay } from '../../effects/EffectsOverlay';
 import { MenuBar } from '../menubar';
 import { UploadProgress } from './UploadProgress';
 import { CSSElementPicker } from '../viewers/CSSElementPicker';
@@ -1785,6 +1786,9 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
         onDragLeave={handleFileDragLeave}
         onDrop={handleFileDrop}
       >
+        {/* Effects overlay (skin system) */}
+        <EffectsOverlay />
+
         {/* Desktop Icons */}
       {rootItems.map((item) => (
         <DesktopIcon

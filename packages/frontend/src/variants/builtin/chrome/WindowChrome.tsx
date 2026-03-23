@@ -12,6 +12,7 @@ const VARIANT_CLASS: Record<string, string> = {
   beveled: styles.beveled,
   flat: styles.flat,
   floating: styles.floating,
+  sprite: styles.sprite,
 };
 
 export function WindowChrome({

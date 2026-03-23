@@ -8,7 +8,7 @@
  */
 
 import type { Env } from '../index';
-import type { DesktopItem, UserProfile } from '../types';
+import type { DesktopItem, UserProfile, SoundPack } from '../types';
 
 interface SavedWindowState {
   id: string;
@@ -35,6 +35,12 @@ interface VisitorResponse {
   fontSmoothing?: boolean;
   customCSS?: string;
   hideWatermark?: boolean;
+  // Extended design tokens (cursor images, etc.)
+  designTokens?: Record<string, string | number | boolean>;
+  // Variant selections (window chrome style, etc.)
+  variants?: Record<string, string>;
+  // Sound customization
+  soundPack?: SoundPack;
   // Profile fields
   bio?: string;
   profileLinks?: { title: string; url: string }[];
@@ -128,6 +134,8 @@ export async function handleVisit(
       fontSmoothing: data.profile?.fontSmoothing,
       customCSS: data.profile?.customCSS,
       hideWatermark: data.profile?.hideWatermark,
+      designTokens: data.profile?.designTokens,
+      soundPack: data.profile?.soundPack,
       bio: data.profile?.bio,
       profileLinks: data.profile?.profileLinks,
       shareDescription: data.profile?.shareDescription,

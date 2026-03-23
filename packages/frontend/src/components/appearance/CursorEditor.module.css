@@ -1,0 +1,115 @@
+/* Cursor Editor Styles */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sectionLabel {
+  font-family: var(--font-chicago);
+  font-size: 11px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--shadow);
+}
+
+.cursorGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cursorRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+}
+
+.cursorRow:hover {
+  background: var(--highlight);
+  border-color: var(--shadow);
+}
+
+.cursorLabel {
+  font-family: var(--font-geneva);
+  font-size: 11px;
+  width: 80px;
+  flex-shrink: 0;
+}
+
+.cursorPreview {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--shadow);
+  background: var(--white);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  image-rendering: pixelated;
+}
+
+.cursorPreview img {
+  max-width: 32px;
+  max-height: 32px;
+  image-rendering: pixelated;
+}
+
+.cursorStatus {
+  font-family: var(--font-geneva);
+  font-size: 10px;
+  color: var(--shadow);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cursorStatus.custom {
+  color: var(--selection);
+  font-weight: bold;
+}
+
+.cursorActions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.btn {
+  font-family: var(--font-chicago);
+  font-size: 10px;
+  padding: 2px 6px;
+  border: 1px outset var(--highlight);
+  background: var(--platinum);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn:hover {
+  background: var(--highlight);
+}
+
+.btn:active {
+  border-style: inset;
+  background: var(--shadow);
+}
+
+.btnRemove {
+  composes: btn;
+  color: #900;
+}
+
+.hiddenInput {
+  display: none;
+}
+
+.error {
+  font-family: var(--font-geneva);
+  font-size: 10px;
+  color: #c00;
+  padding: 2px 4px;
+}

@@ -53,6 +53,7 @@ const ALLOWED_URL_PREFIXES = [
   '/api/css-assets/',
   '/api/wallpaper/',
   '/api/icon/',
+  '/api/bazaar/assets/',
 ];
 
 /**

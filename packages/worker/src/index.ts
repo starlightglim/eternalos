@@ -9,6 +9,9 @@ import { UserDesktop } from './durable-objects/UserDesktop';
 import { DesktopChatAgent } from './agents/DesktopChatAgent';
 import { handleSignup, handleLogin, handleLogout, handleForgotPassword, handleResetPassword, handleRefreshToken, handleChangePassword, handleChangeUsername, handleSendVerification, handleVerifyEmail, handleGoogleCallback } from './routes/auth';
 import { handleUpload, handleServeFile, handleWallpaperUpload, handleServeWallpaper, handleIconUpload, handleServeIcon, handleCSSAssetUpload, handleServeCSSAsset, handleListCSSAssets, handleDeleteCSSAsset, handleAnalyzeImageItem } from './routes/upload';
+import { handleSoundUpload, handleServeSound, handleListSounds, handleDeleteSound } from './routes/sounds';
+import { handleCursorUpload, handleServeCursor, handleListCursors, handleDeleteCursor } from './routes/cursors';
+import { handleBazaarPublish, handleBazaarBrowse, handleBazaarGetPack, handleBazaarInstall, handleBazaarDelete, handleBazaarServeAsset, handleBazaarMyPacks } from './routes/bazaar';
 import { handleVisit } from './routes/visit';
 import { handleOgImage } from './routes/ogImage';
 import { trackVisitAnalytics, handleGetAnalytics } from './routes/analytics';
@@ -270,7 +273,7 @@ export default {
       const rateLimitConfig = isAuthRoute ? RATE_LIMIT_AUTH : RATE_LIMIT_API;
 
       // Check rate limit (skip for file serving to avoid latency)
-      const skipRateLimit = path.startsWith('/api/files/') || path.startsWith('/api/wallpaper/') || path.startsWith('/api/css-assets/');
+      const skipRateLimit = path.startsWith('/api/files/') || path.startsWith('/api/wallpaper/') || path.startsWith('/api/css-assets/') || path.startsWith('/api/sounds/') || path.startsWith('/api/cursors/') || path.startsWith('/api/bazaar/assets/');
       if (!skipRateLimit) {
         rateLimitResult = await checkRateLimit(request, env, rateLimitConfig);
         if (!rateLimitResult.allowed) {
@@ -593,6 +596,163 @@ export default {
           response = await handleServeCSSAsset(request, env, uid, assetId, filename);
           return withCors(response, corsHeaders);
         }
+      }
+
+      // Sound upload
+      if (path === '/api/sounds' && request.method === 'POST') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+        response = await handleSoundUpload(request, env, authResult);
+        return withCors(response, corsHeaders);
+      }
+
+      // Sound list
+      if (path === '/api/sounds' && request.method === 'GET') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+        response = await handleListSounds(request, env, authResult);
+        return withCors(response, corsHeaders);
+      }
+
+      // Sound delete: /api/sounds/:soundId
+      if (path.startsWith('/api/sounds/') && request.method === 'DELETE') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+        const soundId = path.slice('/api/sounds/'.length);
+        // Only match delete for single-segment paths (not serving paths)
+        if (!soundId.includes('/')) {
+          response = await handleDeleteSound(request, env, authResult, soundId);
+          return withCors(response, corsHeaders);
+        }
+      }
+
+      // Sound serving: /api/sounds/:uid/:soundId/:filename (public)
+      if (path.startsWith('/api/sounds/') && request.method === 'GET') {
+        const parts = path.slice('/api/sounds/'.length).split('/');
+        if (parts.length >= 3) {
+          const [uid, soundId, ...filenameParts] = parts;
+          const filename = decodeURIComponent(filenameParts.join('/'));
+          response = await handleServeSound(request, env, uid, soundId, filename);
+          return withCors(response, corsHeaders);
+        }
+      }
+
+      // Cursor upload
+      if (path === '/api/cursors' && request.method === 'POST') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+        response = await handleCursorUpload(request, env, authResult);
+        return withCors(response, corsHeaders);
+      }
+
+      // Cursor list
+      if (path === '/api/cursors' && request.method === 'GET') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+        response = await handleListCursors(request, env, authResult);
+        return withCors(response, corsHeaders);
+      }
+
+      // Cursor delete: /api/cursors/:cursorId
+      if (path.startsWith('/api/cursors/') && request.method === 'DELETE') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+        const cursorId = path.slice('/api/cursors/'.length);
+        if (!cursorId.includes('/')) {
+          response = await handleDeleteCursor(request, env, authResult, cursorId);
+          return withCors(response, corsHeaders);
+        }
+      }
+
+      // Cursor serving: /api/cursors/:uid/:cursorId/:filename (public)
+      if (path.startsWith('/api/cursors/') && request.method === 'GET') {
+        const parts = path.slice('/api/cursors/'.length).split('/');
+        if (parts.length >= 3) {
+          const [uid, cursorId, ...filenameParts] = parts;
+          const filename = decodeURIComponent(filenameParts.join('/'));
+          response = await handleServeCursor(request, env, uid, cursorId, filename);
+          return withCors(response, corsHeaders);
+        }
+      }
+
+      // =====================================================================
+      // Bazaar routes
+      // =====================================================================
+
+      // Bazaar asset serving (public, cacheable) — must be before auth-required routes
+      if (path.startsWith('/api/bazaar/assets/') && request.method === 'GET') {
+        const parts = path.slice('/api/bazaar/assets/'.length).split('/');
+        if (parts.length >= 2) {
+          const [packId, ...filenameParts] = parts;
+          const filename = decodeURIComponent(filenameParts.join('/'));
+          response = await handleBazaarServeAsset(request, env, packId, filename);
+          return withCors(response, corsHeaders);
+        }
+      }
+
+      // Bazaar browse (public)
+      if (path === '/api/bazaar/browse' && request.method === 'GET') {
+        response = await handleBazaarBrowse(request, env);
+        return withCors(response, corsHeaders);
+      }
+
+      // Bazaar get pack (public)
+      if (path.startsWith('/api/bazaar/pack/') && request.method === 'GET') {
+        const packId = path.slice('/api/bazaar/pack/'.length);
+        if (packId && !packId.includes('/')) {
+          response = await handleBazaarGetPack(request, env, packId);
+          return withCors(response, corsHeaders);
+        }
+      }
+
+      // Bazaar publish (auth required)
+      if (path === '/api/bazaar/publish' && request.method === 'POST') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) return withCors(authResult, corsHeaders);
+        response = await handleBazaarPublish(request, env, authResult);
+        return withCors(response, corsHeaders);
+      }
+
+      // Bazaar install (auth required)
+      if (path.startsWith('/api/bazaar/install/') && request.method === 'POST') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) return withCors(authResult, corsHeaders);
+        const packId = path.slice('/api/bazaar/install/'.length);
+        if (packId && !packId.includes('/')) {
+          response = await handleBazaarInstall(request, env, authResult, packId);
+          return withCors(response, corsHeaders);
+        }
+      }
+
+      // Bazaar delete (auth required, author only)
+      if (path.startsWith('/api/bazaar/pack/') && request.method === 'DELETE') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) return withCors(authResult, corsHeaders);
+        const packId = path.slice('/api/bazaar/pack/'.length);
+        if (packId && !packId.includes('/')) {
+          response = await handleBazaarDelete(request, env, authResult, packId);
+          return withCors(response, corsHeaders);
+        }
+      }
+
+      // Bazaar my packs (auth required)
+      if (path === '/api/bazaar/my-packs' && request.method === 'GET') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) return withCors(authResult, corsHeaders);
+        response = await handleBazaarMyPacks(request, env, authResult);
+        return withCors(response, corsHeaders);
       }
 
       // File serving: /api/files/:uid/:itemId/:filename

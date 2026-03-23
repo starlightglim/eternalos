@@ -9,6 +9,14 @@ import { adjustColor, getContrastingTextColor, getSecondaryTextColor } from '../
 import { resolveFontFamily } from '../utils/fontCatalog';
 import { TOKEN_REGISTRY, getAllCSSVars, type DerivedTransform } from './tokenSchema';
 
+/** Resolve a relative /api/ path to a full URL using the configured API base */
+const API_BASE = import.meta.env.VITE_API_URL || '';
+function resolveAssetUrl(url: string): string {
+  if (!API_BASE || url.startsWith('http://') || url.startsWith('https://')) return url;
+  if (url.startsWith('/api/')) return `${API_BASE}${url}`;
+  return url;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -274,6 +282,101 @@ export function compileTokensToCSS(
   // --- Structural: cursor ---
   if (tokens['cursor.style'] && String(tokens['cursor.style']).trim()) {
     rules.push(`.user-desktop { cursor: ${tokens['cursor.style']}; }`);
+  }
+
+  // --- Custom cursor images (Skin system) ---
+  // Each cursor.image.* token maps to CSS cursor rules on appropriate selectors
+  const cursorImageMap: Record<string, { selectors: string[]; fallback: string }> = {
+    'cursor.image.default': {
+      selectors: ['.user-desktop'],
+      fallback: 'default',
+    },
+    'cursor.image.pointer': {
+      selectors: [
+        '.user-desktop a',
+        '.user-desktop button',
+        '.user-desktop [role="button"]',
+        '.user-desktop .cursor-pointer',
+      ],
+      fallback: 'pointer',
+    },
+    'cursor.image.grab': {
+      selectors: ['.user-desktop .titleBar', '.user-desktop [style*="cursor: grab"]'],
+      fallback: 'grab',
+    },
+    'cursor.image.grabbing': {
+      selectors: ['.user-desktop .dragging', '.user-desktop [style*="cursor: grabbing"]'],
+      fallback: 'grabbing',
+    },
+    'cursor.image.text': {
+      selectors: [
+        '.user-desktop input[type="text"]',
+        '.user-desktop textarea',
+        '.user-desktop [contenteditable]',
+      ],
+      fallback: 'text',
+    },
+    'cursor.image.wait': {
+      selectors: ['.user-desktop .loading', '.user-desktop [aria-busy="true"]'],
+      fallback: 'wait',
+    },
+    'cursor.image.move': {
+      selectors: ['.user-desktop .cursor-move'],
+      fallback: 'move',
+    },
+    'cursor.image.nwse-resize': {
+      selectors: ['.user-desktop .resizeHandle', '.user-desktop [style*="cursor: nwse-resize"]'],
+      fallback: 'nwse-resize',
+    },
+  };
+
+  for (const [tokenPath, config] of Object.entries(cursorImageMap)) {
+    const cursorUrl = tokens[tokenPath];
+    if (cursorUrl && typeof cursorUrl === 'string' && cursorUrl.trim()) {
+      // Parse hotspot from the URL or token (stored as JSON: "url|hotspotX|hotspotY")
+      let url = cursorUrl;
+      let hotX = 0;
+      let hotY = 0;
+      if (cursorUrl.includes('|')) {
+        const parts = cursorUrl.split('|');
+        url = parts[0];
+        hotX = parseInt(parts[1], 10) || 0;
+        hotY = parseInt(parts[2], 10) || 0;
+      }
+      const resolvedUrl = resolveAssetUrl(url);
+      const selector = config.selectors.join(', ');
+      rules.push(`${selector} { cursor: url('${resolvedUrl}') ${hotX} ${hotY}, ${config.fallback} !important; }`);
+    }
+  }
+
+  // --- Sprite chrome (Skin system) ---
+  // 1. Assemble border-image-slice from individual slice tokens
+  const sTop = Number(tokens['chrome.sprite.sliceTop'] ?? 20);
+  const sRight = Number(tokens['chrome.sprite.sliceRight'] ?? 20);
+  const sBottom = Number(tokens['chrome.sprite.sliceBottom'] ?? 20);
+  const sLeft = Number(tokens['chrome.sprite.sliceLeft'] ?? 20);
+
+  if (tokens['chrome.sprite.sliceTop'] !== undefined || tokens['chrome.sprite.sliceRight'] !== undefined ||
+      tokens['chrome.sprite.sliceBottom'] !== undefined || tokens['chrome.sprite.sliceLeft'] !== undefined) {
+    cssVars.set('--eos-chrome-sprite-slice', `${sTop} ${sRight} ${sBottom} ${sLeft}`);
+    cssVars.set('--eos-chrome-sprite-border-width', `${sTop}px ${sRight}px ${sBottom}px ${sLeft}px`);
+  }
+
+  // 2. Wrap all sprite URL values in url() for CSS consumption
+  //    The main loop sets raw URL strings; CSS needs url('...')
+  for (const [varName, varValue] of cssVars) {
+    if (varName.includes('sprite') && typeof varValue === 'string' &&
+        varValue.startsWith('/api/') && !varValue.startsWith('url(')) {
+      cssVars.set(varName, `url('${resolveAssetUrl(varValue)}')`);
+    }
+  }
+
+  // 3. Add px units to sprite button dimensions
+  if (tokens['buttons.sprite.width'] !== undefined) {
+    cssVars.set('--eos-sprite-button-width', `${tokens['buttons.sprite.width']}px`);
+  }
+  if (tokens['buttons.sprite.height'] !== undefined) {
+    cssVars.set('--eos-sprite-button-height', `${tokens['buttons.sprite.height']}px`);
   }
 
   return { cssVars, rules, bodyStyles };

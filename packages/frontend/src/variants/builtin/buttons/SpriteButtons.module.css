@@ -1,0 +1,62 @@
+/* Sprite Buttons — custom images for window controls (Skin system) */
+
+.buttonGroup {
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 4px;
+  z-index: 2;
+}
+
+.btn {
+  width: var(--eos-sprite-button-width, 16px);
+  height: var(--eos-sprite-button-height, 16px);
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-color: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  image-rendering: pixelated;
+}
+
+/* Close button */
+.close {
+  background-image: var(--eos-sprite-btn-close, none);
+}
+.close:hover {
+  background-image: var(--eos-sprite-btn-close-hover, var(--eos-sprite-btn-close, none));
+}
+.close:active {
+  background-image: var(--eos-sprite-btn-close-active, var(--eos-sprite-btn-close-hover, var(--eos-sprite-btn-close, none)));
+}
+
+/* Zoom button */
+.zoom {
+  background-image: var(--eos-sprite-btn-zoom, none);
+}
+.zoom:hover {
+  background-image: var(--eos-sprite-btn-zoom-hover, var(--eos-sprite-btn-zoom, none));
+}
+.zoom:active {
+  background-image: var(--eos-sprite-btn-zoom-active, var(--eos-sprite-btn-zoom-hover, var(--eos-sprite-btn-zoom, none)));
+}
+
+/* Collapse button */
+.collapse {
+  background-image: var(--eos-sprite-btn-collapse, none);
+}
+.collapse:hover {
+  background-image: var(--eos-sprite-btn-collapse-hover, var(--eos-sprite-btn-collapse, none));
+}
+.collapse:active {
+  background-image: var(--eos-sprite-btn-collapse-active, var(--eos-sprite-btn-collapse-hover, var(--eos-sprite-btn-collapse, none)));
+}
+
+/* Inactive state */
+.inactive .btn {
+  opacity: 0.5;
+}

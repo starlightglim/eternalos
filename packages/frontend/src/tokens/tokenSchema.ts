@@ -589,6 +589,109 @@ export const TOKEN_REGISTRY: TokenDefinition[] = [
   },
 
   // =========================================================================
+  // CURSOR IMAGE TOKENS — Custom cursor images per state (Skin system)
+  // These are cssText tokens storing URL paths. Compiled via special cursor
+  // handling in tokenCompiler.ts to emit cursor: url(...) CSS rules.
+  // =========================================================================
+  {
+    path: 'cursor.image.default',
+    profileKey: null,
+    label: 'Default Cursor',
+    hint: 'Custom cursor image for default/arrow state',
+    tab: 'controls',
+    group: 'Custom Cursors',
+    valueType: 'cssText',
+    defaultValue: '',
+  },
+  {
+    path: 'cursor.image.pointer',
+    profileKey: null,
+    label: 'Pointer Cursor',
+    hint: 'Custom cursor for links and buttons',
+    tab: 'controls',
+    group: 'Custom Cursors',
+    valueType: 'cssText',
+    defaultValue: '',
+  },
+  {
+    path: 'cursor.image.grab',
+    profileKey: null,
+    label: 'Grab Cursor',
+    hint: 'Custom cursor for draggable elements (title bars)',
+    tab: 'controls',
+    group: 'Custom Cursors',
+    valueType: 'cssText',
+    defaultValue: '',
+  },
+  {
+    path: 'cursor.image.grabbing',
+    profileKey: null,
+    label: 'Grabbing Cursor',
+    hint: 'Custom cursor while actively dragging',
+    tab: 'controls',
+    group: 'Custom Cursors',
+    valueType: 'cssText',
+    defaultValue: '',
+  },
+  {
+    path: 'cursor.image.text',
+    profileKey: null,
+    label: 'Text Cursor',
+    hint: 'Custom cursor for text input areas',
+    tab: 'controls',
+    group: 'Custom Cursors',
+    valueType: 'cssText',
+    defaultValue: '',
+  },
+  {
+    path: 'cursor.image.wait',
+    profileKey: null,
+    label: 'Wait Cursor',
+    hint: 'Custom cursor for loading states',
+    tab: 'controls',
+    group: 'Custom Cursors',
+    valueType: 'cssText',
+    defaultValue: '',
+  },
+  {
+    path: 'cursor.image.move',
+    profileKey: null,
+    label: 'Move Cursor',
+    hint: 'Custom cursor for moving items',
+    tab: 'controls',
+    group: 'Custom Cursors',
+    valueType: 'cssText',
+    defaultValue: '',
+  },
+  {
+    path: 'cursor.image.nwse-resize',
+    profileKey: null,
+    label: 'Resize Cursor',
+    hint: 'Custom cursor for resize handles',
+    tab: 'controls',
+    group: 'Custom Cursors',
+    valueType: 'cssText',
+    defaultValue: '',
+  },
+
+  // =========================================================================
+  // DESKTOP EFFECTS (Skin system — visual overlays)
+  // Simple ON/OFF toggles. Effect color is the only parameter.
+  // =========================================================================
+  { path: 'effects.scanlines.enabled', profileKey: null, label: 'Scanlines', hint: 'Horizontal lines (retro CRT look)', tab: 'controls', group: 'Desktop Effects', valueType: 'boolean', defaultValue: false },
+  { path: 'effects.crt.enabled', profileKey: null, label: 'CRT Curvature', hint: 'Darkened edges like a curved monitor', tab: 'controls', group: 'Desktop Effects', valueType: 'boolean', defaultValue: false },
+  { path: 'effects.rain.enabled', profileKey: null, label: 'Rain', hint: 'Falling raindrops', tab: 'controls', group: 'Desktop Effects', valueType: 'boolean', defaultValue: false },
+  { path: 'effects.snow.enabled', profileKey: null, label: 'Snow', hint: 'Drifting snowflakes', tab: 'controls', group: 'Desktop Effects', valueType: 'boolean', defaultValue: false },
+  { path: 'effects.matrix.enabled', profileKey: null, label: 'Matrix Rain', hint: 'Falling green characters', tab: 'controls', group: 'Desktop Effects', valueType: 'boolean', defaultValue: false },
+  { path: 'effects.stars.enabled', profileKey: null, label: 'Stars', hint: 'Twinkling stars', tab: 'controls', group: 'Desktop Effects', valueType: 'boolean', defaultValue: false },
+  { path: 'effects.fireflies.enabled', profileKey: null, label: 'Fireflies', hint: 'Slow-moving glowing dots', tab: 'controls', group: 'Desktop Effects', valueType: 'boolean', defaultValue: false },
+  { path: 'effects.dust.enabled', profileKey: null, label: 'Dust Motes', hint: 'Tiny floating particles', tab: 'controls', group: 'Desktop Effects', valueType: 'boolean', defaultValue: false },
+  { path: 'effects.sparkleTrail.enabled', profileKey: null, label: 'Sparkle Trail', hint: 'Golden sparkles following cursor', tab: 'controls', group: 'Cursor Trails', valueType: 'boolean', defaultValue: false },
+  { path: 'effects.rainbowTrail.enabled', profileKey: null, label: 'Rainbow Trail', hint: 'Color-cycling cursor trail', tab: 'controls', group: 'Cursor Trails', valueType: 'boolean', defaultValue: false },
+  { path: 'effects.ghostTrail.enabled', profileKey: null, label: 'Ghost Trail', hint: 'Fading cursor echoes', tab: 'controls', group: 'Cursor Trails', valueType: 'boolean', defaultValue: false },
+  { path: 'effects.color', profileKey: null, label: 'Effect Color', hint: 'Tint color for effects', tab: 'controls', group: 'Desktop Effects', valueType: 'color', defaultValue: '#FFFFFF' },
+
+  // =========================================================================
   // Custom CSS (not rendered in panel, handled by CSSEditor)
   // =========================================================================
   {

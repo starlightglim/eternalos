@@ -135,7 +135,7 @@ export interface WindowState {
   preMaximizedPosition?: { x: number; y: number };
   preMaximizedSize?: { width: number; height: number };
   // Content information
-  contentType: 'folder' | 'image' | 'text' | 'markdown' | 'code' | 'get-info' | 'about' | 'wallpaper' | 'welcome' | 'search' | 'preferences' | 'trash' | 'audio' | 'video' | 'pdf' | 'calculator' | 'clock' | 'link' | 'appearance' | 'widget' | 'css-editor' | 'share-dialog' | 'profile' | 'agent-chat';
+  contentType: 'folder' | 'image' | 'text' | 'markdown' | 'code' | 'get-info' | 'about' | 'wallpaper' | 'welcome' | 'search' | 'preferences' | 'trash' | 'audio' | 'video' | 'pdf' | 'calculator' | 'clock' | 'link' | 'appearance' | 'widget' | 'css-editor' | 'share-dialog' | 'profile' | 'agent-chat' | 'bazaar' | 'cursor-creator';
   contentId?: string; // Reference to DesktopItem id if applicable
 }
 
@@ -184,6 +184,8 @@ export interface UserProfile {
   shareDescription?: string;       // Custom OG description, max 200 chars
   // Analytics
   analyticsEnabled?: boolean;      // Opt-in view counter
+  // Sound customization (Skin system)
+  soundPack?: { name: string; sounds: Partial<Record<string, string>> };
 }
 
 /**

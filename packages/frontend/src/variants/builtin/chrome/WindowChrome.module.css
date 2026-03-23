@@ -43,6 +43,22 @@
   overflow: hidden;
 }
 
+/* === Sprite variant (Skin system) — 9-slice border-image === */
+.sprite {
+  background: var(--eos-chrome-sprite-bg, transparent);
+  border: none;
+  border-style: solid;
+  border-width: var(--eos-chrome-sprite-border-width, 20px);
+  border-image-source: var(--eos-chrome-sprite-url, none);
+  border-image-slice: var(--eos-chrome-sprite-slice, 20 20 20 20) fill;
+  border-image-repeat: var(--eos-chrome-sprite-repeat, stretch);
+  box-shadow: none;
+}
+
+.sprite .windowInner {
+  border: none;
+}
+
 /* === States === */
 .minimized {
   display: none;

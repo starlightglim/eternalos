@@ -188,6 +188,32 @@ export function MenuBar() {
     setActiveMenu(null);
   }, [openWindow]);
 
+  const handleOpenBazaar = useCallback(() => {
+    openWindow({
+      id: 'bazaar-window',
+      title: 'Bazaar',
+      position: { x: 140, y: 70 },
+      size: { width: 500, height: 420 },
+      minimized: false,
+      maximized: false,
+      contentType: 'bazaar',
+    });
+    setActiveMenu(null);
+  }, [openWindow]);
+
+  const handleOpenCursorCreator = useCallback(() => {
+    openWindow({
+      id: 'cursor-creator',
+      title: 'Cursor Creator',
+      position: { x: 120, y: 50 },
+      size: { width: 460, height: 520 },
+      minimized: false,
+      maximized: false,
+      contentType: 'cursor-creator',
+    });
+    setActiveMenu(null);
+  }, [openWindow]);
+
   const handleOpenCSSEditor = useCallback(() => {
     openWindow({
       id: 'css-editor',
@@ -625,6 +651,8 @@ export function MenuBar() {
       { label: 'Ask Eternal...', action: handleOpenAgentChat, disabled: !isApiConfigured },
       { divider: true, label: '' },
       { label: 'Appearance...', action: handleOpenAppearance },
+      { label: 'Bazaar...', action: handleOpenBazaar },
+      { label: 'Cursor Creator...', action: handleOpenCursorCreator },
       { label: 'Custom CSS...', action: handleOpenCSSEditor },
       { label: 'Desktop Patterns...', action: handleOpenWallpaperPicker },
       { label: 'Settings...', action: handleOpenPreferences },

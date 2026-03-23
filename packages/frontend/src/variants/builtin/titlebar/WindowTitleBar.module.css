@@ -107,3 +107,25 @@
   color: var(--shadow);
   text-shadow: none;
 }
+
+/* === Sprite variant (Skin system) — custom texture === */
+.sprite .titleBar {
+  background-image: var(--eos-titlebar-sprite-url, none);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  background-color: transparent;
+}
+
+.sprite .titleText {
+  color: var(--eos-titlebar-sprite-text-color, #FFFFFF);
+  text-shadow: var(--eos-titlebar-sprite-text-shadow, 0 1px 2px rgba(0, 0, 0, 0.5));
+  background: transparent;
+}
+
+.inactive.sprite .titleBar {
+  opacity: 0.7;
+}
+
+.inactive.sprite .titleText {
+  text-shadow: none;
+}

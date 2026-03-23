@@ -7,6 +7,9 @@ import { getTokensByTab, groupTokensByGroup, type TokenDefinition } from '../../
 import { WALLPAPER_OPTIONS, type WallpaperId } from '../desktop/Desktop';
 import { uploadWallpaper, isApiConfigured, getWallpaperUrl } from '../../services/api';
 import { VariantPicker } from './VariantPicker';
+import CursorEditor from '../appearance/CursorEditor';
+import SpriteEditor from '../appearance/SpriteEditor';
+import { listCursors, type CursorAsset } from '../../services/api';
 import styles from './AppearancePanel.module.css';
 
 type TabId = 'themes' | 'palette' | 'windows' | 'controls' | 'typography';
@@ -573,6 +576,20 @@ export function AppearancePanel() {
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
+  // Cursor assets state
+  const [cursorAssets, setCursorAssets] = useState<CursorAsset[]>([]);
+  const loadCursorAssets = useCallback(() => {
+    if (isApiConfigured) {
+      listCursors().then(setCursorAssets).catch(console.error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'controls') {
+      loadCursorAssets();
+    }
+  }, [activeTab, loadCursorAssets]);
+
   const handleSelectWallpaper = useCallback(
     (id: WallpaperId) => {
       setWallpaper(id);
@@ -849,6 +866,26 @@ export function AppearancePanel() {
               ))}
             </div>
             <TokenGroupSection tab="windows" appearance={appearance} updateAppearance={updateAppearance} />
+
+            {/* Sprite upload UI — shown when any sprite variant is active */}
+            {(appearance.variants?.['window.chrome'] === 'sprite' ||
+              appearance.variants?.['window.titleBar'] === 'sprite' ||
+              appearance.variants?.['window.buttons'] === 'sprite' ||
+              appearance.variants?.['window.resizeHandle'] === 'sprite') && (
+              <>
+                <hr className={styles.sectionDivider} />
+                <div className={styles.sectionIntro}>
+                  <div className={styles.sectionTitle}>Sprite Assets</div>
+                  <div className={styles.sectionHint}>Upload custom images for your sprite-based window chrome.</div>
+                </div>
+                <SpriteEditor
+                  showChrome={appearance.variants?.['window.chrome'] === 'sprite'}
+                  showTitleBar={appearance.variants?.['window.titleBar'] === 'sprite'}
+                  showButtons={appearance.variants?.['window.buttons'] === 'sprite'}
+                  showResize={appearance.variants?.['window.resizeHandle'] === 'sprite'}
+                />
+              </>
+            )}
           </div>
         )}
 
@@ -869,6 +906,14 @@ export function AppearancePanel() {
               ))}
             </div>
             <TokenGroupSection tab="controls" appearance={appearance} updateAppearance={updateAppearance} />
+
+            {/* Custom Cursors */}
+            <div style={{ marginTop: 12 }}>
+              <CursorEditor
+                cursorAssets={cursorAssets}
+                onAssetsChange={loadCursorAssets}
+              />
+            </div>
           </div>
         )}
 

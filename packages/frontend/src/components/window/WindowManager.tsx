@@ -20,6 +20,8 @@ import { SearchWindow } from '../viewers/SearchWindow';
 import { PreferencesWindow } from '../viewers/PreferencesWindow';
 import { AppearancePanel } from '../viewers/AppearancePanel';
 import { CSSEditor } from '../viewers/CSSEditor';
+import { BazaarWindow } from '../viewers/BazaarWindow';
+import { CursorCreator } from '../viewers/CursorCreator';
 import { ShareDialog } from '../viewers/ShareDialog';
 import { ProfileWindow } from '../viewers/ProfileWindow';
 import { AgentChatWindow } from '../viewers/AgentChatWindow';
@@ -309,6 +311,12 @@ function WindowContent({
 
     case 'css-editor':
       return <CSSEditor />;
+
+    case 'bazaar':
+      return <BazaarWindow />;
+
+    case 'cursor-creator':
+      return <CursorCreator />;
 
     case 'trash':
       return <TrashView />;

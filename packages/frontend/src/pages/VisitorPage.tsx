@@ -12,6 +12,7 @@ import { useIsMobile } from '../hooks/useIsMobile';
 import { isApiConfigured, fetchVisitorDesktop, getWallpaperUrl, type SavedWindowState } from '../services/api';
 import { useVisitorSync } from '../hooks/useVisitorSync';
 import { applyAppearance, clearAppearance, profileToAppearance, profileHasAppearance, useAppearanceStore, APPEARANCE_PROFILE_KEYS } from '../stores/appearanceStore';
+import { useSoundStore } from '../stores/soundStore';
 import { getTextFileContentType, type DesktopItem, type UserProfile } from '../types';
 import styles from './VisitorPage.module.css';
 
@@ -114,10 +115,18 @@ export function VisitorPage() {
     // Apply owner's appearance settings (including custom CSS)
     applyAppearance(ownerAppearance);
 
+    // Load owner's custom sounds if they have a sound pack
+    const ownerProfile = profile as unknown as Record<string, unknown>;
+    if (ownerProfile.soundPack) {
+      useSoundStore.getState().loadVisitorSounds(ownerProfile.soundPack as import('../stores/soundStore').SoundPack);
+    }
+
     // Cleanup: restore user's own appearance when leaving visitor mode
     return () => {
       // First clear the owner's appearance
       clearAppearance();
+      // Clear visitor sounds
+      useSoundStore.getState().clearVisitorSounds();
       // Then restore the user's own appearance if they had any
       if (savedAppearance && Object.keys(savedAppearance).length > 0) {
         applyAppearance(savedAppearance);

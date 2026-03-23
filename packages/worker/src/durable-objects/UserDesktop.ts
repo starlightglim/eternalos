@@ -14,6 +14,8 @@ import type {
   UserProfile,
   GuestbookConfig,
   GuestbookEntry,
+  SoundAssetMeta,
+  CursorAssetMeta,
 } from '../types';
 import type { CSSAssetMeta } from '../routes/upload';
 import { sanitizeText } from '../utils/sanitize';
@@ -50,6 +52,8 @@ export class UserDesktop {
   private windows: SavedWindowState[] = [];
   private cssAssets: CSSAssetMeta[] = [];
   private cssHistory: CustomCSSVersion[] = [];
+  private soundAssets: SoundAssetMeta[] = [];
+  private cursorAssets: CursorAssetMeta[] = [];
   private initialized = false;
   // Track bytes reserved by in-flight uploads (not yet committed as items)
   // to prevent quota bypass via concurrent uploads.
@@ -100,6 +104,10 @@ export class UserDesktop {
 
     // Load custom CSS history
     this.cssHistory = await this.state.storage.get<CustomCSSVersion[]>('css-history') ?? [];
+
+    // Load sound and cursor assets (skin system)
+    this.soundAssets = await this.state.storage.get<SoundAssetMeta[]>('sound-assets') ?? [];
+    this.cursorAssets = await this.state.storage.get<CursorAssetMeta[]>('cursor-assets') ?? [];
 
     this.initialized = true;
   }
@@ -286,6 +294,48 @@ export class UserDesktop {
         const assetId = path.slice('/css-assets/'.length);
         this.cssAssets = this.cssAssets.filter(a => a.assetId !== assetId);
         await this.state.storage.put('css-assets', this.cssAssets);
+        return Response.json({ success: true });
+      }
+
+      // GET /sounds - List sound assets
+      if (path === '/sounds' && method === 'GET') {
+        return Response.json({ assets: this.soundAssets });
+      }
+
+      // POST /sounds - Add sound asset metadata
+      if (path === '/sounds' && method === 'POST') {
+        const meta = await request.json() as SoundAssetMeta;
+        this.soundAssets.push(meta);
+        await this.state.storage.put('sound-assets', this.soundAssets);
+        return Response.json({ success: true });
+      }
+
+      // DELETE /sounds/:soundId - Remove sound asset metadata
+      if (path.startsWith('/sounds/') && method === 'DELETE') {
+        const soundId = path.slice('/sounds/'.length);
+        this.soundAssets = this.soundAssets.filter(a => a.soundId !== soundId);
+        await this.state.storage.put('sound-assets', this.soundAssets);
+        return Response.json({ success: true });
+      }
+
+      // GET /cursors - List cursor assets
+      if (path === '/cursors' && method === 'GET') {
+        return Response.json({ assets: this.cursorAssets });
+      }
+
+      // POST /cursors - Add cursor asset metadata
+      if (path === '/cursors' && method === 'POST') {
+        const meta = await request.json() as CursorAssetMeta;
+        this.cursorAssets.push(meta);
+        await this.state.storage.put('cursor-assets', this.cursorAssets);
+        return Response.json({ success: true });
+      }
+
+      // DELETE /cursors/:cursorId - Remove cursor asset metadata
+      if (path.startsWith('/cursors/') && method === 'DELETE') {
+        const cursorId = path.slice('/cursors/'.length);
+        this.cursorAssets = this.cursorAssets.filter(a => a.cursorId !== cursorId);
+        await this.state.storage.put('cursor-assets', this.cursorAssets);
         return Response.json({ success: true });
       }
 
@@ -621,6 +671,7 @@ export class UserDesktop {
       'profileLinks',
       'shareDescription',
       'analyticsEnabled',
+      'soundPack',
     ];
     const filteredUpdates: Partial<UserProfile> = {};
 
@@ -676,7 +727,7 @@ export class UserDesktop {
           let match;
           while ((match = urlRegex.exec(value)) !== null) {
             const urlValue = match[1].trim();
-            if (!urlValue.startsWith('/api/css-assets/') && !urlValue.startsWith('/api/wallpaper/') && !urlValue.startsWith('/api/icon/')) {
+            if (!urlValue.startsWith('/api/css-assets/') && !urlValue.startsWith('/api/wallpaper/') && !urlValue.startsWith('/api/icon/') && !urlValue.startsWith('/api/sounds/') && !urlValue.startsWith('/api/cursors/')) {
               throw new Error(`${field} contains disallowed url()`);
             }
           }
@@ -732,10 +783,10 @@ export class UserDesktop {
       ];
       // SECURITY: Same url() allowlist used for customCSS — prevents external
       // resource loading (tracking pixels, data exfiltration) via design tokens
-      const tokenAllowedUrlPrefixes = ['/api/css-assets/', '/api/wallpaper/', '/api/icon/'];
+      const tokenAllowedUrlPrefixes = ['/api/css-assets/', '/api/wallpaper/', '/api/icon/', '/api/sounds/', '/api/cursors/', '/api/bazaar/assets/'];
       for (const [key, value] of Object.entries(dt)) {
-        // Keys must be dot-path identifiers (alphanumeric + dots)
-        if (!/^[a-zA-Z][a-zA-Z0-9.]*$/.test(key) || key.length > 100) {
+        // Keys must be dot-path identifiers (alphanumeric + dots + hyphens)
+        if (!/^[a-zA-Z][a-zA-Z0-9.\-]*$/.test(key) || key.length > 100) {
           throw new Error(`Invalid designToken key: ${key}`);
         }
         // Values must be string, number, or boolean
@@ -798,7 +849,7 @@ export class UserDesktop {
 
       // Validate url() references — only allow first-party asset paths
       // Normalize (decode) paths before validation to prevent encoded bypasses
-      const allowedUrlPrefixes = ['/api/css-assets/', '/api/wallpaper/', '/api/icon/'];
+      const allowedUrlPrefixes = ['/api/css-assets/', '/api/wallpaper/', '/api/icon/', '/api/sounds/', '/api/cursors/'];
       const urlPattern = /url\s*\(\s*(['"]?)([^'")\s]+)\1\s*\)/gi;
       let urlMatch: RegExpExecArray | null;
       while ((urlMatch = urlPattern.exec(css)) !== null) {
@@ -857,6 +908,23 @@ export class UserDesktop {
             throw e;
           }
           throw new Error(`Invalid profile link URL: ${link.url}`);
+        }
+      }
+    }
+
+    // Validate soundPack
+    if (filteredUpdates.soundPack !== undefined) {
+      if (filteredUpdates.soundPack !== null && typeof filteredUpdates.soundPack === 'object') {
+        const pack = filteredUpdates.soundPack;
+        if (typeof pack.name !== 'string' || pack.name.length > 100) {
+          throw new Error('Sound pack name must be a string of max 100 characters');
+        }
+        if (pack.sounds && typeof pack.sounds === 'object') {
+          for (const [, url] of Object.entries(pack.sounds)) {
+            if (typeof url !== 'string' || !url.startsWith('/api/sounds/')) {
+              throw new Error('Sound pack URLs must start with /api/sounds/');
+            }
+          }
         }
       }
     }

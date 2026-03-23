@@ -203,7 +203,7 @@ const markedOptions: MarkedOptions = {
 };
 
 // Configure DOMPurify to allow safe attributes while blocking dangerous ones
-const purifyConfig: DOMPurify.Config = {
+const purifyConfig = {
   ALLOWED_TAGS: [
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
     'p', 'br', 'hr',
@@ -241,5 +241,5 @@ function parseMarkdown(text: string): string {
 
   // Parse markdown to HTML with marked, then sanitize with DOMPurify
   const rawHtml = marked.parse(text, markedOptions) as string;
-  return DOMPurify.sanitize(rawHtml, purifyConfig);
+  return DOMPurify.sanitize(rawHtml, purifyConfig) as string;
 }

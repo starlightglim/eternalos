@@ -50,6 +50,7 @@ remote = true
 # Environment
 [vars]
 ENVIRONMENT = "production"
+ALLOWED_ORIGINS = "https://eternalos.me,https://www.eternalos.me"
 
 # JWT_SECRET is set via: wrangler secret put JWT_SECRET
 # For local dev, set JWT_SECRET in .dev.vars file

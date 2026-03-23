@@ -12,6 +12,8 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useAuthStore } from '../../stores/authStore';
 import { useSoundStore } from '../../stores/soundStore';
+import { listSounds, type SoundAsset } from '../../services/api';
+import SoundPackEditor from '../sound/SoundPackEditor';
 import { fetchAnalytics, type AnalyticsData } from '../../services/api';
 import { isApiConfigured, fetchQuota, updateProfile, type QuotaInfo } from '../../services/api';
 import styles from './PreferencesWindow.module.css';
@@ -21,6 +23,7 @@ type TabId = 'account' | 'sound';
 export function PreferencesWindow() {
   const { user, profile, setAnalyticsEnabled, changePassword, changeUsername, sendVerificationEmail } = useAuthStore();
   const { enabled: soundEnabled, volume, setEnabled: setSoundEnabled, setVolume, playSound } = useSoundStore();
+  const [soundAssets, setSoundAssets] = useState<SoundAsset[]>([]);
   const [activeTab, setActiveTab] = useState<TabId>('account');
   const [displayName, setDisplayName] = useState(profile?.displayName || '');
   const [isEditingName, setIsEditingName] = useState(false);
@@ -87,6 +90,19 @@ export function PreferencesWindow() {
         .finally(() => setAnalyticsLoading(false));
     }
   }, [activeTab, profile?.analyticsEnabled, analyticsData, analyticsLoading]);
+
+  // Load sound assets when sound tab is active
+  const loadSoundAssets = useCallback(() => {
+    if (isApiConfigured) {
+      listSounds().then(setSoundAssets).catch(console.error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'sound') {
+      loadSoundAssets();
+    }
+  }, [activeTab, loadSoundAssets]);
 
   // Focus input when editing
   useEffect(() => {
@@ -636,6 +652,16 @@ export function PreferencesWindow() {
                   </button>
                 </div>
               </div>
+
+              {/* Sound pack editor */}
+              {soundEnabled && (
+                <div style={{ marginTop: 8, borderTop: '1px solid var(--shadow)', paddingTop: 8 }}>
+                  <SoundPackEditor
+                    soundAssets={soundAssets}
+                    onAssetsChange={loadSoundAssets}
+                  />
+                </div>
+              )}
             </div>
           </div>
         )}
