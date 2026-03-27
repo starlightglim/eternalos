@@ -160,6 +160,14 @@ export function FolderView({ folderId, visitorItems, isVisitorMode = false, isDr
             ? (() => { switch (item.widgetType) { case 'sticky-note': return { width: 250, height: 250 }; case 'guestbook': return { width: 350, height: 400 }; case 'pixel-canvas': return { width: 300, height: 340 }; case 'music-player': return { width: 300, height: 300 }; case 'link-board': return { width: 350, height: 300 }; default: return { width: 250, height: 250 }; } })()
             : { width: 250, height: 250 };
           break;
+        case 'app':
+          idPrefix = 'app';
+          contentType = 'app';
+          windowSize = {
+            width: item.appManifest?.windowConfig?.defaultWidth || 600,
+            height: item.appManifest?.windowConfig?.defaultHeight || 500,
+          };
+          break;
       }
 
       openWindow({
@@ -169,7 +177,7 @@ export function FolderView({ folderId, visitorItems, isVisitorMode = false, isDr
         size: windowSize,
         minimized: false,
         maximized: false,
-        contentType: contentType as 'folder' | 'image' | 'text' | 'markdown' | 'code' | 'get-info' | 'about' | 'audio' | 'video' | 'pdf' | 'link' | 'widget',
+        contentType: contentType as 'folder' | 'image' | 'text' | 'markdown' | 'code' | 'get-info' | 'about' | 'audio' | 'video' | 'pdf' | 'link' | 'widget' | 'app',
         contentId: item.id,
       });
     },
@@ -581,6 +589,8 @@ export function FolderView({ folderId, visitorItems, isVisitorMode = false, isDr
         return <VideoFileIcon size={32} />;
       case 'pdf':
         return <PDFFileIcon size={32} />;
+      case 'app':
+        return <TextFileIcon size={32} />;
       default:
         return <TextFileIcon size={32} />;
     }

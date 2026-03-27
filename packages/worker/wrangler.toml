@@ -12,8 +12,8 @@ name = "USER_DESKTOP"
 class_name = "UserDesktop"
 
 [[durable_objects.bindings]]
-name = "DesktopChatAgent"
-class_name = "DesktopChatAgent"
+name = "OrchestratorAgent"
+class_name = "OrchestratorAgent"
 
 [[migrations]]
 tag = "v1"
@@ -22,6 +22,15 @@ new_sqlite_classes = ["UserDesktop"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["DesktopChatAgent"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["OrchestratorAgent"]
+deleted_classes = ["DesktopChatAgent"]
+
+# Dynamic Workers (sandboxed app runtime)
+[[worker_loaders]]
+binding = "LOADER"
 
 # KV Namespaces
 [[kv_namespaces]]
@@ -45,7 +54,7 @@ remote = true
 
 # Optional local overrides in .dev.vars:
 # IMAGE_ANALYSIS_MODEL=@cf/meta/llama-3.2-11b-vision-instruct
-# AGENT_CHAT_MODEL=@cf/zai-org/glm-4.7-flash
+# ANTHROPIC_API_KEY=sk-ant-...
 
 # Environment
 [vars]
@@ -53,7 +62,8 @@ ENVIRONMENT = "production"
 ALLOWED_ORIGINS = "https://eternalos.me,https://www.eternalos.me"
 
 # JWT_SECRET is set via: wrangler secret put JWT_SECRET
-# For local dev, set JWT_SECRET in .dev.vars file
+# ANTHROPIC_API_KEY is set via: wrangler secret put ANTHROPIC_API_KEY
+# For local dev, set secrets in .dev.vars file
 
 # Google OAuth (optional — enables "Sign in with Google")
 # GOOGLE_CLIENT_ID = "your-client-id.apps.googleusercontent.com"  # Set in .dev.vars or here

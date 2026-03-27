@@ -151,7 +151,7 @@ export type WidgetConfig = StickyNoteConfig | GuestbookConfig | MusicPlayerConfi
 
 export interface DesktopItem {
   id: string;
-  type: 'folder' | 'image' | 'text' | 'link' | 'audio' | 'video' | 'pdf' | 'widget' | 'sticker';
+  type: 'folder' | 'image' | 'text' | 'link' | 'audio' | 'video' | 'pdf' | 'widget' | 'sticker' | 'app';
   name: string;
   parentId: string | null; // null = root desktop
   position: { x: number; y: number };
@@ -179,6 +179,30 @@ export interface DesktopItem {
   userTags?: string[];
   // AI / metadata enrichment for uploaded images
   imageAnalysis?: ImageAnalysisMetadata;
+  // User-created app (type='app')
+  appManifest?: AppManifest;
+}
+
+// ---------------------------------------------------------------------------
+// User-created Apps (Dynamic Workers)
+// ---------------------------------------------------------------------------
+
+export interface AppWindowConfig {
+  defaultWidth: number;
+  defaultHeight: number;
+  minWidth?: number;
+  minHeight?: number;
+  resizable?: boolean;
+  frameless?: boolean;
+}
+
+export interface AppManifest {
+  name: string;
+  description?: string;
+  version: string;
+  windowConfig: AppWindowConfig;
+  // Dynamic Worker app ID (registered in OrchestratorAgent)
+  appId: string;
 }
 
 export interface CustomCSSVersion {
