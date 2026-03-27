@@ -11,16 +11,20 @@
     "coverage": "WORKER_COVERAGE=1 WRANGLER_LOG_PATH=../../.wrangler-test.log node --test test/**/*.test.mjs"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250214.0",
+    "@cloudflare/workers-types": "^4.20260317.1",
     "typescript": "~5.9.3",
-    "wrangler": "^3.101.0"
+    "wrangler": "^4.77.0"
   },
   "dependencies": {
-    "@cloudflare/ai-chat": "^0.1.8",
-    "agents": "^0.7.5",
-    "ai": "^6.0.116",
+    "@ai-sdk/anthropic": "^3.0.64",
+    "@cloudflare/ai-chat": "^0.2.5",
+    "@cloudflare/codemode": "^0.3.2",
+    "@cloudflare/worker-bundler": "^0.0.4",
+    "agents": "^0.8.5",
+    "ai": "^6.0.138",
     "file-type": "^21.3.4",
     "nanoid": "^3.3.11",
-    "workers-ai-provider": "^3.1.2"
+    "workers-ai-provider": "^3.1.2",
+    "zod": "^3.24.0"
   }
 }

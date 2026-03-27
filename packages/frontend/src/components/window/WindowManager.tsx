@@ -25,6 +25,7 @@ import { CursorCreator } from '../viewers/CursorCreator';
 import { ShareDialog } from '../viewers/ShareDialog';
 import { ProfileWindow } from '../viewers/ProfileWindow';
 import { AgentChatWindow } from '../viewers/AgentChatWindow';
+import { AppViewer } from '../viewers/AppViewer';
 import { FolderView } from './FolderView';
 import { TrashView } from './TrashView';
 import { WidgetRenderer } from '../widgets';
@@ -425,6 +426,24 @@ function WindowContent({
 
     case 'agent-chat':
       return <AgentChatWindow />;
+
+    case 'app':
+      if (!item?.appManifest?.appId) {
+        return (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              height: '100%',
+              backgroundColor: '#1a1a2e',
+            }}
+          >
+            <p style={{ color: '#888', fontSize: '12px' }}>App not found</p>
+          </div>
+        );
+      }
+      return <AppViewer appId={item.appManifest.appId} />;
 
     default:
       return null;

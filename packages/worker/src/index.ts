@@ -6,7 +6,7 @@
  */
 
 import { UserDesktop } from './durable-objects/UserDesktop';
-import { DesktopChatAgent } from './agents/DesktopChatAgent';
+import { OrchestratorAgent } from './agents/OrchestratorAgent';
 import { handleSignup, handleLogin, handleLogout, handleForgotPassword, handleResetPassword, handleRefreshToken, handleChangePassword, handleChangeUsername, handleSendVerification, handleVerifyEmail, handleGoogleCallback } from './routes/auth';
 import { handleUpload, handleServeFile, handleWallpaperUpload, handleServeWallpaper, handleIconUpload, handleServeIcon, handleCSSAssetUpload, handleServeCSSAsset, handleListCSSAssets, handleDeleteCSSAsset, handleAnalyzeImageItem } from './routes/upload';
 import { handleSoundUpload, handleServeSound, handleListSounds, handleDeleteSound } from './routes/sounds';
@@ -36,7 +36,13 @@ export interface Env {
 
   // Durable Objects
   USER_DESKTOP: DurableObjectNamespace;
-  DesktopChatAgent: DurableObjectNamespace<DesktopChatAgent>;
+  OrchestratorAgent: DurableObjectNamespace<OrchestratorAgent>;
+
+  // Dynamic Workers (sandboxed app runtime)
+  LOADER: WorkerLoader;
+
+  // Anthropic API (optional — enables Claude as primary model)
+  ANTHROPIC_API_KEY?: string;
 
   // Workers AI
   AI: Ai;
@@ -58,7 +64,7 @@ export interface Env {
   APP_URL?: string; // Base URL for the app (e.g., "https://eternalos.app")
 }
 
-export { UserDesktop, DesktopChatAgent };
+export { UserDesktop, OrchestratorAgent };
 
 // Standard security headers applied to every response
 const SECURITY_HEADERS: Record<string, string> = {
@@ -233,13 +239,46 @@ export default {
         return withCors(authResult, corsHeaders);
       }
 
-      const agentStub = await getAgentByName<Env, DesktopChatAgent>(env.DesktopChatAgent, authResult.uid);
+      const agentStub = await getAgentByName<Env, OrchestratorAgent>(env.OrchestratorAgent, authResult.uid);
       const forwardUrl = new URL(request.url);
       const remainder = path.slice('/api/agent/chat'.length);
       forwardUrl.pathname = remainder || '/';
 
       const agentResponse = await agentStub.fetch(new Request(forwardUrl.toString(), request));
       return withCors(agentResponse, corsHeaders);
+    }
+
+    // Serve user-created apps via Dynamic Workers: /api/apps/:appId
+    if (path.startsWith('/api/apps/')) {
+      const appId = path.slice('/api/apps/'.length).split('/')[0];
+      if (!appId) {
+        return withCors(new Response('App ID required', { status: 400 }), corsHeaders);
+      }
+
+      // Look up app owner from KV
+      const appMeta = await env.DESKTOP_KV.get<{ uid: string; version: number }>(`app:${appId}`, 'json');
+      if (!appMeta) {
+        return withCors(new Response('App not found', { status: 404 }), corsHeaders);
+      }
+
+      // Load the compiled app bundle from R2 and serve via Dynamic Worker
+      const r2Prefix = `apps/${appMeta.uid}/${appId}`;
+      const bundleObj = await env.ETERNALOS_FILES.get(`${r2Prefix}/bundle.json`);
+      if (!bundleObj) {
+        return withCors(new Response('App bundle not found', { status: 404 }), corsHeaders);
+      }
+
+      const bundle = await bundleObj.json<{ mainModule: string; modules: Record<string, string> }>();
+      const worker = env.LOADER.get(`app-${appId}@v${appMeta.version}`, async () => ({
+        compatibilityDate: '2024-09-23',
+        mainModule: bundle.mainModule,
+        modules: bundle.modules,
+        globalOutbound: null, // fully sandboxed — no network access
+      }));
+
+      const entrypoint = worker.getEntrypoint();
+      const appResponse = await entrypoint.fetch(request);
+      return appResponse;
     }
 
     // WebSocket live-sync for visitors: /api/ws/:username

@@ -3,7 +3,7 @@
 /**
  * Desktop item types
  */
-export type DesktopItemType = 'folder' | 'image' | 'text' | 'link' | 'audio' | 'video' | 'pdf' | 'widget' | 'sticker';
+export type DesktopItemType = 'folder' | 'image' | 'text' | 'link' | 'audio' | 'video' | 'pdf' | 'widget' | 'sticker' | 'app';
 
 /**
  * Widget types for Layer 3 customization
@@ -117,6 +117,26 @@ export interface DesktopItem {
   userTags?: string[];
   // AI / metadata enrichment for uploaded images
   imageAnalysis?: ImageAnalysisMetadata;
+  // User-created app (type='app')
+  appManifest?: AppManifest;
+}
+
+/**
+ * App manifest for user-created apps (Dynamic Workers)
+ */
+export interface AppManifest {
+  name: string;
+  description?: string;
+  version: string;
+  windowConfig: {
+    defaultWidth: number;
+    defaultHeight: number;
+    minWidth?: number;
+    minHeight?: number;
+    resizable?: boolean;
+    frameless?: boolean;
+  };
+  appId: string;
 }
 
 /**
@@ -135,7 +155,7 @@ export interface WindowState {
   preMaximizedPosition?: { x: number; y: number };
   preMaximizedSize?: { width: number; height: number };
   // Content information
-  contentType: 'folder' | 'image' | 'text' | 'markdown' | 'code' | 'get-info' | 'about' | 'wallpaper' | 'welcome' | 'search' | 'preferences' | 'trash' | 'audio' | 'video' | 'pdf' | 'calculator' | 'clock' | 'link' | 'appearance' | 'widget' | 'css-editor' | 'share-dialog' | 'profile' | 'agent-chat' | 'bazaar' | 'cursor-creator';
+  contentType: 'folder' | 'image' | 'text' | 'markdown' | 'code' | 'get-info' | 'about' | 'wallpaper' | 'welcome' | 'search' | 'preferences' | 'trash' | 'audio' | 'video' | 'pdf' | 'calculator' | 'clock' | 'link' | 'appearance' | 'widget' | 'css-editor' | 'share-dialog' | 'profile' | 'agent-chat' | 'bazaar' | 'cursor-creator' | 'app';
   contentId?: string; // Reference to DesktopItem id if applicable
 }
 

@@ -603,6 +603,19 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
           contentType: 'widget',
           contentId: item.id,
         });
+      } else if (item.type === 'app') {
+        const w = item.appManifest?.windowConfig?.defaultWidth || 600;
+        const h = item.appManifest?.windowConfig?.defaultHeight || 500;
+        openWindow({
+          id: `app-${item.id}`,
+          title: item.appManifest?.name || item.name,
+          position: { x: 100 + Math.random() * 100, y: 80 + Math.random() * 80 },
+          size: { width: w, height: h },
+          minimized: false,
+          maximized: false,
+          contentType: 'app',
+          contentId: item.id,
+        });
       }
     },
     [openWindow]

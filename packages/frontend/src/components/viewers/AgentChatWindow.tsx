@@ -12,8 +12,8 @@ import styles from './AgentChatWindow.module.css';
 const STARTER_PROMPTS = [
   'What is on my desktop right now?',
   'Find images related to roads.',
-  'Which recent images contain text?',
-  'How many anime images are there?',
+  'Build me a pomodoro timer app',
+  'Create a pixel art canvas',
 ];
 
 type MessagePart = {
@@ -211,7 +211,7 @@ export function AgentChatWindow() {
   }, []);
 
   const agent = useAgent({
-    agent: 'DesktopChatAgent',
+    agent: 'OrchestratorAgent',
     basePath: 'api/agent/chat',
     host: apiBaseUrl.host,
     protocol: apiBaseUrl.protocol === 'https:' ? 'wss' : 'ws',
@@ -244,10 +244,11 @@ export function AgentChatWindow() {
   }, []);
 
   useEffect(() => {
+    const refreshToolTypes = ['tool-createFolder', 'tool-moveItems', 'tool-codemode'];
     for (const message of messages) {
       for (const part of (message.parts as MessagePart[] | undefined) ?? []) {
         if (
-          part.type === 'tool-createFolderFromMatches' &&
+          refreshToolTypes.includes(part.type) &&
           part.state === 'output-available' &&
           part.toolCallId &&
           !refreshedToolCalls.current.has(part.toolCallId)
@@ -410,16 +411,16 @@ export function AgentChatWindow() {
       );
     }
 
-    if (part.type === 'tool-createFolderFromMatches') {
-      const input = (part.input as { folderName?: string; query?: string } | undefined) ?? {};
+    if (part.type === 'tool-createFolder' || part.type === 'tool-moveItems') {
+      const input = (part.input as { folderName?: string } | undefined) ?? {};
+      const label = part.type === 'tool-createFolder' ? 'Create folder' : 'Move items';
 
       if (part.state === 'approval-requested') {
         return (
-          <div key={`create-folder-${index}`} className={styles.toolCard}>
+          <div key={`folder-${index}`} className={styles.toolCard}>
             <div className={styles.toolTitle}>Approval required</div>
             <div className={styles.toolBody}>
-              Create the folder <strong>{input.folderName || 'Untitled Folder'}</strong>
-              {input.query ? ` using matches for "${input.query}"` : ' using the current matches'}?
+              {label}: <strong>{input.folderName || ''}</strong>
             </div>
             <div className={styles.approvalRow}>
               <button
@@ -449,28 +450,18 @@ export function AgentChatWindow() {
         );
       }
 
-      if (part.state === 'approval-responded') {
-        return (
-          <div key={`create-folder-${index}`} className={styles.toolCard}>
-            <div className={styles.toolTitle}>Folder request</div>
-            <div className={styles.toolBody}>Approval received. Finishing the folder action...</div>
-          </div>
-        );
-      }
-
       if (part.state === 'output-denied') {
         return (
-          <div key={`create-folder-${index}`} className={styles.toolCard}>
-            <div className={styles.toolTitle}>Folder request cancelled</div>
-            <div className={styles.toolBody}>The folder action was denied.</div>
+          <div key={`folder-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>{label} cancelled</div>
           </div>
         );
       }
 
       if (part.state === 'output-error') {
         return (
-          <div key={`create-folder-${index}`} className={styles.toolCard}>
-            <div className={styles.toolTitle}>Folder creation failed</div>
+          <div key={`folder-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>{label} failed</div>
             <div className={styles.errorText}>{String(part.errorText ?? 'Unknown error')}</div>
           </div>
         );
@@ -479,25 +470,89 @@ export function AgentChatWindow() {
       if (part.state === 'output-available') {
         const output = part.output as CreateFolderOutput;
         return (
-          <div key={`create-folder-${index}`} className={styles.toolCard}>
-            <div className={styles.toolTitle}>Folder created</div>
+          <div key={`folder-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>{label} complete</div>
             <div className={styles.toolBody}>
-              {renderItemButton(output.folder)} now contains {output.movedCount} item{output.movedCount === 1 ? '' : 's'}.
-            </div>
-            <div className={styles.resultList}>
-              {output.movedItems.map((item) => (
-                <div key={item.id} className={styles.resultRow}>
-                  <div className={styles.resultHeading}>
-                    {renderItemButton(item)} <span className={styles.resultType}>({item.type})</span>
-                  </div>
-                </div>
-              ))}
+              {output.folder ? (
+                <>{renderItemButton(output.folder)} now contains {output.movedCount} item{output.movedCount === 1 ? '' : 's'}.</>
+              ) : (
+                <>Moved {output.movedCount} item{output.movedCount === 1 ? '' : 's'}.</>
+              )}
             </div>
           </div>
         );
       }
 
       return null;
+    }
+
+    // Codemode tool — app building via generated TypeScript
+    if (part.type === 'tool-codemode') {
+      if (part.state === 'output-error') {
+        return (
+          <div key={`codemode-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>App build failed</div>
+            <div className={styles.errorText}>{String(part.errorText ?? 'Unknown error')}</div>
+          </div>
+        );
+      }
+
+      if (part.state !== 'output-available') {
+        return (
+          <div key={`codemode-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Building app...</div>
+            <div className={styles.toolBody}>Generating and compiling your app...</div>
+          </div>
+        );
+      }
+
+      const output = part.output as { result?: unknown; logs?: string[] } | undefined;
+      const result = output?.result as { appId?: string; name?: string; status?: string; version?: number } | undefined;
+
+      if (result?.status === 'created') {
+        return (
+          <div key={`codemode-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>App created</div>
+            <div className={styles.toolBody}>
+              <strong>{result.name}</strong> has been added to your desktop.
+            </div>
+          </div>
+        );
+      }
+
+      if (result?.status === 'updated') {
+        return (
+          <div key={`codemode-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>App updated</div>
+            <div className={styles.toolBody}>
+              App updated to version {result.version}. Reload the app window to see changes.
+            </div>
+          </div>
+        );
+      }
+
+      if (result?.status === 'deleted') {
+        return (
+          <div key={`codemode-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>App deleted</div>
+            <div className={styles.toolBody}>The app has been removed from your desktop.</div>
+          </div>
+        );
+      }
+
+      // Generic codemode output
+      return (
+        <div key={`codemode-${index}`} className={styles.toolCard}>
+          <div className={styles.toolTitle}>Code executed</div>
+          <div className={styles.toolBody}>
+            {output?.logs && output.logs.length > 0 ? (
+              <pre style={{ fontSize: '10px', whiteSpace: 'pre-wrap', margin: 0 }}>{output.logs.join('\n')}</pre>
+            ) : (
+              <span>Done.</span>
+            )}
+          </div>
+        </div>
+      );
     }
 
     return null;
@@ -512,7 +567,7 @@ export function AgentChatWindow() {
       <div className={styles.header}>
         <div>
           <div className={styles.title}>Ask Eternal</div>
-          <div className={styles.subtitle}>Grounded in your real desktop, tags, OCR, and image metadata.</div>
+          <div className={styles.subtitle}>Search your desktop, build apps, and organize files.</div>
         </div>
         <button className={styles.clearButton} type="button" onClick={clearHistory}>
           Clear History
