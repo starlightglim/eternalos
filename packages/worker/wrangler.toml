@@ -26,7 +26,7 @@ new_sqlite_classes = ["DesktopChatAgent"]
 [[migrations]]
 tag = "v3"
 new_sqlite_classes = ["OrchestratorAgent"]
-deleted_classes = ["DesktopChatAgent"]
+deleted_classes = ["DesktopChatAgent", "AppBuilderAgent"]
 
 # Dynamic Workers (sandboxed app runtime)
 [[worker_loaders]]
