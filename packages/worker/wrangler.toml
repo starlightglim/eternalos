@@ -25,6 +25,10 @@ new_sqlite_classes = ["DesktopChatAgent"]
 
 [[migrations]]
 tag = "v3"
+new_sqlite_classes = ["AppBuilderAgent"]
+
+[[migrations]]
+tag = "v4"
 new_sqlite_classes = ["OrchestratorAgent"]
 deleted_classes = ["DesktopChatAgent", "AppBuilderAgent"]
 

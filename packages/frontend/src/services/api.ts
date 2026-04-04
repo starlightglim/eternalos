@@ -57,6 +57,13 @@ export function setSessionExpiredHandler(handler: (() => void) | null): void {
   onSessionExpired = handler;
 }
 
+// Callback for syncing refreshed tokens back to the persisted store
+let onTokenUpdate: ((token: string, refreshToken: string) => void) | null = null;
+
+export function setTokenUpdateHandler(handler: ((token: string, refreshToken: string) => void) | null): void {
+  onTokenUpdate = handler;
+}
+
 interface RefreshResponse {
   token: string;
   refreshToken: string;
@@ -89,6 +96,8 @@ async function refreshSession(): Promise<boolean> {
       const data = await response.json() as RefreshResponse;
       authToken = data.token;
       refreshToken = data.refreshToken;
+      // Sync new tokens to persisted store so page reloads don't restore stale tokens
+      onTokenUpdate?.(data.token, data.refreshToken);
       return true;
     } catch {
       return false;
@@ -236,7 +245,20 @@ export async function googleLogin(code: string, redirectUri: string): Promise<Go
 }
 
 export async function logout(): Promise<void> {
-  await apiRequest('/api/auth/logout', { method: 'POST' });
+  // Use direct fetch (not apiRequest) to avoid triggering token refresh on expired sessions
+  if (authToken) {
+    try {
+      await fetch(`${API_URL}/api/auth/logout`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        // Send refresh token so backend can clean it up even if session already expired
+        body: JSON.stringify({ refreshToken }),
+      });
+    } catch { /* ignore network errors during logout */ }
+  }
   setAuthToken(null);
   setRefreshToken(null);
   clearFileToken();

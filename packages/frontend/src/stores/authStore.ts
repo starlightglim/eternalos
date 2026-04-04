@@ -10,6 +10,7 @@ import {
   setRefreshToken,
   clearFileToken,
   setSessionExpiredHandler,
+  setTokenUpdateHandler,
   signup as apiSignup,
   login as apiLogin,
   googleLogin as apiGoogleLogin,
@@ -245,37 +246,21 @@ export const useAuthStore = create<AuthStore>()(
 
         try {
           if (isApiConfigured && token) {
+            // apiLogout handles clearing authToken, refreshToken, and fileToken
             await apiLogout();
           }
-          setAuthToken(null);
-          setRefreshToken(null);
-          clearFileToken();
-          // Clear window state on logout
-          useWindowStore.getState().clearWindowState();
-          set({
-            user: null,
-            profile: null,
-            token: null,
-            refreshToken: null,
-            loading: false,
-          });
-        } catch (error: unknown) {
-          // Clear state even if logout API fails
-          setAuthToken(null);
-          setRefreshToken(null);
-          clearFileToken();
-          // Clear window state on logout
-          useWindowStore.getState().clearWindowState();
-          const message = error instanceof Error ? error.message : 'Logout failed';
-          set({
-            user: null,
-            profile: null,
-            token: null,
-            refreshToken: null,
-            loading: false,
-            error: message,
-          });
+        } catch {
+          // Ignore logout API errors — we clear state regardless
         }
+        // Clear window state on logout
+        useWindowStore.getState().clearWindowState();
+        set({
+          user: null,
+          profile: null,
+          token: null,
+          refreshToken: null,
+          loading: false,
+        });
       },
 
       clearError: () => set({ error: null }),
@@ -455,6 +440,14 @@ export const useAuthStore = create<AuthStore>()(
             loading: false,
             error: 'Your session has expired. Please log in again.',
           });
+          // Navigate to login — use window.location since store can't access React Router
+          window.location.href = '/login';
+        });
+
+        // Sync refreshed tokens back to the persisted store so page reloads
+        // don't restore stale (consumed) tokens and trigger reuse detection
+        setTokenUpdateHandler((newToken, newRefreshToken) => {
+          set({ token: newToken, refreshToken: newRefreshToken });
         });
 
         // In demo mode, auto-login with mock user

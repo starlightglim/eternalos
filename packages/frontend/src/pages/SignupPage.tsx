@@ -149,7 +149,7 @@ export function SignupPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 autoComplete="new-password"
-                minLength={6}
+                minLength={8}
               />
             </div>
 

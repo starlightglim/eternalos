@@ -161,7 +161,7 @@ export function ResetPasswordPage() {
                 required
                 autoComplete="new-password"
                 autoFocus
-                minLength={6}
+                minLength={8}
               />
             </div>
 
@@ -175,7 +175,7 @@ export function ResetPasswordPage() {
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 required
                 autoComplete="new-password"
-                minLength={6}
+                minLength={8}
               />
             </div>
 

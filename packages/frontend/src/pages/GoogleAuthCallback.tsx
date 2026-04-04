@@ -43,12 +43,8 @@ export function GoogleAuthCallback() {
     // Exchange code for tokens
     const exchangeCode = async () => {
       try {
-        const result = await googleLogin(code, getOAuthRedirectUri())
-        if (result.isNewUser) {
-          navigate('/desktop', { replace: true })
-        } else {
-          navigate('/desktop', { replace: true })
-        }
+        await googleLogin(code, getOAuthRedirectUri())
+        navigate('/desktop', { replace: true })
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Google sign-in failed'
         // Strip HTTP status prefix if present (e.g., "401 Failed to authenticate...")

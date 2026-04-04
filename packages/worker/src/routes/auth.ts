@@ -376,16 +376,16 @@ Try saying:
   }
 
   // Generate JWT
+  const accessExpiry = 15 * 60;
   let token: string;
   try {
-    token = await signJWT({ uid, username: normalizedUsername }, env.JWT_SECRET);
+    token = await signJWT({ uid, username: normalizedUsername }, env.JWT_SECRET, accessExpiry);
   } catch (e) {
     console.error('Signup: sign JWT failed:', e);
     return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
   }
 
   const refreshToken = generateRefreshToken();
-  const accessExpiry = 15 * 60;
   const refreshExpiry = 7 * 24 * 60 * 60;
 
   // Store session in KV
@@ -538,11 +538,14 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
   }
 
   // Generate new JWT
+  // Access token: 15 minutes, Refresh token: 7 days
+  const accessExpiry = 15 * 60; // 15 minutes in seconds
   let token: string;
   try {
     token = await signJWT(
       { uid: userRecord.uid, username: userRecord.username },
-      env.JWT_SECRET
+      env.JWT_SECRET,
+      accessExpiry
     );
   } catch (jwtError) {
     console.error('JWT signing error:', jwtError);
@@ -552,9 +555,6 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
   // Generate refresh token
   const now = Date.now();
   const refreshToken = generateRefreshToken();
-
-  // Access token: 15 minutes, Refresh token: 7 days
-  const accessExpiry = 15 * 60; // 15 minutes in seconds
   const refreshExpiry = 7 * 24 * 60 * 60; // 7 days in seconds
 
   // Store session in KV
@@ -618,6 +618,9 @@ export async function handleLogout(request: Request, env: Env): Promise<Response
 
   const token = authHeader.slice('Bearer '.length);
 
+  // Parse optional body for refresh token (fallback when session already expired from KV)
+  const body = await request.json().catch(() => ({})) as { refreshToken?: string };
+
   // Get session to also delete refresh token
   const sessionJson = await env.AUTH_KV.get(`session:${token}`);
   if (sessionJson) {
@@ -625,6 +628,9 @@ export async function handleLogout(request: Request, env: Env): Promise<Response
     if (session.refreshToken) {
       await env.AUTH_KV.delete(`refresh:${session.refreshToken}`);
     }
+  } else if (body.refreshToken) {
+    // Session already expired from KV — use the client-provided refresh token
+    await env.AUTH_KV.delete(`refresh:${body.refreshToken}`);
   }
 
   // Delete session from KV
@@ -745,11 +751,10 @@ export async function handleRefreshToken(request: Request, env: Env): Promise<Re
 
   // Generate new tokens
   const now = Date.now();
-  const newAccessToken = await signJWT({ uid: refreshData.uid, username: refreshData.username }, env.JWT_SECRET);
-  const newRefreshToken = generateRefreshToken();
-
   // Access token: 15 minutes, Refresh token: 7 days
   const accessExpiry = 15 * 60; // 15 minutes in seconds
+  const newAccessToken = await signJWT({ uid: refreshData.uid, username: refreshData.username }, env.JWT_SECRET, accessExpiry);
+  const newRefreshToken = generateRefreshToken();
   const refreshExpiry = 7 * 24 * 60 * 60; // 7 days in seconds
 
   // Store new session
@@ -1050,9 +1055,9 @@ export async function handleChangePassword(request: Request, env: Env, auth: Aut
   await env.AUTH_KV.put(`user:${email}`, JSON.stringify(updatedUserRecord));
 
   // Generate new tokens so the user stays logged in
-  const token = await signJWT({ uid: auth.uid, username: userRecord.username }, env.JWT_SECRET);
-  const refreshToken = generateRefreshToken();
   const accessExpiry = 15 * 60;
+  const token = await signJWT({ uid: auth.uid, username: userRecord.username }, env.JWT_SECRET, accessExpiry);
+  const refreshToken = generateRefreshToken();
   const refreshExpiry = 7 * 24 * 60 * 60;
 
   const sessionRecord: SessionRecord = {
@@ -1138,7 +1143,10 @@ export async function handleChangeUsername(request: Request, env: Env, auth: Aut
     if (!valid) {
       return Response.json({ error: 'Password is incorrect' }, { status: 401 });
     }
-  } else if (!userRecord.oauthProviders?.length) {
+  } else if (userRecord.oauthProviders?.length) {
+    // OAuth-only user — require them to set a password first for verification
+    return Response.json({ error: 'Please set a password in account settings before changing your username' }, { status: 400 });
+  } else {
     // No password and no OAuth — shouldn't happen, but fail safely
     return Response.json({ error: 'Account configuration error' }, { status: 500 });
   }
@@ -1189,9 +1197,9 @@ export async function handleChangeUsername(request: Request, env: Env, auth: Aut
 
     // Issue new tokens with updated username
     const now = Date.now();
-    const token = await signJWT({ uid: auth.uid, username: normalizedNewUsername }, env.JWT_SECRET);
-    const refreshToken = generateRefreshToken();
     const accessExpiry = 15 * 60;
+    const token = await signJWT({ uid: auth.uid, username: normalizedNewUsername }, env.JWT_SECRET, accessExpiry);
+    const refreshToken = generateRefreshToken();
     const refreshExpiry = 7 * 24 * 60 * 60;
 
     const sessionRecord: SessionRecord = {
@@ -1615,9 +1623,9 @@ export async function handleGoogleCallback(request: Request, env: Env): Promise<
   }
 
   // Step 4: Issue EternalOS tokens (same flow as login/signup)
-  const token = await signJWT({ uid: userRecord.uid, username: userRecord.username }, env.JWT_SECRET);
-  const refreshTokenValue = generateRefreshToken();
   const accessExpiry = 15 * 60;
+  const token = await signJWT({ uid: userRecord.uid, username: userRecord.username }, env.JWT_SECRET, accessExpiry);
+  const refreshTokenValue = generateRefreshToken();
   const refreshExpiry = 7 * 24 * 60 * 60;
 
   const sessionRecord: SessionRecord = {
