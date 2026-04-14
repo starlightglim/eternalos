@@ -134,6 +134,9 @@ export const useAuthStore = create<AuthStore>()(
             username: response.user.username,
             displayName: response.user.username,
             createdAt: Date.now(),
+            // Signup always creates a fresh account — flag as new so the
+            // QuickStartWizard appears on first desktop render.
+            isNewUser: true,
           };
 
           set({
@@ -221,6 +224,9 @@ export const useAuthStore = create<AuthStore>()(
             username: response.user.username,
             displayName: response.user.username,
             createdAt: Date.now(),
+            // Propagate the server-reported new-user flag so the
+            // QuickStartWizard appears for first-time Google signups.
+            isNewUser: response.isNewUser,
           };
 
           set({

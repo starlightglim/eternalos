@@ -237,25 +237,6 @@ export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps
           ))}
         </div>
 
-        <div className={styles.selectionSummary}>
-          <div className={styles.summaryHeader}>
-            <div>
-              <div className={styles.summaryEyebrow}>Selected Preset</div>
-              <div className={styles.summaryTitle}>{selectedPreset.name}</div>
-            </div>
-            <div className={styles.summaryMeta}>Wallpaper: {selectedPreset.wallpaper}</div>
-          </div>
-          <div className={styles.highlightList}>
-            {selectedPreset.highlights.map((highlight) => (
-              <span key={highlight} className={styles.highlightChip}>
-                {highlight}
-              </span>
-            ))}
-          </div>
-          <p className={styles.summaryNote}>
-            A <code>{ONBOARDING_THEME_FILENAME}</code> snapshot will be saved in your <code>{CUSTOM_CSS_FOLDER_NAME}</code> folder.
-          </p>
-        </div>
         </div>
 
         <div className={styles.actions}>
