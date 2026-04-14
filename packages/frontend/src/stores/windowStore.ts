@@ -109,6 +109,8 @@ interface WindowStore {
   loadWindowState: (validItemIds?: Set<string>, serverWindows?: SavedWindowState[]) => void;
   loadVisitorWindows: (windows: SavedWindowState[], validItemIds: Set<string>) => void;
   clearWindowState: () => void;
+  // Wipe in-memory state AND the localStorage cache (logout / user switch).
+  resetOnLogout: () => void;
 }
 
 export const useWindowStore = create<WindowStore>((set, get) => ({
@@ -481,6 +483,25 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
     // Keep localStorage intact — it serves as a fast cache for next login.
     // The server is the source of truth; loadWindowState() falls back to
     // server windows when localStorage doesn't match.
+    set({ windows: [], nextZIndex: 1 });
+  },
+
+  resetOnLogout: () => {
+    // Cancel any pending debounced writes so they can't re-populate
+    // localStorage after we clear.
+    if (saveTimeout) {
+      clearTimeout(saveTimeout);
+      saveTimeout = null;
+    }
+    if (serverSyncTimeout) {
+      clearTimeout(serverSyncTimeout);
+      serverSyncTimeout = null;
+    }
+    try {
+      localStorage.removeItem(WINDOW_STATE_KEY);
+    } catch {
+      // Ignore
+    }
     set({ windows: [], nextZIndex: 1 });
   },
 }));

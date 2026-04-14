@@ -6,7 +6,7 @@
  * user's Custom CSS folder so the preset is visible and reusable.
  */
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef, useId } from 'react';
 import { useAppearanceStore } from '../../stores/appearanceStore';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { useAuthStore } from '../../stores/authStore';
@@ -34,6 +34,9 @@ export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps
   const addItem = useDesktopStore((state) => state.addItem);
   const updateItem = useDesktopStore((state) => state.updateItem);
   const profile = useAuthStore((state) => state.profile);
+  const wizardRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const descId = useId();
 
   const selectedPreset = useMemo(
     () => THEME_PRESETS.find((preset) => preset.id === selectedId) ?? THEME_PRESETS[0],
@@ -137,18 +140,64 @@ export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps
     onComplete();
   }, [onComplete]);
 
+  // Accessibility: move focus into the dialog on open, restore it on close,
+  // and let Escape dismiss the wizard (same as clicking Skip).
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    wizardRef.current?.focus();
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isApplying) {
+        e.preventDefault();
+        handleSkip();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+
+    // Prevent the page behind the modal from scrolling while it's open.
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.body.style.overflow = prevOverflow;
+      previouslyFocused?.focus?.();
+    };
+  }, [handleSkip, isApplying]);
+
   return (
-    <div className={styles.overlay}>
-      <div className={styles.wizard}>
+    <div
+      className={styles.overlay}
+      onMouseDown={(e) => {
+        // Clicking the dimmed backdrop acts as Skip (a11y-friendly dismiss)
+        if (e.target === e.currentTarget && !isApplying) {
+          handleSkip();
+        }
+      }}
+    >
+      <div
+        className={styles.wizard}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descId}
+        tabIndex={-1}
+        ref={wizardRef}
+      >
+        <div className={styles.scrollArea}>
         <div className={styles.header}>
-          <h1 className={styles.title}>Welcome, {username}!</h1>
-          <p className={styles.subtitle}>Pick a starter direction. You can fine-tune every detail afterward.</p>
+          <h1 id={titleId} className={styles.title}>Welcome, {username}!</h1>
+          <p id={descId} className={styles.subtitle}>Pick a starter direction. You can fine-tune every detail afterward.</p>
         </div>
 
-        <div className={styles.presets}>
+        <div className={styles.presets} role="radiogroup" aria-labelledby={titleId}>
           {THEME_PRESETS.map((preset) => (
             <button
               key={preset.id}
+              type="button"
+              role="radio"
+              aria-checked={selectedId === preset.id}
+              aria-label={`${preset.name}: ${preset.description}`}
               className={`${styles.presetCard} ${selectedId === preset.id ? styles.selected : ''}`}
               onClick={() => handleSelect(preset)}
               disabled={isApplying}
@@ -206,6 +255,7 @@ export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps
           <p className={styles.summaryNote}>
             A <code>{ONBOARDING_THEME_FILENAME}</code> snapshot will be saved in your <code>{CUSTOM_CSS_FOLDER_NAME}</code> folder.
           </p>
+        </div>
         </div>
 
         <div className={styles.actions}>

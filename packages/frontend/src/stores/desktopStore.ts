@@ -114,6 +114,9 @@ interface DesktopStore {
   // Loading
   setLoading: (loading: boolean) => void;
 
+  // Reset all state + purge localStorage cache (called on logout / user switch)
+  reset: () => void;
+
   // Upload
   uploadFile: (
     file: File,
@@ -205,39 +208,103 @@ const mockItems: DesktopItem[] = [
 // Debounce timers for position updates
 const positionUpdateTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-// Local cache key for instant load
+// Local cache key for instant load.
+// Cache is namespaced by uid so one user's items can never surface under
+// another user's session (see "image leak on user switch" bug).
 const DESKTOP_CACHE_KEY = 'eternalos-desktop-cache';
+const AUTH_PERSIST_KEY = 'eternalos-auth';
 
-// Load cached items from localStorage
+// Read the currently-persisted auth uid from localStorage. Returns null if
+// no user is signed in. We read localStorage directly instead of importing
+// authStore to avoid a circular import at module load.
+function getPersistedUid(): string | null {
+  try {
+    const raw = localStorage.getItem(AUTH_PERSIST_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed?.state?.user?.uid ?? null;
+  } catch {
+    return null;
+  }
+}
+
+interface CachedDesktop {
+  uid: string;
+  items: DesktopItem[];
+}
+
+// Load cached items from localStorage — only if they belong to the
+// currently-authenticated user.
 function loadCachedItems(): DesktopItem[] | null {
   try {
     const cached = localStorage.getItem(DESKTOP_CACHE_KEY);
-    if (cached) {
-      const parsed = JSON.parse(cached);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
-      }
+    if (!cached) return null;
+
+    const parsed = JSON.parse(cached);
+    const currentUid = getPersistedUid();
+
+    // Legacy cache (bare array) — can't verify ownership, drop it.
+    if (Array.isArray(parsed)) {
+      localStorage.removeItem(DESKTOP_CACHE_KEY);
+      return null;
     }
+
+    // Namespaced cache — only return if uid matches current session.
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      typeof parsed.uid === 'string' &&
+      Array.isArray(parsed.items) &&
+      parsed.uid === currentUid &&
+      parsed.items.length > 0
+    ) {
+      return parsed.items as DesktopItem[];
+    }
+
+    // Mismatch (different user, or no user) — clear the stale cache.
+    localStorage.removeItem(DESKTOP_CACHE_KEY);
+    return null;
   } catch {
-    // Ignore cache errors
+    return null;
   }
-  return null;
 }
 
-// Save items to localStorage cache (debounced)
+// Save items to localStorage cache (debounced). Cache is tagged with the
+// current uid so a later session can detect and discard foreign data.
 let cacheTimer: ReturnType<typeof setTimeout> | null = null;
 function cacheItems(items: DesktopItem[]) {
-  // Debounce cache writes
   if (cacheTimer) {
     clearTimeout(cacheTimer);
   }
   cacheTimer = setTimeout(() => {
     try {
-      localStorage.setItem(DESKTOP_CACHE_KEY, JSON.stringify(items));
+      const uid = getPersistedUid();
+      // No authenticated user — don't write a cache entry that could
+      // later be read by someone else.
+      if (!uid) {
+        localStorage.removeItem(DESKTOP_CACHE_KEY);
+        return;
+      }
+      const payload: CachedDesktop = { uid, items };
+      localStorage.setItem(DESKTOP_CACHE_KEY, JSON.stringify(payload));
     } catch {
       // Ignore cache errors (e.g., quota exceeded)
     }
   }, 1000);
+}
+
+// Purge the desktop cache from localStorage immediately (cancel any pending
+// debounced write first).
+function purgeDesktopCache() {
+  if (cacheTimer) {
+    clearTimeout(cacheTimer);
+    cacheTimer = null;
+  }
+  try {
+    localStorage.removeItem(DESKTOP_CACHE_KEY);
+  } catch {
+    // Ignore
+  }
 }
 
 export const useDesktopStore = create<DesktopStore>((set, get) => ({
@@ -260,6 +327,22 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
   setUid: (uid) => set({ uid }),
 
   setLoading: (loading) => set({ loading }),
+
+  reset: () => {
+    // Cancel any pending position/cache writes so they can't resurrect
+    // the previous user's data after we clear.
+    positionUpdateTimers.forEach((t) => clearTimeout(t));
+    positionUpdateTimers.clear();
+    purgeDesktopCache();
+    set({
+      items: [],
+      selectedIds: new Set<string>(),
+      uid: null,
+      loading: false,
+      uploads: [],
+      serverWindows: [],
+    });
+  },
 
   addItem: (item) => {
     // Update local state

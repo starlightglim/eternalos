@@ -15,6 +15,7 @@ import {
   pruneMessages,
   stepCountIs,
   streamText,
+  type ToolSet,
 } from 'ai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createWorkersAI } from 'workers-ai-provider';
@@ -98,7 +99,7 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
       agentName: this.name,
     });
     const codemode = createCodeTool({
-      tools: appTools,
+      tools: appTools as any,
       executor,
     });
 
@@ -107,12 +108,12 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
       system: SYSTEM_PROMPT,
       messages: pruneMessages({
         messages: await convertToModelMessages(this.messages),
-        maxTokens: 16000,
+        toolCalls: 'before-last-10-messages',
       }),
       tools: {
         ...desktopTools,
         codemode,
-      },
+      } as any,
       prepareStep: async ({ stepNumber }) => {
         if (stepNumber === 0) {
           return { toolChoice: 'required' as const };

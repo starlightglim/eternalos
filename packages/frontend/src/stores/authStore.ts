@@ -21,6 +21,7 @@ import {
   sendVerificationEmail as apiSendVerification,
 } from '../services/api';
 import { useWindowStore } from './windowStore';
+import { useDesktopStore } from './desktopStore';
 
 interface AuthState {
   user: AuthUser | null;
@@ -252,8 +253,11 @@ export const useAuthStore = create<AuthStore>()(
         } catch {
           // Ignore logout API errors — we clear state regardless
         }
-        // Clear window state on logout
-        useWindowStore.getState().clearWindowState();
+        // Wipe every per-user cache so the next sign-in can't see the
+        // previous user's items, windows, or image URLs.
+        useWindowStore.getState().resetOnLogout();
+        useDesktopStore.getState().reset();
+        clearFileToken();
         set({
           user: null,
           profile: null,
@@ -431,7 +435,8 @@ export const useAuthStore = create<AuthStore>()(
           setAuthToken(null);
           setRefreshToken(null);
           clearFileToken();
-          useWindowStore.getState().clearWindowState();
+          useWindowStore.getState().resetOnLogout();
+          useDesktopStore.getState().reset();
           set({
             user: null,
             profile: null,

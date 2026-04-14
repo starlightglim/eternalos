@@ -88,19 +88,19 @@ export function createAppTools(ctx: AppToolsContext) {
   return {
     createApp: tool({
       description: 'Create a new app on the desktop. Provide HTML, CSS, and JS as separate files. The app runs in a sandboxed iframe.',
-      parameters: z.object({
+      inputSchema: z.object({
         name: z.string().min(1).max(80).describe('App name'),
         description: z.string().max(500).optional().describe('Short description'),
         files: z.record(z.string()).describe('App source files: { "index.html": "...", "styles.css": "...", "app.js": "..." }'),
         width: z.number().optional().default(600).describe('Default window width'),
         height: z.number().optional().default(500).describe('Default window height'),
       }),
-      execute: async ({ name, description, files, width, height }) => {
+      execute: async (input) => {
         const appId = crypto.randomUUID();
         const r2Prefix = `apps/${uid}/${appId}`;
 
         // Assemble into a Worker and bundle
-        const workerFiles = assembleWorkerFiles(files);
+        const workerFiles = assembleWorkerFiles(input.files);
         const { mainModule, modules } = await createWorker({ files: workerFiles });
 
         // Store the compiled bundle in R2
@@ -108,14 +108,14 @@ export function createAppTools(ctx: AppToolsContext) {
         await env.ETERNALOS_FILES.put(`${r2Prefix}/bundle.json`, bundle);
 
         // Store original source files in R2 for later editing
-        await env.ETERNALOS_FILES.put(`${r2Prefix}/source.json`, JSON.stringify(files));
+        await env.ETERNALOS_FILES.put(`${r2Prefix}/source.json`, JSON.stringify(input.files));
 
         // Register in the agent's SQLite database
         const now = Date.now();
         sql.exec(
           `INSERT INTO apps (id, name, description, version, r2_prefix, width, height, created_at, updated_at)
            VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)`,
-          appId, name, description ?? '', r2Prefix, width, height, now, now,
+          appId, input.name, input.description ?? '', r2Prefix, input.width, input.height, now, now,
         );
 
         // Store app ownership in KV for the serving route
@@ -125,10 +125,10 @@ export function createAppTools(ctx: AppToolsContext) {
         const doId = env.USER_DESKTOP.idFromName(uid);
         const stub = env.USER_DESKTOP.get(doId);
         const manifest: AppManifest = {
-          name,
-          description,
+          name: input.name,
+          description: input.description,
           version: '1',
-          windowConfig: { defaultWidth: width, defaultHeight: height, resizable: true },
+          windowConfig: { defaultWidth: input.width, defaultHeight: input.height, resizable: true },
           appId,
         };
 
@@ -136,7 +136,7 @@ export function createAppTools(ctx: AppToolsContext) {
           method: 'POST',
           body: JSON.stringify({
             type: 'app',
-            name,
+            name: input.name,
             parentId: null,
             position: { x: 60 + Math.random() * 200, y: 60 + Math.random() * 200 },
             isPublic: false,
@@ -153,104 +153,104 @@ export function createAppTools(ctx: AppToolsContext) {
         // Update the registry with the desktop item ID
         sql.exec('UPDATE apps SET desktop_item_id = ? WHERE id = ?', item.id, appId);
 
-        return { appId, itemId: item.id, name, status: 'created' };
+        return { appId, itemId: item.id, name: input.name, status: 'created' };
       },
     }),
 
     updateApp: tool({
       description: 'Update an existing app\'s code. Provide the full updated files.',
-      parameters: z.object({
+      inputSchema: z.object({
         appId: z.string().describe('The app ID to update'),
         files: z.record(z.string()).describe('Updated source files'),
         name: z.string().optional().describe('Updated name'),
       }),
-      execute: async ({ appId, files, name }) => {
+      execute: async (input) => {
         // Look up the app in the registry
         const rows = [...sql.exec<{ version: number; r2_prefix: string; desktop_item_id: string | null }>(
-          'SELECT version, r2_prefix, desktop_item_id FROM apps WHERE id = ?', appId,
-        ).results];
-        if (rows.length === 0) throw new Error(`App ${appId} not found`);
+          'SELECT version, r2_prefix, desktop_item_id FROM apps WHERE id = ?', input.appId,
+        )];
+        if (rows.length === 0) throw new Error(`App ${input.appId} not found`);
         const app = rows[0];
 
         const newVersion = app.version + 1;
 
         // Re-bundle
-        const workerFiles = assembleWorkerFiles(files);
+        const workerFiles = assembleWorkerFiles(input.files);
         const { mainModule, modules } = await createWorker({ files: workerFiles });
 
         // Update R2
         const bundle = JSON.stringify({ mainModule, modules });
         await env.ETERNALOS_FILES.put(`${app.r2_prefix}/bundle.json`, bundle);
-        await env.ETERNALOS_FILES.put(`${app.r2_prefix}/source.json`, JSON.stringify(files));
+        await env.ETERNALOS_FILES.put(`${app.r2_prefix}/source.json`, JSON.stringify(input.files));
 
         // Update registry
         const now = Date.now();
-        if (name) {
-          sql.exec('UPDATE apps SET version = ?, name = ?, updated_at = ? WHERE id = ?', newVersion, name, now, appId);
+        if (input.name) {
+          sql.exec('UPDATE apps SET version = ?, name = ?, updated_at = ? WHERE id = ?', newVersion, input.name, now, input.appId);
         } else {
-          sql.exec('UPDATE apps SET version = ?, updated_at = ? WHERE id = ?', newVersion, now, appId);
+          sql.exec('UPDATE apps SET version = ?, updated_at = ? WHERE id = ?', newVersion, now, input.appId);
         }
 
         // Update KV version for the serving route
-        await env.DESKTOP_KV.put(`app:${appId}`, JSON.stringify({ uid, version: newVersion }));
+        await env.DESKTOP_KV.put(`app:${input.appId}`, JSON.stringify({ uid, version: newVersion }));
 
         // Update the desktop item manifest if we have a linked item
-        if (app.desktop_item_id && name) {
+        if (app.desktop_item_id && input.name) {
           const doId = env.USER_DESKTOP.idFromName(uid);
           const stub = env.USER_DESKTOP.get(doId);
           await stub.fetch(new Request('http://internal/items', {
             method: 'PATCH',
             body: JSON.stringify([{
               id: app.desktop_item_id,
-              updates: { name },
+              updates: { name: input.name },
             }]),
           }));
         }
 
-        return { appId, version: newVersion, status: 'updated' };
+        return { appId: input.appId, version: newVersion, status: 'updated' };
       },
     }),
 
     listApps: tool({
       description: 'List all apps created by the user.',
-      parameters: z.object({}),
+      inputSchema: z.object({}),
       execute: async () => {
         const rows = [...sql.exec<{ id: string; name: string; description: string; version: number; created_at: number }>(
           'SELECT id, name, description, version, created_at FROM apps ORDER BY created_at DESC',
-        ).results];
+        )];
         return { apps: rows };
       },
     }),
 
     getAppSource: tool({
       description: 'Get the source files of an existing app so you can see or modify its code.',
-      parameters: z.object({
+      inputSchema: z.object({
         appId: z.string().describe('The app ID to read source from'),
       }),
-      execute: async ({ appId }) => {
+      execute: async (input) => {
         const rows = [...sql.exec<{ r2_prefix: string; name: string }>(
-          'SELECT r2_prefix, name FROM apps WHERE id = ?', appId,
-        ).results];
-        if (rows.length === 0) throw new Error(`App ${appId} not found`);
+          'SELECT r2_prefix, name FROM apps WHERE id = ?', input.appId,
+        )];
+        if (rows.length === 0) throw new Error(`App ${input.appId} not found`);
 
         const obj = await env.ETERNALOS_FILES.get(`${rows[0].r2_prefix}/source.json`);
         if (!obj) throw new Error('Source files not found');
 
         const files = await obj.json<Record<string, string>>();
-        return { appId, name: rows[0].name, files };
+        return { appId: input.appId, name: rows[0].name, files };
       },
     }),
 
     deleteApp: tool({
       description: 'Delete an app from the desktop and clean up its stored data.',
-      parameters: z.object({
+      inputSchema: z.object({
         appId: z.string().describe('The app ID to delete'),
       }),
-      execute: async ({ appId }) => {
+      execute: async (input) => {
         const rows = [...sql.exec<{ r2_prefix: string; desktop_item_id: string | null }>(
-          'SELECT r2_prefix, desktop_item_id FROM apps WHERE id = ?', appId,
-        ).results];
-        if (rows.length === 0) throw new Error(`App ${appId} not found`);
+          'SELECT r2_prefix, desktop_item_id FROM apps WHERE id = ?', input.appId,
+        )];
+        if (rows.length === 0) throw new Error(`App ${input.appId} not found`);
         const app = rows[0];
 
         // Delete from R2
@@ -258,10 +258,10 @@ export function createAppTools(ctx: AppToolsContext) {
         await env.ETERNALOS_FILES.delete(`${app.r2_prefix}/source.json`);
 
         // Delete from KV
-        await env.DESKTOP_KV.delete(`app:${appId}`);
+        await env.DESKTOP_KV.delete(`app:${input.appId}`);
 
         // Delete from registry
-        sql.exec('DELETE FROM apps WHERE id = ?', appId);
+        sql.exec('DELETE FROM apps WHERE id = ?', input.appId);
 
         // Trash the desktop item if it exists
         if (app.desktop_item_id) {
@@ -276,7 +276,7 @@ export function createAppTools(ctx: AppToolsContext) {
           }));
         }
 
-        return { appId, status: 'deleted' };
+        return { appId: input.appId, status: 'deleted' };
       },
     }),
   };

@@ -5,14 +5,16 @@
 
 .overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   background: rgba(0, 0, 0, 0.5);
+  /* Allow the overlay itself to scroll when the wizard is taller than
+     the viewport (short laptops, zoomed browsers, devtools open). */
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 24px 16px;
   z-index: 20000;
   animation: fadeIn 0.2s ease-out;
 }
@@ -34,9 +36,28 @@
     inset -1px -1px 0 var(--shadow, #808080),
     4px 4px 0 rgba(0, 0, 0, 0.3);
   padding: 20px 24px;
-  width: 520px;
-  max-width: 90vw;
+  width: 560px;
+  max-width: 100%;
+  /* Cap to viewport height so the wizard's own content area scrolls
+     instead of overflowing the screen. 48px accounts for overlay padding. */
+  max-height: calc(100dvh - 48px);
+  display: flex;
+  flex-direction: column;
+  margin: auto 0;
   animation: slideIn 0.2s ease-out;
+}
+
+.wizard:focus {
+  outline: none;
+}
+
+.scrollArea {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Tiny inset so scrollbar doesn't hug the bevel */
+  margin-right: -4px;
+  padding-right: 4px;
 }
 
 @keyframes slideIn {
@@ -73,9 +94,11 @@
 
 .presets {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-  margin-bottom: 20px;
+  /* Auto-fit so 13 presets flow into more columns on wide screens
+     instead of producing 7 rows in a fixed 2-col layout. */
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
 }
 
 .presetCard {
@@ -279,6 +302,10 @@
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+  flex-shrink: 0;
+  padding-top: 12px;
+  margin-top: 4px;
+  border-top: 1px solid var(--shadow, #808080);
 }
 
 .skipButton,

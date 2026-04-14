@@ -118,7 +118,7 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
   return {
     getDesktopOverview: tool({
       description: 'Get a concise summary of the current desktop: item counts by type, recent items, and analyzed image stats.',
-      parameters: z.object({}),
+      inputSchema: z.object({}),
       execute: async () => {
         const snapshot = await loadSnapshot(ctx);
         const active = snapshot.items.filter((i) => !i.isTrashed);
@@ -150,17 +150,17 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
 
     searchDesktop: tool({
       description: 'Search the desktop by name, tags, captions, OCR text, colors, URLs, or text content. Returns matching items with where they matched.',
-      parameters: z.object({
+      inputSchema: z.object({
         query: z.string().min(1).describe('The search query in plain language.'),
       }),
-      execute: async ({ query }) => {
+      execute: async (input) => {
         const snapshot = await loadSnapshot(ctx);
-        const results = searchItems(snapshot.items, query);
+        const results = searchItems(snapshot.items, input.query);
         const matchedIds = results.map((r) => r.id);
-        ctx.setState({ lastMatchedItemIds: matchedIds, lastQuery: query });
+        ctx.setState({ lastMatchedItemIds: matchedIds, lastQuery: input.query });
 
         return {
-          query,
+          query: input.query,
           totalMatches: results.length,
           items: results.slice(0, 10),
         };
@@ -169,13 +169,13 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
 
     createFolder: tool({
       description: 'Create a folder on the desktop and optionally move items into it. Use after searching to group matches.',
-      parameters: z.object({
+      inputSchema: z.object({
         folderName: z.string().min(1).max(80).describe('Name for the new folder.'),
         itemIds: z.array(z.string()).optional().describe('Item IDs to move into the folder. Omit to use the last search results.'),
       }),
       needsApproval: true,
-      execute: async ({ folderName, itemIds }) => {
-        const sourceIds = itemIds?.filter(Boolean) ?? ctx.getState().lastMatchedItemIds;
+      execute: async (input) => {
+        const sourceIds = input.itemIds?.filter(Boolean) ?? ctx.getState().lastMatchedItemIds;
         if (sourceIds.length === 0) {
           throw new Error('No items to group. Search for files first, or provide item IDs.');
         }
@@ -187,7 +187,7 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
           method: 'POST',
           body: JSON.stringify({
             type: 'folder',
-            name: folderName.trim(),
+            name: input.folderName.trim(),
             parentId: null,
             position: { x: 60, y: 60 },
             isPublic: true,
@@ -197,7 +197,7 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
         const folder = await createRes.json<DesktopItem>();
 
         // Move items into the folder
-        const patches = sourceIds.map((id) => ({ id, updates: { parentId: folder.id } }));
+        const patches = sourceIds.map((id: string) => ({ id, updates: { parentId: folder.id } }));
         const moveRes = await stub.fetch(new Request('http://internal/items', {
           method: 'PATCH',
           body: JSON.stringify(patches),
@@ -215,14 +215,14 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
 
     moveItems: tool({
       description: 'Move desktop items into a folder or back to the root desktop.',
-      parameters: z.object({
+      inputSchema: z.object({
         itemIds: z.array(z.string()).min(1).describe('IDs of items to move.'),
         targetFolderId: z.string().nullable().describe('Target folder ID, or null for root desktop.'),
       }),
       needsApproval: true,
-      execute: async ({ itemIds, targetFolderId }) => {
+      execute: async (input) => {
         const stub = ctx.getUserDesktopStub();
-        const patches = itemIds.map((id) => ({ id, updates: { parentId: targetFolderId } }));
+        const patches = input.itemIds.map((id: string) => ({ id, updates: { parentId: input.targetFolderId } }));
         const res = await stub.fetch(new Request('http://internal/items', {
           method: 'PATCH',
           body: JSON.stringify(patches),

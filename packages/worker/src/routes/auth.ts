@@ -120,12 +120,13 @@ export async function handleSignup(request: Request, env: Env): Promise<Response
   // SECURITY: Acquire short-lived locks on email + username before the
   // check-then-write sequence. This prevents concurrent signups from both
   // passing the existence check and overwriting each other's records.
-  // The lock TTL (30s) is long enough to cover the signup flow and short
-  // enough to auto-expire if a request crashes mid-flow.
+  // The lock TTL (60s) is long enough to cover the signup flow and short
+  // enough to auto-expire if a request crashes mid-flow. Cloudflare KV
+  // requires expirationTtl >= 60 seconds.
   const emailLockKey = `signup-lock:email:${normalizedEmail}`;
   const usernameLockKey = `signup-lock:username:${normalizedUsername}`;
   const lockValue = crypto.randomUUID();
-  const LOCK_TTL_SECONDS = 30;
+  const LOCK_TTL_SECONDS = 60;
 
   // Try to acquire email lock (put-if-absent pattern using a short TTL)
   const existingEmailLock = await env.AUTH_KV.get(emailLockKey);
