@@ -427,7 +427,11 @@ export class UserDesktop {
       name: partial.name ?? 'Untitled',
       parentId: partial.parentId ?? null,
       position: partial.position ?? { x: 0, y: 0 },
-      isPublic: partial.isPublic ?? true,
+      // SECURITY: default to private. Users must explicitly opt items into public
+      // visibility via "Make Public" in the UI. Historical items stored with
+      // isPublic: true keep their visibility; only new items without an explicit
+      // flag start private.
+      isPublic: partial.isPublic ?? false,
       createdAt: now,
       updatedAt: now,
       r2Key: partial.r2Key,
@@ -441,6 +445,7 @@ export class UserDesktop {
       stickerConfig: partial.stickerConfig,
       userTags: partial.userTags === undefined ? undefined : this.normalizeUserTags(partial.userTags),
       imageAnalysis: partial.imageAnalysis,
+      appManifest: partial.appManifest,
     };
 
     this.items.set(item.id, item);
@@ -471,6 +476,7 @@ export class UserDesktop {
       'stickerConfig',
       'userTags',
       'imageAnalysis',
+      'appManifest',
       'isTrashed',
       'trashedAt',
       'originalParentId',
@@ -581,11 +587,14 @@ export class UserDesktop {
   }
 
   /**
-   * Compute public items (non-trashed, not explicitly private)
+   * Compute public items (non-trashed, explicitly public).
+   * SECURITY: requires isPublic === true. Items with undefined/null isPublic
+   * are treated as private — only items a user has explicitly opted into
+   * sharing appear in visitor mode.
    */
   private getPublicItemsFiltered(): DesktopItem[] {
     return Array.from(this.items.values()).filter(
-      (item) => item.isPublic !== false && !item.isTrashed
+      (item) => item.isPublic === true && !item.isTrashed
     );
   }
 
@@ -602,9 +611,10 @@ export class UserDesktop {
   }
 
   /**
-   * Get visitor-visible items (for visitor mode)
-   * Shows all non-trashed items unless explicitly marked private (isPublic === false).
-   * Items default to visible — users opt-out by setting isPublic to false.
+   * Get visitor-visible items (for visitor mode).
+   * Items must be explicitly public (isPublic === true) and not trashed to
+   * appear in visitor mode. Users opt items IN to public visibility via the
+   * UI's "Make Public" toggle.
    */
   private async getPublicSnapshot(): Promise<{
     items: DesktopItem[];
@@ -678,6 +688,38 @@ export class UserDesktop {
     for (const field of allowedFields) {
       if (updates[field] !== undefined) {
         (filteredUpdates as Record<string, unknown>)[field] = updates[field];
+      }
+    }
+
+    // SECURITY: Validate the `wallpaper` field. The string is stored as-is and
+    // later parsed by handleWallpaperUpload to derive an R2 key for cleanup.
+    // If we allowed an attacker to store a custom:<victim-uid>/... value here,
+    // their next wallpaper upload would delete the victim's R2 object. The uid
+    // segment MUST match this profile's own uid.
+    if (typeof filteredUpdates.wallpaper === 'string') {
+      const w = filteredUpdates.wallpaper;
+      if (w.length > 200) {
+        throw new Error('Invalid wallpaper value');
+      }
+      if (w.startsWith('custom:')) {
+        const parts = w.slice('custom:'.length).split('/');
+        const [storedUid, wallpaperId, filename] = parts;
+        const segmentOk = (s: string | undefined) =>
+          typeof s === 'string' && s.length > 0 && !s.includes('..') && !s.includes('\\');
+        if (
+          parts.length !== 3 ||
+          storedUid !== this.profile.uid ||
+          !segmentOk(wallpaperId) ||
+          !segmentOk(filename) ||
+          !/^[A-Za-z0-9._-]+$/.test(wallpaperId) ||
+          !/^wallpaper\.(jpg|jpeg|png)$/i.test(filename)
+        ) {
+          throw new Error('Invalid wallpaper value');
+        }
+      } else if (!/^[A-Za-z0-9_-]{0,50}$/.test(w)) {
+        // Non-custom wallpapers are built-in preset identifiers (e.g., "blue",
+        // "classic") or the empty string. No slashes, colons, or URL schemes.
+        throw new Error('Invalid wallpaper value');
       }
     }
 
@@ -784,6 +826,19 @@ export class UserDesktop {
       // SECURITY: Same url() allowlist used for customCSS — prevents external
       // resource loading (tracking pixels, data exfiltration) via design tokens
       const tokenAllowedUrlPrefixes = ['/api/css-assets/', '/api/wallpaper/', '/api/icon/', '/api/sounds/', '/api/cursors/', '/api/bazaar/assets/'];
+      // Validate a bare URL (no url() wrapper) against the first-party
+      // allowlist. Used for keys whose compiler path wraps the value in
+      // url(...) client-side (cursor images).
+      const isFirstPartyAssetUrl = (raw: string): boolean => {
+        let decoded: string;
+        try { decoded = decodeURIComponent(raw); } catch { return false; }
+        decoded = decoded.replace(/\\/g, '/');
+        if (decoded.includes('..')) return false;
+        let pathname: string;
+        try { pathname = new URL(decoded, 'http://localhost').pathname; } catch { return false; }
+        if (pathname.includes('..')) return false;
+        return tokenAllowedUrlPrefixes.some((prefix) => pathname.startsWith(prefix));
+      };
       for (const [key, value] of Object.entries(dt)) {
         // Keys must be dot-path identifiers (alphanumeric + dots + hyphens)
         if (!/^[a-zA-Z][a-zA-Z0-9.\-]*$/.test(key) || key.length > 100) {
@@ -801,6 +856,25 @@ export class UserDesktop {
           for (const pattern of dangerousTokenPatterns) {
             if (pattern.test(value)) {
               throw new Error(`designToken value contains disallowed pattern for ${key}`);
+            }
+          }
+          // SECURITY: Reject CSS rule-terminating characters. The client
+          // compiler interpolates token values into rule bodies
+          // (`selector { prop: ${value}; }`), so `}` or `;` break out and let
+          // an attacker inject arbitrary top-level CSS (UI redressing, fake
+          // overlays). No registered token legitimately uses these chars.
+          if (/[{};]/.test(value)) {
+            throw new Error(`designToken value contains disallowed CSS punctuation for ${key}`);
+          }
+          // SECURITY: For keys whose compiler wraps the value in url(...)
+          // (cursor.image.*), the value is a bare URL so the url() scan below
+          // never sees it. Enforce the first-party allowlist directly so a
+          // bare `https://evil.com/beacon.gif` can't become a stored beacon.
+          if (key.startsWith('cursor.image.') && value.trim().length > 0) {
+            // Cursor values may carry a hotspot suffix: "url|hotX|hotY"
+            const bareUrl = value.split('|')[0].trim();
+            if (!isFirstPartyAssetUrl(bareUrl)) {
+              throw new Error(`designToken ${key}: URL must reference first-party assets`);
             }
           }
           // Validate url() references — only allow first-party asset paths

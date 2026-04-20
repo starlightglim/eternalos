@@ -24,6 +24,16 @@ import type { Env } from '../index';
 import type { AuthContext } from '../middleware/auth';
 import type { BazaarPack, PackType } from '../types';
 import { sanitizeFilename } from '../utils/sanitize';
+import { validateManifestAgainstFiles, validateManifest, formatValidationErrors } from '../utils/estheme';
+import type { EsthemeManifest } from '../utils/estheme';
+
+// Path within the zip — forward slashes, no `..`, no leading slash. Mirrors
+// `bundlePathRegex` in utils/estheme so this file doesn't need a new export.
+const BUNDLE_PATH_REGEX = /^(?!\.\.\/)(?!\/)(?!.*\/\.\.\/)[A-Za-z0-9._\-/]+$/;
+// Reserved R2 keys we write ourselves. Assets may never use these paths,
+// otherwise a form-field payload would overwrite the server-authoritative
+// manifest and our install flow would serve unvalidated metadata.
+const RESERVED_ESTHEME_PATHS = new Set(['manifest.json']);
 
 // Constraints
 const MAX_PACK_ASSETS = 20;
@@ -154,6 +164,41 @@ export async function handleBazaarPublish(
       }
     }
 
+    // SECURITY: Validate config keys/values BEFORE they land in KV. On install
+    // the client merges non-legacy keys into designTokens and PATCHes /profile;
+    // the server-side profile validator is the authoritative gate, but we want
+    // to reject obviously-malicious packs here too so they never see installers.
+    //   - keys: dotted identifier, <= 100 chars
+    //   - values: string/number/bool, strings <= 500 chars, no `{};` (CSS
+    //     rule-terminators would enable CSS breakout) and no scheme:// URLs
+    //     that don't point at first-party assets
+    const bazaarAllowedUrlPrefixes = ['/api/css-assets/', '/api/wallpaper/', '/api/icon/', '/api/sounds/', '/api/cursors/', '/api/bazaar/assets/'];
+    for (const [cKey, cVal] of Object.entries(config)) {
+      if (!/^[a-zA-Z][a-zA-Z0-9.\-]*$/.test(cKey) || cKey.length > 100) {
+        return Response.json({ error: `Invalid config key: ${cKey}` }, { status: 400 });
+      }
+      if (typeof cVal !== 'string' && typeof cVal !== 'number' && typeof cVal !== 'boolean') {
+        return Response.json({ error: `Invalid config value type for ${cKey}` }, { status: 400 });
+      }
+      if (typeof cVal === 'string') {
+        if (cVal.length > 500) {
+          return Response.json({ error: `config value too long for ${cKey}` }, { status: 400 });
+        }
+        if (/[{};]/.test(cVal)) {
+          return Response.json({ error: `config value contains disallowed CSS punctuation for ${cKey}` }, { status: 400 });
+        }
+        if (cKey.startsWith('cursor.image.') && cVal.trim().length > 0) {
+          const bareUrl = cVal.split('|')[0].trim();
+          let pathname: string;
+          try { pathname = new URL(bareUrl, 'http://localhost').pathname; }
+          catch { return Response.json({ error: `Invalid URL for ${cKey}` }, { status: 400 }); }
+          if (pathname.includes('..') || !bazaarAllowedUrlPrefixes.some((p) => pathname.startsWith(p))) {
+            return Response.json({ error: `config ${cKey}: URL must reference first-party assets` }, { status: 400 });
+          }
+        }
+      }
+    }
+
     const authorUsername = auth.username;
 
     // Build pack
@@ -263,7 +308,30 @@ export async function handleBazaarGetPack(
 ): Promise<Response> {
   const packStr = await env.DESKTOP_KV.get(`bazaar:pack:${packId}`);
   if (!packStr) return Response.json({ error: 'Pack not found' }, { status: 404 });
-  return Response.json({ pack: JSON.parse(packStr) });
+  const pack = JSON.parse(packStr) as BazaarPack & { manifestVersion?: number };
+
+  // If this is a .estheme pack (manifestVersion set at publish), also return
+  // the manifest so the client can apply it without a second round trip.
+  let manifest: EsthemeManifest | null = null;
+  if (pack.manifestVersion === 1) {
+    const manifestObj = await env.ETERNALOS_FILES.get(`bazaar/${packId}/manifest.json`);
+    if (manifestObj) {
+      try {
+        const raw = await manifestObj.json();
+        // SECURITY: Re-validate the manifest on read. Although publish now
+        // writes the validated manifest AFTER asset uploads to defeat path
+        // collisions, this is defense in depth: if any future code path
+        // writes to `bazaar/{packId}/manifest.json` out-of-band, installers
+        // will only ever receive a fully zod-checked manifest.
+        const result = validateManifest(raw);
+        manifest = result.ok ? result.manifest : null;
+      } catch {
+        manifest = null;
+      }
+    }
+  }
+
+  return Response.json({ pack, manifest });
 }
 
 // ---------------------------------------------------------------------------
@@ -389,3 +457,219 @@ export async function handleBazaarMyPacks(
 
   return Response.json({ packs });
 }
+
+// ---------------------------------------------------------------------------
+// .estheme publish
+// ---------------------------------------------------------------------------
+
+/**
+ * Publish a .estheme bundle. Client unzips on the client (JSZip) and sends:
+ *   - `manifest` form field: the manifest JSON string
+ *   - `preview` form field: preview PNG/JPEG Blob (required, ≤1MB)
+ *   - `file_<path>` form fields: one per asset referenced by the manifest.
+ *     Path matches the zip-relative path from the manifest's layer refs.
+ *
+ * Why client-unzips: Workers have limited zip libraries and we don't want to
+ * pay CPU on every publish. The client already has JSZip for export/install
+ * preview anyway.
+ *
+ * This endpoint:
+ *   1. Validates manifest with zod + cross-checks against provided file fields.
+ *   2. Verifies author matches authenticated user.
+ *   3. Enforces size / count constraints.
+ *   4. Uploads manifest.json + assets to R2 at bazaar/{packId}/.
+ *   5. Creates a BazaarPack row in KV.
+ */
+export async function handleBazaarPublishEstheme(
+  request: Request, env: Env, auth: AuthContext
+): Promise<Response> {
+  try {
+    const formData = await request.formData();
+
+    // 1. Manifest
+    const manifestRaw = formData.get('manifest');
+    if (typeof manifestRaw !== 'string' || !manifestRaw) {
+      return Response.json({ error: 'Missing manifest field' }, { status: 400 });
+    }
+    let manifestJson: unknown;
+    try {
+      manifestJson = JSON.parse(manifestRaw);
+    } catch {
+      return Response.json({ error: 'Invalid manifest JSON' }, { status: 400 });
+    }
+
+    // 2. Collect file fields — anything named "file_*"
+    const assetFields: { path: string; file: File }[] = [];
+    for (const [key, value] of formData.entries()) {
+      if (!key.startsWith('file_')) continue;
+      if (typeof value === 'string') continue;
+      const file = value as File;
+      const path = key.slice('file_'.length);
+      if (!path) continue;
+      // SECURITY: Validate the asset path against the same regex used for
+      // manifest-declared bundle paths. Without this check, a form field like
+      // `file_../OTHER_PACK/x.css` writes outside the pack's R2 prefix, and
+      // `file_manifest.json` would overwrite the server-validated manifest
+      // that we write moments later.
+      if (path.length > 200 || !BUNDLE_PATH_REGEX.test(path)) {
+        return Response.json(
+          { error: `Invalid asset path: ${path}` },
+          { status: 400 }
+        );
+      }
+      if (RESERVED_ESTHEME_PATHS.has(path)) {
+        return Response.json(
+          { error: `Reserved asset path: ${path}` },
+          { status: 400 }
+        );
+      }
+      if (file.size > MAX_ASSET_SIZE) {
+        return Response.json(
+          { error: `Asset "${path}" too large (max ${MAX_ASSET_SIZE / 1024}KB)` },
+          { status: 400 }
+        );
+      }
+      // SECURITY: Enforce the same MIME allowlist as the legacy publish flow.
+      // Without this an attacker could upload a `text/html` asset and, since
+      // the serving handler echoes the stored Content-Type, reference it from
+      // the manifest as a "CSS layer" to coax a browser render.
+      const fileType = file.type || 'application/octet-stream';
+      if (!ALLOWED_ASSET_TYPES[fileType] && fileType !== 'text/css' && fileType !== 'application/json') {
+        return Response.json(
+          { error: `Asset "${path}" has invalid type: ${fileType}` },
+          { status: 400 }
+        );
+      }
+      assetFields.push({ path, file });
+    }
+    if (assetFields.length > MAX_PACK_ASSETS) {
+      return Response.json(
+        { error: `Max ${MAX_PACK_ASSETS} assets per pack` },
+        { status: 400 }
+      );
+    }
+
+    // 3. Validate manifest against declared files
+    const fileIndex = new Set(assetFields.map((a) => a.path));
+    const validation = validateManifestAgainstFiles(manifestJson, fileIndex);
+    if (!validation.ok) {
+      return Response.json(
+        { error: formatValidationErrors(validation.errors), details: validation.errors },
+        { status: 400 }
+      );
+    }
+    const manifest = validation.manifest;
+
+    // 4. Author check — manifest.author must match authenticated user
+    const expectedAuthor = `@${auth.username}`;
+    if (manifest.author !== expectedAuthor) {
+      return Response.json(
+        { error: `Manifest author (${manifest.author}) does not match authenticated user (${expectedAuthor})` },
+        { status: 403 }
+      );
+    }
+
+    // 5. Preview image
+    const previewField = formData.get('preview');
+    if (!previewField || typeof previewField === 'string') {
+      return Response.json({ error: 'Missing preview image' }, { status: 400 });
+    }
+    const preview = previewField as File;
+    if (preview.size > MAX_PREVIEW_SIZE) {
+      return Response.json({ error: 'Preview too large (max 1MB)' }, { status: 400 });
+    }
+    const allowedPreviewTypes = ['image/png', 'image/jpeg', 'image/webp'];
+    if (!allowedPreviewTypes.includes(preview.type)) {
+      return Response.json(
+        { error: `Preview must be PNG/JPEG/WebP; got ${preview.type}` },
+        { status: 400 }
+      );
+    }
+
+    // 6. Pack count limit per author
+    const authorPacksStr = await env.DESKTOP_KV.get(`bazaar:author:${auth.uid}`);
+    const authorPacks: string[] = authorPacksStr ? JSON.parse(authorPacksStr) : [];
+    if (authorPacks.length >= MAX_PACKS_PER_USER) {
+      return Response.json(
+        { error: `Max ${MAX_PACKS_PER_USER} packs per user` },
+        { status: 400 }
+      );
+    }
+
+    // 7. Upload everything to R2
+    const packId = crypto.randomUUID();
+    const r2Prefix = `bazaar/${packId}`;
+
+    const previewFilename = sanitizeFilename(preview.name || 'preview.png');
+    const previewR2Key = `${r2Prefix}/${previewFilename}`;
+    await env.ETERNALOS_FILES.put(previewR2Key, await preview.arrayBuffer(), {
+      httpMetadata: { contentType: preview.type },
+      customMetadata: { type: 'estheme-preview', packId },
+    });
+
+    // Store each asset at its declared path within the pack prefix FIRST, so
+    // that if any collision slips past path validation, the server-validated
+    // manifest write below wins.
+    for (const entry of assetFields) {
+      const r2Key = `${r2Prefix}/${entry.path}`;
+      await env.ETERNALOS_FILES.put(r2Key, await entry.file.arrayBuffer(), {
+        httpMetadata: { contentType: entry.file.type || 'application/octet-stream' },
+        customMetadata: { type: 'estheme-asset', packId, assetPath: entry.path },
+      });
+    }
+
+    // Store the validated manifest AFTER assets so its R2 key (manifest.json)
+    // cannot be clobbered by an attacker-supplied `file_manifest.json` form
+    // field — this ensures installers always read the zod-validated manifest.
+    const manifestR2Key = `${r2Prefix}/manifest.json`;
+    await env.ETERNALOS_FILES.put(manifestR2Key, JSON.stringify(manifest, null, 2), {
+      httpMetadata: { contentType: 'application/json' },
+      customMetadata: { type: 'estheme-manifest', packId },
+    });
+
+    // 8. Build pack record
+    const previewUrl = `/api/bazaar/assets/${packId}/${previewFilename}`;
+    const pack: BazaarPack & { manifestVersion: 1; parentPackId?: string } = {
+      packId,
+      type: 'skin', // Reuse 'skin' type for back-compat with browse/install UI
+      name: manifest.name,
+      description: manifest.description ?? '',
+      authorUid: auth.uid,
+      authorUsername: auth.username,
+      version: manifest.version,
+      previewUrl,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      installs: 0,
+      tags: manifest.tags ?? [],
+      // Legacy fields — estheme packs don't use them, but keep shape compatible
+      assets: {},
+      config: {},
+      // New fields distinguishing estheme packs
+      manifestVersion: 1,
+      parentPackId: manifest.extends,
+    };
+
+    // 9. Persist indexes
+    await env.DESKTOP_KV.put(`bazaar:pack:${packId}`, JSON.stringify(pack));
+
+    const typeIndexStr = await env.DESKTOP_KV.get(`bazaar:type:skin`);
+    const typeIndex: string[] = typeIndexStr ? JSON.parse(typeIndexStr) : [];
+    typeIndex.unshift(packId);
+    await env.DESKTOP_KV.put(`bazaar:type:skin`, JSON.stringify(typeIndex));
+
+    authorPacks.unshift(packId);
+    await env.DESKTOP_KV.put(`bazaar:author:${auth.uid}`, JSON.stringify(authorPacks));
+
+    return Response.json({ success: true, pack, manifest });
+  } catch (error) {
+    console.error('Bazaar estheme publish error:', error);
+    return Response.json({ error: 'Failed to publish theme' }, { status: 500 });
+  }
+}
+
+/**
+ * Suppress TS unused warnings on imports that are only used via type narrowing
+ * inside JSON bodies. Compiler sees the types; eslint doesn't always.
+ */
+export type { EsthemeManifest };

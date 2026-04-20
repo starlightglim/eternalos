@@ -280,6 +280,17 @@ export interface UserRecord {
   emailVerifiedAt?: number;
   // OAuth providers linked to this account
   oauthProviders?: OAuthProvider[];
+  // Soft delete — set when user initiates account deletion.
+  // While set, login is blocked and tokens are rejected. After a grace period
+  // (14 days), a scheduled cleanup hard-deletes user data.
+  // Users can cancel deletion during the grace period via /api/auth/cancel-deletion.
+  deletedAt?: number;
+  hardDeleteAt?: number;
+  // Recovery codes: bcrypt-hashed one-time-use codes. Generated at signup and
+  // shown to the user once; burned after successful use. Recover access when
+  // email+password is unavailable. Regenerating invalidates the prior set.
+  recoveryCodesHashed?: string[];
+  recoveryCodesGeneratedAt?: number;
 }
 
 export interface SessionRecord {

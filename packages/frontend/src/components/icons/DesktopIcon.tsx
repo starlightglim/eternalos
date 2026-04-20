@@ -1,6 +1,6 @@
 import { useCallback, useRef, useEffect, memo } from 'react';
 import type { DesktopItem } from '../../types';
-import { FolderIcon, TextFileIcon, ImageFileIcon, LinkIcon, AudioFileIcon, VideoFileIcon, PDFFileIcon, WidgetIcon } from './PixelIcons';
+import { FolderIcon, TextFileIcon, ImageFileIcon, LinkIcon, AudioFileIcon, VideoFileIcon, PDFFileIcon, WidgetIcon, AppIcon } from './PixelIcons';
 import { ThumbnailIcon } from './ThumbnailIcon';
 import { renderCustomIcon, CUSTOM_ICON_LIBRARY, type CustomIconId } from './customIconUtils';
 import { getCustomIconUrl } from '../../services/api';
@@ -260,6 +260,7 @@ function DesktopIconInner({
             {item.type === 'video' && <VideoFileIcon size={32} />}
             {item.type === 'pdf' && <PDFFileIcon size={32} />}
             {item.type === 'widget' && <WidgetIcon size={32} />}
+            {item.type === 'app' && <AppIcon size={32} />}
           </>
         )}
       </div>

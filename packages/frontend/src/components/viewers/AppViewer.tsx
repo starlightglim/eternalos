@@ -7,7 +7,7 @@ interface AppViewerProps {
 export function AppViewer({ appId }: AppViewerProps) {
   const src = useMemo(() => {
     const base = import.meta.env.VITE_API_URL || window.location.origin;
-    return `${base}/api/apps/${appId}`;
+    return `${base}/api/apps/${appId}/`;
   }, [appId]);
 
   return (

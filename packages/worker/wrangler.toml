@@ -3,7 +3,7 @@
 
 name = "eternalos-api"
 main = "src/index.ts"
-compatibility_date = "2024-09-23"
+compatibility_date = "2026-04-15"
 compatibility_flags = ["nodejs_compat"]
 
 # Durable Objects
@@ -63,11 +63,22 @@ remote = true
 # Environment
 [vars]
 ENVIRONMENT = "production"
-ALLOWED_ORIGINS = "https://eternalos.me,https://www.eternalos.me"
+ALLOWED_ORIGINS = "https://eternalos.app,https://www.eternalos.app,https://eternalos.me,https://www.eternalos.me"
 
 # JWT_SECRET is set via: wrangler secret put JWT_SECRET
 # ANTHROPIC_API_KEY is set via: wrangler secret put ANTHROPIC_API_KEY
 # For local dev, set secrets in .dev.vars file
+
+# Cloudflare Email Service (outbound) — preferred over Resend when configured.
+# 1. Verify sending domain in Cloudflare dashboard: Email Routing → Outbound.
+# 2. Uncomment the binding below and deploy.
+# 3. Set FROM_EMAIL to an address on the verified domain (e.g. "EternalOS <noreply@eternalos.app>").
+# The binding has no API key; CF auto-handles SPF, DKIM, and DMARC alignment.
+# [[send_email]]
+# name = "SEND_EMAIL"
+
+# RESEND_API_KEY remains a fallback if SEND_EMAIL isn't configured:
+# wrangler secret put RESEND_API_KEY
 
 # Google OAuth (optional — enables "Sign in with Google")
 # GOOGLE_CLIENT_ID = "your-client-id.apps.googleusercontent.com"  # Set in .dev.vars or here

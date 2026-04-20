@@ -9,43 +9,51 @@
 
 import type { Env } from '../index';
 import type { JWTPayload, SessionRecord, UserRecord } from '../types';
-import { verifyJWT, signFileToken, verifyFileToken } from '../utils/jwt';
+import { verifyJWT, signFileToken, verifyFileToken, verifyChatWebSocketToken } from '../utils/jwt';
 
 export interface AuthContext {
   uid: string;
   username: string;
+  /**
+   * Discriminates the credential that produced this context:
+   * - 'session': Bearer JWT with a matching KV session record (full privilege).
+   * - 'file':    `?ft=` short-lived file token. Only valid for file-serving
+   *              routes. `requireAuth()` must reject these by default, since
+   *              file-token URLs leak via Referer, server logs, browser
+   *              history, image-proxy unfurlers, etc.
+   */
+  kind: 'session' | 'file';
 }
 
 /**
- * Verify Authorization header and return auth context
- * Returns null if auth fails
+ * Verify Authorization header and return auth context for a full-session
+ * credential. `?ft=` file tokens are intentionally NOT accepted here — they
+ * are limited to file-serving routes via `authenticateFileRequest()` to
+ * prevent a leaked media URL from authorizing account-scope mutations.
+ *
+ * Returns null if auth fails.
  */
 export async function authenticate(
   request: Request,
   env: Env
 ): Promise<AuthContext | null> {
-  const authHeader = request.headers.get('Authorization');
-
-  // Check for short-lived file token in query param (for img/video/audio src URLs).
-  // File tokens are NOT full JWTs — they only carry uid + expiry and don't need a
-  // KV session lookup, keeping media requests fast and avoiding credential leakage.
-  const url = new URL(request.url);
-  const fileToken = url.searchParams.get('ft');
-  if (fileToken) {
-    return authenticateFileToken(fileToken, env);
-  }
-
-  // Standard Bearer JWT flow
-  let token: string | null = null;
-
-  if (authHeader?.startsWith('Bearer ')) {
-    token = authHeader.slice('Bearer '.length);
-  }
-
+  const token = extractBearerToken(request);
   if (!token) {
     return null;
   }
 
+  return authenticateSessionToken(token, env);
+}
+
+function extractBearerToken(request: Request): string | null {
+  const authHeader = request.headers.get('Authorization');
+  if (authHeader?.startsWith('Bearer ')) {
+    return authHeader.slice('Bearer '.length);
+  }
+  return null;
+}
+
+async function authenticateSessionToken(token: string, env: Env): Promise<AuthContext | null> {
   try {
     const payload = await verifyJWT(token, env.JWT_SECRET);
     if (!payload) {
@@ -78,29 +86,72 @@ export async function authenticate(
         await env.AUTH_KV.delete(`session:${token}`);
         return null;
       }
+      // SECURITY: Reject sessions for soft-deleted accounts. This is defense
+      // in depth — the login/OAuth/recovery-code paths all check `deletedAt`
+      // before minting a token, but if any future code path forgets (as the
+      // original Google callback did), every `requireAuth` route still holds.
+      if (user.deletedAt) {
+        await env.AUTH_KV.delete(`session:${token}`);
+        return null;
+      }
     }
 
     return {
       uid: payload.uid,
       username: payload.username,
+      kind: 'session',
     };
   } catch {
     return null;
   }
 }
 
-/**
- * Verify a short-lived file token (used for media src URLs).
- * Returns a minimal AuthContext with uid only (username set to empty string
- * since file-serving only needs the uid for ownership checks).
- */
-async function authenticateFileToken(
-  token: string,
+export async function authenticateAgentChatWebSocket(
+  request: Request,
   env: Env
 ): Promise<AuthContext | null> {
-  const result = await verifyFileToken(token, env.JWT_SECRET);
+  const bearer = extractBearerToken(request);
+  if (bearer) {
+    const session = await authenticateSessionToken(bearer, env);
+    if (session) return session;
+  }
+
+  const url = new URL(request.url);
+  const wsToken = url.searchParams.get('wsToken');
+  if (!wsToken) return null;
+
+  const payload = await verifyChatWebSocketToken(wsToken, env.JWT_SECRET);
+  if (!payload) return null;
+
+  return {
+    uid: payload.uid,
+    username: '',
+    kind: 'session',
+  };
+}
+
+/**
+ * Authenticate a request to a file-serving route. Accepts either a Bearer
+ * JWT (session) or a `?ft=` file token. MUST NOT be used for mutating or
+ * account-scope endpoints — `?ft=` is considered a read-only file credential
+ * and the returned context is tagged with `kind: 'file'` so downstream code
+ * can enforce that boundary.
+ */
+export async function authenticateFileRequest(
+  request: Request,
+  env: Env
+): Promise<AuthContext | null> {
+  // Prefer a full session if the caller provided one.
+  const session = await authenticate(request, env);
+  if (session) return session;
+
+  const url = new URL(request.url);
+  const fileToken = url.searchParams.get('ft');
+  if (!fileToken) return null;
+
+  const result = await verifyFileToken(fileToken, env.JWT_SECRET);
   if (!result) return null;
-  return { uid: result.uid, username: '' };
+  return { uid: result.uid, username: '', kind: 'file' };
 }
 
 /**
@@ -131,15 +182,16 @@ async function getUserByUid(env: Env, uid: string): Promise<string | null> {
 }
 
 /**
- * Middleware that requires authentication
- * Returns 401 if not authenticated
+ * Middleware that requires a full-session credential. Returns 401 if not
+ * authenticated. File tokens (`?ft=`) are NOT accepted — those credentials
+ * are scoped to file-serving routes only.
  */
 export async function requireAuth(
   request: Request,
   env: Env
 ): Promise<Response | AuthContext> {
   const auth = await authenticate(request, env);
-  if (!auth) {
+  if (!auth || auth.kind !== 'session') {
     return Response.json(
       { error: 'Unauthorized' },
       { status: 401 }

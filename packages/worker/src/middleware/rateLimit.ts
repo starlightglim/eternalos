@@ -37,6 +37,23 @@ export const RATE_LIMIT_API: RateLimitConfig = {
   keyPrefix: 'ratelimit:api',
 };
 
+// Public asset endpoints (files, wallpapers, css-assets, sounds, cursors, bazaar).
+// Limit must be generous because a single visitor page can pull 20-50 assets,
+// but still cap the endpoint against R2 egress DoS and enumeration.
+export const RATE_LIMIT_PUBLIC_ASSET: RateLimitConfig = {
+  maxRequests: 1000,
+  windowMs: 60 * 1000, // 1 minute
+  keyPrefix: 'ratelimit:asset',
+};
+
+// WebSocket connection attempts per IP. Each connection keeps a Durable Object
+// warm, so rapid reconnection must be rate-limited to prevent cost inflation.
+export const RATE_LIMIT_WS: RateLimitConfig = {
+  maxRequests: 30,
+  windowMs: 60 * 1000, // 1 minute
+  keyPrefix: 'ratelimit:ws',
+};
+
 /**
  * Get client identifier for rate limiting
  * Uses CF-Connecting-IP header (set by Cloudflare) or falls back to request IP

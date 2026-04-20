@@ -4,11 +4,14 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/authStore'
 import { isApiConfigured } from '../services/api'
 import { getGoogleClientId, redirectToGoogle } from '../utils/googleOAuth'
+import { Turnstile, TURNSTILE_ENABLED } from '../components/ui/Turnstile'
 import styles from './AuthPage.module.css'
 
 export function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null)
+  const [localError, setLocalError] = useState<string | null>(null)
   const { login, loading, error, clearError, user } = useAuthStore()
   const navigate = useNavigate()
 
@@ -28,6 +31,7 @@ export function LoginPage() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     clearError()
+    setLocalError(null)
 
     if (!isApiConfigured) {
       // Demo mode - navigate to demo user's desktop
@@ -35,8 +39,13 @@ export function LoginPage() {
       return
     }
 
+    if (TURNSTILE_ENABLED && !turnstileToken) {
+      setLocalError('Please complete the CAPTCHA before continuing.')
+      return
+    }
+
     try {
-      await login(email, password)
+      await login(email, password, turnstileToken)
       // Navigation happens via useEffect when user state updates
     } catch (err) {
       // Error is handled by the store
@@ -88,7 +97,7 @@ export function LoginPage() {
             <span className={styles.logoText}>EternalOS</span>
           </div>
 
-          {error && <div className={styles.error}>{error}</div>}
+          {(localError || error) && <div className={styles.error}>{localError || error}</div>}
 
           <form className={styles.form} onSubmit={handleSubmit}>
             <div className={styles.formGroup}>
@@ -117,10 +126,12 @@ export function LoginPage() {
               />
             </div>
 
+            <Turnstile onToken={setTurnstileToken} action="login" />
+
             <button
               type="submit"
               className={styles.submitButton}
-              disabled={loading}
+              disabled={loading || (TURNSTILE_ENABLED && !turnstileToken)}
             >
               {loading ? 'Logging in...' : 'Log In'}
             </button>

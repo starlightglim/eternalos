@@ -70,6 +70,11 @@ interface RefreshResponse {
   expiresIn: number;
 }
 
+interface AgentChatWebSocketTokenResponse {
+  token: string;
+  expiresAt: number;
+}
+
 async function refreshSession(): Promise<boolean> {
   if (!refreshToken) {
     return false;
@@ -189,6 +194,13 @@ async function apiRequest<T>(
   return response.json();
 }
 
+export async function mintAgentChatWebSocketToken(): Promise<string> {
+  const response = await apiRequest<AgentChatWebSocketTokenResponse>('/api/agent/chat/ws-token', {
+    method: 'POST',
+  });
+  return response.token;
+}
+
 // ============ Auth API ============
 
 export interface SignupResponse {
@@ -201,6 +213,8 @@ export interface SignupResponse {
     email: string;
     emailVerified?: boolean;
   };
+  /** Plaintext recovery codes — server returns these exactly once at signup. */
+  recoveryCodes?: string[];
 }
 
 export interface LoginResponse {
@@ -218,18 +232,23 @@ export interface LoginResponse {
 export async function signup(
   email: string,
   password: string,
-  username: string
+  username: string,
+  turnstileToken?: string | null,
 ): Promise<SignupResponse> {
   return apiRequest<SignupResponse>('/api/auth/signup', {
     method: 'POST',
-    body: JSON.stringify({ email, password, username }),
+    body: JSON.stringify({ email, password, username, turnstileToken }),
   });
 }
 
-export async function login(email: string, password: string): Promise<LoginResponse> {
+export async function login(
+  email: string,
+  password: string,
+  turnstileToken?: string | null,
+): Promise<LoginResponse> {
   return apiRequest<LoginResponse>('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, turnstileToken }),
   });
 }
 

@@ -7,22 +7,26 @@
 
 import { UserDesktop } from './durable-objects/UserDesktop';
 import { OrchestratorAgent } from './agents/OrchestratorAgent';
-import { handleSignup, handleLogin, handleLogout, handleForgotPassword, handleResetPassword, handleRefreshToken, handleChangePassword, handleChangeUsername, handleSendVerification, handleVerifyEmail, handleGoogleCallback } from './routes/auth';
+import { handleSignup, handleLogin, handleLogout, handleForgotPassword, handleResetPassword, handleRefreshToken, handleChangePassword, handleChangeUsername, handleSendVerification, handleVerifyEmail, handleGoogleCallback, handleDeleteAccount, handleCancelDeletion, handleExportData, handleUseRecoveryCode, handleRegenerateRecoveryCodes } from './routes/auth';
 import { handleUpload, handleServeFile, handleWallpaperUpload, handleServeWallpaper, handleIconUpload, handleServeIcon, handleCSSAssetUpload, handleServeCSSAsset, handleListCSSAssets, handleDeleteCSSAsset, handleAnalyzeImageItem } from './routes/upload';
 import { handleSoundUpload, handleServeSound, handleListSounds, handleDeleteSound } from './routes/sounds';
 import { handleCursorUpload, handleServeCursor, handleListCursors, handleDeleteCursor } from './routes/cursors';
-import { handleBazaarPublish, handleBazaarBrowse, handleBazaarGetPack, handleBazaarInstall, handleBazaarDelete, handleBazaarServeAsset, handleBazaarMyPacks } from './routes/bazaar';
+import { handleBazaarPublish, handleBazaarBrowse, handleBazaarGetPack, handleBazaarInstall, handleBazaarDelete, handleBazaarServeAsset, handleBazaarMyPacks, handleBazaarPublishEstheme } from './routes/bazaar';
+import { handleAppCapability, handleAppFsList, handleAppFsRead } from './routes/apps';
 import { handleVisit } from './routes/visit';
 import { handleOgImage } from './routes/ogImage';
 import { trackVisitAnalytics, handleGetAnalytics } from './routes/analytics';
-import { requireAuth, authenticate, issueFileToken } from './middleware/auth';
+import { requireAuth, authenticateAgentChatWebSocket, authenticateFileRequest, issueFileToken } from './middleware/auth';
 import { getAgentByName } from 'agents';
+import { signChatWebSocketToken } from './utils/jwt';
 import {
   checkRateLimit,
   rateLimitResponse,
   addRateLimitHeaders,
   RATE_LIMIT_AUTH,
   RATE_LIMIT_API,
+  RATE_LIMIT_PUBLIC_ASSET,
+  RATE_LIMIT_WS,
   type RateLimitResult,
 } from './middleware/rateLimit';
 
@@ -49,13 +53,24 @@ export interface Env {
 
   // Secrets
   JWT_SECRET: string;
-  RESEND_API_KEY?: string; // For sending transactional emails (password reset, etc.)
+  RESEND_API_KEY?: string; // Fallback email provider when SEND_EMAIL binding isn't configured
   IMAGE_ANALYSIS_MODEL?: string; // Optional Workers AI model override for image metadata enrichment
   AGENT_CHAT_MODEL?: string; // Optional Workers AI model override for chat agent
+
+  // Cloudflare Email Service binding (preferred over Resend when configured).
+  // Set up via wrangler.toml: send_email = [{ name = "SEND_EMAIL" }]
+  // Sending domain must be verified in CF dashboard (Email Routing → Outbound).
+  SEND_EMAIL?: { send(message: unknown): Promise<void> };
 
   // Google OAuth (optional — enable by setting both)
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string; // Set via `wrangler secret put GOOGLE_CLIENT_SECRET`
+
+  // Cloudflare Turnstile (optional — invisible CAPTCHA on signup/login/forgot-password)
+  // Set via: wrangler secret put TURNSTILE_SECRET
+  // Frontend reads site key from VITE_TURNSTILE_SITE_KEY env var.
+  // When unset, verifyTurnstile() returns true (dev mode).
+  TURNSTILE_SECRET?: string;
 
   // Environment settings
   ENVIRONMENT?: 'development' | 'production';
@@ -231,12 +246,38 @@ export default {
       return Response.json({ status: 'ok', timestamp: Date.now() }, { headers: corsHeaders });
     }
 
-    // Authenticated stateful chat agent routed through a stable API path.
-    // The actual agent instance name is the authenticated uid, not a client-provided value.
-    if (path === '/api/agent/chat' || path.startsWith('/api/agent/chat/')) {
+    if (path === '/api/agent/chat/ws-token' && request.method === 'POST') {
       const authResult = await requireAuth(request, env);
       if (authResult instanceof Response) {
         return withCors(authResult, corsHeaders);
+      }
+
+      const token = await signChatWebSocketToken(authResult.uid, env.JWT_SECRET);
+      return withCors(Response.json({
+        token,
+        expiresAt: Math.floor(Date.now() / 1000) + 60,
+      }), corsHeaders);
+    }
+
+    // Authenticated stateful chat agent routed through a stable API path.
+    // The actual agent instance name is the authenticated uid, not a client-provided value.
+    if (path === '/api/agent/chat' || path.startsWith('/api/agent/chat/')) {
+      if (
+        request.headers.get('Upgrade') === 'websocket' &&
+        request.headers.get('Origin') &&
+        !corsHeaders['Access-Control-Allow-Origin']
+      ) {
+        return withCors(Response.json({ error: 'CORS origin not allowed' }, { status: 403 }), corsHeaders);
+      }
+
+      const authResult = request.headers.get('Upgrade') === 'websocket'
+        ? await authenticateAgentChatWebSocket(request, env)
+        : await requireAuth(request, env);
+      if (authResult instanceof Response) {
+        return withCors(authResult, corsHeaders);
+      }
+      if (!authResult) {
+        return withCors(Response.json({ error: 'Unauthorized' }, { status: 401 }), corsHeaders);
       }
 
       const agentStub = await getAgentByName<Env, OrchestratorAgent>(env.OrchestratorAgent, authResult.uid);
@@ -248,11 +289,48 @@ export default {
       return withCors(agentResponse, corsHeaders);
     }
 
+    // Mint a capability token for an app: POST /api/apps/:appId/capability
+    // Runs before the Dynamic Worker dispatch below so the capability path
+    // doesn't get swallowed by the iframe-serving code.
+    const capabilityMatch = path.match(/^\/api\/apps\/([^/]+)\/capability$/);
+    if (capabilityMatch && request.method === 'POST') {
+      const appId = capabilityMatch[1];
+      const authResult = await requireAuth(request, env);
+      if (authResult instanceof Response) {
+        return withCors(authResult, corsHeaders);
+      }
+      const response = await handleAppCapability(request, env, authResult, appId);
+      return withCors(response, corsHeaders);
+    }
+
+    // App fs.list — capability-gated; auth verified inside handler.
+    const fsListMatch = path.match(/^\/api\/apps\/([^/]+)\/fs\/list$/);
+    if (fsListMatch && request.method === 'GET') {
+      const response = await handleAppFsList(request, env, fsListMatch[1]);
+      return withCors(response, corsHeaders);
+    }
+
+    // App fs.read — capability-gated; streams from R2 or returns inline content.
+    const fsReadMatch = path.match(/^\/api\/apps\/([^/]+)\/fs\/read\/([^/]+)$/);
+    if (fsReadMatch && request.method === 'GET') {
+      const response = await handleAppFsRead(request, env, fsReadMatch[1], fsReadMatch[2]);
+      return withCors(response, corsHeaders);
+    }
+
     // Serve user-created apps via Dynamic Workers: /api/apps/:appId
     if (path.startsWith('/api/apps/')) {
-      const appId = path.slice('/api/apps/'.length).split('/')[0];
+      const appPath = path.slice('/api/apps/'.length);
+      const appId = appPath.split('/')[0];
       if (!appId) {
         return withCors(new Response('App ID required', { status: 400 }), corsHeaders);
+      }
+
+      // Relative asset paths inside app HTML only resolve correctly when the
+      // document URL ends with a trailing slash.
+      if (appPath === appId) {
+        const redirectUrl = new URL(request.url);
+        redirectUrl.pathname = `/api/apps/${appId}/`;
+        return Response.redirect(redirectUrl.toString(), 308);
       }
 
       // Look up app owner from KV
@@ -270,7 +348,7 @@ export default {
 
       const bundle = await bundleObj.json<{ mainModule: string; modules: Record<string, string> }>();
       const worker = env.LOADER.get(`app-${appId}@v${appMeta.version}`, async () => ({
-        compatibilityDate: '2024-09-23',
+        compatibilityDate: '2026-04-15',
         mainModule: bundle.mainModule,
         modules: bundle.modules,
         globalOutbound: null, // fully sandboxed — no network access
@@ -286,6 +364,13 @@ export default {
       const wsUsername = path.slice('/api/ws/'.length).toLowerCase();
       if (!wsUsername) {
         return new Response('Username required', { status: 400 });
+      }
+
+      // Rate limit WS connection attempts per IP. Each connection keeps a DO
+      // warm, so rapid reconnection must be capped to prevent cost inflation.
+      const wsRateLimit = await checkRateLimit(request, env, RATE_LIMIT_WS);
+      if (!wsRateLimit.allowed) {
+        return rateLimitResponse(wsRateLimit);
       }
 
       // Look up uid by username (stored as JSON { uid })
@@ -307,17 +392,25 @@ export default {
       let response: Response;
       let rateLimitResult: RateLimitResult | null = null;
 
-      // Determine rate limit config based on path
+      // Determine rate limit config based on path.
+      // Public asset GETs get a high-cap limit (1000/min) — enough for a visitor
+      // page with many images, tight enough to block R2 egress DoS.
+      const isPublicAssetRoute = path.startsWith('/api/files/')
+        || path.startsWith('/api/wallpaper/')
+        || path.startsWith('/api/css-assets/')
+        || path.startsWith('/api/sounds/')
+        || path.startsWith('/api/cursors/')
+        || path.startsWith('/api/bazaar/assets/');
       const isAuthRoute = path.startsWith('/api/auth/');
-      const rateLimitConfig = isAuthRoute ? RATE_LIMIT_AUTH : RATE_LIMIT_API;
+      const rateLimitConfig = isPublicAssetRoute
+        ? RATE_LIMIT_PUBLIC_ASSET
+        : isAuthRoute
+          ? RATE_LIMIT_AUTH
+          : RATE_LIMIT_API;
 
-      // Check rate limit (skip for file serving to avoid latency)
-      const skipRateLimit = path.startsWith('/api/files/') || path.startsWith('/api/wallpaper/') || path.startsWith('/api/css-assets/') || path.startsWith('/api/sounds/') || path.startsWith('/api/cursors/') || path.startsWith('/api/bazaar/assets/');
-      if (!skipRateLimit) {
-        rateLimitResult = await checkRateLimit(request, env, rateLimitConfig);
-        if (!rateLimitResult.allowed) {
-          return withCors(rateLimitResponse(rateLimitResult), corsHeaders);
-        }
+      rateLimitResult = await checkRateLimit(request, env, rateLimitConfig);
+      if (!rateLimitResult.allowed) {
+        return withCors(rateLimitResponse(rateLimitResult), corsHeaders);
       }
 
       // Auth routes (60 req/min limit)
@@ -419,6 +512,63 @@ export default {
       // Verify email (token-based, no auth required)
       if (path === '/api/auth/verify-email' && request.method === 'POST') {
         response = await handleVerifyEmail(request, env);
+        if (rateLimitResult) {
+          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
+        }
+        return withCors(response, corsHeaders);
+      }
+
+      // Soft-delete account (authenticated) — 14-day grace period
+      if (path === '/api/auth/delete-account' && request.method === 'POST') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+        response = await handleDeleteAccount(request, env, authResult);
+        if (rateLimitResult) {
+          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
+        }
+        return withCors(response, corsHeaders);
+      }
+
+      // Cancel a pending account deletion (no auth — soft-deleted users can't log in)
+      if (path === '/api/auth/cancel-deletion' && request.method === 'POST') {
+        response = await handleCancelDeletion(request, env);
+        if (rateLimitResult) {
+          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
+        }
+        return withCors(response, corsHeaders);
+      }
+
+      // GDPR data export (authenticated) — returns a JSON download
+      if (path === '/api/auth/export-data' && request.method === 'GET') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+        response = await handleExportData(request, env, authResult);
+        if (rateLimitResult) {
+          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
+        }
+        return withCors(response, corsHeaders);
+      }
+
+      // Use a recovery code to sign in (and optionally reset password)
+      if (path === '/api/auth/use-recovery-code' && request.method === 'POST') {
+        response = await handleUseRecoveryCode(request, env);
+        if (rateLimitResult) {
+          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
+        }
+        return withCors(response, corsHeaders);
+      }
+
+      // Regenerate recovery codes (authenticated, password confirmation required)
+      if (path === '/api/auth/regenerate-recovery-codes' && request.method === 'POST') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+        response = await handleRegenerateRecoveryCodes(request, env, authResult);
         if (rateLimitResult) {
           response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
         }
@@ -756,11 +906,19 @@ export default {
         }
       }
 
-      // Bazaar publish (auth required)
+      // Bazaar publish (auth required) — legacy flat-config packs
       if (path === '/api/bazaar/publish' && request.method === 'POST') {
         const authResult = await requireAuth(request, env);
         if (authResult instanceof Response) return withCors(authResult, corsHeaders);
         response = await handleBazaarPublish(request, env, authResult);
+        return withCors(response, corsHeaders);
+      }
+
+      // Bazaar publish .estheme (auth required) — new theme bundle format
+      if (path === '/api/bazaar/publish-estheme' && request.method === 'POST') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) return withCors(authResult, corsHeaders);
+        response = await handleBazaarPublishEstheme(request, env, authResult);
         return withCors(response, corsHeaders);
       }
 
@@ -805,8 +963,9 @@ export default {
         // Decode URL-encoded filename (browser encodes spaces as %20, etc.)
         const filename = decodeURIComponent(filenameParts.join('/'));
 
-        // Authenticate but don't require it (visitors can access public files)
-        const auth = await authenticate(request, env);
+        // File-serving is the only route that accepts a `?ft=` file token;
+        // visitors can also access public files without any credential.
+        const auth = await authenticateFileRequest(request, env);
 
         response = await handleServeFile(request, env, fileOwnerUid, itemId, filename, auth);
         return withCors(response, corsHeaders);

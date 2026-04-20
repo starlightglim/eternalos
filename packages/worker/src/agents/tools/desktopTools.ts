@@ -183,6 +183,13 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
         const stub = ctx.getUserDesktopStub();
 
         // Create the folder
+        // SECURITY: Default to private. The server's `createItemInternal` also
+        // defaults to private, and the approval UI shown to the user only
+        // surfaces the folder's name — not its visibility. Creating an
+        // agent-proposed "Tax Documents" / "Medical" folder as public would
+        // silently publish the folder name on the user's /@username profile
+        // without consent. The user can toggle "Visible to visitors" via Get
+        // Info after creation if they actually want it public.
         const createRes = await stub.fetch(new Request('http://internal/items', {
           method: 'POST',
           body: JSON.stringify({
@@ -190,7 +197,7 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
             name: input.folderName.trim(),
             parentId: null,
             position: { x: 60, y: 60 },
-            isPublic: true,
+            isPublic: false,
           }),
         }));
         if (!createRes.ok) throw new Error(`Failed to create folder (${createRes.status})`);

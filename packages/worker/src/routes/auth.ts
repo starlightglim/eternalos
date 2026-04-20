@@ -20,16 +20,22 @@ import { signJWT } from '../utils/jwt';
 import { hashPassword, verifyPassword } from '../utils/password';
 import { sanitizeEmail, sanitizeUsername } from '../utils/sanitize';
 import { sendEmail, getPasswordResetEmail, getEmailVerificationEmail, getUsernameChangeEmail } from '../utils/email';
+import { generateRecoveryCodes, hashRecoveryCodes, findMatchingRecoveryHash, burnRecoveryCode } from '../utils/recoveryCodes';
+import { verifyTurnstile } from '../utils/turnstile';
 
 interface SignupBody {
   email: string;
   password: string;
   username: string;
+  /** Optional Turnstile token; verifier is no-op when TURNSTILE_SECRET is unset. */
+  turnstileToken?: string;
 }
 
 interface LoginBody {
   email: string;
   password: string;
+  /** Optional Turnstile token; verifier is no-op when TURNSTILE_SECRET is unset. */
+  turnstileToken?: string;
 }
 
 /**
@@ -93,11 +99,17 @@ export async function handleSignup(request: Request, env: Env): Promise<Response
     return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { email, password, username } = body;
+  const { email, password, username, turnstileToken } = body;
 
   // Validate inputs
   if (!email || !password || !username) {
     return Response.json({ error: 'Email, password, and username are required' }, { status: 400 });
+  }
+
+  // Turnstile verification — no-op when TURNSTILE_SECRET is unset (dev mode).
+  const turnstileOk = await verifyTurnstile(request, env, { token: turnstileToken, expectedAction: 'signup' });
+  if (!turnstileOk) {
+    return Response.json({ error: 'CAPTCHA verification failed. Please try again.' }, { status: 400 });
   }
 
   if (!validateEmail(email)) {
@@ -179,6 +191,16 @@ export async function handleSignup(request: Request, env: Env): Promise<Response
     }
     const now = Date.now();
 
+    // Generate recovery codes — plaintext returned to user once, hashed for storage.
+    const plaintextRecoveryCodes = generateRecoveryCodes();
+    let recoveryCodesHashed: string[];
+    try {
+      recoveryCodesHashed = await hashRecoveryCodes(plaintextRecoveryCodes);
+    } catch (e) {
+      console.error('Signup: hash recovery codes failed:', e);
+      return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
+    }
+
     // Create user record
     const userRecord: UserRecord = {
       uid,
@@ -186,6 +208,8 @@ export async function handleSignup(request: Request, env: Env): Promise<Response
       passwordHash,
       username: normalizedUsername,
       createdAt: now,
+      recoveryCodesHashed,
+      recoveryCodesGeneratedAt: now,
     };
 
     // Store user data in KV
@@ -441,7 +465,7 @@ Try saying:
       const appUrl = env.APP_URL || 'https://eternalos.app';
       const verifyUrl = `${appUrl}/verify-email?token=${verifyToken}`;
       const { html, text } = getEmailVerificationEmail(verifyUrl, normalizedUsername);
-      return sendEmail(env.RESEND_API_KEY!, env.FROM_EMAIL!, {
+      return sendEmail(env, {
         to: normalizedEmail,
         subject: 'Verify your EternalOS email',
         html,
@@ -460,6 +484,10 @@ Try saying:
         email: normalizedEmail,
         emailVerified: false,
       },
+      // Recovery codes — shown to the user once. Client MUST persist or prompt
+      // the user to save before showing anything else. Server no longer has
+      // them in plaintext.
+      recoveryCodes: plaintextRecoveryCodes,
     });
   } finally {
     // Always release signup locks (they auto-expire too, but clean up eagerly)
@@ -482,11 +510,17 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
     return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { email, password } = body;
+  const { email, password, turnstileToken } = body;
 
   // Validate inputs
   if (!email || !password) {
     return Response.json({ error: 'Email and password are required' }, { status: 400 });
+  }
+
+  // Turnstile verification — no-op when TURNSTILE_SECRET is unset (dev mode).
+  const turnstileOk = await verifyTurnstile(request, env, { token: turnstileToken, expectedAction: 'login' });
+  if (!turnstileOk) {
+    return Response.json({ error: 'CAPTCHA verification failed. Please try again.' }, { status: 400 });
   }
 
   const normalizedEmail = sanitizeEmail(email);
@@ -517,6 +551,19 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
   if (!userRecord.passwordHash) {
     const providers = userRecord.oauthProviders?.map(p => p.provider).join(', ') || 'OAuth';
     return Response.json({ error: `This account uses ${providers} sign-in. Please use that method instead.` }, { status: 400 });
+  }
+
+  // Soft-deleted accounts cannot log in. The user can cancel deletion during
+  // the grace period via /api/auth/cancel-deletion.
+  if (userRecord.deletedAt) {
+    const daysLeft = userRecord.hardDeleteAt
+      ? Math.max(0, Math.ceil((userRecord.hardDeleteAt - Date.now()) / (24 * 60 * 60 * 1000)))
+      : 0;
+    return Response.json({
+      error: 'Account scheduled for deletion. Sign in canceled.',
+      accountDeletionPending: true,
+      daysUntilHardDelete: daysLeft,
+    }, { status: 403 });
   }
 
   // Verify password
@@ -882,10 +929,11 @@ export async function handleForgotPassword(request: Request, env: Env): Promise<
 
   const isDev = env.ENVIRONMENT === 'development';
 
-  // Send password reset email (if Resend is configured)
-  if (env.RESEND_API_KEY && env.FROM_EMAIL) {
+  // Send password reset email — sendEmail() picks CF binding or Resend automatically
+  const emailConfigured = (env.SEND_EMAIL || env.RESEND_API_KEY) && env.FROM_EMAIL;
+  if (emailConfigured) {
     const { html, text } = getPasswordResetEmail(resetUrl, userRecord.username);
-    const sent = await sendEmail(env.RESEND_API_KEY, env.FROM_EMAIL, {
+    const sent = await sendEmail(env, {
       to: normalizedEmail,
       subject: 'Reset your EternalOS password',
       html,
@@ -1225,10 +1273,10 @@ export async function handleChangeUsername(request: Request, env: Env, auth: Aut
       expirationTtl: refreshExpiry,
     });
 
-    // Send notification email (non-blocking)
-    if (env.RESEND_API_KEY && env.FROM_EMAIL) {
+    // Send notification email (non-blocking) — sendEmail picks CF or Resend
+    if ((env.SEND_EMAIL || env.RESEND_API_KEY) && env.FROM_EMAIL) {
       const { html, text } = getUsernameChangeEmail(oldUsername, normalizedNewUsername);
-      sendEmail(env.RESEND_API_KEY, env.FROM_EMAIL, {
+      sendEmail(env, {
         to: email,
         subject: 'Your EternalOS username has been changed',
         html,
@@ -1308,10 +1356,10 @@ export async function handleSendVerification(request: Request, env: Env, auth: A
 
   const isDev = env.ENVIRONMENT === 'development';
 
-  // Send verification email
-  if (env.RESEND_API_KEY && env.FROM_EMAIL) {
+  // Send verification email — sendEmail picks CF binding or Resend
+  if ((env.SEND_EMAIL || env.RESEND_API_KEY) && env.FROM_EMAIL) {
     const { html, text } = getEmailVerificationEmail(verifyUrl, userRecord.username);
-    const sent = await sendEmail(env.RESEND_API_KEY, env.FROM_EMAIL, {
+    const sent = await sendEmail(env, {
       to: email,
       subject: 'Verify your EternalOS email',
       html,
@@ -1623,6 +1671,39 @@ export async function handleGoogleCallback(request: Request, env: Env): Promise<
     return Response.json({ error: 'Failed to authenticate. Please try again.' }, { status: 500 });
   }
 
+  // SECURITY: Enforce the account-deletion grace period on the OAuth path.
+  // `handleLogin` and `handleUseRecoveryCode` both reject credentials for
+  // soft-deleted accounts; without the same check here, a returning Google
+  // user (or an attacker who phished the linked Google account) would silently
+  // bypass the 14-day cooling-off window, keep `deletedAt`/`hardDeleteAt`
+  // set (risking a mid-session hard-delete), and log in normally.
+  //
+  // Policy per the comment on handleCancelDeletion:
+  //   - OAuth-only accounts: successful OAuth is the intended cancel-deletion
+  //     signal — clear the flags and proceed.
+  //   - Password (+optional OAuth) accounts: deletion must be canceled via
+  //     the password-based flow (handleCancelDeletion); block OAuth sign-in.
+  if (userRecord.deletedAt) {
+    const isOAuthOnly = !userRecord.passwordHash;
+    if (isOAuthOnly) {
+      const revived: UserRecord = { ...userRecord };
+      delete (revived as Partial<UserRecord>).deletedAt;
+      delete (revived as Partial<UserRecord>).hardDeleteAt;
+      await env.AUTH_KV.put(`user:${normalizedEmail}`, JSON.stringify(revived));
+      userRecord = revived;
+    } else {
+      return Response.json(
+        {
+          error: 'Account scheduled for deletion. Cancel the deletion to sign in.',
+          accountDeletionPending: true,
+          deletedAt: userRecord.deletedAt,
+          hardDeleteAt: userRecord.hardDeleteAt,
+        },
+        { status: 403 }
+      );
+    }
+  }
+
   // Step 4: Issue EternalOS tokens (same flow as login/signup)
   const accessExpiry = 15 * 60;
   const token = await signJWT({ uid: userRecord.uid, username: userRecord.username }, env.JWT_SECRET, accessExpiry);
@@ -1662,5 +1743,395 @@ export async function handleGoogleCallback(request: Request, env: Env): Promise<
       email: userRecord.email,
       emailVerified: userRecord.emailVerified ?? false,
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Account deletion — soft delete with 14-day grace period
+// ---------------------------------------------------------------------------
+
+const ACCOUNT_DELETION_GRACE_DAYS = 14;
+
+interface DeleteAccountBody {
+  /** Password confirmation. Required for password users, ignored for OAuth-only. */
+  password?: string;
+  /** Optional free-form reason (telemetry, not validated). */
+  reason?: string;
+}
+
+/**
+ * Soft-delete the authenticated user. Marks the user as deletedAt + schedules
+ * hard deletion after a 14-day grace period. Logs the user out by invalidating
+ * sessions. User can cancel via /api/auth/cancel-deletion during the window.
+ */
+export async function handleDeleteAccount(
+  request: Request,
+  env: Env,
+  auth: AuthContext,
+): Promise<Response> {
+  let body: DeleteAccountBody = {};
+  try {
+    body = await request.json() as DeleteAccountBody;
+  } catch {
+    // Body is optional for OAuth-only accounts; empty body is fine.
+  }
+
+  // Look up user by uid
+  const indexJson = await env.AUTH_KV.get(`uid:${auth.uid}`);
+  if (!indexJson) {
+    return Response.json({ error: 'Account not found' }, { status: 404 });
+  }
+  const { email } = JSON.parse(indexJson) as { email: string };
+
+  const userJson = await env.AUTH_KV.get(`user:${email}`);
+  if (!userJson) {
+    return Response.json({ error: 'Account not found' }, { status: 404 });
+  }
+  const user = JSON.parse(userJson) as UserRecord;
+
+  if (user.deletedAt) {
+    return Response.json({
+      error: 'Account is already scheduled for deletion',
+      daysUntilHardDelete: user.hardDeleteAt
+        ? Math.max(0, Math.ceil((user.hardDeleteAt - Date.now()) / (24 * 60 * 60 * 1000)))
+        : 0,
+    }, { status: 409 });
+  }
+
+  // Password-based accounts must confirm with password to prevent session
+  // hijack → silent account delete. OAuth-only accounts skip this (they can't
+  // re-auth with a password here; the session itself is sufficient).
+  if (user.passwordHash) {
+    if (!body.password) {
+      return Response.json({ error: 'Password confirmation required' }, { status: 400 });
+    }
+    const valid = await verifyPassword(body.password, user.passwordHash);
+    if (!valid) {
+      return Response.json({ error: 'Incorrect password' }, { status: 401 });
+    }
+  }
+
+  const now = Date.now();
+  const hardDeleteAt = now + ACCOUNT_DELETION_GRACE_DAYS * 24 * 60 * 60 * 1000;
+
+  const updated: UserRecord = {
+    ...user,
+    deletedAt: now,
+    hardDeleteAt,
+    // Invalidate all existing sessions by bumping passwordChangedAt. Sessions
+    // issued before this instant will be rejected on next request.
+    passwordChangedAt: now,
+  };
+
+  await env.AUTH_KV.put(`user:${email}`, JSON.stringify(updated));
+
+  // Log the user out of the current session explicitly.
+  const authHeader = request.headers.get('Authorization');
+  if (authHeader?.startsWith('Bearer ')) {
+    const token = authHeader.slice('Bearer '.length);
+    await env.AUTH_KV.delete(`session:${token}`).catch(() => {});
+  }
+
+  return Response.json({
+    success: true,
+    deletedAt: now,
+    hardDeleteAt,
+    daysUntilHardDelete: ACCOUNT_DELETION_GRACE_DAYS,
+    message: `Account scheduled for deletion on ${new Date(hardDeleteAt).toISOString()}. Sign in before then to cancel.`,
+  });
+}
+
+/**
+ * Cancel a pending account deletion during the grace period.
+ * Password-account holders supply their credentials to reactivate. OAuth-only
+ * users re-initiate their OAuth flow, which calls this endpoint with a special
+ * oauth-verified marker (handled by handleGoogleCallback when deletedAt is set).
+ */
+export async function handleCancelDeletion(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  let body: { email?: string; password?: string };
+  try {
+    body = await request.json() as { email?: string; password?: string };
+  } catch {
+    return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+
+  if (!body.email || !body.password) {
+    return Response.json({ error: 'Email and password required' }, { status: 400 });
+  }
+
+  const normalizedEmail = sanitizeEmail(body.email);
+  const userJson = await env.AUTH_KV.get(`user:${normalizedEmail}`);
+  if (!userJson) {
+    return Response.json({ error: 'Account not found' }, { status: 404 });
+  }
+  const user = JSON.parse(userJson) as UserRecord;
+
+  if (!user.deletedAt) {
+    return Response.json({ error: 'Account is not pending deletion' }, { status: 400 });
+  }
+  if (!user.passwordHash) {
+    return Response.json({ error: 'OAuth-only accounts must cancel by signing in via OAuth' }, { status: 400 });
+  }
+
+  const valid = await verifyPassword(body.password, user.passwordHash);
+  if (!valid) {
+    return Response.json({ error: 'Incorrect password' }, { status: 401 });
+  }
+
+  const restored: UserRecord = { ...user };
+  delete (restored as Partial<UserRecord>).deletedAt;
+  delete (restored as Partial<UserRecord>).hardDeleteAt;
+
+  await env.AUTH_KV.put(`user:${normalizedEmail}`, JSON.stringify(restored));
+
+  return Response.json({
+    success: true,
+    message: 'Account deletion canceled. You can sign in normally now.',
+  });
+}
+
+// ---------------------------------------------------------------------------
+// GDPR data export — download everything we hold about the user as JSON
+// ---------------------------------------------------------------------------
+
+/**
+ * Collect the user's full data (profile, items, windows, CSS assets, etc.)
+ * and return as a JSON download. The export is a portable snapshot; it does
+ * not include file blobs — those live in R2 and are downloaded separately.
+ */
+export async function handleExportData(
+  request: Request,
+  env: Env,
+  auth: AuthContext,
+): Promise<Response> {
+  const indexJson = await env.AUTH_KV.get(`uid:${auth.uid}`);
+  if (!indexJson) {
+    return Response.json({ error: 'Account not found' }, { status: 404 });
+  }
+  const { email } = JSON.parse(indexJson) as { email: string };
+
+  const userJson = await env.AUTH_KV.get(`user:${email}`);
+  if (!userJson) {
+    return Response.json({ error: 'Account not found' }, { status: 404 });
+  }
+  const user = JSON.parse(userJson) as UserRecord;
+  const sanitizedUser = { ...user };
+  delete sanitizedUser.passwordHash;
+
+  const doId = env.USER_DESKTOP.idFromName(auth.uid);
+  const stub = env.USER_DESKTOP.get(doId);
+
+  const [itemsRes, trashRes, cssHistoryRes, cssAssetsRes] = await Promise.all([
+    stub.fetch(new Request('http://internal/items')).catch(() => null),
+    stub.fetch(new Request('http://internal/trash')).catch(() => null),
+    stub.fetch(new Request('http://internal/css-history')).catch(() => null),
+    stub.fetch(new Request('http://internal/css-assets')).catch(() => null),
+  ]);
+
+  const items = itemsRes?.ok ? await itemsRes.json() : null;
+  const trash = trashRes?.ok ? await trashRes.json() : null;
+  const cssHistory = cssHistoryRes?.ok ? await cssHistoryRes.json() : null;
+  const cssAssets = cssAssetsRes?.ok ? await cssAssetsRes.json() : null;
+
+  const exportedAt = Date.now();
+  const payload = {
+    exportFormatVersion: 1,
+    exportedAt,
+    user: sanitizedUser,
+    desktop: items,
+    trash,
+    cssHistory,
+    cssAssets,
+    note: 'File blobs are stored in R2 and not included. Download them individually from the desktop UI or via /api/files/:uid/:id/:filename while signed in.',
+  };
+
+  const filename = `eternalos-export-${auth.username}-${new Date(exportedAt).toISOString().slice(0, 10)}.json`;
+  return new Response(JSON.stringify(payload, null, 2), {
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Recovery codes — use-as-login + regenerate
+// ---------------------------------------------------------------------------
+
+interface UseRecoveryCodeBody {
+  email: string;
+  code: string;
+  /** Optional: if supplied, password will be reset to this value after the code is burned. */
+  newPassword?: string;
+}
+
+/**
+ * Use a recovery code to sign in. Burns the code on success and optionally
+ * resets the password. Not rate-limited per-account here — the outer auth
+ * rate-limit still applies (60 req/min per IP).
+ */
+export async function handleUseRecoveryCode(request: Request, env: Env): Promise<Response> {
+  let body: UseRecoveryCodeBody;
+  try {
+    body = await request.json() as UseRecoveryCodeBody;
+  } catch {
+    return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+
+  if (!body.email || !body.code) {
+    return Response.json({ error: 'Email and recovery code are required' }, { status: 400 });
+  }
+
+  const normalizedEmail = sanitizeEmail(body.email);
+  const userJson = await env.AUTH_KV.get(`user:${normalizedEmail}`);
+  if (!userJson) {
+    // Generic message to avoid user enumeration
+    return Response.json({ error: 'Invalid recovery code' }, { status: 401 });
+  }
+
+  const user = JSON.parse(userJson) as UserRecord;
+
+  if (user.deletedAt) {
+    return Response.json({
+      error: 'Account scheduled for deletion. Use cancel-deletion instead.',
+      accountDeletionPending: true,
+    }, { status: 403 });
+  }
+
+  if (!user.recoveryCodesHashed || user.recoveryCodesHashed.length === 0) {
+    return Response.json({ error: 'No recovery codes available for this account' }, { status: 400 });
+  }
+
+  const matchingHash = await findMatchingRecoveryHash(body.code, user.recoveryCodesHashed);
+  if (!matchingHash) {
+    return Response.json({ error: 'Invalid recovery code' }, { status: 401 });
+  }
+
+  // Burn the code
+  const remaining = burnRecoveryCode(user.recoveryCodesHashed, matchingHash);
+
+  const updated: UserRecord = {
+    ...user,
+    recoveryCodesHashed: remaining,
+  };
+
+  // Optional: reset password in the same call (common recovery flow)
+  let passwordWasReset = false;
+  if (body.newPassword) {
+    const passwordError = validatePassword(body.newPassword);
+    if (passwordError) {
+      return Response.json({ error: passwordError }, { status: 400 });
+    }
+    updated.passwordHash = await hashPassword(body.newPassword);
+    updated.passwordChangedAt = Date.now();
+    passwordWasReset = true;
+  }
+
+  await env.AUTH_KV.put(`user:${normalizedEmail}`, JSON.stringify(updated));
+
+  // Issue a fresh session
+  if (!env.JWT_SECRET) {
+    return Response.json({ error: 'Server configuration error' }, { status: 500 });
+  }
+  const now = Date.now();
+  const accessExpiry = 15 * 60;
+  const token = await signJWT(
+    { uid: user.uid, username: user.username },
+    env.JWT_SECRET,
+    accessExpiry,
+  );
+  const refreshToken = generateRefreshToken();
+  const refreshExpiry = 7 * 24 * 60 * 60;
+
+  const sessionRecord: SessionRecord = {
+    uid: user.uid,
+    expiresAt: now + accessExpiry * 1000,
+    issuedAt: now,
+    refreshToken,
+    refreshExpiresAt: now + refreshExpiry * 1000,
+  };
+
+  await env.AUTH_KV.put(`session:${token}`, JSON.stringify(sessionRecord), {
+    expirationTtl: accessExpiry,
+  });
+
+  await env.AUTH_KV.put(`refresh:${refreshToken}`, JSON.stringify({
+    uid: user.uid,
+    username: user.username,
+    accessToken: token,
+    expiresAt: now + refreshExpiry * 1000,
+    issuedAt: now,
+  }), { expirationTtl: refreshExpiry });
+
+  return Response.json({
+    success: true,
+    token,
+    refreshToken,
+    expiresIn: accessExpiry,
+    codesRemaining: remaining.length,
+    passwordWasReset,
+    lowCodesWarning: remaining.length <= 2,
+    user: {
+      uid: user.uid,
+      username: user.username,
+      email: user.email,
+      emailVerified: user.emailVerified ?? false,
+    },
+  });
+}
+
+/**
+ * Regenerate a fresh set of recovery codes. Invalidates the old set. Requires
+ * password confirmation to prevent session-hijack → silent code rotation.
+ */
+export async function handleRegenerateRecoveryCodes(
+  request: Request,
+  env: Env,
+  auth: AuthContext,
+): Promise<Response> {
+  let body: { password?: string };
+  try {
+    body = await request.json() as { password?: string };
+  } catch {
+    return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+
+  const indexJson = await env.AUTH_KV.get(`uid:${auth.uid}`);
+  if (!indexJson) return Response.json({ error: 'Account not found' }, { status: 404 });
+  const { email } = JSON.parse(indexJson) as { email: string };
+
+  const userJson = await env.AUTH_KV.get(`user:${email}`);
+  if (!userJson) return Response.json({ error: 'Account not found' }, { status: 404 });
+  const user = JSON.parse(userJson) as UserRecord;
+
+  // Password confirmation required for password-based accounts
+  if (user.passwordHash) {
+    if (!body.password) {
+      return Response.json({ error: 'Password confirmation required' }, { status: 400 });
+    }
+    const valid = await verifyPassword(body.password, user.passwordHash);
+    if (!valid) {
+      return Response.json({ error: 'Incorrect password' }, { status: 401 });
+    }
+  }
+
+  const plaintextCodes = generateRecoveryCodes();
+  const recoveryCodesHashed = await hashRecoveryCodes(plaintextCodes);
+  const now = Date.now();
+
+  const updated: UserRecord = {
+    ...user,
+    recoveryCodesHashed,
+    recoveryCodesGeneratedAt: now,
+  };
+  await env.AUTH_KV.put(`user:${email}`, JSON.stringify(updated));
+
+  return Response.json({
+    success: true,
+    recoveryCodes: plaintextCodes,
+    generatedAt: now,
   });
 }

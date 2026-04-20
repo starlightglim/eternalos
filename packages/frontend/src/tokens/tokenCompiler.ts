@@ -17,6 +17,38 @@ function resolveAssetUrl(url: string): string {
   return url;
 }
 
+/**
+ * First-party asset path allowlist for designToken URL values (cursor images,
+ * sprite URLs, etc.). Must mirror the server-side `tokenAllowedUrlPrefixes`
+ * check in `UserDesktop.updateProfile`.
+ *
+ * SECURITY: returning `false` prevents the caller from emitting a CSS rule
+ * that would cause the browser to fetch an attacker-controlled cross-origin
+ * resource (tracking pixel / visitor beacon). This is a defense-in-depth
+ * layer; the authoritative check is server-side in the profile validator.
+ */
+const TOKEN_ASSET_PATH_PREFIXES = [
+  '/api/css-assets/',
+  '/api/wallpaper/',
+  '/api/icon/',
+  '/api/sounds/',
+  '/api/cursors/',
+  '/api/bazaar/assets/',
+];
+function isFirstPartyAssetUrl(rawUrl: string): boolean {
+  if (!rawUrl) return false;
+  let pathname: string;
+  try {
+    // URL parsing normalizes percent-encoded traversal. The base ensures
+    // relative `/api/...` paths resolve deterministically.
+    pathname = new URL(rawUrl, 'http://localhost').pathname;
+  } catch {
+    return false;
+  }
+  if (pathname.includes('..')) return false;
+  return TOKEN_ASSET_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -343,6 +375,13 @@ export function compileTokensToCSS(
         hotX = parseInt(parts[1], 10) || 0;
         hotY = parseInt(parts[2], 10) || 0;
       }
+      // SECURITY: reject cross-origin or non-allowlisted paths. Without this,
+      // a malicious profile could set the value to an attacker-owned URL and
+      // every visitor's browser would fetch it (tracking pixel / data leak).
+      if (!isFirstPartyAssetUrl(url)) continue;
+      // Defense-in-depth: strip characters that could break out of url('...')
+      // context. Legitimate values only contain path chars [A-Za-z0-9._/-].
+      if (/['"\\\n\r<>]/.test(url)) continue;
       const resolvedUrl = resolveAssetUrl(url);
       const selector = config.selectors.join(', ');
       rules.push(`${selector} { cursor: url('${resolvedUrl}') ${hotX} ${hotY}, ${config.fallback} !important; }`);

@@ -64,10 +64,10 @@ const MAX_WALLPAPER_SIZE = 2 * 1024 * 1024;
 const MAX_ICON_SIZE = 50 * 1024;
 const MAX_IMAGE_ANALYSIS_SIZE = 2 * 1024 * 1024;
 const IMAGE_ANALYSIS_MODEL_FALLBACKS = [
-  '@cf/meta/llama-3.2-11b-vision-instruct',
   '@cf/meta/llama-4-scout-17b-16e-instruct',
-  '@cf/google/gemma-3-12b-it',
+  '@cf/meta/llama-3.2-11b-vision-instruct',
   '@cf/mistralai/mistral-small-3.1-24b-instruct',
+  '@cf/google/gemma-3-12b-it',
 ] as const;
 
 // Allowed MIME types for custom icons (PNG only for pixel art)
@@ -1263,8 +1263,24 @@ export async function handleWallpaperUpload(
         const oldPath = oldWallpaper.slice('custom:'.length);
         // R2 key format: uid/wallpaper/wallpaperId/filename
         const parts = oldPath.split('/');
-        if (parts.length >= 3) {
-          oldWallpaperR2Key = `${parts[0]}/wallpaper/${parts[1]}/${parts[2]}`;
+        // SECURITY: The uid segment in the stored string MUST match the caller's
+        // own uid. Otherwise an attacker could PATCH their profile with a victim's
+        // wallpaper path and use this upload flow to delete the victim's R2 object
+        // (cross-tenant destructive IDOR). Always derive the key from auth.uid.
+        if (parts.length >= 3 && parts[0] === auth.uid) {
+          const wallpaperIdSegment = parts[1];
+          const filenameSegment = parts[2];
+          // Defense-in-depth: reject traversal/separator chars in the stored segments
+          // before using them in an R2 key.
+          const segmentOk = (s: string) =>
+            typeof s === 'string' &&
+            s.length > 0 &&
+            !s.includes('..') &&
+            !s.includes('/') &&
+            !s.includes('\\');
+          if (segmentOk(wallpaperIdSegment) && segmentOk(filenameSegment)) {
+            oldWallpaperR2Key = `${auth.uid}/wallpaper/${wallpaperIdSegment}/${filenameSegment}`;
+          }
         }
       }
     }

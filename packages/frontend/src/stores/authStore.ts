@@ -34,8 +34,8 @@ interface AuthState {
 }
 
 interface AuthActions {
-  signup: (email: string, password: string, username: string) => Promise<void>;
-  login: (email: string, password: string) => Promise<void>;
+  signup: (email: string, password: string, username: string, turnstileToken?: string | null) => Promise<string[] | undefined>;
+  login: (email: string, password: string, turnstileToken?: string | null) => Promise<void>;
   googleLogin: (code: string, redirectUri: string) => Promise<{ isNewUser: boolean }>;
   logout: () => Promise<void>;
   clearError: () => void;
@@ -94,7 +94,7 @@ export const useAuthStore = create<AuthStore>()(
       error: null,
       initialized: false,
 
-      signup: async (email: string, password: string, username: string) => {
+      signup: async (email: string, password: string, username: string, turnstileToken?: string | null) => {
         // In demo mode, just set mock user
         if (!isApiConfigured) {
           set({
@@ -103,7 +103,7 @@ export const useAuthStore = create<AuthStore>()(
             loading: false,
             initialized: true,
           });
-          return;
+          return undefined;
         }
 
         set({ loading: true, error: null });
@@ -113,10 +113,10 @@ export const useAuthStore = create<AuthStore>()(
           const usernameError = validateUsername(username);
           if (usernameError) {
             set({ loading: false, error: usernameError });
-            return;
+            return undefined;
           }
 
-          const response = await apiSignup(email, password, username);
+          const response = await apiSignup(email, password, username, turnstileToken);
 
           // Store token in API client
           setAuthToken(response.token);
@@ -147,13 +147,18 @@ export const useAuthStore = create<AuthStore>()(
             loading: false,
             initialized: true,
           });
+
+          // Return recovery codes so the page can show the save-codes modal
+          // before navigating away. Server returns these exactly once.
+          return response.recoveryCodes;
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : 'Signup failed';
           set({ loading: false, error: message });
+          return undefined;
         }
       },
 
-      login: async (email: string, password: string) => {
+      login: async (email: string, password: string, turnstileToken?: string | null) => {
         // In demo mode, just set mock user
         if (!isApiConfigured) {
           set({
@@ -168,7 +173,7 @@ export const useAuthStore = create<AuthStore>()(
         set({ loading: true, error: null });
 
         try {
-          const response = await apiLogin(email, password);
+          const response = await apiLogin(email, password, turnstileToken);
 
           // Store token in API client
           setAuthToken(response.token);

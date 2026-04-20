@@ -4,6 +4,8 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/authStore'
 import { isApiConfigured } from '../services/api'
 import { getGoogleClientId, redirectToGoogle } from '../utils/googleOAuth'
+import { Turnstile, TURNSTILE_ENABLED } from '../components/ui/Turnstile'
+import { RecoveryCodesDialog } from '../components/ui/RecoveryCodesDialog'
 import styles from './AuthPage.module.css'
 
 export function SignupPage() {
@@ -12,6 +14,8 @@ export function SignupPage() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [username, setUsername] = useState('')
   const [localError, setLocalError] = useState<string | null>(null)
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null)
+  const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null)
   const { signup, loading, error, clearError, user } = useAuthStore()
   const navigate = useNavigate()
 
@@ -21,12 +25,12 @@ export function SignupPage() {
     return () => { document.title = 'EternalOS' }
   }, [])
 
-  // If already logged in, redirect to desktop
+  // If already logged in, redirect to desktop — but hold if recovery codes are showing
   useEffect(() => {
-    if (user) {
+    if (user && !recoveryCodes) {
       navigate('/desktop', { replace: true })
     }
-  }, [user, navigate])
+  }, [user, recoveryCodes, navigate])
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -51,9 +55,19 @@ export function SignupPage() {
       return
     }
 
+    // Turnstile gate (only enforced when site key is configured)
+    if (TURNSTILE_ENABLED && !turnstileToken) {
+      setLocalError('Please complete the CAPTCHA before continuing.')
+      return
+    }
+
     try {
-      await signup(email, password, username)
-      // Navigation happens via useEffect when user state updates
+      const codes = await signup(email, password, username, turnstileToken)
+      if (codes && codes.length > 0) {
+        // Surface recovery codes; navigation happens after user acknowledges.
+        setRecoveryCodes(codes)
+      }
+      // Navigation otherwise happens via useEffect when user state updates
     } catch (err) {
       // Error is handled by the store
       console.error('Signup error:', err)
@@ -166,10 +180,12 @@ export function SignupPage() {
               />
             </div>
 
+            <Turnstile onToken={setTurnstileToken} action="signup" />
+
             <button
               type="submit"
               className={styles.submitButton}
-              disabled={loading}
+              disabled={loading || (TURNSTILE_ENABLED && !turnstileToken)}
             >
               {loading ? 'Creating account...' : 'Create Account'}
             </button>
@@ -202,6 +218,17 @@ export function SignupPage() {
           </div>
         </div>
       </div>
+
+      {recoveryCodes && user && (
+        <RecoveryCodesDialog
+          codes={recoveryCodes}
+          username={user.username}
+          onContinue={() => {
+            setRecoveryCodes(null)
+            navigate('/desktop', { replace: true })
+          }}
+        />
+      )}
     </div>
   )
 }

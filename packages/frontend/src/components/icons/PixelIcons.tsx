@@ -204,6 +204,31 @@ export function LinkIcon({ className, size = 32 }: IconProps) {
 }
 
 /**
+ * App Icon - Small window/application frame
+ */
+export function AppIcon({ className, size = 32 }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 32 32"
+      className={className}
+      style={{ imageRendering: 'pixelated' }}
+    >
+      <rect x="4" y="5" width="24" height="22" fill="#f4f1dc" stroke="#000" strokeWidth="1" />
+      <rect x="4" y="5" width="24" height="5" fill="#1f4e79" stroke="#000" strokeWidth="1" />
+      <rect x="7" y="13" width="18" height="11" fill="#ffffff" stroke="#808080" strokeWidth="1" />
+      <rect x="9" y="15" width="5" height="3" fill="#5b8bd9" />
+      <rect x="16" y="15" width="7" height="1" fill="#808080" />
+      <rect x="16" y="17" width="5" height="1" fill="#808080" />
+      <rect x="9" y="20" width="14" height="2" fill="#d9d9d9" />
+      <rect x="6" y="6" width="2" height="2" fill="#ffffff" />
+      <rect x="24" y="6" width="2" height="2" fill="#ffffff" />
+    </svg>
+  );
+}
+
+/**
  * Trash Icon (Empty)
  */
 export function TrashEmptyIcon({ className, size = 32 }: IconProps) {
@@ -342,4 +367,3 @@ export function AssistantIcon({ className, size = 32 }: IconProps) {
     </svg>
   );
 }
-

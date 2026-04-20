@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { useAgent } from 'agents/react';
 import { useAgentChat } from '@cloudflare/ai-chat/react';
-import { getAuthToken, isApiConfigured } from '../../services/api';
+import { getAuthToken, isApiConfigured, mintAgentChatWebSocketToken } from '../../services/api';
 import { useAuthStore } from '../../stores/authStore';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { useWindowStore } from '../../stores/windowStore';
@@ -70,6 +70,22 @@ type CreateFolderOutput = {
     type: DesktopItem['type'];
     location: string;
   }>;
+};
+
+type ListAppsOutput = {
+  apps: Array<{
+    id: string;
+    name: string;
+    description: string;
+    version: number;
+    created_at: number;
+  }>;
+};
+
+type GetAppSourceOutput = {
+  appId: string;
+  name: string;
+  files: Record<string, string>;
 };
 
 type OpenWindowFn = ReturnType<typeof useWindowStore.getState>['openWindow'];
@@ -198,30 +214,69 @@ function openDesktopItem(openWindow: OpenWindowFn, item: DesktopItem) {
 
 export function AgentChatWindow() {
   const user = useAuthStore((state) => state.user);
+  const authToken = useAuthStore((state) => state.token);
   const items = useDesktopStore((state) => state.items);
   const loadDesktop = useDesktopStore((state) => state.loadDesktop);
   const openWindow = useWindowStore((state) => state.openWindow);
   const inputRef = useRef<HTMLInputElement>(null);
   const refreshedToolCalls = useRef(new Set<string>());
   const [draft, setDraft] = useState('');
+  const [wsToken, setWsToken] = useState<string | null>(null);
+  const [wsReady, setWsReady] = useState(false);
 
   const apiBaseUrl = useMemo(() => {
     const configured = import.meta.env.VITE_API_URL || window.location.origin;
     return new URL(configured);
   }, []);
 
+  const agentQuery = useMemo(() => (
+    wsToken ? { wsToken } : undefined
+  ), [wsToken]);
+
+  const chatHeaders = useMemo(() => (
+    authToken ? { Authorization: `Bearer ${authToken}` } : undefined
+  ), [authToken]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const token = getAuthToken();
+
+    if (!user || !token) {
+      setWsToken(null);
+      setWsReady(true);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setWsReady(false);
+    void mintAgentChatWebSocketToken()
+      .then((nextWsToken) => {
+        if (!cancelled) {
+          setWsToken(nextWsToken);
+          setWsReady(true);
+        }
+      })
+      .catch((mintError) => {
+        console.error('Failed to mint agent chat websocket token:', mintError);
+        if (!cancelled) {
+          setWsToken(null);
+          setWsReady(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid]);
+
   const agent = useAgent({
     agent: 'OrchestratorAgent',
     basePath: 'api/agent/chat',
     host: apiBaseUrl.host,
     protocol: apiBaseUrl.protocol === 'https:' ? 'wss' : 'ws',
-    query: async () => {
-      const token = getAuthToken();
-      return {
-        token: token || null,
-      };
-    },
-    queryDeps: [user?.uid, user?.username],
+    enabled: wsReady && !!user,
+    query: agentQuery,
   });
 
   const {
@@ -233,10 +288,7 @@ export function AgentChatWindow() {
     addToolApprovalResponse,
   } = useAgentChat({
     agent,
-    headers: (() => {
-      const token = getAuthToken();
-      return token ? { Authorization: `Bearer ${token}` } : undefined;
-    })(),
+    headers: chatHeaders,
   });
 
   useEffect(() => {
@@ -486,8 +538,116 @@ export function AgentChatWindow() {
       return null;
     }
 
+    if (part.type === 'tool-listApps') {
+      if (part.state !== 'output-available') {
+        return (
+          <div key={`list-apps-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Apps</div>
+            <div className={styles.toolBody}>Checking your apps...</div>
+          </div>
+        );
+      }
+
+      const output = part.output as ListAppsOutput;
+      return (
+        <div key={`list-apps-${index}`} className={styles.toolCard}>
+          <div className={styles.toolTitle}>Your apps</div>
+          <div className={styles.toolBody}>
+            {output.apps.length === 0
+              ? 'No apps created yet.'
+              : `${output.apps.length} app${output.apps.length === 1 ? '' : 's'} found.`}
+          </div>
+          {output.apps.length > 0 ? (
+            <div className={styles.resultList}>
+              {output.apps.map((app) => (
+                <div key={app.id} className={styles.resultRow}>
+                  <div className={styles.resultHeading}>{app.name}</div>
+                  <div className={styles.resultMeta}>Version {app.version}</div>
+                  {app.description ? (
+                    <div className={styles.resultSummary}>{app.description}</div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      );
+    }
+
+    if (part.type === 'tool-getAppSource') {
+      if (part.state !== 'output-available') {
+        return (
+          <div key={`app-source-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>App source</div>
+            <div className={styles.toolBody}>Loading app files...</div>
+          </div>
+        );
+      }
+
+      const output = part.output as GetAppSourceOutput;
+      const fileNames = Object.keys(output.files);
+      return (
+        <div key={`app-source-${index}`} className={styles.toolCard}>
+          <div className={styles.toolTitle}>App source</div>
+          <div className={styles.toolBody}>
+            <strong>{output.name}</strong> includes {fileNames.length} file{fileNames.length === 1 ? '' : 's'}.
+          </div>
+          {fileNames.length > 0 ? (
+            <div className={styles.matchPills}>
+              {fileNames.slice(0, 12).map((fileName) => (
+                <span key={fileName} className={styles.matchPill}>{fileName}</span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      );
+    }
+
     // Codemode tool — app building via generated TypeScript
     if (part.type === 'tool-codemode') {
+      if (part.state === 'approval-requested') {
+        return (
+          <div key={`codemode-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Approval required</div>
+            <div className={styles.toolBody}>
+              Eternal wants to execute generated code that may create, update, or delete desktop apps.
+            </div>
+            <div className={styles.approvalRow}>
+              <button
+                type="button"
+                className={styles.actionButton}
+                onClick={() => {
+                  if (part.approval?.id) {
+                    void addToolApprovalResponse({ id: part.approval.id, approved: true });
+                  }
+                }}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                className={styles.actionButton}
+                onClick={() => {
+                  if (part.approval?.id) {
+                    void addToolApprovalResponse({ id: part.approval.id, approved: false });
+                  }
+                }}
+              >
+                Deny
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      if (part.state === 'output-denied') {
+        return (
+          <div key={`codemode-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>App action cancelled</div>
+          </div>
+        );
+      }
+
       if (part.state === 'output-error') {
         return (
           <div key={`codemode-${index}`} className={styles.toolCard}>
@@ -628,7 +788,9 @@ export function AgentChatWindow() {
       <div className={styles.footer}>
         <div className={styles.statusRow}>
           <span className={styles.statusLabel}>
-            {hasPendingApproval
+            {!wsReady
+              ? 'Connecting...'
+              : hasPendingApproval
               ? 'Approval needed'
               : status === 'submitted' || status === 'streaming'
                 ? 'Working through your desktop...'
@@ -643,12 +805,14 @@ export function AgentChatWindow() {
             className={styles.input}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            placeholder="Ask about files, images, tags, OCR text, or recent uploads..."
+            placeholder={wsReady
+              ? 'Ask about files, images, tags, OCR text, or recent uploads...'
+              : 'Connecting to Eternal...'}
           />
           <button
             className={styles.sendButton}
             type="submit"
-            disabled={status === 'submitted' || status === 'streaming' || !draft.trim()}
+            disabled={!wsReady || status === 'submitted' || status === 'streaming' || !draft.trim()}
           >
             Send
           </button>

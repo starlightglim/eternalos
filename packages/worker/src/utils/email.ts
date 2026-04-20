@@ -1,34 +1,106 @@
 /**
- * Email utility for EternalOS
+ * Email utility for EternalOS.
  *
- * Sends transactional emails via Resend API.
- * Requires RESEND_API_KEY secret and FROM_EMAIL env var.
+ * Prefers the **Cloudflare Email Service** binding (no API key, auto-configured
+ * SPF/DKIM/DMARC on verified domains) and falls back to **Resend** when that
+ * binding isn't available. If neither is configured, logs a warning and
+ * returns false so callers degrade gracefully.
  *
  * Setup:
- *   wrangler secret put RESEND_API_KEY
- *   Add FROM_EMAIL to wrangler.toml [vars] or .dev.vars
+ *   Cloudflare Email (preferred):
+ *     - Verify sending domain in Cloudflare dashboard (Email Routing → Outbound).
+ *     - Add to wrangler.toml:
+ *         send_email = [{ name = "SEND_EMAIL" }]
+ *     - Set FROM_EMAIL to an address on the verified domain.
+ *   Resend (fallback):
+ *     - wrangler secret put RESEND_API_KEY
+ *     - Set FROM_EMAIL to a Resend-verified sender.
  */
 
-interface SendEmailParams {
+import { createMimeMessage } from 'mimetext';
+
+// Cloudflare's runtime module. The TS types come from @cloudflare/workers-types
+// when available; the runtime import is what matters at execution time.
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore — cloudflare:email is a Workers-runtime-only module
+import { EmailMessage } from 'cloudflare:email';
+
+export interface SendEmailParams {
   to: string;
   subject: string;
   html: string;
   text?: string;
 }
 
-interface ResendResponse {
+/**
+ * Env subset needed for email — typed loosely so this module doesn't need to
+ * import the full Env and risk a circular dependency.
+ */
+export interface EmailCapableEnv {
+  SEND_EMAIL?: { send(message: unknown): Promise<void> };
+  RESEND_API_KEY?: string;
+  FROM_EMAIL?: string;
+}
+
+interface ResendErrorResponse {
   id?: string;
   message?: string;
 }
 
 /**
- * Send an email via Resend API
- * Returns true on success, false on failure (never throws)
+ * Parse a "Name <address@domain>" style FROM_EMAIL into its parts.
+ * Returns address-only for the sender envelope (Cloudflare Email requires a
+ * bare address there) plus the full display form for the MIME From: header.
  */
-export async function sendEmail(
+function parseFromEmail(fromEmail: string): { address: string; display: string } {
+  const match = fromEmail.match(/^\s*(.*?)\s*<\s*([^>]+?)\s*>\s*$/);
+  if (match) {
+    const name = match[1].replace(/^"|"$/g, '').trim();
+    const address = match[2].trim();
+    return { address, display: name ? `${name} <${address}>` : address };
+  }
+  const address = fromEmail.trim();
+  return { address, display: address };
+}
+
+/**
+ * Send via the Cloudflare Email Service binding. Builds a proper MIME message
+ * including both HTML and plain-text parts for multipart/alternative.
+ */
+async function sendViaCloudflareEmail(
+  binding: NonNullable<EmailCapableEnv['SEND_EMAIL']>,
+  fromEmail: string,
+  params: SendEmailParams,
+): Promise<boolean> {
+  try {
+    const { address: fromAddress, display: fromDisplay } = parseFromEmail(fromEmail);
+    const msg = createMimeMessage();
+    msg.setSender(fromDisplay);
+    msg.setRecipient(params.to);
+    msg.setSubject(params.subject);
+    msg.addMessage({ contentType: 'text/html', data: params.html });
+    if (params.text) {
+      msg.addMessage({ contentType: 'text/plain', data: params.text });
+    }
+
+    const message = new EmailMessage(fromAddress, params.to, msg.asRaw());
+    await binding.send(message);
+    return true;
+  } catch (error) {
+    console.error('Cloudflare Email send error:', error);
+    return false;
+  }
+}
+
+/**
+ * Send via the Resend HTTP API. Kept for fallback when the CF binding isn't
+ * configured (local dev without sending-domain verification, or hosts that
+ * prefer to retain Resend).
+ */
+async function sendViaResend(
   apiKey: string,
   fromEmail: string,
-  params: SendEmailParams
+  params: SendEmailParams,
 ): Promise<boolean> {
   try {
     const response = await fetch('https://api.resend.com/emails', {
@@ -47,16 +119,55 @@ export async function sendEmail(
     });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({})) as ResendResponse;
+      const error = await response.json().catch(() => ({})) as ResendErrorResponse;
       console.error('Resend API error:', response.status, error.message || 'Unknown error');
       return false;
     }
-
     return true;
   } catch (error) {
-    console.error('Email send error:', error);
+    console.error('Resend send error:', error);
     return false;
   }
+}
+
+/**
+ * Send an email using whichever backend is configured. Prefers the
+ * Cloudflare Email binding; falls back to Resend; returns false if neither is
+ * available. Never throws.
+ *
+ * Callers typically pass the worker's `env` directly:
+ *   await sendEmail(env, { to, subject, html, text });
+ */
+export async function sendEmail(
+  env: EmailCapableEnv,
+  params: SendEmailParams,
+): Promise<boolean> {
+  const fromEmail = env.FROM_EMAIL;
+  if (!fromEmail) {
+    console.warn('sendEmail: FROM_EMAIL is not configured — skipping send to', params.to);
+    return false;
+  }
+
+  if (env.SEND_EMAIL) {
+    const ok = await sendViaCloudflareEmail(env.SEND_EMAIL, fromEmail, params);
+    if (ok) return true;
+    // Fall through to Resend if the CF send fails and Resend is configured.
+    if (env.RESEND_API_KEY) {
+      console.warn('Cloudflare Email send failed; falling back to Resend');
+      return sendViaResend(env.RESEND_API_KEY, fromEmail, params);
+    }
+    return false;
+  }
+
+  if (env.RESEND_API_KEY) {
+    return sendViaResend(env.RESEND_API_KEY, fromEmail, params);
+  }
+
+  console.warn(
+    'sendEmail: no email backend configured (SEND_EMAIL binding + RESEND_API_KEY both missing). Skipping send to',
+    params.to,
+  );
+  return false;
 }
 
 /**
