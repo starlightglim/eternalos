@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { getFileUrl, isApiConfigured } from '../../services/api';
+import { useFileTokenVersion } from '../../hooks/useFileToken';
 import styles from './AudioPlayer.module.css';
 
 interface AudioPlayerProps {
@@ -37,7 +38,8 @@ export function AudioPlayer({ itemId, r2Key: propR2Key, name: propName }: AudioP
   const r2Key = propR2Key || item?.r2Key;
   const fileName = propName || item?.name || 'Audio';
 
-  // Get audio URL
+  // Re-render when the file token rotates so the audio src stays signed.
+  useFileTokenVersion();
   const audioUrl = r2Key && isApiConfigured
     ? getFileUrl(r2Key)
     : null;

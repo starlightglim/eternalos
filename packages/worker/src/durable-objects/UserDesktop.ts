@@ -446,6 +446,8 @@ export class UserDesktop {
       userTags: partial.userTags === undefined ? undefined : this.normalizeUserTags(partial.userTags),
       imageAnalysis: partial.imageAnalysis,
       appManifest: partial.appManifest,
+      grantedPermissions: partial.grantedPermissions,
+      permissionGrantedAt: partial.permissionGrantedAt,
     };
 
     this.items.set(item.id, item);
@@ -477,6 +479,8 @@ export class UserDesktop {
       'userTags',
       'imageAnalysis',
       'appManifest',
+      'grantedPermissions',
+      'permissionGrantedAt',
       'isTrashed',
       'trashedAt',
       'originalParentId',

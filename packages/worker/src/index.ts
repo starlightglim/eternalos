@@ -7,6 +7,7 @@
 
 import { UserDesktop } from './durable-objects/UserDesktop';
 import { OrchestratorAgent } from './agents/OrchestratorAgent';
+import { EternalService } from './services/EternalService';
 import { handleSignup, handleLogin, handleLogout, handleForgotPassword, handleResetPassword, handleRefreshToken, handleChangePassword, handleChangeUsername, handleSendVerification, handleVerifyEmail, handleGoogleCallback, handleDeleteAccount, handleCancelDeletion, handleExportData, handleUseRecoveryCode, handleRegenerateRecoveryCodes } from './routes/auth';
 import { handleUpload, handleServeFile, handleWallpaperUpload, handleServeWallpaper, handleIconUpload, handleServeIcon, handleCSSAssetUpload, handleServeCSSAsset, handleListCSSAssets, handleDeleteCSSAsset, handleAnalyzeImageItem } from './routes/upload';
 import { handleSoundUpload, handleServeSound, handleListSounds, handleDeleteSound } from './routes/sounds';
@@ -19,6 +20,7 @@ import { trackVisitAnalytics, handleGetAnalytics } from './routes/analytics';
 import { requireAuth, authenticateAgentChatWebSocket, authenticateFileRequest, issueFileToken } from './middleware/auth';
 import { getAgentByName } from 'agents';
 import { signChatWebSocketToken } from './utils/jwt';
+import { buildThreadAgentName, createThread, deleteThread, listThreads, normalizeThreadId, renameThread } from './agents/threadRegistry';
 import {
   checkRateLimit,
   rateLimitResponse,
@@ -79,7 +81,7 @@ export interface Env {
   APP_URL?: string; // Base URL for the app (e.g., "https://eternalos.app")
 }
 
-export { UserDesktop, OrchestratorAgent };
+export { UserDesktop, OrchestratorAgent, EternalService };
 
 // Standard security headers applied to every response
 const SECURITY_HEADERS: Record<string, string> = {
@@ -90,6 +92,31 @@ const SECURITY_HEADERS: Record<string, string> = {
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
   'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'",
 };
+
+// Short, stable hash of an app's grants object. Used to re-key the Dynamic
+// Worker isolate cache when permissions change — so revocation takes effect
+// on the next request without manually flushing anything. Not
+// security-sensitive: grants are also checked at call time in EternalService.
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === 'object') {
+    const entries = Object.keys(value as Record<string, unknown>)
+      .sort()
+      .map((key) => [key, canonicalize((value as Record<string, unknown>)[key])] as const);
+    return Object.fromEntries(entries);
+  }
+  return value;
+}
+
+async function hashGrants(granted: unknown): Promise<string> {
+  const canonical = JSON.stringify(canonicalize(granted ?? {}));
+  const bytes = new TextEncoder().encode(canonical);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  const hex = Array.from(new Uint8Array(digest).slice(0, 6))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return hex;
+}
 
 // Helper to add CORS + security headers to response
 function withCors(response: Response, corsHeaders: Record<string, string>): Response {
@@ -259,8 +286,64 @@ export default {
       }), corsHeaders);
     }
 
+    if (path === '/api/agent/threads' && request.method === 'GET') {
+      const authResult = await requireAuth(request, env);
+      if (authResult instanceof Response) {
+        return withCors(authResult, corsHeaders);
+      }
+
+      const threads = await listThreads(env, authResult.uid);
+      return withCors(Response.json({ threads }), corsHeaders);
+    }
+
+    if (path === '/api/agent/threads' && request.method === 'POST') {
+      const authResult = await requireAuth(request, env);
+      if (authResult instanceof Response) {
+        return withCors(authResult, corsHeaders);
+      }
+
+      const body = await request.json().catch(() => ({})) as { title?: unknown };
+      const title = typeof body.title === 'string' ? body.title : undefined;
+      const thread = await createThread(env, authResult.uid, title);
+      return withCors(Response.json({ thread }, { status: 201 }), corsHeaders);
+    }
+
+    const threadMatch = path.match(/^\/api\/agent\/threads\/([^/]+)$/);
+    if (threadMatch && request.method === 'PATCH') {
+      const authResult = await requireAuth(request, env);
+      if (authResult instanceof Response) {
+        return withCors(authResult, corsHeaders);
+      }
+
+      const body = await request.json().catch(() => ({})) as { title?: unknown };
+      if (typeof body.title !== 'string' || body.title.trim().length === 0) {
+        return withCors(Response.json({ error: 'Thread title is required' }, { status: 400 }), corsHeaders);
+      }
+
+      const thread = await renameThread(env, authResult.uid, threadMatch[1], body.title);
+      if (!thread) {
+        return withCors(Response.json({ error: 'Thread not found' }, { status: 404 }), corsHeaders);
+      }
+
+      return withCors(Response.json({ thread }), corsHeaders);
+    }
+
+    if (threadMatch && request.method === 'DELETE') {
+      const authResult = await requireAuth(request, env);
+      if (authResult instanceof Response) {
+        return withCors(authResult, corsHeaders);
+      }
+
+      const deleted = await deleteThread(env, authResult.uid, threadMatch[1]);
+      if (!deleted) {
+        return withCors(Response.json({ error: 'Thread not found' }, { status: 404 }), corsHeaders);
+      }
+
+      return withCors(Response.json({ deleted: true, threadId: normalizeThreadId(threadMatch[1]) }), corsHeaders);
+    }
+
     // Authenticated stateful chat agent routed through a stable API path.
-    // The actual agent instance name is the authenticated uid, not a client-provided value.
+    // The actual agent instance name is derived from the authenticated uid plus the active thread id.
     if (path === '/api/agent/chat' || path.startsWith('/api/agent/chat/')) {
       if (
         request.headers.get('Upgrade') === 'websocket' &&
@@ -280,7 +363,9 @@ export default {
         return withCors(Response.json({ error: 'Unauthorized' }, { status: 401 }), corsHeaders);
       }
 
-      const agentStub = await getAgentByName<Env, OrchestratorAgent>(env.OrchestratorAgent, authResult.uid);
+      const threadId = normalizeThreadId(url.searchParams.get('threadId'));
+      const agentName = buildThreadAgentName(authResult.uid, threadId);
+      const agentStub = await getAgentByName<Env, OrchestratorAgent>(env.OrchestratorAgent, agentName);
       const forwardUrl = new URL(request.url);
       const remainder = path.slice('/api/agent/chat'.length);
       forwardUrl.pathname = remainder || '/';
@@ -317,6 +402,65 @@ export default {
       return withCors(response, corsHeaders);
     }
 
+    // Serve generated app previews via Dynamic Workers: /api/app-previews/:previewId
+    if (path.startsWith('/api/app-previews/')) {
+      const previewPath = path.slice('/api/app-previews/'.length);
+      const previewId = previewPath.split('/')[0];
+      if (!previewId) {
+        return withCors(new Response('Preview ID required', { status: 400 }), corsHeaders);
+      }
+
+      if (previewPath === previewId) {
+        const redirectUrl = new URL(request.url);
+        redirectUrl.pathname = `/api/app-previews/${previewId}/`;
+        return Response.redirect(redirectUrl.toString(), 308);
+      }
+
+      const previewMeta = await env.DESKTOP_KV.get<{
+        uid: string;
+        version: number;
+        r2Prefix: string;
+        expiresAt?: number;
+        granted?: import('./utils/jwt').AppGrantedPermissions;
+      }>(`app-preview:${previewId}`, 'json');
+      if (!previewMeta) {
+        return withCors(new Response('App preview not found', { status: 404 }), corsHeaders);
+      }
+      if (previewMeta.expiresAt && previewMeta.expiresAt < Date.now()) {
+        return withCors(new Response('App preview expired', { status: 410 }), corsHeaders);
+      }
+
+      // Previews run hermetic by default. Grants are activated only after
+      // install, but keep the field configurable for future permission-review
+      // previews.
+      const granted = previewMeta.granted ?? {};
+      const bundleObj = await env.ETERNALOS_FILES.get(`${previewMeta.r2Prefix}/bundle.json`);
+      if (!bundleObj) {
+        return withCors(new Response('App preview bundle not found', { status: 404 }), corsHeaders);
+      }
+
+      const bundle = await bundleObj.json<{ mainModule: string; modules: Record<string, string> }>();
+      const grantsHash = await hashGrants(granted);
+      const loopback = (ctx as unknown as {
+        exports: {
+          EternalService: (init: { props: { uid: string; appId: string; granted: typeof granted } }) => unknown;
+        };
+      }).exports;
+      const worker = env.LOADER.get(`app-preview-${previewId}@v${previewMeta.version}-${grantsHash}`, async () => ({
+        compatibilityDate: '2026-04-15',
+        mainModule: bundle.mainModule,
+        modules: bundle.modules,
+        globalOutbound: null,
+        env: {
+          ETERNAL: loopback.EternalService({
+            props: { uid: previewMeta.uid, appId: previewId, granted },
+          }),
+        },
+      }));
+
+      return worker.getEntrypoint().fetch(request);
+    }
+
     // Serve user-created apps via Dynamic Workers: /api/apps/:appId
     if (path.startsWith('/api/apps/')) {
       const appPath = path.slice('/api/apps/'.length);
@@ -333,25 +477,50 @@ export default {
         return Response.redirect(redirectUrl.toString(), 308);
       }
 
-      // Look up app owner from KV
-      const appMeta = await env.DESKTOP_KV.get<{ uid: string; version: number }>(`app:${appId}`, 'json');
+      // Look up app owner + grants from KV. `granted` may be absent on older
+      // apps created before manifest v1.5 — treat as hermetic (no permissions).
+      const appMeta = await env.DESKTOP_KV.get<{
+        uid: string;
+        version: number;
+        r2Prefix?: string;
+        granted?: import('./utils/jwt').AppGrantedPermissions;
+      }>(`app:${appId}`, 'json');
       if (!appMeta) {
         return withCors(new Response('App not found', { status: 404 }), corsHeaders);
       }
+      const granted = appMeta.granted ?? {};
 
-      // Load the compiled app bundle from R2 and serve via Dynamic Worker
-      const r2Prefix = `apps/${appMeta.uid}/${appId}`;
+      // Load the compiled app bundle from R2 and serve via Dynamic Worker.
+      const r2Prefix = appMeta.r2Prefix ?? `apps/${appMeta.uid}/${appId}`;
       const bundleObj = await env.ETERNALOS_FILES.get(`${r2Prefix}/bundle.json`);
       if (!bundleObj) {
         return withCors(new Response('App bundle not found', { status: 404 }), corsHeaders);
       }
 
       const bundle = await bundleObj.json<{ mainModule: string; modules: Record<string, string> }>();
-      const worker = env.LOADER.get(`app-${appId}@v${appMeta.version}`, async () => ({
+      // Re-key the isolate cache on grant changes so revocation takes effect
+      // on the next request without a manual flush. Hash is cheap and stable.
+      const grantsHash = await hashGrants(granted);
+      // `ctx.exports` is the loopback-bindings surface for WorkerEntrypoints
+      // exported from this module (available at runtime; typed in
+      // @cloudflare/workers-types/experimental but not the default path we
+      // load). Cast narrowly here rather than flipping the whole types path.
+      const loopback = (ctx as unknown as {
+        exports: {
+          EternalService: (init: { props: { uid: string; appId: string; granted: typeof granted } }) => unknown;
+        };
+      }).exports;
+      const worker = env.LOADER.get(`app-${appId}@v${appMeta.version}-${grantsHash}`, async () => ({
         compatibilityDate: '2026-04-15',
         mainModule: bundle.mainModule,
         modules: bundle.modules,
-        globalOutbound: null, // fully sandboxed — no network access
+        // No arbitrary egress; bridge calls come back in through ETERNAL.
+        globalOutbound: null,
+        env: {
+          ETERNAL: loopback.EternalService({
+            props: { uid: appMeta.uid, appId, granted },
+          }),
+        },
       }));
 
       const entrypoint = worker.getEntrypoint();

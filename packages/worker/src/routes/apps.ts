@@ -15,6 +15,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AppGrantedPermissions, AppCapabilityPayload } from '../utils/jwt';
 import type { DesktopItem } from '../types';
 import { signAppCapabilityToken, verifyAppCapabilityToken } from '../utils/jwt';
+import { buildItemPath, pathMatchesGlob as sharedPathMatchesGlob, canReadItem as sharedCanReadItem } from '../utils/fsPolicy';
 
 // Pack of permission names a client may request. The server validates
 // unknown keys out rather than fail the whole mint.
@@ -156,92 +157,9 @@ export async function verifyAppCapabilityFromRequest(
   return verifyAppCapabilityToken(token, env.JWT_SECRET, { expectedAppId });
 }
 
-/**
- * Build a path from a DesktopItem chain (root → leaf). Paths are "/"-prefixed
- * and segments are item names joined with "/" — what a user would see if they
- * drilled in through folders.
- */
-function buildItemPath(itemId: string, items: Map<string, DesktopItem>): string {
-  const segments: string[] = [];
-  let current: DesktopItem | undefined = items.get(itemId);
-  let depth = 0;
-  while (current && depth < 16) {
-    segments.unshift(current.name);
-    current = current.parentId ? items.get(current.parentId) : undefined;
-    depth++;
-  }
-  return '/' + segments.join('/');
-}
-
-/**
- * Minimal glob matcher for app fs scopes. Supports:
- *   '**'              → match everything
- *   '/Photos/**'       → anything starting with /Photos/
- *   '*.jpg'            → anything ending with .jpg (in any folder)
- *   '/Notes/*.md'      → any .md file directly in /Notes
- *   exact path         → exact match
- *
- * Not a full gitignore implementation — intentionally limited so scopes are
- * predictable and auditable.
- */
-export function pathMatchesGlob(path: string, pattern: string): boolean {
-  if (pattern === '**' || pattern === '/**' || pattern === '**/*') return true;
-  if (pattern === path) return true;
-
-  // `/Dir/**` — prefix match.
-  if (pattern.endsWith('/**')) {
-    const prefix = pattern.slice(0, -'/**'.length);
-    return path === prefix || path.startsWith(prefix + '/');
-  }
-
-  // `*.ext` at any level — extension match.
-  if (pattern.startsWith('*.') && !pattern.includes('/')) {
-    const ext = pattern.slice(1);
-    return path.toLowerCase().endsWith(ext.toLowerCase());
-  }
-
-  // `/Dir/*.ext` — single-segment prefix + extension.
-  if (pattern.includes('/') && pattern.includes('*')) {
-    const lastSlash = pattern.lastIndexOf('/');
-    const prefix = pattern.slice(0, lastSlash);
-    const fileGlob = pattern.slice(lastSlash + 1);
-    if (!fileGlob.startsWith('*.')) return false;
-    const ext = fileGlob.slice(1);
-    const dirPath = path.slice(0, path.lastIndexOf('/'));
-    return dirPath === prefix && path.toLowerCase().endsWith(ext.toLowerCase());
-  }
-
-  return false;
-}
-
-function anyGlobMatches(path: string, patterns: string[] | undefined): boolean {
-  if (!patterns || patterns.length === 0) return false;
-  return patterns.some((p) => pathMatchesGlob(path, p));
-}
-
-/**
- * Does the capability permit reading the given desktop item? Checks:
- *   - granted.fs.read globs match the item's path, OR
- *   - granted.fs.mimeTypes match the item's mime type (for mime-typed files)
- */
-function canReadItem(
-  granted: AppGrantedPermissions,
-  itemPath: string,
-  mimeType: string | undefined,
-): boolean {
-  const readGlobs = granted.fs?.read;
-  if (anyGlobMatches(itemPath, readGlobs)) return true;
-
-  if (mimeType && granted.fs?.mimeTypes) {
-    for (const pattern of granted.fs.mimeTypes) {
-      if (pattern === mimeType) return true;
-      // Simple wildcard like 'image/*'
-      if (pattern.endsWith('/*') && mimeType.startsWith(pattern.slice(0, -1))) return true;
-    }
-  }
-
-  return false;
-}
+// Re-export for backwards-compat with any importers; implementation lives in fsPolicy.
+export const pathMatchesGlob = sharedPathMatchesGlob;
+const canReadItem = sharedCanReadItem;
 
 // ---------------------------------------------------------------------------
 // fs.list

@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { getFileUrl, isApiConfigured } from '../../services/api';
+import { useFileTokenVersion } from '../../hooks/useFileToken';
 import styles from './PDFViewer.module.css';
 
 interface PDFViewerProps {
@@ -23,7 +24,8 @@ export function PDFViewer({ itemId, r2Key: propR2Key, name: propName }: PDFViewe
   const r2Key = propR2Key || item?.r2Key;
   const fileName = propName || item?.name || 'Document';
 
-  // Get PDF URL
+  // Re-render when the file token rotates so the PDF URL stays signed.
+  useFileTokenVersion();
   const pdfUrl = r2Key && isApiConfigured
     ? getFileUrl(r2Key)
     : null;

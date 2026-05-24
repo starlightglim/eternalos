@@ -45,6 +45,13 @@ function generateRefreshToken(): string {
   return crypto.randomUUID() + '-' + crypto.randomUUID();
 }
 
+/**
+ * Refresh token lifetime. Refresh tokens are rotated on every use, so this is
+ * effectively the maximum window of inactivity before the user is forced to
+ * log in again.
+ */
+const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
+
 // Validation helpers
 function validateEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -411,7 +418,7 @@ Try saying:
   }
 
   const refreshToken = generateRefreshToken();
-  const refreshExpiry = 7 * 24 * 60 * 60;
+  const refreshExpiry = REFRESH_TOKEN_TTL_SECONDS;
 
   // Store session in KV
   const sessionRecord: SessionRecord = {
@@ -586,7 +593,7 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
   }
 
   // Generate new JWT
-  // Access token: 15 minutes, Refresh token: 7 days
+  // Access token: 15 minutes, Refresh token: REFRESH_TOKEN_TTL_SECONDS (rotates on use)
   const accessExpiry = 15 * 60; // 15 minutes in seconds
   let token: string;
   try {
@@ -603,7 +610,7 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
   // Generate refresh token
   const now = Date.now();
   const refreshToken = generateRefreshToken();
-  const refreshExpiry = 7 * 24 * 60 * 60; // 7 days in seconds
+  const refreshExpiry = REFRESH_TOKEN_TTL_SECONDS;
 
   // Store session in KV
   const sessionRecord: SessionRecord = {
@@ -773,7 +780,7 @@ export async function handleRefreshToken(request: Request, env: Env): Promise<Re
     // This refresh token was already used! Possible token theft.
     // Invalidate the entire token family by marking a poison flag.
     await env.AUTH_KV.put(`refresh-family-revoked:${familyId}`, '1', {
-      expirationTtl: 7 * 24 * 60 * 60,
+      expirationTtl: REFRESH_TOKEN_TTL_SECONDS,
     });
     // Clean up old tokens
     await env.AUTH_KV.delete(`refresh:${refreshToken}`);
@@ -799,11 +806,11 @@ export async function handleRefreshToken(request: Request, env: Env): Promise<Re
 
   // Generate new tokens
   const now = Date.now();
-  // Access token: 15 minutes, Refresh token: 7 days
+  // Access token: 15 minutes, Refresh token: REFRESH_TOKEN_TTL_SECONDS (rotates on use)
   const accessExpiry = 15 * 60; // 15 minutes in seconds
   const newAccessToken = await signJWT({ uid: refreshData.uid, username: refreshData.username }, env.JWT_SECRET, accessExpiry);
   const newRefreshToken = generateRefreshToken();
-  const refreshExpiry = 7 * 24 * 60 * 60; // 7 days in seconds
+  const refreshExpiry = REFRESH_TOKEN_TTL_SECONDS;
 
   // Store new session
   const sessionRecord: SessionRecord = {
@@ -1107,7 +1114,7 @@ export async function handleChangePassword(request: Request, env: Env, auth: Aut
   const accessExpiry = 15 * 60;
   const token = await signJWT({ uid: auth.uid, username: userRecord.username }, env.JWT_SECRET, accessExpiry);
   const refreshToken = generateRefreshToken();
-  const refreshExpiry = 7 * 24 * 60 * 60;
+  const refreshExpiry = REFRESH_TOKEN_TTL_SECONDS;
 
   const sessionRecord: SessionRecord = {
     uid: auth.uid,
@@ -1249,7 +1256,7 @@ export async function handleChangeUsername(request: Request, env: Env, auth: Aut
     const accessExpiry = 15 * 60;
     const token = await signJWT({ uid: auth.uid, username: normalizedNewUsername }, env.JWT_SECRET, accessExpiry);
     const refreshToken = generateRefreshToken();
-    const refreshExpiry = 7 * 24 * 60 * 60;
+    const refreshExpiry = REFRESH_TOKEN_TTL_SECONDS;
 
     const sessionRecord: SessionRecord = {
       uid: auth.uid,
@@ -1708,7 +1715,7 @@ export async function handleGoogleCallback(request: Request, env: Env): Promise<
   const accessExpiry = 15 * 60;
   const token = await signJWT({ uid: userRecord.uid, username: userRecord.username }, env.JWT_SECRET, accessExpiry);
   const refreshTokenValue = generateRefreshToken();
-  const refreshExpiry = 7 * 24 * 60 * 60;
+  const refreshExpiry = REFRESH_TOKEN_TTL_SECONDS;
 
   const sessionRecord: SessionRecord = {
     uid: userRecord.uid,
@@ -2044,7 +2051,7 @@ export async function handleUseRecoveryCode(request: Request, env: Env): Promise
     accessExpiry,
   );
   const refreshToken = generateRefreshToken();
-  const refreshExpiry = 7 * 24 * 60 * 60;
+  const refreshExpiry = REFRESH_TOKEN_TTL_SECONDS;
 
   const sessionRecord: SessionRecord = {
     uid: user.uid,

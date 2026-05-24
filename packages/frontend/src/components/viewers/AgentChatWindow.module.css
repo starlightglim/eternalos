@@ -1,20 +1,199 @@
 .chatWindow {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto 1fr;
   height: 100%;
-  background: var(--platinum);
-  color: var(--black);
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.36) 35%, rgba(214, 218, 224, 0.92) 100%),
+    linear-gradient(to bottom, #efefef 0%, #d2d5da 100%);
+  color: #202020;
   font-family: var(--font-geneva);
   font-size: 11px;
 }
 
 .header {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.22);
+  background:
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.88), rgba(224, 227, 231, 0.78)),
+    repeating-linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.14) 0 2px,
+      rgba(0, 0, 0, 0.02) 2px 4px
+    );
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.toolbarGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.windowLabel {
+  color: #70767f;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.headerTitle {
+  justify-self: center;
+  font-size: 15px;
+  font-weight: bold;
+}
+
+.toolbarTab,
+.clearButton,
+.promptButton,
+.sendButton,
+.sidebarAction,
+.threadItem {
+  border: 1px solid rgba(70, 70, 70, 0.35);
+  background: linear-gradient(to bottom, #fefefe 0%, #d9dde3 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 1px 0 rgba(255, 255, 255, 0.6);
+  font-family: var(--font-geneva);
+  font-size: 11px;
+  color: #1f1f1f;
+}
+
+.toolbarTab {
+  min-width: 72px;
+  padding: 8px 12px;
+  border-radius: 10px;
+}
+
+.toolbarTabActive {
+  background: linear-gradient(to bottom, #8f9399 0%, #63676d 100%);
+  color: #fff;
+}
+
+.searchBadge {
+  padding: 6px 10px;
+  border: 1px solid rgba(70, 70, 70, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.8);
+  color: #585f69;
+}
+
+.clearButton {
+  padding: 8px 12px;
+  border-radius: 9px;
+}
+
+.layout {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr) 270px;
+}
+
+.sidebar,
+.inspector,
+.mainPane {
+  min-height: 0;
+}
+
+.sidebar,
+.inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 12px;
+  background:
+    linear-gradient(to bottom, rgba(244, 246, 249, 0.9), rgba(221, 225, 232, 0.8)),
+    linear-gradient(to right, rgba(255, 255, 255, 0.26), transparent);
+}
+
+.sidebar {
+  border-right: 1px solid rgba(78, 84, 92, 0.25);
+}
+
+.inspector {
+  border-left: 1px solid rgba(78, 84, 92, 0.25);
+}
+
+.sidebarSection,
+.inspectorSection {
+  display: grid;
+  gap: 8px;
+}
+
+.sidebarHeading {
+  color: #6f757e;
+  font-size: 10px;
+  font-weight: bold;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sidebarAction {
+  padding: 8px 10px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.sidebarEmpty {
+  padding: 8px 10px;
+  color: #7a7a7a;
+}
+
+.threadList {
+  display: grid;
+  gap: 6px;
+}
+
+.threadItem {
+  padding: 10px 12px;
+  border-radius: 8px;
+  text-align: left;
+  line-height: 1.35;
+  display: grid;
+  gap: 2px;
+}
+
+.threadItemActive {
+  background: linear-gradient(to bottom, #69a2ef 0%, #3d78d2 100%);
+  color: #fff;
+  border-color: rgba(33, 66, 119, 0.55);
+}
+
+.threadItemTitle {
+  font-weight: bold;
+}
+
+.threadItemMeta {
+  color: rgba(41, 47, 56, 0.68);
+  font-size: 10px;
+}
+
+.threadItemActive .threadItemMeta {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.mainPane {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  background: rgba(250, 250, 250, 0.72);
+}
+
+.mainHeader {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 12px 8px;
-  border-bottom: 1px solid var(--shadow);
-  background: linear-gradient(to bottom, #dddddd 0%, #c8c8c8 100%);
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(90, 90, 90, 0.18);
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.8), rgba(229, 233, 239, 0.5));
+}
+
+.mainTitle {
+  font-size: 14px;
+  font-weight: bold;
 }
 
 .title {
@@ -23,41 +202,53 @@
 }
 
 .subtitle {
-  color: var(--shadow);
-  line-height: 1.4;
-  max-width: 320px;
+  color: #727a84;
+  line-height: 1.45;
+  max-width: 420px;
 }
 
-.clearButton,
-.promptButton,
-.sendButton {
-  border: 1px solid var(--black);
-  background: var(--platinum);
-  box-shadow:
-    inset 1px 1px 0 var(--white),
-    inset -1px -1px 0 #808080;
-  font-family: var(--font-geneva);
-  font-size: 11px;
-  color: var(--black);
-}
-
-.clearButton {
-  align-self: flex-start;
-  padding: 4px 8px;
+.mainBadge {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(88, 94, 102, 0.24);
+  background: rgba(255, 255, 255, 0.85);
+  color: #70767f;
 }
 
 .messages,
 .emptyState {
-  flex: 1;
+  min-height: 0;
   overflow: auto;
-  padding: 12px;
+  padding: 16px;
   background:
-    linear-gradient(to bottom, #efefef 0 1px, transparent 1px) 0 0 / 100% 18px,
-    #f5f5f5;
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.72), rgba(241, 243, 246, 0.88));
 }
 
-.emptyState p {
-  margin: 0 0 10px;
+.emptyState {
+  display: flex;
+  align-items: flex-start;
+}
+
+.emptyCard {
+  width: min(100%, 460px);
+  padding: 18px 20px;
+  border: 1px solid rgba(95, 99, 106, 0.2);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 8px 20px rgba(52, 62, 76, 0.08);
+}
+
+.emptyTitle {
+  margin-bottom: 6px;
+  font-size: 18px;
+  font-weight: bold;
+}
+
+.emptyCopy {
+  color: #656d78;
+  line-height: 1.55;
 }
 
 .promptGrid {
@@ -66,27 +257,32 @@
 }
 
 .promptButton {
+  padding: 9px 10px;
+  border-radius: 8px;
   text-align: left;
-  padding: 8px 10px;
-  background: #f7f7f7;
+  line-height: 1.4;
 }
 
 .userMessage,
 .assistantMessage {
-  margin-bottom: 10px;
-  padding: 8px 10px;
-  border: 1px solid var(--shadow);
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(92, 98, 107, 0.22);
+  border-radius: 16px;
   box-shadow:
-    inset 1px 1px 0 var(--white),
-    inset -1px -1px 0 #b0b0b0;
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 4px 14px rgba(62, 68, 77, 0.06);
 }
 
 .userMessage {
-  background: #f1f1f1;
+  margin-left: auto;
+  max-width: 76%;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.94), rgba(235, 238, 242, 0.84));
 }
 
 .assistantMessage {
-  background: #fffef3;
+  max-width: 86%;
+  background: linear-gradient(to bottom, rgba(255, 255, 248, 0.95), rgba(247, 246, 233, 0.85));
 }
 
 .messageLabel {
@@ -94,10 +290,11 @@
   font-weight: bold;
 }
 
-.messageBody {
+.messageBody,
+.messageText {
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.45;
+  line-height: 1.55;
 }
 
 .messageParts {
@@ -105,19 +302,14 @@
   gap: 8px;
 }
 
-.messageText {
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.45;
-}
-
 .toolCard {
-  padding: 7px 8px;
-  border: 1px solid #8c8c8c;
-  background: #f8f8ef;
+  padding: 10px 11px;
+  border: 1px solid rgba(118, 118, 105, 0.28);
+  border-radius: 12px;
+  background: rgba(249, 249, 239, 0.95);
   box-shadow:
-    inset 1px 1px 0 var(--white),
-    inset -1px -1px 0 #b7b7a8;
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 3px 10px rgba(72, 72, 60, 0.05);
 }
 
 .toolTitle {
@@ -126,7 +318,104 @@
 }
 
 .toolBody {
-  line-height: 1.45;
+  line-height: 1.5;
+}
+
+.progressPanel {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(182, 182, 170, 0.55);
+}
+
+.progressMetaRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+  color: #4e4e4e;
+  font-size: 10px;
+}
+
+.progressStage {
+  font-weight: bold;
+  color: #2f2f2f;
+}
+
+.progressElapsed {
+  color: #686868;
+}
+
+.progressTrack {
+  position: relative;
+  height: 10px;
+  overflow: hidden;
+  border: 1px solid #8c8c8c;
+  border-radius: 999px;
+  background: linear-gradient(to bottom, #eeeeee 0%, #dcdcdc 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.08);
+}
+
+.progressBar {
+  position: absolute;
+  inset: 1px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(72, 122, 214, 0.14) 0%, rgba(72, 122, 214, 0.86) 40%, rgba(72, 122, 214, 0.14) 100%);
+  transform: translateX(-65%);
+  animation: build-progress 1.15s linear infinite;
+}
+
+.progressPrompt {
+  margin-top: 7px;
+  color: #5b5b5b;
+  line-height: 1.4;
+}
+
+.progressStages {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.progressStageRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #6b6b6b;
+  font-size: 10px;
+}
+
+.progressStageDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(100, 100, 100, 0.5);
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.progressStageDotCurrent {
+  background: linear-gradient(to bottom, #7cb0ff 0%, #356fc8 100%);
+  border-color: rgba(31, 70, 134, 0.8);
+}
+
+.progressStageDotDone {
+  background: linear-gradient(to bottom, #8fdc9f 0%, #4f9e62 100%);
+  border-color: rgba(49, 98, 61, 0.82);
+}
+
+.progressStageLabel {
+  color: #676767;
+}
+
+.progressStageLabelCurrent {
+  color: #232323;
+  font-weight: bold;
+}
+
+.progressPromptText {
+  color: #2f2f2f;
 }
 
 .resultList {
@@ -137,7 +426,7 @@
 
 .resultRow {
   padding-top: 6px;
-  border-top: 1px solid #d0d0c0;
+  border-top: 1px solid rgba(208, 208, 192, 0.8);
 }
 
 .resultHeading {
@@ -163,12 +452,13 @@
 }
 
 .matchPill {
-  padding: 1px 5px;
-  border: 1px solid #8f8f8f;
-  background: #ecece0;
+  padding: 2px 6px;
+  border: 1px solid rgba(143, 143, 143, 0.7);
+  border-radius: 999px;
+  background: rgba(236, 236, 224, 0.92);
   box-shadow:
-    inset 1px 1px 0 var(--white),
-    inset -1px -1px 0 #b5b5aa;
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.05);
   font-size: 10px;
 }
 
@@ -178,14 +468,14 @@
   margin: 0;
   border: 0;
   background: transparent;
-  color: #003399;
+  color: #2b67bc;
   text-decoration: underline;
   font: inherit;
   cursor: pointer;
 }
 
 .itemLink:disabled {
-  color: var(--shadow);
+  color: #8a8f96;
   text-decoration: none;
   cursor: default;
 }
@@ -198,21 +488,22 @@
 
 .actionButton {
   min-width: 68px;
-  padding: 4px 8px;
-  border: 1px solid var(--black);
-  background: var(--platinum);
+  padding: 6px 10px;
+  border: 1px solid rgba(70, 70, 70, 0.35);
+  border-radius: 8px;
+  background: linear-gradient(to bottom, #fefefe 0%, #d9dde3 100%);
   box-shadow:
-    inset 1px 1px 0 var(--white),
-    inset -1px -1px 0 #808080;
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 1px 0 rgba(255, 255, 255, 0.55);
   font-family: var(--font-geneva);
   font-size: 11px;
-  color: var(--black);
+  color: #1f1f1f;
 }
 
 .footer {
-  border-top: 1px solid var(--shadow);
-  padding: 10px 12px 12px;
-  background: linear-gradient(to bottom, #d4d4d4 0%, #c4c4c4 100%);
+  border-top: 1px solid rgba(88, 88, 88, 0.18);
+  padding: 12px 16px 14px;
+  background: linear-gradient(to bottom, rgba(230, 233, 238, 0.9), rgba(207, 212, 219, 0.92));
 }
 
 .statusRow {
@@ -220,11 +511,11 @@
   justify-content: space-between;
   gap: 12px;
   min-height: 16px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .statusLabel {
-  color: var(--shadow);
+  color: #646b75;
 }
 
 .errorText {
@@ -238,24 +529,81 @@
 }
 
 .input {
-  border: 1px solid var(--black);
-  background: var(--white);
+  border: 1px solid rgba(70, 70, 70, 0.35);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.96);
   box-shadow:
-    inset 1px 1px 0 #808080,
-    inset -1px -1px 0 var(--white);
-  padding: 7px 8px;
+    inset 0 1px 2px rgba(0, 0, 0, 0.12),
+    0 1px 0 rgba(255, 255, 255, 0.8);
+  padding: 10px 12px;
   font-family: var(--font-geneva);
   font-size: 11px;
-  color: var(--black);
+  color: #202020;
 }
 
 .sendButton {
-  min-width: 80px;
-  padding: 6px 12px;
+  min-width: 84px;
+  padding: 8px 14px;
+  border-radius: 12px;
 }
 
 .sendButton:disabled {
-  color: var(--shadow);
+  color: #898f98;
+}
+
+.statusCard {
+  padding: 10px 11px;
+  border: 1px solid rgba(94, 99, 106, 0.2);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.statusCardTitle {
+  font-weight: bold;
+}
+
+.statusCardMeta {
+  margin-top: 4px;
+  color: #717781;
+  line-height: 1.45;
+}
+
+.threadSummaryCard {
+  display: grid;
+  gap: 8px;
+  padding: 10px 11px;
+  border: 1px solid rgba(94, 99, 106, 0.2);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.threadActionRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.capabilityList {
+  display: grid;
+  gap: 8px;
+}
+
+.capabilityItem {
+  padding: 9px 10px;
+  border: 1px solid rgba(96, 101, 108, 0.18);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.68);
+  line-height: 1.5;
+}
+
+@keyframes build-progress {
+  from {
+    transform: translateX(-65%);
+  }
+
+  to {
+    transform: translateX(100%);
+  }
 }
 
 .unavailable {
@@ -273,4 +621,39 @@
 .unavailable h3,
 .unavailable p {
   margin: 0;
+}
+
+@media (max-width: 1180px) {
+  .layout {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+
+  .inspector {
+    display: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .header {
+    grid-template-columns: 1fr;
+    justify-items: stretch;
+  }
+
+  .headerTitle {
+    justify-self: start;
+  }
+
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid rgba(78, 84, 92, 0.25);
+  }
+
+  .userMessage,
+  .assistantMessage {
+    max-width: 100%;
+  }
 }

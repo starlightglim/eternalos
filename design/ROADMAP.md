@@ -1,8 +1,8 @@
 # EternalOS — Improvement Roadmap
 
 > Authored 2026-04-18 by Claude (Opus 4.7, 1M context) during a research + design session.
-> Refreshed 2026-04-20 to incorporate current repo state and Cloudflare platform releases through 2026-04-20.
-> Companion design docs: [01-apps-interop.md](01-apps-interop.md), [02-social-v1.md](02-social-v1.md), [03-mobile.md](03-mobile.md), [04-skin-format.md](04-skin-format.md).
+> Refreshed 2026-04-22 to incorporate current repo state, Cloudflare platform releases through 2026-04-20, and the new source-first app workspace architecture.
+> Companion design docs: [01-apps-interop.md](01-apps-interop.md), [12-orchestrator-v2.md](12-orchestrator-v2.md), [13-source-first-app-workspaces.md](13-source-first-app-workspaces.md), [02-social-v1.md](02-social-v1.md), [03-mobile.md](03-mobile.md), [04-skin-format.md](04-skin-format.md).
 
 ---
 
@@ -142,13 +142,14 @@ The big bets. Each has a companion design doc.
 
 16. **Apps ↔ Files interop** — scoped permission model, capability tokens, network allowlist, inter-app messaging, Dynamic Worker runtime hardening. See [01-apps-interop.md](01-apps-interop.md).
 17. **Social v1** — D1 spine, follows, feed (fanout-on-read), forums (adjacency-list + path), Inbox DO with hibernation + Web Push, AI Search-backed semantic search, moderation pipeline. See [02-social-v1.md](02-social-v1.md).
-24. **Mobile redesign** — PWA, grid home screen, gestures, camera upload, share-target, offline-first shell. See [03-mobile.md](03-mobile.md).
-25. **`.estheme` skin format** — single bundle, drag-drop install, versioning, fork lineage, nested/extending themes. See [04-skin-format.md](04-skin-format.md).
-20. **Publish each UserDesktop as a remote MCP server** — `McpAgent` + `workers-oauth-provider` + modern Agents RPC transport. Wins #4 from CF research.
-21. **In-OS code editor** — Monaco/CodeMirror window for hand-editing codemode apps.
-22. **Command palette (`Cmd/Ctrl+K`)** — unified search across files, settings, packs, users, forum threads.
-23. **DO Facets per app** (when mature enough) — persistent state for user-created apps.
-24. **Terminal widget** — real-ish terminal with agent + codemode + pack install commands.
+18. **Source-first app workspaces** — editable app source trees, preview builds, install/publish separation, workspace profiles, and agent patch flow. See [13-source-first-app-workspaces.md](13-source-first-app-workspaces.md).
+19. **Mobile redesign** — PWA, grid home screen, gestures, camera upload, share-target, offline-first shell. See [03-mobile.md](03-mobile.md).
+20. **`.estheme` skin format** — single bundle, drag-drop install, versioning, fork lineage, nested/extending themes. See [04-skin-format.md](04-skin-format.md).
+21. **Publish each UserDesktop as a remote MCP server** — `McpAgent` + `workers-oauth-provider` + modern Agents RPC transport. Wins #4 from CF research.
+22. **In-OS code editor** — Monaco/CodeMirror window for hand-editing app workspaces.
+23. **Command palette (`Cmd/Ctrl+K`)** — unified search across files, settings, packs, users, forum threads.
+24. **DO Facets per app** (when mature enough) — persistent state for user-created apps.
+25. **Terminal widget** — real-ish terminal with agent + codemode + pack install commands.
 
 ### P3 — Polish and personality
 
@@ -184,6 +185,7 @@ P1 upgrades ────┤
                 │
                 └─► P2 platform plays
                       ├─► Apps interop ──┐
+                      ├─► Source-first app workspaces ─┤
                       ├─► Skin format ───┼─► Bazaar v2 (forkable, lineage)
                       ├─► MCP server ────┤
                       ├─► Social v1 ─────┼─► Forum + feed + moderation
@@ -192,7 +194,7 @@ P1 upgrades ────┤
                           └─► P3 polish (each item independent)
 ```
 
-**Critical path for "platform" identity:** P0 blockers → D1 migration (bazaar + social) → skin format → apps interop → social v1. That is the ~10-week product arc.
+**Critical path for "platform" identity:** P0 blockers → D1 migration (bazaar + social) → skin format → apps interop → source-first app workspaces → social v1. That is the ~10-week product arc.
 
 ## Effort estimates (calibrated to one engineer, full-time)
 
@@ -202,10 +204,11 @@ P1 upgrades ────┤
 | P1 upgrades | 7–15 | 1.5 weeks |
 | Apps interop (P2 #16) | — | 3 weeks |
 | Social v1 (P2 #17) | — | 4 weeks |
-| Mobile redesign (P2 #18) | — | 3 weeks |
-| Skin format (P2 #19) | — | 2 weeks |
-| MCP publish (P2 #20) | — | 1 week |
-| Code editor + command palette (P2 #21–22) | — | 1.5 weeks |
+| Source-first app workspaces (P2 #18) | — | 2 weeks |
+| Mobile redesign (P2 #19) | — | 3 weeks |
+| Skin format (P2 #20) | — | 2 weeks |
+| MCP publish (P2 #21) | — | 1 week |
+| Code editor + command palette (P2 #22–23) | — | 1.5 weeks |
 | P3 polish | 31–50 | ongoing |
 
 Total to ship a "platform-ready" EternalOS from today: ~3.5 months with one engineer. Beta on just P0+P1 is feasible in ~2 weeks.
@@ -222,7 +225,7 @@ Model benchmarking. AI Search namespaces. GitHub Actions CI. Session device list
 Mobile PWA rebuild ([03-mobile.md](03-mobile.md)). `.estheme` format + forkable bazaar ([04-skin-format.md](04-skin-format.md)). These are parallelizable with a second contributor.
 
 **Phase 3 (week 6–10): Apps ecosystem.**
-Apps interop permission model on Dynamic Workers ([01-apps-interop.md](01-apps-interop.md)). In-OS code editor. DO Facets when viable. Publish MCP server.
+Apps interop permission model on Dynamic Workers ([01-apps-interop.md](01-apps-interop.md)). Source-first app workspaces and install/publish flow ([13-source-first-app-workspaces.md](13-source-first-app-workspaces.md)). In-OS code editor. DO Facets when viable. Publish MCP server.
 
 **Phase 4 (week 9–14): Social.**
 D1 migration, follows, feed, forum v1 ([02-social-v1.md](02-social-v1.md)). Ship to existing user base (opt-in).

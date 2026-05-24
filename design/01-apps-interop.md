@@ -2,6 +2,16 @@
 
 > Design for the app platform layer of EternalOS.
 > Parent doc: [ROADMAP.md](ROADMAP.md). Related: [04-skin-format.md](04-skin-format.md).
+>
+> Implementation note, 2026-04-22:
+> the read-only desktop bridge is no longer purely hypothetical. Current app
+> runtime code already injects a same-origin `window.eternal` bridge backed by a
+> Dynamic Worker `/_eternal/*` route and an `EternalService` service binding.
+> This doc still describes the broader interop surface, including future write,
+> IPC, handlers, virtual folders, and network permissions. For the current
+> orchestrator/runtime architecture, see [12-orchestrator-v2.md](12-orchestrator-v2.md).
+> For the editable source-project model used by the app builder, see
+> [13-source-first-app-workspaces.md](13-source-first-app-workspaces.md).
 
 ## Goals
 

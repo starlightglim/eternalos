@@ -1,8 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { useAgent } from 'agents/react';
 import { useAgentChat } from '@cloudflare/ai-chat/react';
-import { getAuthToken, isApiConfigured, mintAgentChatWebSocketToken } from '../../services/api';
+import {
+  createAgentThread,
+  deleteAgentThread,
+  getAuthToken,
+  isApiConfigured,
+  listAgentThreads,
+  mintAgentChatWebSocketToken,
+  renameAgentThread,
+  type AgentThreadSummary,
+} from '../../services/api';
 import { useAuthStore } from '../../stores/authStore';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { useWindowStore } from '../../stores/windowStore';
@@ -86,9 +95,136 @@ type GetAppSourceOutput = {
   appId: string;
   name: string;
   files: Record<string, string>;
+  workspaceManifest?: {
+    version: 1;
+    profile: 'static-html';
+    entryHtml: string;
+    sourceFiles: string[];
+    runtimeAsset: string;
+    workerEntrypoint: string;
+  } | null;
+};
+
+type AppPermissions = {
+  fs?: {
+    read?: string[];
+    mimeTypes?: string[];
+  };
+  profile?: {
+    read?: Array<'username' | 'displayName' | 'bio' | 'avatar'>;
+  };
+};
+
+type AppCreateOutput = {
+  appId: string;
+  itemId?: string;
+  name: string;
+  status: 'created';
+  permissions?: AppPermissions;
+  build?: AppBuildSummary;
+};
+
+type AppPreviewOutput = {
+  previewId: string;
+  name: string;
+  status: 'preview-ready';
+  previewUrl: string;
+  expiresAt: number;
+  permissions?: AppPermissions;
+  build?: AppBuildSummary;
+};
+
+type AppUpdateOutput = {
+  appId: string;
+  version: number;
+  status: 'updated';
+  build?: AppBuildSummary;
+};
+
+type AppDeleteOutput = {
+  appId: string;
+  status: 'deleted';
+};
+
+type MemorySummary = {
+  id: string;
+  kind: 'preference' | 'identity' | 'project' | 'context' | 'other';
+  content: string;
+  updatedAt?: number;
+};
+
+type RememberMemoryOutput = {
+  status: 'created' | 'updated';
+  memory: MemorySummary;
+  totalMemories: number;
+};
+
+type ListMemoriesOutput = {
+  totalMemories: number;
+  returnedCount: number;
+  memories: MemorySummary[];
+};
+
+type ForgetMemoryOutput = {
+  status: 'deleted' | 'not_found';
+  memory?: MemorySummary;
+  totalMemories: number;
+};
+
+type AppBuildStageSummary = {
+  key: 'prepare-workspace' | 'bundle-worker' | 'write-storage' | 'install-desktop';
+  label: string;
+  status: 'completed' | 'current' | 'pending';
+};
+
+type AppBuildSummary = {
+  currentStage: AppBuildStageSummary['key'] | 'ready';
+  stages: AppBuildStageSummary[];
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
 };
 
 type OpenWindowFn = ReturnType<typeof useWindowStore.getState>['openWindow'];
+
+const BUILD_STAGE_PLANS = {
+  generated: [
+    { afterSeconds: 0, currentStage: 'prepare-workspace', title: 'Planning and preparing workspace' },
+    { afterSeconds: 4, currentStage: 'prepare-workspace', title: 'Generating source files' },
+    { afterSeconds: 11, currentStage: 'bundle-worker', title: 'Bundling worker runtime' },
+    { afterSeconds: 18, currentStage: 'write-storage', title: 'Writing app files' },
+    { afterSeconds: 24, currentStage: 'install-desktop', title: 'Installing on desktop' },
+    { afterSeconds: 34, currentStage: 'install-desktop', title: 'Still working, this is taking longer than expected' },
+  ],
+  direct: [
+    { afterSeconds: 0, currentStage: 'prepare-workspace', title: 'Preparing workspace' },
+    { afterSeconds: 3, currentStage: 'bundle-worker', title: 'Bundling worker runtime' },
+    { afterSeconds: 8, currentStage: 'write-storage', title: 'Writing app files' },
+    { afterSeconds: 13, currentStage: 'install-desktop', title: 'Installing on desktop' },
+    { afterSeconds: 22, currentStage: 'install-desktop', title: 'Still working, this is taking longer than expected' },
+  ],
+  update: [
+    { afterSeconds: 0, currentStage: 'prepare-workspace', title: 'Preparing updated workspace' },
+    { afterSeconds: 3, currentStage: 'bundle-worker', title: 'Bundling updated runtime' },
+    { afterSeconds: 8, currentStage: 'write-storage', title: 'Writing updated files' },
+    { afterSeconds: 13, currentStage: 'install-desktop', title: 'Publishing update to the desktop' },
+    { afterSeconds: 22, currentStage: 'install-desktop', title: 'Still working, this is taking longer than expected' },
+  ],
+  codemode: [
+    { afterSeconds: 0, currentStage: 'prepare-workspace', title: 'Running app build script' },
+    { afterSeconds: 6, currentStage: 'bundle-worker', title: 'Compiling generated app' },
+    { afterSeconds: 12, currentStage: 'write-storage', title: 'Saving app files' },
+    { afterSeconds: 18, currentStage: 'install-desktop', title: 'Installing on desktop' },
+    { afterSeconds: 28, currentStage: 'install-desktop', title: 'Still working, this is taking longer than expected' },
+  ],
+} as const;
+
+const BUILD_STAGE_LABELS: Record<AppBuildStageSummary['key'], string> = {
+  'prepare-workspace': 'Prepare workspace',
+  'bundle-worker': 'Bundle runtime',
+  'write-storage': 'Write files',
+  'install-desktop': 'Install on desktop',
+};
 
 function getUserMessageText(message: { parts?: MessagePart[] }): string {
   if (!message.parts) return '';
@@ -209,12 +345,191 @@ function openDesktopItem(openWindow: OpenWindowFn, item: DesktopItem) {
       contentType: 'widget',
       contentId: item.id,
     });
+    return;
+  }
+
+  if (item.type === 'app') {
+    openWindow({
+      id: `app-${item.id}`,
+      title: item.appManifest?.name || item.name,
+      position: { x: 120, y: 96 },
+      size: {
+        width: item.appManifest?.windowConfig?.defaultWidth || 600,
+        height: item.appManifest?.windowConfig?.defaultHeight || 500,
+      },
+      minimized: false,
+      maximized: false,
+      contentType: 'app',
+      contentId: item.id,
+    });
   }
 }
 
-export function AgentChatWindow() {
-  const user = useAuthStore((state) => state.user);
-  const authToken = useAuthStore((state) => state.token);
+function getBuildStagePlanState(
+  elapsedSeconds: number,
+  variant: keyof typeof BUILD_STAGE_PLANS,
+): { title: string; currentStage: AppBuildStageSummary['key']; stages: AppBuildStageSummary[] } {
+  const plan = BUILD_STAGE_PLANS[variant];
+  let activeIndex = 0;
+  for (let index = 0; index < plan.length; index += 1) {
+    if (elapsedSeconds >= plan[index].afterSeconds) {
+      activeIndex = index;
+    }
+  }
+
+  const activeStage = plan[activeIndex].currentStage;
+  const stageOrder = Object.keys(BUILD_STAGE_LABELS) as Array<AppBuildStageSummary['key']>;
+
+  return {
+    title: plan[activeIndex].title,
+    currentStage: activeStage,
+    stages: stageOrder.map((key) => ({
+      key,
+      label: BUILD_STAGE_LABELS[key],
+      status: key === activeStage
+        ? 'current'
+        : stageOrder.indexOf(key) < stageOrder.indexOf(activeStage)
+          ? 'completed'
+          : 'pending',
+    })),
+  };
+}
+
+function summarizePermissions(permissions: AppPermissions | undefined): string[] {
+  if (!permissions) return [];
+
+  const parts: string[] = [];
+
+  if (permissions.fs?.mimeTypes?.length) {
+    parts.push(`desktop files: ${permissions.fs.mimeTypes.join(', ')}`);
+  }
+  if (permissions.fs?.read?.length) {
+    parts.push(`desktop paths: ${permissions.fs.read.join(', ')}`);
+  }
+  if (permissions.profile?.read?.length) {
+    parts.push(`profile: ${permissions.profile.read.join(', ')}`);
+  }
+
+  return parts;
+}
+
+function summarizeCompletedBuildStages(build: AppBuildSummary | undefined): string[] {
+  if (!build) return [];
+  return build.stages
+    .filter((stage) => stage.status === 'completed')
+    .map((stage) => stage.label);
+}
+
+function AppBuildProgressCard({
+  title,
+  subtitle,
+  prompt,
+  variant,
+}: {
+  title: string;
+  subtitle: string;
+  prompt?: string;
+  variant: keyof typeof BUILD_STAGE_PLANS;
+}) {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setElapsedSeconds((value) => value + 1);
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  const progressState = getBuildStagePlanState(elapsedSeconds, variant);
+
+  return (
+    <div className={styles.toolCard}>
+      <div className={styles.toolTitle}>{title}</div>
+      <div className={styles.toolBody}>{subtitle}</div>
+      <div className={styles.progressPanel}>
+        <div className={styles.progressMetaRow}>
+          <span className={styles.progressStage}>{progressState.title}</span>
+          <span className={styles.progressElapsed}>{elapsedSeconds}s elapsed</span>
+        </div>
+        <div className={styles.progressTrack}>
+          <div className={styles.progressBar} />
+        </div>
+        <div className={styles.progressStages}>
+          {progressState.stages.map((stage) => (
+            <div key={stage.key} className={styles.progressStageRow}>
+              <span
+                className={[
+                  styles.progressStageDot,
+                  stage.status === 'completed' ? styles.progressStageDotDone : '',
+                  stage.status === 'current' ? styles.progressStageDotCurrent : '',
+                ].filter(Boolean).join(' ')}
+                aria-hidden="true"
+              />
+              <span
+                className={[
+                  styles.progressStageLabel,
+                  stage.status === 'current' ? styles.progressStageLabelCurrent : '',
+                ].filter(Boolean).join(' ')}
+              >
+                {stage.label}
+              </span>
+            </div>
+          ))}
+        </div>
+        {prompt ? (
+          <div className={styles.progressPrompt}>
+            Request: <span className={styles.progressPromptText}>{prompt}</span>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+const ACTIVE_THREAD_STORAGE_KEY_PREFIX = 'eternal-agent-active-thread:';
+
+function getActiveThreadStorageKey(uid: string): string {
+  return `${ACTIVE_THREAD_STORAGE_KEY_PREFIX}${uid}`;
+}
+
+function formatThreadTimestamp(timestamp: number): string {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const isSameDay = date.toDateString() === now.toDateString();
+
+  return isSameDay
+    ? date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+type AgentChatThreadPaneProps = {
+  user: NonNullable<ReturnType<typeof useAuthStore.getState>['user']>;
+  authToken: string | null;
+  activeThread: AgentThreadSummary;
+  threadList: AgentThreadSummary[];
+  threadsLoading: boolean;
+  threadsError: string | null;
+  onSelectThread: (threadId: string) => void;
+  onCreateThread: () => Promise<void>;
+  onRenameThread: () => Promise<void>;
+  onDeleteThread: () => Promise<void>;
+  onThreadActivity: () => void;
+};
+
+function AgentChatThreadPane({
+  user,
+  authToken,
+  activeThread,
+  threadList,
+  threadsLoading,
+  threadsError,
+  onSelectThread,
+  onCreateThread,
+  onRenameThread,
+  onDeleteThread,
+  onThreadActivity,
+}: AgentChatThreadPaneProps) {
   const items = useDesktopStore((state) => state.items);
   const loadDesktop = useDesktopStore((state) => state.loadDesktop);
   const openWindow = useWindowStore((state) => state.openWindow);
@@ -230,8 +545,8 @@ export function AgentChatWindow() {
   }, []);
 
   const agentQuery = useMemo(() => (
-    wsToken ? { wsToken } : undefined
-  ), [wsToken]);
+    wsToken ? { wsToken, threadId: activeThread.id } : undefined
+  ), [activeThread.id, wsToken]);
 
   const chatHeaders = useMemo(() => (
     authToken ? { Authorization: `Bearer ${authToken}` } : undefined
@@ -275,7 +590,7 @@ export function AgentChatWindow() {
     basePath: 'api/agent/chat',
     host: apiBaseUrl.host,
     protocol: apiBaseUrl.protocol === 'https:' ? 'wss' : 'ws',
-    enabled: wsReady && !!user,
+    enabled: wsReady && !!user && !!activeThread.id,
     query: agentQuery,
   });
 
@@ -289,6 +604,7 @@ export function AgentChatWindow() {
   } = useAgentChat({
     agent,
     headers: chatHeaders,
+    body: { threadId: activeThread.id },
   });
 
   useEffect(() => {
@@ -296,7 +612,17 @@ export function AgentChatWindow() {
   }, []);
 
   useEffect(() => {
-    const refreshToolTypes = ['tool-createFolder', 'tool-moveItems', 'tool-codemode'];
+    const refreshToolTypes = [
+      'tool-createFolder',
+      'tool-moveItems',
+      'tool-codemode',
+      'tool-previewAppFromPrompt',
+      'tool-installAppPreview',
+      'tool-buildAppFromPrompt',
+      'tool-createApp',
+      'tool-updateApp',
+      'tool-deleteApp',
+    ];
     for (const message of messages) {
       for (const part of (message.parts as MessagePart[] | undefined) ?? []) {
         if (
@@ -311,6 +637,12 @@ export function AgentChatWindow() {
       }
     }
   }, [messages, loadDesktop]);
+
+  useEffect(() => {
+    if (status === 'ready') {
+      onThreadActivity();
+    }
+  }, [messages.length, onThreadActivity, status]);
 
   if (!isApiConfigured) {
     return (
@@ -350,6 +682,25 @@ export function AgentChatWindow() {
     if (item) {
       openDesktopItem(openWindow, item);
     }
+  };
+
+  const openPreviewWindow = (previewId: string, name: string) => {
+    openWindow({
+      id: `app-preview-${previewId}`,
+      title: `${name} Preview`,
+      position: { x: 132, y: 92 },
+      size: { width: 840, height: 620 },
+      minimized: false,
+      maximized: false,
+      contentType: 'app-preview',
+      contentId: previewId,
+    });
+  };
+
+  const requestInstallPreview = (previewId: string) => {
+    void sendMessage({
+      text: `Install app preview ${previewId}`,
+    });
   };
 
   const renderItemButton = (item: { id: string; name: string; type: DesktopItem['type'] }) => {
@@ -603,6 +954,389 @@ export function AgentChatWindow() {
       );
     }
 
+    if (part.type === 'tool-rememberMemory') {
+      if (part.state !== 'output-available') {
+        return (
+          <div key={`remember-memory-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Saving memory</div>
+            <div className={styles.toolBody}>Updating remembered context...</div>
+          </div>
+        );
+      }
+
+      const output = part.output as RememberMemoryOutput;
+      return (
+        <div key={`remember-memory-${index}`} className={styles.toolCard}>
+          <div className={styles.toolTitle}>{output.status === 'updated' ? 'Memory updated' : 'Memory saved'}</div>
+          <div className={styles.toolBody}>
+            <strong>{output.memory.kind}</strong>: {output.memory.content}
+          </div>
+        </div>
+      );
+    }
+
+    if (part.type === 'tool-listMemories') {
+      if (part.state !== 'output-available') {
+        return (
+          <div key={`list-memories-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Memories</div>
+            <div className={styles.toolBody}>Loading saved memories...</div>
+          </div>
+        );
+      }
+
+      const output = part.output as ListMemoriesOutput;
+      return (
+        <div key={`list-memories-${index}`} className={styles.toolCard}>
+          <div className={styles.toolTitle}>Saved memories</div>
+          <div className={styles.toolBody}>
+            {output.returnedCount === 0
+              ? 'No saved memories.'
+              : `${output.returnedCount} memor${output.returnedCount === 1 ? 'y' : 'ies'} shown.`}
+          </div>
+          {output.memories.length > 0 ? (
+            <div className={styles.resultList}>
+              {output.memories.map((memory) => (
+                <div key={memory.id} className={styles.resultRow}>
+                  <div className={styles.resultHeading}>
+                    <strong>{memory.kind}</strong>
+                  </div>
+                  <div className={styles.resultSummary}>{memory.content}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      );
+    }
+
+    if (part.type === 'tool-forgetMemory') {
+      if (part.state !== 'output-available') {
+        return (
+          <div key={`forget-memory-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Removing memory</div>
+            <div className={styles.toolBody}>Updating remembered context...</div>
+          </div>
+        );
+      }
+
+      const output = part.output as ForgetMemoryOutput;
+      return (
+        <div key={`forget-memory-${index}`} className={styles.toolCard}>
+          <div className={styles.toolTitle}>{output.status === 'deleted' ? 'Memory removed' : 'Memory not found'}</div>
+          {output.memory ? (
+            <div className={styles.toolBody}>
+              <strong>{output.memory.kind}</strong>: {output.memory.content}
+            </div>
+          ) : null}
+        </div>
+      );
+    }
+
+    if (
+      part.type === 'tool-previewAppFromPrompt'
+      || part.type === 'tool-installAppPreview'
+      || part.type === 'tool-buildAppFromPrompt'
+      || part.type === 'tool-createApp'
+      || part.type === 'tool-updateApp'
+      || part.type === 'tool-deleteApp'
+    ) {
+      const toolInput = (part.input as {
+        prompt?: string;
+        name?: string;
+        appId?: string;
+        previewId?: string;
+      } | undefined) ?? {};
+
+      const label = part.type === 'tool-previewAppFromPrompt'
+        ? 'Preview app'
+        : part.type === 'tool-installAppPreview'
+          ? 'Install preview'
+          : part.type === 'tool-buildAppFromPrompt'
+        ? 'Build app'
+        : part.type === 'tool-createApp'
+          ? 'Create app'
+          : part.type === 'tool-updateApp'
+            ? 'Update app'
+            : 'Delete app';
+
+      const targetName = toolInput.name || toolInput.appId || toolInput.previewId || 'this app';
+
+      if (part.state === 'approval-requested') {
+        const body = part.type === 'tool-previewAppFromPrompt'
+          ? (
+            <>
+              Eternal wants to generate an app preview without installing it yet.
+              {toolInput.prompt ? <> <span className={styles.resultSummary}>Request: “{toolInput.prompt}”</span></> : null}
+            </>
+          )
+          : part.type === 'tool-buildAppFromPrompt'
+          ? (
+            <>
+              Eternal wants to build and install a new app on your desktop.
+              {toolInput.prompt ? <> <span className={styles.resultSummary}>Request: “{toolInput.prompt}”</span></> : null}
+            </>
+          )
+          : (
+            <>Eternal wants to {label.toLowerCase()} <strong>{targetName}</strong>.</>
+          );
+
+        return (
+          <div key={`app-tool-approval-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Approval required</div>
+            <div className={styles.toolBody}>{body}</div>
+            <div className={styles.approvalRow}>
+              <button
+                type="button"
+                className={styles.actionButton}
+                onClick={() => {
+                  if (part.approval?.id) {
+                    void addToolApprovalResponse({ id: part.approval.id, approved: true });
+                  }
+                }}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                className={styles.actionButton}
+                onClick={() => {
+                  if (part.approval?.id) {
+                    void addToolApprovalResponse({ id: part.approval.id, approved: false });
+                  }
+                }}
+              >
+                Deny
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      if (part.state === 'output-denied') {
+        return (
+          <div key={`app-tool-denied-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>{label} cancelled</div>
+          </div>
+        );
+      }
+
+      if (part.state === 'output-error') {
+        return (
+          <div key={`app-tool-error-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>{label} failed</div>
+            <div className={styles.errorText}>{String(part.errorText ?? 'Unknown error')}</div>
+          </div>
+        );
+      }
+
+      if (part.state !== 'output-available') {
+        if (part.type === 'tool-previewAppFromPrompt') {
+          return (
+            <AppBuildProgressCard
+              key={`app-tool-progress-${index}`}
+              title="Building preview..."
+              subtitle="Generating, bundling, and preparing a preview."
+              prompt={toolInput.prompt}
+              variant="generated"
+            />
+          );
+        }
+
+        if (part.type === 'tool-installAppPreview') {
+          return (
+            <AppBuildProgressCard
+              key={`app-tool-progress-${index}`}
+              title="Installing preview..."
+              subtitle="Promoting the preview into a desktop app."
+              prompt={toolInput.previewId}
+              variant="direct"
+            />
+          );
+        }
+
+        if (part.type === 'tool-buildAppFromPrompt') {
+          return (
+            <AppBuildProgressCard
+              key={`app-tool-progress-${index}`}
+              title="Building app..."
+              subtitle="Generating, bundling, and installing your app."
+              prompt={toolInput.prompt}
+              variant="generated"
+            />
+          );
+        }
+
+        if (part.type === 'tool-createApp') {
+          return (
+            <AppBuildProgressCard
+              key={`app-tool-progress-${index}`}
+              title="Installing app..."
+              subtitle="Bundling the provided files and adding the app to your desktop."
+              prompt={toolInput.name}
+              variant="direct"
+            />
+          );
+        }
+
+        if (part.type === 'tool-updateApp') {
+          return (
+            <AppBuildProgressCard
+              key={`app-tool-progress-${index}`}
+              title="Updating app..."
+              subtitle="Rebuilding the app bundle and refreshing the desktop version."
+              prompt={toolInput.appId}
+              variant="update"
+            />
+          );
+        }
+
+        return (
+          <div key={`app-tool-progress-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Deleting app...</div>
+            <div className={styles.toolBody}>Removing the app and cleaning up its files.</div>
+          </div>
+        );
+      }
+
+      if (part.type === 'tool-previewAppFromPrompt') {
+        const output = part.output as AppPreviewOutput;
+        const permissionSummary = summarizePermissions(output.permissions);
+        const buildSummary = summarizeCompletedBuildStages(output.build);
+
+        return (
+          <div key={`app-tool-preview-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>App preview ready</div>
+            <div className={styles.toolBody}>
+              <strong>{output.name}</strong> is ready to inspect before installing.
+            </div>
+            <div className={styles.resultList}>
+              <div className={styles.resultRow}>
+                <div className={styles.resultHeading}>
+                  <button
+                    type="button"
+                    className={styles.itemLink}
+                    onClick={() => openPreviewWindow(output.previewId, output.name)}
+                  >
+                    Open preview
+                  </button>
+                </div>
+                <div className={styles.resultMeta}>Preview ID: {output.previewId}</div>
+              </div>
+            </div>
+            <div className={styles.approvalRow}>
+              <button
+                type="button"
+                className={styles.actionButton}
+                onClick={() => openPreviewWindow(output.previewId, output.name)}
+              >
+                Open in desktop
+              </button>
+              <button
+                type="button"
+                className={styles.actionButton}
+                onClick={() => requestInstallPreview(output.previewId)}
+              >
+                Install preview
+              </button>
+            </div>
+            {permissionSummary.length > 0 ? (
+              <div className={styles.resultList}>
+                {permissionSummary.map((entry) => (
+                  <div key={entry} className={styles.resultRow}>
+                    <div className={styles.resultMeta}>install permission: {entry}</div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {buildSummary.length > 0 ? (
+              <div className={styles.resultList}>
+                {buildSummary.map((entry) => (
+                  <div key={entry} className={styles.resultRow}>
+                    <div className={styles.resultMeta}>{entry}</div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        );
+      }
+
+      if (part.type === 'tool-buildAppFromPrompt' || part.type === 'tool-createApp' || part.type === 'tool-installAppPreview') {
+        const output = part.output as AppCreateOutput;
+        const permissionSummary = summarizePermissions(output.permissions);
+        const buildSummary = summarizeCompletedBuildStages(output.build);
+
+        return (
+          <div key={`app-tool-created-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>App created</div>
+            <div className={styles.toolBody}>
+              <strong>{output.name}</strong> has been added to your desktop.
+            </div>
+            {output.itemId ? (
+              <div className={styles.resultList}>
+                <div className={styles.resultRow}>
+                  <div className={styles.resultHeading}>
+                    {renderItemButton({ id: output.itemId, name: output.name, type: 'app' })}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+            {permissionSummary.length > 0 ? (
+              <div className={styles.resultList}>
+                {permissionSummary.map((entry) => (
+                  <div key={entry} className={styles.resultRow}>
+                    <div className={styles.resultMeta}>{entry}</div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {buildSummary.length > 0 ? (
+              <div className={styles.resultList}>
+                {buildSummary.map((entry) => (
+                  <div key={entry} className={styles.resultRow}>
+                    <div className={styles.resultMeta}>{entry}</div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        );
+      }
+
+      if (part.type === 'tool-updateApp') {
+        const output = part.output as AppUpdateOutput;
+        const buildSummary = summarizeCompletedBuildStages(output.build);
+        return (
+          <div key={`app-tool-updated-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>App updated</div>
+            <div className={styles.toolBody}>
+              App updated to version {output.version}. Reopen the app window if it is already open.
+            </div>
+            {buildSummary.length > 0 ? (
+              <div className={styles.resultList}>
+                {buildSummary.map((entry) => (
+                  <div key={entry} className={styles.resultRow}>
+                    <div className={styles.resultMeta}>{entry}</div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        );
+      }
+
+      const output = part.output as AppDeleteOutput;
+      return (
+        <div key={`app-tool-deleted-${index}`} className={styles.toolCard}>
+          <div className={styles.toolTitle}>App deleted</div>
+          <div className={styles.toolBody}>
+            {output.appId ? `Removed app ${output.appId} from your desktop.` : 'The app has been removed from your desktop.'}
+          </div>
+        </div>
+      );
+    }
+
     // Codemode tool — app building via generated TypeScript
     if (part.type === 'tool-codemode') {
       if (part.state === 'approval-requested') {
@@ -659,10 +1393,12 @@ export function AgentChatWindow() {
 
       if (part.state !== 'output-available') {
         return (
-          <div key={`codemode-${index}`} className={styles.toolCard}>
-            <div className={styles.toolTitle}>Building app...</div>
-            <div className={styles.toolBody}>Generating and compiling your app...</div>
-          </div>
+          <AppBuildProgressCard
+            key={`codemode-${index}`}
+            title="Building app..."
+            subtitle="Generating and compiling your app..."
+            variant="codemode"
+          />
         );
       }
 
@@ -721,103 +1457,464 @@ export function AgentChatWindow() {
   const hasPendingApproval = messages.some((message) =>
     ((message.parts as MessagePart[] | undefined) ?? []).some((part) => part.state === 'approval-requested')
   );
+  const latestPendingToolPart = [...messages]
+    .reverse()
+    .flatMap((message) => [...((message.parts as MessagePart[] | undefined) ?? [])].reverse())
+    .find((part) => (
+      part.type.startsWith('tool-')
+      && part.state !== 'output-available'
+      && part.state !== 'output-error'
+      && part.state !== 'output-denied'
+      && part.state !== 'approval-requested'
+    ));
+
+  const statusText = !wsReady
+    ? 'Connecting...'
+    : hasPendingApproval
+      ? 'Approval needed'
+      : latestPendingToolPart?.type === 'tool-buildAppFromPrompt'
+        || latestPendingToolPart?.type === 'tool-previewAppFromPrompt'
+        || latestPendingToolPart?.type === 'tool-installAppPreview'
+        || latestPendingToolPart?.type === 'tool-createApp'
+        || latestPendingToolPart?.type === 'tool-updateApp'
+        || latestPendingToolPart?.type === 'tool-codemode'
+          ? 'Building your app...'
+          : latestPendingToolPart?.type === 'tool-deleteApp'
+            ? 'Removing app...'
+            : status === 'submitted' || status === 'streaming'
+              ? 'Working through your desktop...'
+              : 'Ready';
+  const currentRequestLabel = activeThread.title.length > 42
+    ? `${activeThread.title.slice(0, 39)}...`
+    : activeThread.title;
+  const capabilityNotes = [
+    'Search files, images, OCR text, and desktop metadata',
+    'Build and update apps directly on the desktop',
+    'Remember stable preferences and project context',
+  ];
 
   return (
     <div className={styles.chatWindow}>
       <div className={styles.header}>
-        <div>
-          <div className={styles.title}>Ask Eternal</div>
-          <div className={styles.subtitle}>Search your desktop, build apps, and organize files.</div>
+        <div className={styles.toolbarGroup}>
+          <div className={styles.windowLabel}>Eternal Workspace</div>
+          <button className={`${styles.toolbarTab} ${styles.toolbarTabActive}`} type="button">
+            Chat
+          </button>
+          <button className={styles.toolbarTab} type="button" onClick={() => void onCreateThread()}>
+            New Thread
+          </button>
         </div>
-        <button className={styles.clearButton} type="button" onClick={clearHistory}>
-          Clear History
-        </button>
+        <div className={styles.headerTitle}>Ask Eternal</div>
+        <div className={styles.toolbarGroup}>
+          <div className={styles.searchBadge}>Kimi</div>
+          <button className={styles.clearButton} type="button" onClick={() => void clearHistory()}>
+            Clear History
+          </button>
+        </div>
       </div>
 
-      {messages.length === 0 ? (
-        <div className={styles.emptyState}>
-          <p>Try one of these:</p>
-          <div className={styles.promptGrid}>
-            {STARTER_PROMPTS.map((prompt) => (
-              <button
-                key={prompt}
-                type="button"
-                className={styles.promptButton}
-                onClick={() => submitPrompt(prompt)}
-              >
-                {prompt}
-              </button>
-            ))}
+      <div className={styles.layout}>
+        <aside className={styles.sidebar}>
+          <div className={styles.sidebarSection}>
+            <div className={styles.sidebarHeading}>Workspace</div>
+            <button className={styles.sidebarAction} type="button" onClick={() => void onCreateThread()}>
+              New Thread
+            </button>
+            <button className={styles.sidebarAction} type="button" onClick={() => void clearHistory()}>
+              Clear History
+            </button>
           </div>
-        </div>
-      ) : (
-        <div className={styles.messages}>
-          {messages.map((message) => {
-            const parts = (message.parts as MessagePart[] | undefined) ?? [];
 
-            if (message.role === 'user') {
-              const text = getUserMessageText(message);
-              if (!text) return null;
-
-              return (
-                <div key={message.id} className={styles.userMessage}>
-                  <div className={styles.messageLabel}>You</div>
-                  <div className={styles.messageBody}>{text}</div>
-                </div>
-              );
-            }
-
-            const renderedParts = parts
-              .map((part, index) => renderAssistantPart(part, index))
-              .filter((part): part is ReactNode => part !== null);
-
-            if (renderedParts.length === 0) {
-              return null;
-            }
-
-            return (
-              <div key={message.id} className={styles.assistantMessage}>
-                <div className={styles.messageLabel}>Eternal</div>
-                <div className={styles.messageParts}>{renderedParts}</div>
+          <div className={styles.sidebarSection}>
+            <div className={styles.sidebarHeading}>Threads</div>
+            {threadsLoading ? (
+              <div className={styles.sidebarEmpty}>Loading threads...</div>
+            ) : threadsError ? (
+              <div className={styles.sidebarEmpty}>{threadsError}</div>
+            ) : threadList.length === 0 ? (
+              <div className={styles.sidebarEmpty}>No threads yet</div>
+            ) : (
+              <div className={styles.threadList}>
+                {threadList.map((thread) => (
+                  <button
+                    key={thread.id}
+                    type="button"
+                    className={`${styles.threadItem} ${thread.id === activeThread.id ? styles.threadItemActive : ''}`}
+                    onClick={() => onSelectThread(thread.id)}
+                  >
+                    <span className={styles.threadItemTitle}>{thread.title}</span>
+                    <span className={styles.threadItemMeta}>{formatThreadTimestamp(thread.updatedAt)}</span>
+                  </button>
+                ))}
               </div>
-            );
-          })}
-        </div>
-      )}
+            )}
+          </div>
+        </aside>
 
-      <div className={styles.footer}>
-        <div className={styles.statusRow}>
-          <span className={styles.statusLabel}>
-            {!wsReady
-              ? 'Connecting...'
-              : hasPendingApproval
-              ? 'Approval needed'
-              : status === 'submitted' || status === 'streaming'
-                ? 'Working through your desktop...'
-                : 'Ready'}
-          </span>
-          {error ? <span className={styles.errorText}>{error.message}</span> : null}
-        </div>
+        <section className={styles.mainPane}>
+          <div className={styles.mainHeader}>
+            <div>
+              <div className={styles.mainTitle}>{currentRequestLabel}</div>
+              <div className={styles.subtitle}>Search your desktop, build apps, and organize files.</div>
+            </div>
+            <div className={styles.mainBadge}>Aura</div>
+          </div>
 
-        <form className={styles.form} onSubmit={handleSend}>
-          <input
-            ref={inputRef}
-            className={styles.input}
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder={wsReady
-              ? 'Ask about files, images, tags, OCR text, or recent uploads...'
-              : 'Connecting to Eternal...'}
-          />
-          <button
-            className={styles.sendButton}
-            type="submit"
-            disabled={!wsReady || status === 'submitted' || status === 'streaming' || !draft.trim()}
-          >
-            Send
-          </button>
-        </form>
+          {messages.length === 0 ? (
+            <div className={styles.emptyState}>
+              <div className={styles.emptyCard}>
+                <div className={styles.emptyTitle}>Start with a natural-language request</div>
+                <div className={styles.emptyCopy}>
+                  Ask for a desktop search, a new app, or something you want Eternal to remember.
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className={styles.messages}>
+              {messages.map((message) => {
+                const parts = (message.parts as MessagePart[] | undefined) ?? [];
+
+                if (message.role === 'user') {
+                  const text = getUserMessageText(message);
+                  if (!text) return null;
+
+                  return (
+                    <div key={message.id} className={styles.userMessage}>
+                      <div className={styles.messageLabel}>You</div>
+                      <div className={styles.messageBody}>{text}</div>
+                    </div>
+                  );
+                }
+
+                const renderedParts = parts
+                  .map((part, index) => renderAssistantPart(part, index))
+                  .filter((part): part is ReactNode => part !== null);
+
+                if (renderedParts.length === 0) {
+                  return null;
+                }
+
+                return (
+                  <div key={message.id} className={styles.assistantMessage}>
+                    <div className={styles.messageLabel}>Eternal</div>
+                    <div className={styles.messageParts}>{renderedParts}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className={styles.footer}>
+            <div className={styles.statusRow}>
+              <span className={styles.statusLabel}>{statusText}</span>
+              {error ? <span className={styles.errorText}>{error.message}</span> : null}
+            </div>
+
+            <form className={styles.form} onSubmit={handleSend}>
+              <input
+                ref={inputRef}
+                className={styles.input}
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                placeholder={wsReady
+                  ? 'Ask about files, images, tags, OCR text, or recent uploads...'
+                  : 'Connecting to Eternal...'}
+              />
+              <button
+                className={styles.sendButton}
+                type="submit"
+                disabled={!wsReady || status === 'submitted' || status === 'streaming' || !draft.trim()}
+              >
+                Send
+              </button>
+            </form>
+          </div>
+        </section>
+
+        <aside className={styles.inspector}>
+          <div className={styles.inspectorSection}>
+            <div className={styles.sidebarHeading}>Status</div>
+            <div className={styles.statusCard}>
+              <div className={styles.statusCardTitle}>{statusText}</div>
+              <div className={styles.statusCardMeta}>
+                {wsReady ? 'Realtime connection active' : 'Connecting to agent transport'}
+              </div>
+            </div>
+          </div>
+
+          <div className={styles.inspectorSection}>
+            <div className={styles.sidebarHeading}>Thread</div>
+            <div className={styles.threadSummaryCard}>
+              <div className={styles.statusCardTitle}>{activeThread.title}</div>
+              <div className={styles.statusCardMeta}>
+                Updated {formatThreadTimestamp(activeThread.updatedAt)}
+              </div>
+              <div className={styles.threadActionRow}>
+                <button className={styles.sidebarAction} type="button" onClick={() => void onRenameThread()}>
+                  Rename
+                </button>
+                <button className={styles.sidebarAction} type="button" onClick={() => void onDeleteThread()}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className={styles.inspectorSection}>
+            <div className={styles.sidebarHeading}>Quick Starts</div>
+            <div className={styles.promptGrid}>
+              {STARTER_PROMPTS.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  className={styles.promptButton}
+                  onClick={() => submitPrompt(prompt)}
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className={styles.inspectorSection}>
+            <div className={styles.sidebarHeading}>Capabilities</div>
+            <div className={styles.capabilityList}>
+              {capabilityNotes.map((note) => (
+                <div key={note} className={styles.capabilityItem}>
+                  {note}
+                </div>
+              ))}
+            </div>
+          </div>
+        </aside>
       </div>
     </div>
+  );
+}
+
+export function AgentChatWindow() {
+  const user = useAuthStore((state) => state.user);
+  const authToken = useAuthStore((state) => state.token);
+  const [threads, setThreads] = useState<AgentThreadSummary[]>([]);
+  const [threadsLoading, setThreadsLoading] = useState(false);
+  const [threadsError, setThreadsError] = useState<string | null>(null);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+
+  const refreshThreads = useCallback(async ({ silent = false }: { silent?: boolean } = {}): Promise<AgentThreadSummary[]> => {
+    if (!user) {
+      setThreads([]);
+      setThreadsError(null);
+      return [];
+    }
+
+    if (!silent) {
+      setThreadsLoading(true);
+    }
+    try {
+      const nextThreads = await listAgentThreads();
+      setThreads(nextThreads);
+      setThreadsError(null);
+      return nextThreads;
+    } catch (refreshError) {
+      console.error('Failed to load agent threads:', refreshError);
+      setThreadsError(refreshError instanceof Error ? refreshError.message : 'Failed to load threads');
+      return [];
+    } finally {
+      if (!silent) {
+        setThreadsLoading(false);
+      }
+    }
+  }, [user]);
+
+  const ensureActiveThread = useCallback(async (threadList: AgentThreadSummary[]): Promise<AgentThreadSummary | null> => {
+    if (!user) return null;
+
+    const storageKey = getActiveThreadStorageKey(user.uid);
+    const savedThreadId = window.localStorage.getItem(storageKey);
+    const preferredThreadId = activeThreadId || savedThreadId;
+    const preferredThread = preferredThreadId
+      ? threadList.find((thread) => thread.id === preferredThreadId)
+      : undefined;
+
+    if (preferredThread) {
+      setActiveThreadId(preferredThread.id);
+      window.localStorage.setItem(storageKey, preferredThread.id);
+      return preferredThread;
+    }
+
+    if (threadList.length > 0) {
+      setActiveThreadId(threadList[0].id);
+      window.localStorage.setItem(storageKey, threadList[0].id);
+      return threadList[0];
+    }
+
+    try {
+      const thread = await createAgentThread();
+      setThreads([thread]);
+      setActiveThreadId(thread.id);
+      window.localStorage.setItem(storageKey, thread.id);
+      setThreadsError(null);
+      return thread;
+    } catch (createError) {
+      console.error('Failed to create initial agent thread:', createError);
+      setThreadsError(createError instanceof Error ? createError.message : 'Failed to create thread');
+      return null;
+    }
+  }, [activeThreadId, user]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!user) {
+      setThreads([]);
+      setActiveThreadId(null);
+      setThreadsError(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void (async () => {
+      const nextThreads = await refreshThreads();
+      if (cancelled) return;
+      await ensureActiveThread(nextThreads);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ensureActiveThread, refreshThreads, user]);
+
+  const handleSelectThread = useCallback((threadId: string) => {
+    if (!user) return;
+    setActiveThreadId(threadId);
+    window.localStorage.setItem(getActiveThreadStorageKey(user.uid), threadId);
+  }, [user]);
+
+  const handleCreateThread = useCallback(async () => {
+    if (!user) return;
+
+    try {
+      const thread = await createAgentThread();
+      const nextThreads = [thread, ...threads.filter((existing) => existing.id !== thread.id)];
+      setThreads(nextThreads);
+      setThreadsError(null);
+      setActiveThreadId(thread.id);
+      window.localStorage.setItem(getActiveThreadStorageKey(user.uid), thread.id);
+    } catch (createError) {
+      console.error('Failed to create agent thread:', createError);
+      setThreadsError(createError instanceof Error ? createError.message : 'Failed to create thread');
+    }
+  }, [threads, user]);
+
+  const handleRenameThread = useCallback(async () => {
+    if (!user || !activeThreadId) return;
+
+    const activeThread = threads.find((thread) => thread.id === activeThreadId);
+    const nextTitle = window.prompt('Rename thread', activeThread?.title ?? 'New Thread')?.trim();
+    if (!nextTitle) return;
+
+    try {
+      const updated = await renameAgentThread(activeThreadId, nextTitle);
+      const nextThreads = threads
+        .map((thread) => (thread.id === updated.id ? updated : thread))
+        .sort((a, b) => b.updatedAt - a.updatedAt);
+      setThreads(nextThreads);
+      setThreadsError(null);
+    } catch (renameError) {
+      console.error('Failed to rename agent thread:', renameError);
+      setThreadsError(renameError instanceof Error ? renameError.message : 'Failed to rename thread');
+    }
+  }, [activeThreadId, threads, user]);
+
+  const handleDeleteThread = useCallback(async () => {
+    if (!user || !activeThreadId) return;
+
+    const activeThread = threads.find((thread) => thread.id === activeThreadId);
+    const confirmed = window.confirm(`Delete "${activeThread?.title ?? 'this thread'}"?`);
+    if (!confirmed) return;
+
+    try {
+      await deleteAgentThread(activeThreadId);
+      const nextThreads = threads.filter((thread) => thread.id !== activeThreadId);
+      setThreads(nextThreads);
+      setThreadsError(null);
+
+      if (nextThreads.length > 0) {
+        const nextActiveThread = nextThreads[0];
+        setActiveThreadId(nextActiveThread.id);
+        window.localStorage.setItem(getActiveThreadStorageKey(user.uid), nextActiveThread.id);
+      } else {
+        const created = await createAgentThread();
+        setThreads([created]);
+        setActiveThreadId(created.id);
+        window.localStorage.setItem(getActiveThreadStorageKey(user.uid), created.id);
+      }
+    } catch (deleteError) {
+      console.error('Failed to delete agent thread:', deleteError);
+      setThreadsError(deleteError instanceof Error ? deleteError.message : 'Failed to delete thread');
+    }
+  }, [activeThreadId, threads, user]);
+
+  const handleThreadActivity = useCallback(() => {
+    void refreshThreads({ silent: true }).then((nextThreads) => {
+      if (!user) return;
+      const storageKey = getActiveThreadStorageKey(user.uid);
+      const currentThreadId = activeThreadId || window.localStorage.getItem(storageKey);
+      const matchingThread = currentThreadId
+        ? nextThreads.find((thread) => thread.id === currentThreadId)
+        : undefined;
+
+      if (matchingThread) {
+        window.localStorage.setItem(storageKey, matchingThread.id);
+      }
+    });
+  }, [activeThreadId, refreshThreads, user]);
+
+  if (!isApiConfigured) {
+    return (
+      <div className={styles.unavailable}>
+        <h3>Chat Unavailable</h3>
+        <p>The Cloudflare agent chat only runs when the API worker is configured.</p>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className={styles.unavailable}>
+        <h3>Sign In Required</h3>
+        <p>Log in to ask questions about your desktop and uploaded images.</p>
+      </div>
+    );
+  }
+
+  const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
+
+  if (!activeThread) {
+    return (
+      <div className={styles.unavailable}>
+        <h3>Preparing Chat</h3>
+        <p>{threadsError ?? 'Creating your first conversation thread...'}</p>
+      </div>
+    );
+  }
+
+  return (
+    <AgentChatThreadPane
+      key={activeThread.id}
+      user={user}
+      authToken={authToken}
+      activeThread={activeThread}
+      threadList={threads}
+      threadsLoading={threadsLoading}
+      threadsError={threadsError}
+      onSelectThread={handleSelectThread}
+      onCreateThread={handleCreateThread}
+      onRenameThread={handleRenameThread}
+      onDeleteThread={handleDeleteThread}
+      onThreadActivity={handleThreadActivity}
+    />
   );
 }

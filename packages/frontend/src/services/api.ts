@@ -22,11 +22,85 @@ let authToken: string | null = null;
 let refreshToken: string | null = null;
 let refreshRequest: Promise<boolean> | null = null;
 
+// Proactive JWT refresh — schedule a refresh slightly before the access token
+// expires so requests never see a 401 in the happy path. Refresh tokens rotate
+// on each use, so as long as the user opens the app within REFRESH_TOKEN_TTL,
+// they stay logged in transparently.
+const ACCESS_TOKEN_TTL_MS = 15 * 60 * 1000; // matches server (15 min)
+const ACCESS_TOKEN_REFRESH_BUFFER_MS = 60 * 1000; // refresh 1 min before expiry
+let proactiveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearProactiveRefreshTimer(): void {
+  if (proactiveRefreshTimer) {
+    clearTimeout(proactiveRefreshTimer);
+    proactiveRefreshTimer = null;
+  }
+}
+
+/**
+ * Read the `exp` claim from a JWT (best-effort, no signature check — we trust
+ * our own server's token). Returns the absolute expiry in ms, or null if the
+ * token is malformed.
+ */
+function getJwtExpiryMs(token: string): number | null {
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return null;
+    const padded = payload + '='.repeat((4 - (payload.length % 4)) % 4);
+    const base64 = padded.replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = JSON.parse(atob(base64)) as { exp?: number };
+    return typeof decoded.exp === 'number' ? decoded.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+function scheduleProactiveRefresh(expiresInSeconds?: number): void {
+  clearProactiveRefreshTimer();
+  if (!refreshToken || !authToken) return;
+
+  let delayMs: number;
+  if (typeof expiresInSeconds === 'number') {
+    // Fresh login/refresh — server reported the exact TTL.
+    delayMs = expiresInSeconds * 1000 - ACCESS_TOKEN_REFRESH_BUFFER_MS;
+  } else {
+    // Rehydration after a page refresh — the stored token may already be
+    // partway through its lifetime. Use its `exp` claim to schedule precisely.
+    const expiryMs = getJwtExpiryMs(authToken);
+    delayMs = expiryMs
+      ? expiryMs - Date.now() - ACCESS_TOKEN_REFRESH_BUFFER_MS
+      : ACCESS_TOKEN_TTL_MS - ACCESS_TOKEN_REFRESH_BUFFER_MS;
+  }
+
+  // If the token is already inside the buffer window (or expired), refresh
+  // very soon — but not synchronously, to avoid re-entrancy with whatever
+  // call site triggered this scheduling.
+  delayMs = Math.max(1_000, delayMs);
+  proactiveRefreshTimer = setTimeout(async () => {
+    const ok = await refreshSession();
+    if (!ok && authToken) {
+      // Refresh token rejected (probably 30-day window elapsed). Trigger the
+      // same session-expired flow that 401s on API calls take, so the user
+      // is redirected to /login instead of left with a dead token.
+      authToken = null;
+      refreshToken = null;
+      onSessionExpired?.();
+    }
+  }, delayMs);
+}
+
 /**
  * Set the auth token for API requests
  */
 export function setAuthToken(token: string | null): void {
   authToken = token;
+  if (!token) {
+    clearProactiveRefreshTimer();
+  } else if (refreshToken) {
+    // Token (re)set externally (login, rehydration). Assume a fresh full TTL —
+    // worst case we refresh slightly early.
+    scheduleProactiveRefresh();
+  }
 }
 
 /**
@@ -41,6 +115,13 @@ export function getAuthToken(): string | null {
  */
 export function setRefreshToken(token: string | null): void {
   refreshToken = token;
+  if (!token) {
+    clearProactiveRefreshTimer();
+  } else if (authToken && !proactiveRefreshTimer) {
+    // Defensive: rehydration may set tokens in either order. If authToken was
+    // already restored before refreshToken, schedule the refresh now.
+    scheduleProactiveRefresh();
+  }
 }
 
 /**
@@ -75,6 +156,26 @@ interface AgentChatWebSocketTokenResponse {
   expiresAt: number;
 }
 
+export interface AgentThreadSummary {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+interface ListAgentThreadsResponse {
+  threads: AgentThreadSummary[];
+}
+
+interface AgentThreadResponse {
+  thread: AgentThreadSummary;
+}
+
+interface DeleteAgentThreadResponse {
+  deleted: boolean;
+  threadId: string;
+}
+
 async function refreshSession(): Promise<boolean> {
   if (!refreshToken) {
     return false;
@@ -103,6 +204,13 @@ async function refreshSession(): Promise<boolean> {
       refreshToken = data.refreshToken;
       // Sync new tokens to persisted store so page reloads don't restore stale tokens
       onTokenUpdate?.(data.token, data.refreshToken);
+      // Refreshed JWTs invalidate the cached file token (they're scoped to a
+      // session and the new file token will be fresher anyway).
+      cachedFileToken = null;
+      fileTokenExpiresAt = 0;
+      void fetchFileToken();
+      // Schedule the next proactive refresh based on the server-reported TTL.
+      scheduleProactiveRefresh(data.expiresIn);
       return true;
     } catch {
       return false;
@@ -199,6 +307,35 @@ export async function mintAgentChatWebSocketToken(): Promise<string> {
     method: 'POST',
   });
   return response.token;
+}
+
+export async function listAgentThreads(): Promise<AgentThreadSummary[]> {
+  const response = await apiRequest<ListAgentThreadsResponse>('/api/agent/threads', {
+    method: 'GET',
+  });
+  return response.threads;
+}
+
+export async function createAgentThread(title?: string): Promise<AgentThreadSummary> {
+  const response = await apiRequest<AgentThreadResponse>('/api/agent/threads', {
+    method: 'POST',
+    body: JSON.stringify(title ? { title } : {}),
+  });
+  return response.thread;
+}
+
+export async function renameAgentThread(threadId: string, title: string): Promise<AgentThreadSummary> {
+  const response = await apiRequest<AgentThreadResponse>(`/api/agent/threads/${encodeURIComponent(threadId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ title }),
+  });
+  return response.thread;
+}
+
+export async function deleteAgentThread(threadId: string): Promise<DeleteAgentThreadResponse> {
+  return apiRequest<DeleteAgentThreadResponse>(`/api/agent/threads/${encodeURIComponent(threadId)}`, {
+    method: 'DELETE',
+  });
 }
 
 // ============ Auth API ============
@@ -600,17 +737,60 @@ export async function fetchVisitorDesktop(username: string): Promise<VisitorResp
  * Replaces the old approach of putting the full JWT in query params, which
  * leaked credentials into server logs, browser history, and referrer headers.
  *
- * The token is cached and refreshed automatically every 4 minutes (token TTL is 5 min).
+ * Token TTL is 5 min on the server. We refresh ~1 min before expiry so URLs
+ * already on the page never see a 401.
+ *
+ * Components subscribe via `subscribeToFileToken` / `getFileTokenVersion` so
+ * they re-render when the token first loads (after a page refresh) or rotates.
  */
+const FILE_TOKEN_TTL_MS = 5 * 60 * 1000;
+const FILE_TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
+
 let cachedFileToken: string | null = null;
 let fileTokenExpiresAt = 0;
 let fileTokenRequest: Promise<string | null> | null = null;
+let fileTokenRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let fileTokenVersion = 0;
+const fileTokenSubscribers = new Set<() => void>();
+
+function notifyFileTokenSubscribers(): void {
+  fileTokenVersion += 1;
+  for (const sub of fileTokenSubscribers) {
+    try { sub(); } catch { /* ignore subscriber errors */ }
+  }
+}
+
+/**
+ * Subscribe to file-token changes. Returns an unsubscribe function.
+ * Use with `useSyncExternalStore` (see hooks/useFileToken.ts).
+ */
+export function subscribeToFileToken(callback: () => void): () => void {
+  fileTokenSubscribers.add(callback);
+  return () => {
+    fileTokenSubscribers.delete(callback);
+  };
+}
+
+/**
+ * Get the current file-token version (incremented on every token change).
+ * Stable across renders when the token hasn't changed — safe for useSyncExternalStore.
+ */
+export function getFileTokenVersion(): number {
+  return fileTokenVersion;
+}
+
+function clearFileTokenRefreshTimer(): void {
+  if (fileTokenRefreshTimer) {
+    clearTimeout(fileTokenRefreshTimer);
+    fileTokenRefreshTimer = null;
+  }
+}
 
 async function fetchFileToken(): Promise<string | null> {
   if (!authToken) return null;
 
-  // Return cached token if still valid (with 60s buffer)
-  if (cachedFileToken && Date.now() < fileTokenExpiresAt - 60_000) {
+  // Return cached token if still valid (with refresh buffer)
+  if (cachedFileToken && Date.now() < fileTokenExpiresAt - FILE_TOKEN_REFRESH_BUFFER_MS) {
     return cachedFileToken;
   }
 
@@ -619,17 +799,24 @@ async function fetchFileToken(): Promise<string | null> {
 
   fileTokenRequest = (async () => {
     try {
-      const response = await fetch(`${API_URL}/api/file-token`, {
+      // Use apiRequest so a 401 here goes through the JWT refresh path. Doing
+      // a bare fetch would silently fail when the JWT had expired during
+      // page-load idle time, leaving images broken until the next user action.
+      const data = await apiRequest<{ ft: string }>('/api/file-token', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authToken}`,
-        },
       });
-      if (!response.ok) return null;
-      const data = await response.json() as { ft: string };
       cachedFileToken = data.ft;
-      fileTokenExpiresAt = Date.now() + 5 * 60 * 1000; // 5 min TTL
+      fileTokenExpiresAt = Date.now() + FILE_TOKEN_TTL_MS;
+      // Schedule a background refresh shortly before the token would expire
+      // so existing img/video src URLs never go stale.
+      clearFileTokenRefreshTimer();
+      fileTokenRefreshTimer = setTimeout(() => {
+        cachedFileToken = null;
+        fileTokenExpiresAt = 0;
+        void fetchFileToken();
+      }, FILE_TOKEN_TTL_MS - FILE_TOKEN_REFRESH_BUFFER_MS);
+      // Wake any subscribed components so they re-render with the new URL.
+      notifyFileTokenSubscribers();
       return cachedFileToken;
     } catch {
       return null;
@@ -646,7 +833,7 @@ async function fetchFileToken(): Promise<string | null> {
  * Returns null if no token is available yet — call ensureFileToken() first.
  */
 export function getCachedFileToken(): string | null {
-  if (cachedFileToken && Date.now() < fileTokenExpiresAt - 60_000) {
+  if (cachedFileToken && Date.now() < fileTokenExpiresAt - FILE_TOKEN_REFRESH_BUFFER_MS) {
     return cachedFileToken;
   }
   return null;
@@ -666,11 +853,20 @@ export async function ensureFileToken(): Promise<string | null> {
 export function clearFileToken(): void {
   cachedFileToken = null;
   fileTokenExpiresAt = 0;
+  clearFileTokenRefreshTimer();
+  notifyFileTokenSubscribers();
 }
 
 /**
  * Get the URL for a file stored in R2.
  * Uses a short-lived file token (not the full JWT) in the query param.
+ *
+ * If the token isn't ready yet (page just loaded), this still returns a usable
+ * URL — public files will load and private files will 401, but components that
+ * subscribe via `useFileTokenVersion()` will re-render and pick up the proper
+ * URL as soon as the token arrives. Always trigger an `ensureFileToken()` so
+ * that subscribers are eventually notified.
+ *
  * @param r2Key - The full R2 key path (e.g., "uid/itemId/filename")
  */
 export function getFileUrl(r2Key: string): string {
@@ -678,11 +874,13 @@ export function getFileUrl(r2Key: string): string {
   // Encode each path segment to handle special characters in filenames
   const encodedKey = r2Key.split('/').map(encodeURIComponent).join('/');
   const baseUrl = `${API_URL}/api/files/${encodedKey}`;
-  // Only append token param if we actually have a valid token.
-  // An empty/null token would still allow public files to load via the
-  // server's public-item check, but avoids sending a malformed query param.
   if (ft) {
     return `${baseUrl}?ft=${encodeURIComponent(ft)}`;
+  }
+  // Fire-and-forget — when the token arrives, subscribers re-render and call
+  // getFileUrl again with a token attached.
+  if (authToken) {
+    void fetchFileToken();
   }
   return baseUrl;
 }

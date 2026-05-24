@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { useWindowStore } from '../../stores/windowStore';
 import { isApiConfigured, getFileUrl } from '../../services/api';
+import { useFileTokenVersion } from '../../hooks/useFileToken';
 import { ContextMenu, type ContextMenuItem } from '../ui';
 import styles from './ImageViewer.module.css';
 
@@ -39,6 +40,8 @@ export function ImageViewer({
   const nameInputRef = useRef<HTMLInputElement>(null);
   const { updateItem } = useDesktopStore();
   const { updateWindowTitle } = useWindowStore();
+  // Re-run the loadImage effect when the file token rotates so the URL stays valid.
+  const fileTokenVersion = useFileTokenVersion();
 
   // Update filename when prop changes
   useEffect(() => {
@@ -156,7 +159,7 @@ export function ImageViewer({
     }
 
     loadImage();
-  }, [r2Key]);
+  }, [r2Key, fileTokenVersion]);
 
   return (
     <div className={styles.imageViewer} onContextMenu={handleContextMenu}>

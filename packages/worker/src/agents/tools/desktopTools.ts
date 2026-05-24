@@ -8,6 +8,7 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 import type { DesktopItem, UserProfile } from '../../types';
+import type { OrchestratorState } from '../state';
 
 interface DesktopSnapshot {
   items: DesktopItem[];
@@ -16,8 +17,8 @@ interface DesktopSnapshot {
 
 interface DesktopToolsContext {
   getUserDesktopStub: () => DurableObjectStub;
-  setState: (state: { lastMatchedItemIds: string[]; lastQuery: string | null }) => void;
-  getState: () => { lastMatchedItemIds: string[]; lastQuery: string | null };
+  setState: (state: OrchestratorState) => void;
+  getState: () => OrchestratorState;
 }
 
 async function loadSnapshot(ctx: DesktopToolsContext): Promise<DesktopSnapshot> {
@@ -157,7 +158,11 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
         const snapshot = await loadSnapshot(ctx);
         const results = searchItems(snapshot.items, input.query);
         const matchedIds = results.map((r) => r.id);
-        ctx.setState({ lastMatchedItemIds: matchedIds, lastQuery: input.query });
+        ctx.setState({
+          ...ctx.getState(),
+          lastMatchedItemIds: matchedIds,
+          lastQuery: input.query,
+        });
 
         return {
           query: input.query,

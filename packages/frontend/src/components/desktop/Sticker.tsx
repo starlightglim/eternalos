@@ -11,6 +11,7 @@
 import { useCallback, useRef, useState, memo } from 'react';
 import type { DesktopItem } from '../../types';
 import { getFileUrl } from '../../services/api';
+import { useFileTokenVersion } from '../../hooks/useFileToken';
 import { slugify } from '../../utils/slugify';
 import styles from './Sticker.module.css';
 
@@ -49,6 +50,8 @@ function StickerInner({
   const resizeStartMouse = useRef({ x: 0, y: 0 });
   const resizeStartSize = useRef({ width: 0, height: 0 });
 
+  // Re-render when the file token rotates so the URL stays signed.
+  useFileTokenVersion();
   const imageUrl = item.r2Key ? getFileUrl(item.r2Key) : '';
 
   // --- Drag handlers (owner only) ---

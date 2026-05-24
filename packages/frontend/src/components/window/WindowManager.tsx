@@ -445,6 +445,24 @@ function WindowContent({
       }
       return <AppViewer appId={item.appManifest.appId} />;
 
+    case 'app-preview':
+      if (!contentId) {
+        return (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              height: '100%',
+              backgroundColor: '#1a1a2e',
+            }}
+          >
+            <p style={{ color: '#888', fontSize: '12px' }}>Preview not found</p>
+          </div>
+        );
+      }
+      return <AppViewer previewId={contentId} />;
+
     default:
       return null;
   }

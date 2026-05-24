@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { useWindowStore } from '../../stores/windowStore';
 import { getFileUrl } from '../../services/api';
+import { useFileTokenVersion } from '../../hooks/useFileToken';
 import { getTextFileContentType, type DesktopItem } from '../../types';
 import styles from './SearchWindow.module.css';
 
@@ -178,6 +179,8 @@ export function SearchWindow() {
   const { items } = useDesktopStore();
   const { openWindow, windows, closeWindow, focusWindow } = useWindowStore();
   const inputRef = useRef<HTMLInputElement>(null);
+  // Re-render preview thumbnails when the file token rotates.
+  useFileTokenVersion();
 
   useEffect(() => {
     inputRef.current?.focus();

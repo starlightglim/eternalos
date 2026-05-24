@@ -181,6 +181,14 @@ export interface DesktopItem {
   imageAnalysis?: ImageAnalysisMetadata;
   // User-created app (type='app')
   appManifest?: AppManifest;
+  // For type='app': the subset of declared permissions the user approved.
+  // Shape is AppGrantedPermissions from utils/jwt.ts (serialized JSON-safe).
+  // Absent = no permissions granted = hermetic app (default).
+  grantedPermissions?: {
+    fs?: { read?: string[]; mimeTypes?: string[] };
+    profile?: { read?: Array<'username' | 'displayName' | 'bio' | 'avatar'> };
+  };
+  permissionGrantedAt?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +204,24 @@ export interface AppWindowConfig {
   frameless?: boolean;
 }
 
+/**
+ * Permissions an app declares in its manifest. These are the *requested*
+ * capabilities — the user grants a subset at install time (stored on the
+ * DesktopItem as `grantedPermissions`).
+ *
+ * Shape mirrors AppGrantedPermissions in utils/jwt.ts; narrowed to the
+ * v1 surface (read-only fs + profile).
+ */
+export interface AppPermissions {
+  fs?: {
+    read?: string[];          // path globs: ['**'], ['/Photos/**']
+    mimeTypes?: string[];     // ['image/*', 'audio/*', 'text/*']
+  };
+  profile?: {
+    read?: Array<'username' | 'displayName' | 'bio' | 'avatar'>;
+  };
+}
+
 export interface AppManifest {
   name: string;
   description?: string;
@@ -203,6 +229,10 @@ export interface AppManifest {
   windowConfig: AppWindowConfig;
   // Dynamic Worker app ID (registered in OrchestratorAgent)
   appId: string;
+  // Permissions the app declares it needs. Users grant a subset at install.
+  permissions?: AppPermissions;
+  // Short natural-language reason shown in the install dialog. Keep under ~200 chars.
+  rationale?: string;
 }
 
 export interface CustomCSSVersion {

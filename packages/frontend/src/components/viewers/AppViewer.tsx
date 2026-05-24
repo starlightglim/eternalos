@@ -1,14 +1,18 @@
 import { useMemo } from 'react';
 
 interface AppViewerProps {
-  appId: string;
+  appId?: string;
+  previewId?: string;
 }
 
-export function AppViewer({ appId }: AppViewerProps) {
+export function AppViewer({ appId, previewId }: AppViewerProps) {
   const src = useMemo(() => {
     const base = import.meta.env.VITE_API_URL || window.location.origin;
+    if (previewId) {
+      return `${base}/api/app-previews/${previewId}/`;
+    }
     return `${base}/api/apps/${appId}/`;
-  }, [appId]);
+  }, [appId, previewId]);
 
   return (
     <iframe

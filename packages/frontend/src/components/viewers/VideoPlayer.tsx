@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { getFileUrl, isApiConfigured } from '../../services/api';
+import { useFileTokenVersion } from '../../hooks/useFileToken';
 import styles from './VideoPlayer.module.css';
 
 interface VideoPlayerProps {
@@ -42,7 +43,8 @@ export function VideoPlayer({ itemId, r2Key: propR2Key, name: propName }: VideoP
   const r2Key = propR2Key || item?.r2Key;
   const fileName = propName || item?.name || 'Video';
 
-  // Get video URL
+  // Re-render when the file token rotates so the video src stays signed.
+  useFileTokenVersion();
   const videoUrl = r2Key && isApiConfigured
     ? getFileUrl(r2Key)
     : null;
