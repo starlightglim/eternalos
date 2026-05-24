@@ -20,7 +20,17 @@ interface AppToolsContext {
   env: Env;
   sql: SqlStorage;
   agentName: string; // uid
+  toolCallId?: string;
+  onBuildStage?: (toolCallId: string, stage: string, label: string) => void;
 }
+
+const REAL_BUILD_STAGES: Record<string, string> = {
+  spec: 'Generating specification',
+  codegen: 'Writing source files',
+  bundle: 'Bundling app',
+  storage: 'Saving files',
+  install: 'Installing on desktop',
+};
 
 interface AppBundleInput {
   name: string;
@@ -161,11 +171,11 @@ type AppSpec = z.infer<typeof appSpecSchema>;
 
 const APP_BUILD_TIMEOUT_MS = {
   desktopSummary: 5_000,
-  specGeneration: 30_000,
-  fileGeneration: 60_000,
-  bundling: 20_000,
-  storageWrite: 10_000,
-  desktopInstall: 10_000,
+  specGeneration: 90_000,
+  fileGeneration: 120_000,
+  bundling: 30_000,
+  storageWrite: 15_000,
+  desktopInstall: 15_000,
 } as const;
 
 async function withStepTimeout<T>(
@@ -1307,6 +1317,12 @@ ${repairContext}`,
   return app;
 }
 
+function emitStage(ctx: AppToolsContext, stage: keyof typeof REAL_BUILD_STAGES): void {
+  if (ctx.toolCallId) {
+    ctx.onBuildStage?.(ctx.toolCallId, stage, REAL_BUILD_STAGES[stage]);
+  }
+}
+
 async function buildAppFromPromptWithRetries(
   ctx: AppToolsContext,
   prompt: string,
@@ -1317,6 +1333,7 @@ async function buildAppFromPromptWithRetries(
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
+      emitStage(ctx, 'spec');
       spec = await generateAppSpec(ctx.env, prompt, desktopSummary);
       break;
     } catch (error) {
@@ -1334,6 +1351,7 @@ async function buildAppFromPromptWithRetries(
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
+      emitStage(ctx, 'codegen');
       const generatedApp = await generateAppFromPrompt(
         ctx.env,
         prompt,
@@ -1371,6 +1389,7 @@ async function writeAppArtifact(
   const workspace = createAppWorkspace(input.files);
   tracker.markCompleted('prepare-workspace');
 
+  emitStage(ctx, 'bundle');
   const workerFiles = createWorkerModuleFiles(workspace, mountBasePath);
   const { mainModule, modules } = await withStepTimeout(
     'Bundling app worker',
@@ -1402,6 +1421,7 @@ async function writeAppArtifact(
     expiresAt: options?.expiresAt,
   };
 
+  emitStage(ctx, 'storage');
   const bundle = JSON.stringify({ mainModule, modules });
   await withStepTimeout(
     'Writing app bundle',
@@ -1468,6 +1488,8 @@ async function createAndRegisterApp(
       APP_BUILD_TIMEOUT_MS.desktopInstall,
       getNextDesktopGridPosition(stub),
     );
+
+    emitStage(ctx, 'install');
     const manifest: AppManifest = {
       name: input.name,
       description: input.description,
@@ -1593,6 +1615,7 @@ async function buildAppPreviewFromPromptWithRetries(
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
+      emitStage(ctx, 'spec');
       spec = await generateAppSpec(ctx.env, prompt, desktopSummary);
       break;
     } catch (error) {
@@ -1610,6 +1633,7 @@ async function buildAppPreviewFromPromptWithRetries(
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
+      emitStage(ctx, 'codegen');
       const generatedApp = await generateAppFromPrompt(
         ctx.env,
         prompt,
@@ -1998,7 +2022,7 @@ export function createAppTools(ctx: AppToolsContext) {
         prompt: z.string().min(1).max(8000).describe('Natural-language app request or product brief'),
       }),
       needsApproval: true,
-      execute: async (input) => buildAppPreviewFromPromptWithRetries(ctx, input.prompt),
+      execute: async (input, { toolCallId }) => buildAppPreviewFromPromptWithRetries({ ...ctx, toolCallId }, input.prompt),
     }),
 
     installAppPreview: tool({
@@ -2007,7 +2031,7 @@ export function createAppTools(ctx: AppToolsContext) {
         previewId: z.string().min(1).max(128).describe('Preview ID returned by previewAppFromPrompt'),
       }),
       needsApproval: true,
-      execute: async (input) => installAppPreview(ctx, input.previewId),
+      execute: async (input, { toolCallId }) => installAppPreview({ ...ctx, toolCallId }, input.previewId),
     }),
 
     buildAppFromPrompt: tool({
@@ -2016,7 +2040,7 @@ export function createAppTools(ctx: AppToolsContext) {
         prompt: z.string().min(1).max(8000).describe('Natural-language app request or product brief'),
       }),
       needsApproval: true,
-      execute: async (input) => buildAppFromPromptWithRetries(ctx, input.prompt),
+      execute: async (input, { toolCallId }) => buildAppFromPromptWithRetries({ ...ctx, toolCallId }, input.prompt),
     }),
 
     createCuratedApp: tool({
@@ -2027,10 +2051,10 @@ export function createAppTools(ctx: AppToolsContext) {
         description: z.string().max(500).optional().describe('Optional app description override'),
       }),
       needsApproval: true,
-      execute: async (input) => {
+      execute: async (input, { toolCallId }) => {
         if (input.template === 'todo') {
           return createAndRegisterApp(
-            ctx,
+            { ...ctx, toolCallId },
             buildTodoTemplate(input.name ?? 'Tasks', input.description),
           );
         }
@@ -2049,7 +2073,7 @@ export function createAppTools(ctx: AppToolsContext) {
         height: z.number().optional().default(500).describe('Default window height'),
       }),
       needsApproval: true,
-      execute: async (input) => createAndRegisterApp(ctx, {
+      execute: async (input, { toolCallId }) => createAndRegisterApp({ ...ctx, toolCallId }, {
         name: input.name,
         description: input.description,
         files: input.files,
@@ -2069,7 +2093,8 @@ export function createAppTools(ctx: AppToolsContext) {
         height: z.number().optional().describe('Updated default window height'),
       }),
       needsApproval: true,
-      execute: async (input) => {
+      execute: async (input, { toolCallId }) => {
+        const tctx = { ...ctx, toolCallId };
         // Look up the app in the registry
         const rows = [...sql.exec<{ version: number; r2_prefix: string; desktop_item_id: string | null; name: string; description: string; width: number; height: number }>(
           'SELECT version, r2_prefix, desktop_item_id, name, description, width, height FROM apps WHERE id = ?', input.appId,
@@ -2089,6 +2114,7 @@ export function createAppTools(ctx: AppToolsContext) {
           const workspace = createAppWorkspace(input.files);
           tracker.markCompleted('prepare-workspace');
 
+          emitStage(tctx, 'bundle');
           const workerFiles = createWorkerModuleFiles(workspace);
           const { mainModule, modules } = await withStepTimeout(
             'Bundling app worker',
@@ -2103,6 +2129,7 @@ export function createAppTools(ctx: AppToolsContext) {
           );
           tracker.markCompleted('bundle-worker');
 
+          emitStage(tctx, 'storage');
           const bundle = JSON.stringify({ mainModule, modules });
           await withStepTimeout(
             'Writing app bundle',
@@ -2149,6 +2176,7 @@ export function createAppTools(ctx: AppToolsContext) {
           );
 
           if (app.desktop_item_id) {
+            emitStage(tctx, 'install');
             const doId = env.USER_DESKTOP.idFromName(uid);
             const stub = env.USER_DESKTOP.get(doId);
             const manifest: AppManifest = {

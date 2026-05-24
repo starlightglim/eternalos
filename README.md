@@ -301,8 +301,12 @@ AGENT_CHAT_MODEL=@cf/zai-org/glm-4.7-flash
 Important frontend env in [packages/frontend/.env.local](packages/frontend/.env.local):
 
 ```env
-VITE_API_URL=https://eternalos-api.wubny31.workers.dev
+VITE_API_URL=http://localhost:8787
 ```
+
+Local Wrangler uses local simulated KV, R2, and Durable Objects by default. Accounts
+created on the deployed app are not available locally; sign up locally or run
+Wrangler against remote resources intentionally when you need production data.
 
 Then open:
 

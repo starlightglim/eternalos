@@ -10,9 +10,12 @@
 import { AIChatAgent } from '@cloudflare/ai-chat';
 import {
   convertToModelMessages,
+  createUIMessageStream,
+  createUIMessageStreamResponse,
   pruneMessages,
   stepCountIs,
   streamText,
+  UI_MESSAGE_STREAM_HEADERS,
 } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import type { Env } from '../index';
@@ -292,10 +295,20 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
       moveItems: allDesktopTools.moveItems,
     };
 
+    // Stage emitter: set inside createUIMessageStream.execute before any tool runs.
+    const stageEmitter: { write: ((chunk: object) => void) | null } = { write: null };
+
     const appTools = createAppTools({
       env: this.env,
       sql: this.ctx.storage.sql,
       agentName: ownerUid,
+      onBuildStage: (toolCallId, stage, label) => {
+        stageEmitter.write?.({
+          type: 'data-build-stage',
+          id: toolCallId,
+          data: { stage, label },
+        });
+      },
     });
     const appReadTools = {
       listApps: appTools.listApps,
@@ -328,30 +341,37 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
     const activeToolNames = Object.keys(activeRouteTools) as string[];
     const shouldForceFirstToolCall = route === 'app-build';
 
-    const result = streamText({
-      model: this.getModel(),
-      system: `${getSystemPrompt(route)}\n\n${formatMemoryContext(this.state)}`,
-      messages: pruneMessages({
-        messages: await convertToModelMessages(this.messages),
-        toolCalls: 'before-last-10-messages',
-      }),
-      tools: activeRouteTools as any,
-      prepareStep: async ({ stepNumber }) => {
-        if (activeToolNames.length === 0) {
-          return {
-            activeTools: [],
-            toolChoice: 'auto' as const,
-          };
-        }
+    const stream = createUIMessageStream({
+      execute: async ({ writer }) => {
+        stageEmitter.write = (chunk) => writer.write(chunk as any);
+        const result = streamText({
+          model: this.getModel(),
+          system: `${getSystemPrompt(route)}\n\n${formatMemoryContext(this.state)}`,
+          messages: pruneMessages({
+            messages: await convertToModelMessages(this.messages),
+            toolCalls: 'before-last-10-messages',
+          }),
+          tools: activeRouteTools as any,
+          prepareStep: async ({ stepNumber }) => {
+            if (activeToolNames.length === 0) {
+              return {
+                activeTools: [],
+                toolChoice: 'auto' as const,
+              };
+            }
 
-        return {
-          activeTools: activeToolNames,
-          toolChoice: shouldForceFirstToolCall && stepNumber === 0 ? 'required' as const : 'auto' as const,
-        };
+            return {
+              activeTools: activeToolNames,
+              toolChoice: shouldForceFirstToolCall && stepNumber === 0 ? 'required' as const : 'auto' as const,
+            };
+          },
+          stopWhen: stepCountIs(10),
+        });
+        writer.merge(result.toUIMessageStream() as any);
       },
-      stopWhen: stepCountIs(10),
+      onError: (error) => (error instanceof Error ? error.message : String(error)),
     });
 
-    return result.toUIMessageStreamResponse();
+    return createUIMessageStreamResponse({ stream, headers: UI_MESSAGE_STREAM_HEADERS });
   }
 }

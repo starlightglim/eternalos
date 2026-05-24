@@ -321,101 +321,141 @@
   line-height: 1.5;
 }
 
-.progressPanel {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(182, 182, 170, 0.55);
-}
+/* ── In-progress build card ── */
 
-.progressMetaRow {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 6px;
-  color: #4e4e4e;
-  font-size: 10px;
-}
-
-.progressStage {
-  font-weight: bold;
-  color: #2f2f2f;
-}
-
-.progressElapsed {
-  color: #686868;
-}
-
-.progressTrack {
-  position: relative;
-  height: 10px;
-  overflow: hidden;
-  border: 1px solid #8c8c8c;
-  border-radius: 999px;
-  background: linear-gradient(to bottom, #eeeeee 0%, #dcdcdc 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.95),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.08);
-}
-
-.progressBar {
-  position: absolute;
-  inset: 1px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, rgba(72, 122, 214, 0.14) 0%, rgba(72, 122, 214, 0.86) 40%, rgba(72, 122, 214, 0.14) 100%);
-  transform: translateX(-65%);
-  animation: build-progress 1.15s linear infinite;
-}
-
-.progressPrompt {
-  margin-top: 7px;
-  color: #5b5b5b;
-  line-height: 1.4;
-}
-
-.progressStages {
-  display: grid;
-  gap: 4px;
-  margin-top: 8px;
-}
-
-.progressStageRow {
+.buildProgressHeader {
   display: flex;
   align-items: center;
-  gap: 6px;
-  color: #6b6b6b;
+  gap: 7px;
+  margin-bottom: 9px;
+}
+
+.buildSpinner {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #4a8adf;
+  flex-shrink: 0;
+  animation: build-pulse 1.1s ease-in-out infinite;
+}
+
+.buildProgressTitle {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  color: #1e1e1e;
+}
+
+.buildProgressElapsed {
+  font-size: 10px;
+  color: #888;
+  font-variant-numeric: tabular-nums;
+}
+
+.buildStageList {
+  display: grid;
+  gap: 5px;
+}
+
+.buildStageRow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+}
+
+.buildStageIcon {
+  width: 13px;
+  text-align: center;
+  flex-shrink: 0;
+  font-size: 10px;
+  color: #b0b0a8;
+}
+
+.buildStageIconDone {
+  color: #3a9e5c;
+  font-weight: 700;
+}
+
+.buildStageIconActive {
+  color: #4a8adf;
+  animation: build-pulse 1.1s ease-in-out infinite;
+}
+
+.buildStageLabel {
+  color: #1e1e1e;
+}
+
+.buildStageLabelDim {
+  color: #aaa;
+}
+
+.buildStageLabelActive {
+  font-weight: 600;
+}
+
+.buildPrompt {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(182, 182, 170, 0.45);
+}
+
+.buildPromptText {
+  font-size: 10px;
+  color: #686868;
+  font-style: italic;
+}
+
+/* ── Completed build summary ── */
+
+.buildSummary {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(182, 182, 170, 0.45);
+}
+
+.buildCheckList {
+  display: grid;
+  gap: 5px;
+}
+
+.buildCheckRow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+}
+
+.buildCheckIcon {
+  width: 13px;
+  text-align: center;
+  flex-shrink: 0;
+  color: #3a9e5c;
+  font-weight: 700;
   font-size: 10px;
 }
 
-.progressStageDot {
-  width: 8px;
-  height: 8px;
+.buildCheckLabel {
+  color: #2c2c2c;
+}
+
+.buildFooter {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+}
+
+.buildDurationBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid rgba(58, 158, 92, 0.35);
   border-radius: 999px;
-  border: 1px solid rgba(100, 100, 100, 0.5);
-  background: rgba(255, 255, 255, 0.7);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
-}
-
-.progressStageDotCurrent {
-  background: linear-gradient(to bottom, #7cb0ff 0%, #356fc8 100%);
-  border-color: rgba(31, 70, 134, 0.8);
-}
-
-.progressStageDotDone {
-  background: linear-gradient(to bottom, #8fdc9f 0%, #4f9e62 100%);
-  border-color: rgba(49, 98, 61, 0.82);
-}
-
-.progressStageLabel {
-  color: #676767;
-}
-
-.progressStageLabelCurrent {
-  color: #232323;
-  font-weight: bold;
-}
-
-.progressPromptText {
-  color: #2f2f2f;
+  background: rgba(58, 158, 92, 0.08);
+  color: #2d7a4a;
+  font-size: 10px;
+  font-weight: 600;
 }
 
 .resultList {
@@ -596,14 +636,9 @@
   line-height: 1.5;
 }
 
-@keyframes build-progress {
-  from {
-    transform: translateX(-65%);
-  }
-
-  to {
-    transform: translateX(100%);
-  }
+@keyframes build-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 
 .unavailable {

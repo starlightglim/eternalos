@@ -34,6 +34,8 @@ type MessagePart = {
   errorText?: unknown;
   toolCallId?: string;
   approval?: { id: string };
+  id?: string;
+  data?: unknown;
 };
 
 type SearchResultItem = {
@@ -187,43 +189,14 @@ type AppBuildSummary = {
 
 type OpenWindowFn = ReturnType<typeof useWindowStore.getState>['openWindow'];
 
-const BUILD_STAGE_PLANS = {
-  generated: [
-    { afterSeconds: 0, currentStage: 'prepare-workspace', title: 'Planning and preparing workspace' },
-    { afterSeconds: 4, currentStage: 'prepare-workspace', title: 'Generating source files' },
-    { afterSeconds: 11, currentStage: 'bundle-worker', title: 'Bundling worker runtime' },
-    { afterSeconds: 18, currentStage: 'write-storage', title: 'Writing app files' },
-    { afterSeconds: 24, currentStage: 'install-desktop', title: 'Installing on desktop' },
-    { afterSeconds: 34, currentStage: 'install-desktop', title: 'Still working, this is taking longer than expected' },
-  ],
-  direct: [
-    { afterSeconds: 0, currentStage: 'prepare-workspace', title: 'Preparing workspace' },
-    { afterSeconds: 3, currentStage: 'bundle-worker', title: 'Bundling worker runtime' },
-    { afterSeconds: 8, currentStage: 'write-storage', title: 'Writing app files' },
-    { afterSeconds: 13, currentStage: 'install-desktop', title: 'Installing on desktop' },
-    { afterSeconds: 22, currentStage: 'install-desktop', title: 'Still working, this is taking longer than expected' },
-  ],
-  update: [
-    { afterSeconds: 0, currentStage: 'prepare-workspace', title: 'Preparing updated workspace' },
-    { afterSeconds: 3, currentStage: 'bundle-worker', title: 'Bundling updated runtime' },
-    { afterSeconds: 8, currentStage: 'write-storage', title: 'Writing updated files' },
-    { afterSeconds: 13, currentStage: 'install-desktop', title: 'Publishing update to the desktop' },
-    { afterSeconds: 22, currentStage: 'install-desktop', title: 'Still working, this is taking longer than expected' },
-  ],
-  codemode: [
-    { afterSeconds: 0, currentStage: 'prepare-workspace', title: 'Running app build script' },
-    { afterSeconds: 6, currentStage: 'bundle-worker', title: 'Compiling generated app' },
-    { afterSeconds: 12, currentStage: 'write-storage', title: 'Saving app files' },
-    { afterSeconds: 18, currentStage: 'install-desktop', title: 'Installing on desktop' },
-    { afterSeconds: 28, currentStage: 'install-desktop', title: 'Still working, this is taking longer than expected' },
-  ],
-} as const;
+const REAL_BUILD_STAGE_ORDER = ['spec', 'codegen', 'bundle', 'storage', 'install'] as const;
 
-const BUILD_STAGE_LABELS: Record<AppBuildStageSummary['key'], string> = {
-  'prepare-workspace': 'Prepare workspace',
-  'bundle-worker': 'Bundle runtime',
-  'write-storage': 'Write files',
-  'install-desktop': 'Install on desktop',
+const REAL_BUILD_STAGE_LABELS: Record<string, string> = {
+  spec: 'Generating specification',
+  codegen: 'Writing source files',
+  bundle: 'Bundling app',
+  storage: 'Saving files',
+  install: 'Installing on desktop',
 };
 
 function getUserMessageText(message: { parts?: MessagePart[] }): string {
@@ -365,35 +338,6 @@ function openDesktopItem(openWindow: OpenWindowFn, item: DesktopItem) {
   }
 }
 
-function getBuildStagePlanState(
-  elapsedSeconds: number,
-  variant: keyof typeof BUILD_STAGE_PLANS,
-): { title: string; currentStage: AppBuildStageSummary['key']; stages: AppBuildStageSummary[] } {
-  const plan = BUILD_STAGE_PLANS[variant];
-  let activeIndex = 0;
-  for (let index = 0; index < plan.length; index += 1) {
-    if (elapsedSeconds >= plan[index].afterSeconds) {
-      activeIndex = index;
-    }
-  }
-
-  const activeStage = plan[activeIndex].currentStage;
-  const stageOrder = Object.keys(BUILD_STAGE_LABELS) as Array<AppBuildStageSummary['key']>;
-
-  return {
-    title: plan[activeIndex].title,
-    currentStage: activeStage,
-    stages: stageOrder.map((key) => ({
-      key,
-      label: BUILD_STAGE_LABELS[key],
-      status: key === activeStage
-        ? 'current'
-        : stageOrder.indexOf(key) < stageOrder.indexOf(activeStage)
-          ? 'completed'
-          : 'pending',
-    })),
-  };
-}
 
 function summarizePermissions(permissions: AppPermissions | undefined): string[] {
   if (!permissions) return [];
@@ -413,23 +357,37 @@ function summarizePermissions(permissions: AppPermissions | undefined): string[]
   return parts;
 }
 
-function summarizeCompletedBuildStages(build: AppBuildSummary | undefined): string[] {
-  if (!build) return [];
-  return build.stages
-    .filter((stage) => stage.status === 'completed')
-    .map((stage) => stage.label);
+function BuildStageSummary({ build }: { build: AppBuildSummary | undefined }) {
+  if (!build?.stages?.length) return null;
+  const completedStages = build.stages.filter((s) => s.status === 'completed');
+  if (completedStages.length === 0) return null;
+  const durationSec = build.durationMs > 0 ? (build.durationMs / 1000).toFixed(1) : null;
+
+  return (
+    <div className={styles.buildSummary}>
+      <div className={styles.buildCheckList}>
+        {completedStages.map((stage) => (
+          <div key={stage.key} className={styles.buildCheckRow}>
+            <span className={styles.buildCheckIcon} aria-hidden="true">✓</span>
+            <span className={styles.buildCheckLabel}>{stage.label}</span>
+          </div>
+        ))}
+      </div>
+      {durationSec ? (
+        <div className={styles.buildFooter}>
+          <span className={styles.buildDurationBadge}>Built in {durationSec}s</span>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function AppBuildProgressCard({
-  title,
-  subtitle,
   prompt,
-  variant,
+  realStage,
 }: {
-  title: string;
-  subtitle: string;
   prompt?: string;
-  variant: keyof typeof BUILD_STAGE_PLANS;
+  realStage?: string;
 }) {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
@@ -441,48 +399,51 @@ function AppBuildProgressCard({
     return () => window.clearInterval(intervalId);
   }, []);
 
-  const progressState = getBuildStagePlanState(elapsedSeconds, variant);
+  const currentIndex = realStage ? REAL_BUILD_STAGE_ORDER.indexOf(realStage as typeof REAL_BUILD_STAGE_ORDER[number]) : -1;
+  const currentLabel = realStage ? (REAL_BUILD_STAGE_LABELS[realStage] ?? 'Building...') : 'Building...';
+  const stages = REAL_BUILD_STAGE_ORDER.map((key, i) => ({
+    key,
+    label: REAL_BUILD_STAGE_LABELS[key],
+    status: i < currentIndex ? 'completed' : i === currentIndex ? 'current' : 'pending',
+  }));
 
   return (
     <div className={styles.toolCard}>
-      <div className={styles.toolTitle}>{title}</div>
-      <div className={styles.toolBody}>{subtitle}</div>
-      <div className={styles.progressPanel}>
-        <div className={styles.progressMetaRow}>
-          <span className={styles.progressStage}>{progressState.title}</span>
-          <span className={styles.progressElapsed}>{elapsedSeconds}s elapsed</span>
-        </div>
-        <div className={styles.progressTrack}>
-          <div className={styles.progressBar} />
-        </div>
-        <div className={styles.progressStages}>
-          {progressState.stages.map((stage) => (
-            <div key={stage.key} className={styles.progressStageRow}>
-              <span
-                className={[
-                  styles.progressStageDot,
-                  stage.status === 'completed' ? styles.progressStageDotDone : '',
-                  stage.status === 'current' ? styles.progressStageDotCurrent : '',
-                ].filter(Boolean).join(' ')}
-                aria-hidden="true"
-              />
-              <span
-                className={[
-                  styles.progressStageLabel,
-                  stage.status === 'current' ? styles.progressStageLabelCurrent : '',
-                ].filter(Boolean).join(' ')}
-              >
-                {stage.label}
-              </span>
-            </div>
-          ))}
-        </div>
-        {prompt ? (
-          <div className={styles.progressPrompt}>
-            Request: <span className={styles.progressPromptText}>{prompt}</span>
-          </div>
-        ) : null}
+      <div className={styles.buildProgressHeader}>
+        <span className={styles.buildSpinner} aria-hidden="true" />
+        <span className={styles.buildProgressTitle}>{currentLabel}</span>
+        <span className={styles.buildProgressElapsed}>{elapsedSeconds}s</span>
       </div>
+      <div className={styles.buildStageList}>
+        {stages.map((stage) => (
+          <div key={stage.key} className={styles.buildStageRow}>
+            <span
+              className={[
+                styles.buildStageIcon,
+                stage.status === 'completed' ? styles.buildStageIconDone : '',
+                stage.status === 'current' ? styles.buildStageIconActive : '',
+              ].filter(Boolean).join(' ')}
+              aria-hidden="true"
+            >
+              {stage.status === 'completed' ? '✓' : stage.status === 'current' ? '●' : '○'}
+            </span>
+            <span
+              className={[
+                styles.buildStageLabel,
+                stage.status === 'pending' ? styles.buildStageLabelDim : '',
+                stage.status === 'current' ? styles.buildStageLabelActive : '',
+              ].filter(Boolean).join(' ')}
+            >
+              {stage.label}
+            </span>
+          </div>
+        ))}
+      </div>
+      {prompt ? (
+        <div className={styles.buildPrompt}>
+          <span className={styles.buildPromptText}>"{prompt}"</span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -719,7 +680,7 @@ function AgentChatThreadPane({
     );
   };
 
-  const renderAssistantPart = (part: MessagePart, index: number): ReactNode => {
+  const renderAssistantPart = (part: MessagePart, index: number, messageParts: MessagePart[]): ReactNode => {
     if (part.type === 'text') {
       const text = String(part.text ?? '').trim();
       if (!text) return null;
@@ -1131,14 +1092,15 @@ function AgentChatThreadPane({
       }
 
       if (part.state !== 'output-available') {
+        const stagePart = messageParts.find((p) => p.type === 'data-build-stage' && p.id === part.toolCallId);
+        const realStage = (stagePart?.data as { stage?: string } | undefined)?.stage;
+
         if (part.type === 'tool-previewAppFromPrompt') {
           return (
             <AppBuildProgressCard
               key={`app-tool-progress-${index}`}
-              title="Building preview..."
-              subtitle="Generating, bundling, and preparing a preview."
               prompt={toolInput.prompt}
-              variant="generated"
+              realStage={realStage}
             />
           );
         }
@@ -1147,10 +1109,8 @@ function AgentChatThreadPane({
           return (
             <AppBuildProgressCard
               key={`app-tool-progress-${index}`}
-              title="Installing preview..."
-              subtitle="Promoting the preview into a desktop app."
               prompt={toolInput.previewId}
-              variant="direct"
+              realStage={realStage}
             />
           );
         }
@@ -1159,10 +1119,8 @@ function AgentChatThreadPane({
           return (
             <AppBuildProgressCard
               key={`app-tool-progress-${index}`}
-              title="Building app..."
-              subtitle="Generating, bundling, and installing your app."
               prompt={toolInput.prompt}
-              variant="generated"
+              realStage={realStage}
             />
           );
         }
@@ -1171,10 +1129,8 @@ function AgentChatThreadPane({
           return (
             <AppBuildProgressCard
               key={`app-tool-progress-${index}`}
-              title="Installing app..."
-              subtitle="Bundling the provided files and adding the app to your desktop."
               prompt={toolInput.name}
-              variant="direct"
+              realStage={realStage}
             />
           );
         }
@@ -1183,10 +1139,8 @@ function AgentChatThreadPane({
           return (
             <AppBuildProgressCard
               key={`app-tool-progress-${index}`}
-              title="Updating app..."
-              subtitle="Rebuilding the app bundle and refreshing the desktop version."
               prompt={toolInput.appId}
-              variant="update"
+              realStage={realStage}
             />
           );
         }
@@ -1202,7 +1156,6 @@ function AgentChatThreadPane({
       if (part.type === 'tool-previewAppFromPrompt') {
         const output = part.output as AppPreviewOutput;
         const permissionSummary = summarizePermissions(output.permissions);
-        const buildSummary = summarizeCompletedBuildStages(output.build);
 
         return (
           <div key={`app-tool-preview-${index}`} className={styles.toolCard}>
@@ -1249,15 +1202,7 @@ function AgentChatThreadPane({
                 ))}
               </div>
             ) : null}
-            {buildSummary.length > 0 ? (
-              <div className={styles.resultList}>
-                {buildSummary.map((entry) => (
-                  <div key={entry} className={styles.resultRow}>
-                    <div className={styles.resultMeta}>{entry}</div>
-                  </div>
-                ))}
-              </div>
-            ) : null}
+            <BuildStageSummary build={output.build} />
           </div>
         );
       }
@@ -1265,7 +1210,6 @@ function AgentChatThreadPane({
       if (part.type === 'tool-buildAppFromPrompt' || part.type === 'tool-createApp' || part.type === 'tool-installAppPreview') {
         const output = part.output as AppCreateOutput;
         const permissionSummary = summarizePermissions(output.permissions);
-        const buildSummary = summarizeCompletedBuildStages(output.build);
 
         return (
           <div key={`app-tool-created-${index}`} className={styles.toolCard}>
@@ -1291,37 +1235,20 @@ function AgentChatThreadPane({
                 ))}
               </div>
             ) : null}
-            {buildSummary.length > 0 ? (
-              <div className={styles.resultList}>
-                {buildSummary.map((entry) => (
-                  <div key={entry} className={styles.resultRow}>
-                    <div className={styles.resultMeta}>{entry}</div>
-                  </div>
-                ))}
-              </div>
-            ) : null}
+            <BuildStageSummary build={output.build} />
           </div>
         );
       }
 
       if (part.type === 'tool-updateApp') {
         const output = part.output as AppUpdateOutput;
-        const buildSummary = summarizeCompletedBuildStages(output.build);
         return (
           <div key={`app-tool-updated-${index}`} className={styles.toolCard}>
             <div className={styles.toolTitle}>App updated</div>
             <div className={styles.toolBody}>
               App updated to version {output.version}. Reopen the app window if it is already open.
             </div>
-            {buildSummary.length > 0 ? (
-              <div className={styles.resultList}>
-                {buildSummary.map((entry) => (
-                  <div key={entry} className={styles.resultRow}>
-                    <div className={styles.resultMeta}>{entry}</div>
-                  </div>
-                ))}
-              </div>
-            ) : null}
+            <BuildStageSummary build={output.build} />
           </div>
         );
       }
@@ -1395,9 +1322,6 @@ function AgentChatThreadPane({
         return (
           <AppBuildProgressCard
             key={`codemode-${index}`}
-            title="Building app..."
-            subtitle="Generating and compiling your app..."
-            variant="codemode"
           />
         );
       }
@@ -1588,7 +1512,7 @@ function AgentChatThreadPane({
                 }
 
                 const renderedParts = parts
-                  .map((part, index) => renderAssistantPart(part, index))
+                  .map((part, index) => renderAssistantPart(part, index, parts))
                   .filter((part): part is ReactNode => part !== null);
 
                 if (renderedParts.length === 0) {
