@@ -9,6 +9,7 @@ import { UserDesktop } from './durable-objects/UserDesktop';
 import { OrchestratorAgent } from './agents/OrchestratorAgent';
 import { EternalService } from './services/EternalService';
 import { handleSignup, handleLogin, handleLogout, handleForgotPassword, handleResetPassword, handleRefreshToken, handleChangePassword, handleChangeUsername, handleSendVerification, handleVerifyEmail, handleGoogleCallback, handleDeleteAccount, handleCancelDeletion, handleExportData, handleUseRecoveryCode, handleRegenerateRecoveryCodes } from './routes/auth';
+import { handleHyperEvmWalletLink, handleHyperEvmWalletList, handleHyperEvmWalletLogin, handleHyperEvmWalletNonce, handleHyperEvmWalletUnlink } from './routes/hyperEvmWallet';
 import { handleUpload, handleServeFile, handleWallpaperUpload, handleServeWallpaper, handleIconUpload, handleServeIcon, handleCSSAssetUpload, handleServeCSSAsset, handleListCSSAssets, handleDeleteCSSAsset, handleAnalyzeImageItem } from './routes/upload';
 import { handleSoundUpload, handleServeSound, handleListSounds, handleDeleteSound } from './routes/sounds';
 import { handleCursorUpload, handleServeCursor, handleListCursors, handleDeleteCursor } from './routes/cursors';
@@ -128,7 +129,9 @@ function withCors(response: Response, corsHeaders: Record<string, string>): Resp
     newHeaders.set(key, value);
   }
   const websocket = (response as Response & { webSocket?: WebSocket }).webSocket;
-  return new Response(response.body, {
+  const mustRemainBodyless = response.status === 101 || response.status === 204 || response.status === 205 || response.status === 304;
+  const body = response.body ?? (mustRemainBodyless ? null : '');
+  return new Response(body, {
     status: response.status,
     statusText: response.statusText,
     headers: newHeaders,
@@ -609,6 +612,64 @@ export default {
 
       if (path === '/api/auth/google' && request.method === 'POST') {
         response = await handleGoogleCallback(request, env);
+        if (rateLimitResult) {
+          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
+        }
+        return withCors(response, corsHeaders);
+      }
+
+      if (path === '/api/auth/hyperevm/nonce' && request.method === 'POST') {
+        response = await handleHyperEvmWalletNonce(request, env);
+        if (rateLimitResult) {
+          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
+        }
+        return withCors(response, corsHeaders);
+      }
+
+      if (path === '/api/auth/hyperevm/login' && request.method === 'POST') {
+        response = await handleHyperEvmWalletLogin(request, env);
+        if (rateLimitResult) {
+          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
+        }
+        return withCors(response, corsHeaders);
+      }
+
+      if (path === '/api/auth/hyperevm/link' && request.method === 'POST') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+        response = await handleHyperEvmWalletLink(request, env, authResult);
+        if (rateLimitResult) {
+          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
+        }
+        return withCors(response, corsHeaders);
+      }
+
+      if (path === '/api/auth/hyperevm/wallets' && request.method === 'GET') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+        response = await handleHyperEvmWalletList(env, authResult);
+        if (rateLimitResult) {
+          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
+        }
+        return withCors(response, corsHeaders);
+      }
+
+      const hyperEvmWalletDeleteMatch = path.match(/^\/api\/auth\/hyperevm\/wallets\/([^/]+)\/([^/]+)$/);
+      if (hyperEvmWalletDeleteMatch && request.method === 'DELETE') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) {
+          return withCors(authResult, corsHeaders);
+        }
+        response = await handleHyperEvmWalletUnlink(
+          env,
+          authResult,
+          hyperEvmWalletDeleteMatch[1],
+          hyperEvmWalletDeleteMatch[2],
+        );
         if (rateLimitResult) {
           response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
         }

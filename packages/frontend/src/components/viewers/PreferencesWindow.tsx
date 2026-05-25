@@ -12,10 +12,27 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useAuthStore } from '../../stores/authStore';
 import { useSoundStore } from '../../stores/soundStore';
-import { listSounds, type SoundAsset } from '../../services/api';
+import {
+  createHyperEvmWalletChallenge,
+  linkHyperEvmWallet,
+  listHyperEvmWallets,
+  listSounds,
+  unlinkHyperEvmWallet,
+  type SoundAsset,
+} from '../../services/api';
 import SoundPackEditor from '../sound/SoundPackEditor';
 import { fetchAnalytics, type AnalyticsData } from '../../services/api';
 import { isApiConfigured, fetchQuota, updateProfile, type QuotaInfo } from '../../services/api';
+import type { HyperEvmChainId, LinkedWallet } from '../../types';
+import {
+  DEFAULT_HYPEREVM_CHAIN_ID,
+  formatWalletAddress,
+  getHyperEvmChainName,
+  HYPEREVM_MAINNET_CHAIN_ID,
+  HYPEREVM_TESTNET_CHAIN_ID,
+  requestHyperEvmWallet,
+  signHyperEvmMessage,
+} from '../../utils/hyperEvmWallet';
 import styles from './PreferencesWindow.module.css';
 
 type TabId = 'account' | 'sound';
@@ -57,6 +74,13 @@ export function PreferencesWindow() {
   const [verifySuccess, setVerifySuccess] = useState<string | null>(null);
   const [verifyError, setVerifyError] = useState<string | null>(null);
 
+  // HyperEVM wallet state
+  const [wallets, setWallets] = useState<LinkedWallet[]>([]);
+  const [walletChainId, setWalletChainId] = useState<HyperEvmChainId>(DEFAULT_HYPEREVM_CHAIN_ID);
+  const [walletLoading, setWalletLoading] = useState(false);
+  const [walletError, setWalletError] = useState<string | null>(null);
+  const [walletSuccess, setWalletSuccess] = useState<string | null>(null);
+
   // Wallpaper state moved to AppearancePanel
 
   // Update display name when profile changes
@@ -90,6 +114,21 @@ export function PreferencesWindow() {
         .finally(() => setAnalyticsLoading(false));
     }
   }, [activeTab, profile?.analyticsEnabled, analyticsData, analyticsLoading]);
+
+  const loadWallets = useCallback(() => {
+    if (!isApiConfigured) return;
+    listHyperEvmWallets()
+      .then((result) => setWallets(result.wallets))
+      .catch((error) => {
+        console.error('Failed to load HyperEVM wallets:', error);
+      });
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'account' && isApiConfigured) {
+      loadWallets();
+    }
+  }, [activeTab, loadWallets]);
 
   // Load sound assets when sound tab is active
   const loadSoundAssets = useCallback(() => {
@@ -250,6 +289,52 @@ export function PreferencesWindow() {
       setVerifyLoading(false);
     }
   }, [sendVerificationEmail]);
+
+  const handleLinkHyperEvmWallet = useCallback(async () => {
+    setWalletError(null);
+    setWalletSuccess(null);
+    setWalletLoading(true);
+
+    try {
+      const { address, chainId } = await requestHyperEvmWallet(walletChainId);
+      const challenge = await createHyperEvmWalletChallenge(address, chainId, 'link');
+      const signature = await signHyperEvmMessage(challenge.message, address);
+      const result = await linkHyperEvmWallet({
+        address,
+        chainId,
+        nonce: challenge.nonce,
+        signature,
+      });
+      setWallets((current) => {
+        const filtered = current.filter((wallet) => (
+          wallet.chainId !== result.wallet.chainId ||
+          wallet.address.toLowerCase() !== result.wallet.address.toLowerCase()
+        ));
+        return [result.wallet, ...filtered];
+      });
+      setWalletSuccess(`Linked ${formatWalletAddress(result.wallet.address)} on ${getHyperEvmChainName(result.wallet.chainId)}.`);
+    } catch (error) {
+      setWalletError(error instanceof Error ? error.message : 'Failed to link HyperEVM wallet');
+    } finally {
+      setWalletLoading(false);
+    }
+  }, [walletChainId]);
+
+  const handleUnlinkHyperEvmWallet = useCallback(async (wallet: LinkedWallet) => {
+    setWalletError(null);
+    setWalletSuccess(null);
+    setWalletLoading(true);
+
+    try {
+      const result = await unlinkHyperEvmWallet(wallet.chainId, wallet.address);
+      setWallets(result.wallets);
+      setWalletSuccess(`Unlinked ${formatWalletAddress(wallet.address)}.`);
+    } catch (error) {
+      setWalletError(error instanceof Error ? error.message : 'Failed to unlink HyperEVM wallet');
+    } finally {
+      setWalletLoading(false);
+    }
+  }, []);
 
   const formatDate = (timestamp?: number) => {
     if (!timestamp) return 'Unknown';
@@ -450,6 +535,60 @@ export function PreferencesWindow() {
                 ) : (
                   <span className={styles.quotaError}>Unable to load quota</span>
                 )}
+              </div>
+            )}
+
+            {/* HyperEVM Wallets */}
+            {isApiConfigured && (
+              <div className={styles.accountSection}>
+                <div className={styles.accountSectionTitle}>HyperEVM Wallets</div>
+                <div className={styles.walletHelp}>
+                  Optional wallet linking enables future HyperEVM asset provenance and wallet sign-in.
+                </div>
+                <div className={styles.walletControls}>
+                  <select
+                    className={styles.accountInput}
+                    value={walletChainId}
+                    onChange={(event) => setWalletChainId(Number(event.target.value) as HyperEvmChainId)}
+                    disabled={walletLoading}
+                  >
+                    <option value={HYPEREVM_MAINNET_CHAIN_ID}>HyperEVM Mainnet</option>
+                    <option value={HYPEREVM_TESTNET_CHAIN_ID}>HyperEVM Testnet</option>
+                  </select>
+                  <button
+                    className={styles.accountButton}
+                    onClick={handleLinkHyperEvmWallet}
+                    disabled={walletLoading}
+                  >
+                    {walletLoading ? 'Waiting for Wallet...' : 'Connect Wallet'}
+                  </button>
+                </div>
+                {wallets.length > 0 ? (
+                  <div className={styles.walletList}>
+                    {wallets.map((wallet) => (
+                      <div
+                        className={styles.walletRow}
+                        key={`${wallet.chainId}:${wallet.address}`}
+                      >
+                        <div className={styles.walletDetails}>
+                          <span className={styles.walletAddress}>{formatWalletAddress(wallet.address)}</span>
+                          <span className={styles.walletChain}>{getHyperEvmChainName(wallet.chainId)}</span>
+                        </div>
+                        <button
+                          className={styles.accountButton}
+                          onClick={() => void handleUnlinkHyperEvmWallet(wallet)}
+                          disabled={walletLoading}
+                        >
+                          Unlink
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className={styles.walletEmpty}>No HyperEVM wallets linked.</div>
+                )}
+                {walletSuccess && <div className={styles.accountSuccess}>{walletSuccess}</div>}
+                {walletError && <div className={styles.accountError}>{walletError}</div>}
               </div>
             )}
 

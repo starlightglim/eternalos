@@ -4,6 +4,8 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/authStore'
 import { isApiConfigured } from '../services/api'
 import { getGoogleClientId, redirectToGoogle } from '../utils/googleOAuth'
+import type { HyperEvmChainId } from '../types'
+import { HYPEREVM_MAINNET_CHAIN_ID, HYPEREVM_TESTNET_CHAIN_ID } from '../utils/hyperEvmWallet'
 import { Turnstile, TURNSTILE_ENABLED } from '../components/ui/Turnstile'
 import styles from './AuthPage.module.css'
 
@@ -12,7 +14,8 @@ export function LoginPage() {
   const [password, setPassword] = useState('')
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null)
   const [localError, setLocalError] = useState<string | null>(null)
-  const { login, loading, error, clearError, user } = useAuthStore()
+  const [walletChainId, setWalletChainId] = useState<HyperEvmChainId>(HYPEREVM_MAINNET_CHAIN_ID)
+  const { login, loginWithHyperEvmWallet, loading, error, clearError, user } = useAuthStore()
   const navigate = useNavigate()
 
   // Set document title
@@ -50,6 +53,17 @@ export function LoginPage() {
     } catch (err) {
       // Error is handled by the store
       console.error('Login error:', err)
+    }
+  }
+
+  const handleHyperEvmLogin = async () => {
+    clearError()
+    setLocalError(null)
+
+    try {
+      await loginWithHyperEvmWallet(walletChainId)
+    } catch (err) {
+      console.error('HyperEVM login error:', err)
     }
   }
 
@@ -157,6 +171,25 @@ export function LoginPage() {
               </button>
             </>
           )}
+
+          <select
+            className={styles.input}
+            value={walletChainId}
+            onChange={(event) => setWalletChainId(Number(event.target.value) as HyperEvmChainId)}
+            disabled={loading}
+          >
+            <option value={HYPEREVM_MAINNET_CHAIN_ID}>HyperEVM Mainnet</option>
+            <option value={HYPEREVM_TESTNET_CHAIN_ID}>HyperEVM Testnet</option>
+          </select>
+
+          <button
+            type="button"
+            className={styles.googleButton}
+            onClick={handleHyperEvmLogin}
+            disabled={loading}
+          >
+            Sign in with HyperEVM Wallet
+          </button>
 
           <div className={styles.linkSection}>
             <span>No account? </span>

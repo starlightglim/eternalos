@@ -16,6 +16,7 @@ Companion specifications for the EternalOS improvement roadmap. Each numbered do
 10. **[07-observability-ops.md](07-observability-ops.md)** — Sentry wiring, Analytics Engine, Logpush, staging env, CI/CD with manual prod gate, incident runbook, cost alerts, status page.
 11. **[08-onboarding.md](08-onboarding.md)** — demo mode, progressive signup, goal-based wizard, example desktops, empty-feed bootstrap, command palette, inline help, ricer vs beginner paths.
 12. **[09-d1-migration.md](09-d1-migration.md)** — zero-downtime KV → D1 migration plan for bazaar indexes. Phased dual-write, backfill, cutover, rollback. Unblocks social v1.
+13. **[14-hyperevm-assets.md](14-hyperevm-assets.md)** — optional HyperEVM wallet linking and asset provenance model. Keeps NFTs as verification/ownership metadata, not storage or mandatory login.
 13. **[10-privacy-tos.md](10-privacy-tos.md)** — legal posture, data we collect / don't, retention, sub-processors, draft privacy policy + ToS + AUP + DMCA, signup consent, age gating, breach response.
 
 ## Format

@@ -18,7 +18,6 @@ const VARIANT_CLASS: Record<string, string> = {
 export function WindowChrome({
   windowRef,
   windowId,
-  isActive: _isActive,
   collapsed,
   minimized,
   position,

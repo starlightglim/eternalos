@@ -1,5 +1,4 @@
-/* eslint-env serviceworker */
-/* eslint-disable no-undef */
+/* global self, caches, fetch, Response, URL */
 
 /**
  * EternalOS service worker — app shell + R2 asset caching.

@@ -89,7 +89,7 @@ export function Window({
   const lastClickTime = useRef(0);
 
   // Focus window on any click
-  const handleWindowClick = useCallback((_e: React.PointerEvent) => {
+  const handleWindowClick = useCallback(() => {
     focusWindow(id);
   }, [focusWindow, id]);
 
