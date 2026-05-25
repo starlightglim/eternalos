@@ -226,6 +226,9 @@ function PackCard({ pack, onInstall, installing }: { pack: BazaarPack; onInstall
       />
       <div style={{ fontWeight: 'bold', textAlign: 'center', wordBreak: 'break-word' }}>{pack.name}</div>
       <div style={{ color: '#666', fontSize: 10 }}>@{pack.authorUsername}</div>
+      {pack.verification?.provider === 'hyperevm' && pack.verification.status === 'verified' && (
+        <div style={{ color: '#006600', fontSize: 10, fontWeight: 'bold' }}>HyperEVM verified</div>
+      )}
       <div style={{ color: '#888', fontSize: 10 }}>{pack.installs} installs</div>
       <button
         onClick={() => onInstall(pack.packId)}

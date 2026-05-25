@@ -5,7 +5,7 @@
  * Falls back to mock mode when VITE_API_URL is not configured.
  */
 
-import type { DesktopItem, UserProfile } from '../types';
+import type { DesktopItem, HyperEvmChainId, LinkedWallet, UserProfile } from '../types';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -398,6 +398,68 @@ export async function googleLogin(code: string, redirectUri: string): Promise<Go
     method: 'POST',
     body: JSON.stringify({ code, redirectUri }),
   });
+}
+
+// ============ HyperEVM Wallet API ============
+
+export interface HyperEvmWalletChallenge {
+  provider: 'hyperevm';
+  chainId: HyperEvmChainId;
+  address: string;
+  nonce: string;
+  message: string;
+  expiresAt: number;
+}
+
+export type HyperEvmWalletPurpose = 'link' | 'login';
+
+export async function createHyperEvmWalletChallenge(
+  address: string,
+  chainId: HyperEvmChainId,
+  purpose: HyperEvmWalletPurpose,
+): Promise<HyperEvmWalletChallenge> {
+  return apiRequest<HyperEvmWalletChallenge>('/api/auth/hyperevm/nonce', {
+    method: 'POST',
+    body: JSON.stringify({ address, chainId, purpose }),
+  });
+}
+
+export async function linkHyperEvmWallet(input: {
+  address: string;
+  chainId: HyperEvmChainId;
+  nonce: string;
+  signature: string;
+}): Promise<{ success: boolean; wallet: LinkedWallet }> {
+  return apiRequest<{ success: boolean; wallet: LinkedWallet }>('/api/auth/hyperevm/link', {
+    method: 'POST',
+    body: JSON.stringify({ ...input, purpose: 'link' }),
+  });
+}
+
+export async function loginWithHyperEvmWallet(input: {
+  address: string;
+  chainId: HyperEvmChainId;
+  nonce: string;
+  signature: string;
+}): Promise<LoginResponse> {
+  return apiRequest<LoginResponse>('/api/auth/hyperevm/login', {
+    method: 'POST',
+    body: JSON.stringify({ ...input, purpose: 'login' }),
+  });
+}
+
+export async function listHyperEvmWallets(): Promise<{ wallets: LinkedWallet[] }> {
+  return apiRequest<{ wallets: LinkedWallet[] }>('/api/auth/hyperevm/wallets');
+}
+
+export async function unlinkHyperEvmWallet(
+  chainId: HyperEvmChainId,
+  address: string,
+): Promise<{ success: boolean; wallets: LinkedWallet[] }> {
+  return apiRequest<{ success: boolean; wallets: LinkedWallet[] }>(
+    `/api/auth/hyperevm/wallets/${chainId}/${encodeURIComponent(address)}`,
+    { method: 'DELETE' },
+  );
 }
 
 export async function logout(): Promise<void> {
@@ -1449,6 +1511,19 @@ export interface BazaarPack {
   tags: string[];
   assets: Record<string, string>;
   config: Record<string, string | number | boolean>;
+  verification?: {
+    provider: 'hyperevm';
+    chainId: HyperEvmChainId;
+    contractAddress: string;
+    tokenId: string;
+    standard: 'ERC721' | 'ERC1155';
+    manifestHash: string;
+    tokenUri?: string;
+    txHash?: string;
+    verifiedOwner?: string;
+    verifiedAt?: number;
+    status: 'pending' | 'verified' | 'mismatch' | 'revoked';
+  };
 }
 
 /** Browse packs in the Bazaar */

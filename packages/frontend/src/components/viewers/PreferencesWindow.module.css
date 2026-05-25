@@ -919,6 +919,53 @@
   cursor: not-allowed;
 }
 
+.walletHelp,
+.walletEmpty {
+  font-size: 10px;
+  color: var(--text-color-secondary);
+  line-height: 1.4;
+}
+
+.walletControls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.walletList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.walletRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px;
+  background: var(--white);
+  border: 1px solid var(--shadow);
+}
+
+.walletDetails {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.walletAddress {
+  font-family: var(--font-monaco);
+  font-size: 10px;
+  color: var(--text-color);
+}
+
+.walletChain {
+  font-size: 9px;
+  color: var(--text-color-secondary);
+}
+
 .accountSuccess {
   font-size: 10px;
   color: #006600;

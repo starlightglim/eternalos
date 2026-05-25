@@ -12,6 +12,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260317.1",
+    "source-map": "^0.7.6",
     "typescript": "~5.9.3",
     "wrangler": "^4.77.0"
   },
@@ -25,6 +26,7 @@
     "file-type": "^21.3.4",
     "mimetext": "^3.0.28",
     "nanoid": "^3.3.11",
+    "viem": "^2.50.4",
     "workers-ai-provider": "^3.1.2",
     "zod": "^3.24.0"
   }

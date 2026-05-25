@@ -296,6 +296,17 @@ export interface OAuthProvider {
   email?: string;      // OAuth provider email (for display)
 }
 
+export type LinkedWalletProvider = 'hyperevm';
+export type HyperEvmChainId = 998 | 999;
+
+export interface LinkedWallet {
+  provider: LinkedWalletProvider;
+  chainId: HyperEvmChainId;
+  address: string;
+  linkedAt: number;
+  lastVerifiedAt: number;
+}
+
 export interface UserRecord {
   uid: string;
   email: string;
@@ -310,6 +321,10 @@ export interface UserRecord {
   emailVerifiedAt?: number;
   // OAuth providers linked to this account
   oauthProviders?: OAuthProvider[];
+  // Optional wallet credentials linked after normal account creation.
+  // Wallets do not replace email/OAuth identity; they enable HyperEVM
+  // provenance, ownership checks, and wallet login for already-linked accounts.
+  linkedWallets?: LinkedWallet[];
   // Soft delete — set when user initiates account deletion.
   // While set, login is blocked and tokens are rejected. After a grace period
   // (14 days), a scheduled cleanup hard-deletes user data.
@@ -361,6 +376,20 @@ export interface EmailVerificationRecord {
 
 export type PackType = 'cursor' | 'icon' | 'sound' | 'effect' | 'skin';
 
+export interface HyperEvmAssetVerification {
+  provider: 'hyperevm';
+  chainId: HyperEvmChainId;
+  contractAddress: string;
+  tokenId: string;
+  standard: 'ERC721' | 'ERC1155';
+  manifestHash: string;
+  tokenUri?: string;
+  txHash?: string;
+  verifiedOwner?: string;
+  verifiedAt?: number;
+  status: 'pending' | 'verified' | 'mismatch' | 'revoked';
+}
+
 export interface BazaarPack {
   packId: string;
   type: PackType;
@@ -378,4 +407,6 @@ export interface BazaarPack {
   assets: Record<string, string>;
   /** Token paths → values to apply on install */
   config: Record<string, string | number | boolean>;
+  /** Optional on-chain provenance record. Assets still live in R2/Bazaar. */
+  verification?: HyperEvmAssetVerification;
 }
