@@ -197,7 +197,7 @@ function CanvasLayer({ tokens }: { tokens: Tokens }) {
     stars: [] as Particle[],
     fireflies: [] as Particle[],
     dust: [] as Particle[],
-    sparkle: [] as Particle[],
+    sparkle: [] as Parameters<typeof renderSparkleTrail>[1],
     rainbow: [] as { x: number; y: number; age: number }[],
     ghost: [] as { x: number; y: number; age: number }[],
     snowTime: { v: 0 },
@@ -269,7 +269,7 @@ function CanvasLayer({ tokens }: { tokens: Tokens }) {
       if (isOn(tokens, 'effects.stars.enabled')) renderStars(ctx, s.stars, dt, w, h, s.starsTime);
       if (isOn(tokens, 'effects.fireflies.enabled')) renderFireflies(ctx, s.fireflies, dt, w, h, s.fireflyTime);
       if (isOn(tokens, 'effects.dust.enabled')) renderDust(ctx, s.dust, dt, w, h);
-      if (isOn(tokens, 'effects.sparkleTrail.enabled')) renderSparkleTrail(ctx, s.sparkle as any, dt, m.x, m.y, m.active);
+      if (isOn(tokens, 'effects.sparkleTrail.enabled')) renderSparkleTrail(ctx, s.sparkle, dt, m.x, m.y, m.active);
       if (isOn(tokens, 'effects.rainbowTrail.enabled')) renderRainbowTrail(ctx, s.rainbow, dt, m.x, m.y, m.active, s.rainbowHue);
       if (isOn(tokens, 'effects.ghostTrail.enabled')) renderGhostTrail(ctx, s.ghost, dt, m.x, m.y, m.active, s.ghostTimer, color);
 

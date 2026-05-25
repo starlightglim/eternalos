@@ -129,7 +129,9 @@ function withCors(response: Response, corsHeaders: Record<string, string>): Resp
     newHeaders.set(key, value);
   }
   const websocket = (response as Response & { webSocket?: WebSocket }).webSocket;
-  return new Response(response.body, {
+  const mustRemainBodyless = response.status === 101 || response.status === 204 || response.status === 205 || response.status === 304;
+  const body = response.body ?? (mustRemainBodyless ? null : '');
+  return new Response(body, {
     status: response.status,
     statusText: response.statusText,
     headers: newHeaders,

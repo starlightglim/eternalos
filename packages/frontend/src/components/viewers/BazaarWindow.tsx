@@ -7,7 +7,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { bazaarBrowse, bazaarInstall, bazaarPublish, bazaarMyPacks, bazaarDelete, type BazaarPack, getApiUrl } from '../../services/api';
-import { useAppearanceStore } from '../../stores/appearanceStore';
+import { useAppearanceStore, type CustomAppearance } from '../../stores/appearanceStore';
 import { useAuthStore } from '../../stores/authStore';
 
 type PackType = 'cursor' | 'icon' | 'sound' | 'effect' | 'skin';
@@ -61,34 +61,35 @@ export function BazaarWindow() {
     setInstalling(packId);
     try {
       const result = await bazaarInstall(packId);
-      if (result.success && result.config) {
+      if (result.success) {
         // Merge config into appearance
         const store = useAppearanceStore.getState();
         const currentTokens = store.appearance.designTokens || {};
         const newTokens = { ...currentTokens };
-        const profileUpdates: Record<string, unknown> = {};
+        const profileUpdates: Partial<CustomAppearance> = {};
+        const profileUpdatesByKey = profileUpdates as Record<string, string | number | boolean>;
 
-        const legacyFields = [
+        const legacyFields = new Set([
           'accentColor', 'desktopColor', 'windowBgColor', 'titleBarBgColor',
           'titleBarTextColor', 'windowBorderColor', 'buttonBgColor', 'buttonTextColor',
           'buttonBorderColor', 'labelColor', 'systemFont', 'bodyFont', 'monoFont',
           'windowBorderRadius', 'controlBorderRadius', 'windowShadow', 'windowOpacity',
-        ];
+        ]);
         for (const [key, value] of Object.entries(result.config)) {
-          if (legacyFields.includes(key)) {
-            profileUpdates[key] = value;
+          if (legacyFields.has(key)) {
+            profileUpdatesByKey[key] = value;
           } else {
             newTokens[key] = value as string | number | boolean;
           }
         }
 
-        store.updateAppearance({ ...profileUpdates, designTokens: newTokens } as any);
+        store.updateAppearance({ ...profileUpdates, designTokens: newTokens });
         store.saveAppearance();
         setMessage({ type: 'success', text: `Installed "${result.pack?.name || 'pack'}"!` });
         // Refresh pack list to show updated install count
         loadPacks();
       } else {
-        setMessage({ type: 'error', text: (result as any).error || 'Install failed' });
+        setMessage({ type: 'error', text: result.error || 'Install failed' });
       }
     } catch (err) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Install failed' });

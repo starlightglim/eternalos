@@ -63,7 +63,7 @@ const bundlePathRegex = /^(?!\.\.\/)(?!\/)(?!.*\/\.\.\/)[A-Za-z0-9._\-/]+$/;
 const bundlePath = z.string().regex(bundlePathRegex, 'Invalid bundle path');
 const colorValue = z.string().max(200);
 
-const tokensLayerSchema = z
+export const tokensLayerSchema = z
   .object({
     accentColor: colorValue.optional(),
     desktopColor: colorValue.optional(),
@@ -85,9 +85,9 @@ const tokensLayerSchema = z
   })
   .strict();
 
-const variantsLayerSchema = z.record(z.string().max(64), z.string().max(128));
+export const variantsLayerSchema = z.record(z.string().max(64), z.string().max(128));
 
-const typographyLayerSchema = z
+export const typographyLayerSchema = z
   .object({
     systemFont: z.string().max(64).optional(),
     bodyFont: z.string().max(64).optional(),

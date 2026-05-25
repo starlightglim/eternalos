@@ -1526,6 +1526,10 @@ export interface BazaarPack {
   };
 }
 
+export type BazaarInstallResult =
+  | { success: true; config: Record<string, string | number | boolean>; pack: BazaarPack }
+  | { success: false; error?: string };
+
 /** Browse packs in the Bazaar */
 export async function bazaarBrowse(options?: {
   type?: string; q?: string; page?: number;
@@ -1546,7 +1550,7 @@ export async function bazaarGetPack(packId: string): Promise<{ pack: BazaarPack 
 }
 
 /** Install a pack (returns the config to apply) */
-export async function bazaarInstall(packId: string): Promise<{ success: boolean; config: Record<string, string | number | boolean>; pack: BazaarPack }> {
+export async function bazaarInstall(packId: string): Promise<BazaarInstallResult> {
   const response = await fetch(`${API_URL}/api/bazaar/install/${packId}`, {
     method: 'POST',
     headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},

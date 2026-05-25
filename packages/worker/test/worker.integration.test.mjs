@@ -46,8 +46,24 @@ async function readJson(response) {
   return text ? JSON.parse(text) : null;
 }
 
+function workerUrl(url) {
+  const parsed = new URL(url, BASE_URL);
+  return `http://${worker.address}:${worker.port}${parsed.pathname}${parsed.search}`;
+}
+
+async function fetchWorker(url, init) {
+  return fetch(workerUrl(url), init);
+}
+
 async function fetchJson(url, init) {
-  const response = await worker.fetch(`${BASE_URL}${url}`, init);
+  let response;
+  try {
+    response = await fetchWorker(url, init);
+  } catch (error) {
+    throw new Error(`Request failed for ${url}: ${error instanceof Error ? error.message : String(error)}`, {
+      cause: error,
+    });
+  }
   const body = await readJson(response);
   return { response, body };
 }
@@ -147,12 +163,47 @@ function createPngFile(name = 'pixel.png') {
   return new File([PNG_BYTES], name, { type: 'image/png' });
 }
 
+async function createMultipartForm(parts) {
+  const boundary = `----eternalos-test-${crypto.randomUUID()}`;
+  const chunks = [];
+
+  for (const part of parts) {
+    chunks.push(Buffer.from(`--${boundary}\r\n`));
+    if (part.file) {
+      chunks.push(Buffer.from(
+        `Content-Disposition: form-data; name="${part.name}"; filename="${part.file.name}"\r\n` +
+        `Content-Type: ${part.file.type || 'application/octet-stream'}\r\n\r\n`
+      ));
+      chunks.push(Buffer.from(await part.file.arrayBuffer()));
+      chunks.push(Buffer.from('\r\n'));
+    } else {
+      chunks.push(Buffer.from(
+        `Content-Disposition: form-data; name="${part.name}"\r\n\r\n` +
+        `${part.value ?? ''}\r\n`
+      ));
+    }
+  }
+
+  chunks.push(Buffer.from(`--${boundary}--\r\n`));
+
+  return {
+    body: Buffer.concat(chunks),
+    headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+  };
+}
+
 before(async () => {
   const options = {
     config: 'wrangler.toml',
     logLevel: 'error',
+    vars: {
+      ENVIRONMENT: 'development',
+      ALLOWED_ORIGINS: 'http://127.0.0.1,http://localhost:5173',
+      JWT_SECRET: 'worker-integration-test-secret',
+    },
     experimental: {
       disableExperimentalWarning: true,
+      forceLocal: true,
       testMode: true,
     },
   };
@@ -268,14 +319,15 @@ describe('worker integration', () => {
   it('removes newly-private items from the visitor snapshot cache immediately', async () => {
     const user = await signupUser();
 
-    const uploadForm = new FormData();
-    uploadForm.set('file', new File(['hello visitor'], 'Public Note.txt', { type: 'text/plain' }));
-    uploadForm.set('isPublic', 'true');
+    const uploadForm = await createMultipartForm([
+      { name: 'file', file: new File(['hello visitor'], 'Public Note.txt', { type: 'text/plain' }) },
+      { name: 'isPublic', value: 'true' },
+    ]);
 
     const upload = await expectOk('/api/upload', {
       method: 'POST',
-      headers: authHeaders(user.token),
-      body: uploadForm,
+      headers: authHeaders(user.token, uploadForm.headers),
+      body: uploadForm.body,
     });
 
     const firstVisit = await expectOk(`/api/visit/${user.user.username}`, {
@@ -297,19 +349,20 @@ describe('worker integration', () => {
   it('blocks direct public file access once the item is trashed', async () => {
     const user = await signupUser();
 
-    const uploadForm = new FormData();
-    uploadForm.set('file', new File(['trash me'], 'Shared Doc.txt', { type: 'text/plain' }));
-    uploadForm.set('isPublic', 'true');
+    const uploadForm = await createMultipartForm([
+      { name: 'file', file: new File(['trash me'], 'Shared Doc.txt', { type: 'text/plain' }) },
+      { name: 'isPublic', value: 'true' },
+    ]);
 
     const upload = await expectOk('/api/upload', {
       method: 'POST',
-      headers: authHeaders(user.token),
-      body: uploadForm,
+      headers: authHeaders(user.token, uploadForm.headers),
+      body: uploadForm.body,
     });
 
     const filePath = `/api/files/${user.user.uid}/${upload.item.id}/${encodeURIComponent(upload.item.name)}`;
 
-    const beforeTrash = await worker.fetch(`${BASE_URL}${filePath}`);
+    const beforeTrash = await fetchWorker(filePath);
     assert.equal(beforeTrash.status, 200);
 
     await patchItems(user.token, [{
@@ -321,7 +374,7 @@ describe('worker integration', () => {
       },
     }]);
 
-    const afterTrash = await worker.fetch(`${BASE_URL}${filePath}`);
+    const afterTrash = await fetchWorker(filePath);
     assert.equal(afterTrash.status, 403);
   });
 
@@ -359,7 +412,7 @@ describe('worker integration', () => {
       shareDescription: 'A quiet corner of the web',
     });
 
-    const response = await worker.fetch(`${BASE_URL}/api/og/${user.user.username}.png`);
+    const response = await fetchWorker(`/api/og/${user.user.username}.png`);
     const svg = await response.text();
 
     assert.equal(response.status, 200);
@@ -370,13 +423,14 @@ describe('worker integration', () => {
 
   it('marks uploaded images for async metadata enrichment', async () => {
     const user = await signupUser();
-    const uploadForm = new FormData();
-    uploadForm.set('file', createPngFile('analyze-me.png'));
+    const uploadForm = await createMultipartForm([
+      { name: 'file', file: createPngFile('analyze-me.png') },
+    ]);
 
     const upload = await expectOk('/api/upload', {
       method: 'POST',
-      headers: authHeaders(user.token),
-      body: uploadForm,
+      headers: authHeaders(user.token, uploadForm.headers),
+      body: uploadForm.body,
     });
 
     assert.equal(upload.item.type, 'image');
@@ -408,13 +462,14 @@ describe('worker integration', () => {
     const user = await signupUser();
     const startingQuota = await getQuota(user.token);
 
-    const wallpaperForm = new FormData();
-    wallpaperForm.set('file', createPngFile('wallpaper.png'));
+    const wallpaperForm = await createMultipartForm([
+      { name: 'file', file: createPngFile('wallpaper.png') },
+    ]);
 
     await expectOk('/api/wallpaper', {
       method: 'POST',
-      headers: authHeaders(user.token),
-      body: wallpaperForm,
+      headers: authHeaders(user.token, wallpaperForm.headers),
+      body: wallpaperForm.body,
     });
 
     const folder = await createDesktopItem(user.token, {
@@ -424,33 +479,36 @@ describe('worker integration', () => {
       isPublic: false,
     });
 
-    const iconForm = new FormData();
-    iconForm.set('itemId', folder.id);
-    iconForm.set('file', createPngFile('icon.png'));
+    const iconForm = await createMultipartForm([
+      { name: 'itemId', value: folder.id },
+      { name: 'file', file: createPngFile('icon.png') },
+    ]);
 
     await expectOk('/api/icon', {
       method: 'POST',
-      headers: authHeaders(user.token),
-      body: iconForm,
+      headers: authHeaders(user.token, iconForm.headers),
+      body: iconForm.body,
     });
 
-    const cssForm = new FormData();
-    cssForm.set('file', createPngFile('background.png'));
+    const cssForm = await createMultipartForm([
+      { name: 'file', file: createPngFile('background.png') },
+    ]);
 
     await expectOk('/api/css-assets', {
       method: 'POST',
-      headers: authHeaders(user.token),
-      body: cssForm,
+      headers: authHeaders(user.token, cssForm.headers),
+      body: cssForm.body,
     });
 
-    const uploadForm = new FormData();
     const textFile = new File(['quota file'], 'quota.txt', { type: 'text/plain' });
-    uploadForm.set('file', textFile);
+    const uploadForm = await createMultipartForm([
+      { name: 'file', file: textFile },
+    ]);
 
     await expectOk('/api/upload', {
       method: 'POST',
-      headers: authHeaders(user.token),
-      body: uploadForm,
+      headers: authHeaders(user.token, uploadForm.headers),
+      body: uploadForm.body,
     });
 
     const finalQuota = await getQuota(user.token);

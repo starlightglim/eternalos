@@ -7,8 +7,8 @@
     "dev": "wrangler dev --inspector-port=0",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "test": "WRANGLER_LOG_PATH=../../.wrangler-test.log node --test test/**/*.test.mjs",
-    "coverage": "WORKER_COVERAGE=1 WRANGLER_LOG_PATH=../../.wrangler-test.log node --test test/**/*.test.mjs"
+    "test": "WRANGLER_LOG_PATH=../../.wrangler-test.log node --test $(find test -name '*.test.mjs' -print)",
+    "coverage": "WORKER_COVERAGE=1 WRANGLER_LOG_PATH=../../.wrangler-test.log node --test $(find test -name '*.test.mjs' -print)"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260317.1",
