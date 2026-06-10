@@ -137,7 +137,7 @@ export function CartridgeEditor() {
   }, [cartId, refreshDrafts]);
 
   return (
-    <div className={styles.editor}>
+    <div className={styles.editor} data-no-drag>
       <div className={styles.sidebar}>
         <div className={styles.sidebarHeader}>
           <span>Carts</span>

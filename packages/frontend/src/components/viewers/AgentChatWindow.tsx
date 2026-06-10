@@ -499,6 +499,7 @@ function AgentChatThreadPane({
   const [draft, setDraft] = useState('');
   const [wsToken, setWsToken] = useState<string | null>(null);
   const [wsReady, setWsReady] = useState(false);
+  const [mainView, setMainView] = useState<'chat' | 'history'>('chat');
 
   const apiBaseUrl = useMemo(() => {
     const configured = import.meta.env.VITE_API_URL || window.location.origin;
@@ -1417,40 +1418,64 @@ function AgentChatThreadPane({
     'Remember stable preferences and project context',
   ];
 
+  const isBusy = status === 'submitted' || status === 'streaming';
+
   return (
     <div className={styles.chatWindow}>
-      <div className={styles.header}>
+      <header className={styles.toolbar}>
         <div className={styles.toolbarGroup}>
-          <div className={styles.windowLabel}>Eternal Workspace</div>
-          <button className={`${styles.toolbarTab} ${styles.toolbarTabActive}`} type="button">
-            Chat
-          </button>
-          <button className={styles.toolbarTab} type="button" onClick={() => void onCreateThread()}>
+          <button className={styles.toolbarButton} type="button" onClick={() => void onCreateThread()}>
+            <span className={styles.toolbarButtonGlyph} aria-hidden="true">＋</span>
             New Thread
           </button>
-        </div>
-        <div className={styles.headerTitle}>Ask Eternal</div>
-        <div className={styles.toolbarGroup}>
-          <div className={styles.searchBadge}>Kimi</div>
-          <button className={styles.clearButton} type="button" onClick={() => void clearHistory()}>
-            Clear History
+          <button className={styles.toolbarButton} type="button" onClick={() => void clearHistory()}>
+            <span className={styles.toolbarButtonGlyph} aria-hidden="true">⌫</span>
+            Clear
           </button>
         </div>
-      </div>
+
+        <div className={styles.segmentedControl} data-theme-immune role="tablist" aria-label="View">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mainView === 'chat'}
+            className={`${styles.segment} ${mainView === 'chat' ? styles.segmentActive : ''}`}
+            onClick={() => setMainView('chat')}
+          >
+            Chat
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mainView === 'history'}
+            className={`${styles.segment} ${mainView === 'history' ? styles.segmentActive : ''}`}
+            onClick={() => setMainView('history')}
+          >
+            History
+          </button>
+        </div>
+
+        <div className={`${styles.toolbarGroup} ${styles.toolbarGroupEnd}`}>
+          <span className={`${styles.statusDot} ${wsReady ? styles.statusDotReady : ''}`} aria-hidden="true" />
+          <span className={styles.toolbarStatus}>{statusText}</span>
+        </div>
+      </header>
 
       <div className={styles.layout}>
-        <aside className={styles.sidebar}>
+        <aside className={styles.sidebar} data-theme-immune>
           <div className={styles.sidebarSection}>
             <div className={styles.sidebarHeading}>Workspace</div>
-            <button className={styles.sidebarAction} type="button" onClick={() => void onCreateThread()}>
-              New Thread
+            <button className={styles.sidebarNavItem} type="button" onClick={() => void onCreateThread()}>
+              <span className={styles.sidebarNavIcon} aria-hidden="true">✎</span>
+              New thread
             </button>
-            <button className={styles.sidebarAction} type="button" onClick={() => void clearHistory()}>
-              Clear History
+            <button className={styles.sidebarNavItem} type="button" onClick={() => setMainView('history')}>
+              <span className={styles.sidebarNavIcon} aria-hidden="true">≡</span>
+              History
             </button>
           </div>
 
-          <div className={styles.sidebarSection}>
+          <div className={`${styles.sidebarSection} ${styles.sidebarSectionGrow}`}>
             <div className={styles.sidebarHeading}>Threads</div>
             {threadsLoading ? (
               <div className={styles.sidebarEmpty}>Loading threads...</div>
@@ -1465,7 +1490,10 @@ function AgentChatThreadPane({
                     key={thread.id}
                     type="button"
                     className={`${styles.threadItem} ${thread.id === activeThread.id ? styles.threadItemActive : ''}`}
-                    onClick={() => onSelectThread(thread.id)}
+                    onClick={() => {
+                      onSelectThread(thread.id);
+                      setMainView('chat');
+                    }}
                   >
                     <span className={styles.threadItemTitle}>{thread.title}</span>
                     <span className={styles.threadItemMeta}>{formatThreadTimestamp(thread.updatedAt)}</span>
@@ -1476,85 +1504,136 @@ function AgentChatThreadPane({
           </div>
         </aside>
 
-        <section className={styles.mainPane}>
-          <div className={styles.mainHeader}>
-            <div>
-              <div className={styles.mainTitle}>{currentRequestLabel}</div>
-              <div className={styles.subtitle}>Search your desktop, build apps, and organize files.</div>
-            </div>
-            <div className={styles.mainBadge}>Aura</div>
-          </div>
-
-          {messages.length === 0 ? (
-            <div className={styles.emptyState}>
-              <div className={styles.emptyCard}>
-                <div className={styles.emptyTitle}>Start with a natural-language request</div>
-                <div className={styles.emptyCopy}>
-                  Ask for a desktop search, a new app, or something you want Eternal to remember.
-                </div>
+        {mainView === 'history' ? (
+          <section className={styles.mainPane}>
+            <div className={styles.mainHeader}>
+              <div className={styles.mainHeaderText}>
+                <div className={styles.mainTitle}>History</div>
+                <div className={styles.subtitle}>All conversations with Eternal</div>
               </div>
             </div>
-          ) : (
-            <div className={styles.messages}>
-              {messages.map((message) => {
-                const parts = (message.parts as MessagePart[] | undefined) ?? [];
+            <div className={styles.historyList}>
+              {threadList.map((thread) => (
+                <div
+                  key={thread.id}
+                  className={`${styles.historyRow} ${thread.id === activeThread.id ? styles.historyRowActive : ''}`}
+                >
+                  <button
+                    type="button"
+                    className={styles.historyRowMain}
+                    onClick={() => {
+                      onSelectThread(thread.id);
+                      setMainView('chat');
+                    }}
+                  >
+                    <span className={styles.threadItemTitle}>{thread.title}</span>
+                    <span className={styles.threadItemMeta}>Updated {formatThreadTimestamp(thread.updatedAt)}</span>
+                  </button>
+                  {thread.id === activeThread.id ? (
+                    <div className={styles.historyRowActions}>
+                      <button className={styles.ghostButton} type="button" onClick={() => void onRenameThread()}>
+                        Rename
+                      </button>
+                      <button className={styles.ghostButton} type="button" onClick={() => void onDeleteThread()}>
+                        Delete
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : (
+          <section className={styles.mainPane}>
+            <div className={styles.mainHeader}>
+              <div className={styles.mainHeaderText}>
+                <div className={styles.mainTitle}>{currentRequestLabel}</div>
+                <div className={styles.subtitle}>Search your desktop, build apps, and organize files.</div>
+              </div>
+              <div className={styles.mainBadge}>Aura</div>
+            </div>
 
-                if (message.role === 'user') {
-                  const text = getUserMessageText(message);
-                  if (!text) return null;
+            {messages.length === 0 ? (
+              <div className={styles.emptyState}>
+                <div className={styles.emptyCard}>
+                  <div className={styles.emptyTitle}>Start with a natural-language request</div>
+                  <div className={styles.emptyCopy}>
+                    Ask for a desktop search, a new app, or something you want Eternal to remember.
+                  </div>
+                  <div className={styles.emptyPrompts}>
+                    {STARTER_PROMPTS.map((prompt) => (
+                      <button
+                        key={prompt}
+                        type="button"
+                        className={styles.promptButton}
+                        onClick={() => submitPrompt(prompt)}
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className={styles.messages}>
+                {messages.map((message) => {
+                  const parts = (message.parts as MessagePart[] | undefined) ?? [];
+
+                  if (message.role === 'user') {
+                    const text = getUserMessageText(message);
+                    if (!text) return null;
+
+                    return (
+                      <div key={message.id} className={styles.userRow}>
+                        <div className={styles.userBubble}>{text}</div>
+                      </div>
+                    );
+                  }
+
+                  const renderedParts = parts
+                    .map((part, index) => renderAssistantPart(part, index, parts))
+                    .filter((part): part is ReactNode => part !== null);
+
+                  if (renderedParts.length === 0) {
+                    return null;
+                  }
 
                   return (
-                    <div key={message.id} className={styles.userMessage}>
-                      <div className={styles.messageLabel}>You</div>
-                      <div className={styles.messageBody}>{text}</div>
+                    <div key={message.id} className={styles.assistantMessage}>
+                      <div className={styles.messageParts}>{renderedParts}</div>
                     </div>
                   );
-                }
+                })}
+              </div>
+            )}
 
-                const renderedParts = parts
-                  .map((part, index) => renderAssistantPart(part, index, parts))
-                  .filter((part): part is ReactNode => part !== null);
-
-                if (renderedParts.length === 0) {
-                  return null;
-                }
-
-                return (
-                  <div key={message.id} className={styles.assistantMessage}>
-                    <div className={styles.messageLabel}>Eternal</div>
-                    <div className={styles.messageParts}>{renderedParts}</div>
+            <div className={styles.composerArea}>
+              {error ? <div className={styles.composerError}>{error.message}</div> : null}
+              <form className={styles.composer} data-theme-immune onSubmit={handleSend}>
+                <input
+                  ref={inputRef}
+                  className={styles.composerInput}
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  placeholder={wsReady ? 'Ask Eternal anything...' : 'Connecting to Eternal...'}
+                />
+                <div className={styles.composerRow}>
+                  <div className={styles.composerChips}>
+                    <span className={styles.composerChip}>Workers AI</span>
+                    <span className={styles.composerChip}>{isBusy ? 'Working...' : 'Ready'}</span>
                   </div>
-                );
-              })}
+                  <button
+                    className={styles.sendButton}
+                    type="submit"
+                    disabled={!wsReady || isBusy || !draft.trim()}
+                  >
+                    Send
+                  </button>
+                </div>
+              </form>
             </div>
-          )}
-
-          <div className={styles.footer}>
-            <div className={styles.statusRow}>
-              <span className={styles.statusLabel}>{statusText}</span>
-              {error ? <span className={styles.errorText}>{error.message}</span> : null}
-            </div>
-
-            <form className={styles.form} onSubmit={handleSend}>
-              <input
-                ref={inputRef}
-                className={styles.input}
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                placeholder={wsReady
-                  ? 'Ask about files, images, tags, OCR text, or recent uploads...'
-                  : 'Connecting to Eternal...'}
-              />
-              <button
-                className={styles.sendButton}
-                type="submit"
-                disabled={!wsReady || status === 'submitted' || status === 'streaming' || !draft.trim()}
-              >
-                Send
-              </button>
-            </form>
-          </div>
-        </section>
+          </section>
+        )}
 
         <aside className={styles.inspector}>
           <div className={styles.inspectorSection}>
@@ -1569,16 +1648,16 @@ function AgentChatThreadPane({
 
           <div className={styles.inspectorSection}>
             <div className={styles.sidebarHeading}>Thread</div>
-            <div className={styles.threadSummaryCard}>
+            <div className={styles.statusCard}>
               <div className={styles.statusCardTitle}>{activeThread.title}</div>
               <div className={styles.statusCardMeta}>
                 Updated {formatThreadTimestamp(activeThread.updatedAt)}
               </div>
               <div className={styles.threadActionRow}>
-                <button className={styles.sidebarAction} type="button" onClick={() => void onRenameThread()}>
+                <button className={styles.ghostButton} type="button" onClick={() => void onRenameThread()}>
                   Rename
                 </button>
-                <button className={styles.sidebarAction} type="button" onClick={() => void onDeleteThread()}>
+                <button className={styles.ghostButton} type="button" onClick={() => void onDeleteThread()}>
                   Delete
                 </button>
               </div>
