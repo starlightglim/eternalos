@@ -8,10 +8,17 @@ interface AppViewerProps {
   launchFileId?: string;
 }
 
+interface AppIpcMessage {
+  type: 'eternal:ipc:message';
+  topic: unknown;
+  payload: unknown;
+  sender: { appId?: string; previewId?: string };
+}
+
 interface ActiveAppListener {
   appId?: string;
   previewId?: string;
-  onMessage: (msg: any) => void;
+  onMessage: (msg: AppIpcMessage) => void;
 }
 
 // In-memory list of active app viewers for the parent-mediated IPC event bus.

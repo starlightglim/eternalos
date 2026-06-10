@@ -652,7 +652,7 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
         });
       }
     },
-    [openWindow]
+    [items, openWindow]
   );
 
   const updateTrashDropTarget = useCallback((nextValue: boolean) => {

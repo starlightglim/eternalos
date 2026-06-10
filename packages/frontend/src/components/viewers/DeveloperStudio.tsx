@@ -121,7 +121,7 @@ export function DeveloperStudio() {
       let manifestObj;
       try {
         manifestObj = JSON.parse(files['eternal.app.json']);
-      } catch (e) {
+      } catch {
         throw new Error('Manifest is not valid JSON! Please check eternal.app.json.');
       }
 
