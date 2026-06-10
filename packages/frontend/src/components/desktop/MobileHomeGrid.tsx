@@ -51,7 +51,6 @@ export function MobileHomeGrid({
   const containerRef = useRef<HTMLDivElement>(null);
   const [pageIndex, setPageIndex] = useState(0);
   const [dragOffset, setDragOffset] = useState(0);
-  const [isDragging, setIsDragging] = useState(false);
   const dragStateRef = useRef<{
     startX: number;
     startY: number;
@@ -99,7 +98,6 @@ export function MobileHomeGrid({
       active: true,
       width: containerWidth,
     };
-    setIsDragging(true);
     setDragOffset(0);
   };
 
@@ -133,14 +131,12 @@ export function MobileHomeGrid({
 
     setPageIndex(newPage);
     setDragOffset(0);
-    setIsDragging(false);
     dragStateRef.current = null;
     if (newPage !== pageIndex) onPageChange?.(newPage);
   };
 
   const handlePointerCancel = () => {
     setDragOffset(0);
-    setIsDragging(false);
     dragStateRef.current = null;
     cancelLongPress();
   };
@@ -204,7 +200,7 @@ export function MobileHomeGrid({
   const trackStyle: React.CSSProperties = {
     display: 'flex',
     transform: `translate3d(calc(${-pageIndex * 100}% + ${dragOffset}px), 0, 0)`,
-    transition: isDragging ? 'none' : 'transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1)',
+    transition: dragStateRef.current?.active ? 'none' : 'transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1)',
     width: '100%',
     willChange: 'transform',
   };

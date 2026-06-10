@@ -103,13 +103,7 @@ export function CursorCreator() {
   // Remove handler
   const handleRemove = useCallback(async (state: CursorState) => {
     const slot = slots[state];
-    if (slot.cursorId) {
-      try {
-        await deleteCursor(slot.cursorId);
-      } catch (err) {
-        console.warn('Failed to delete cursor:', err);
-      }
-    }
+    if (slot.cursorId) { try { await deleteCursor(slot.cursorId); } catch {} }
     setSlots(prev => ({ ...prev, [state]: emptySlot() }));
   }, [slots]);
 

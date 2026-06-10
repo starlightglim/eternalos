@@ -92,7 +92,7 @@ export function Window({
   const bodyDragPending = useRef<{ x: number; y: number; pointerId: number } | null>(null);
 
   // Focus window on any click
-  const handleWindowClick = useCallback(() => {
+  const handleWindowClick = useCallback((_e: React.PointerEvent) => {
     focusWindow(id);
   }, [focusWindow, id]);
 

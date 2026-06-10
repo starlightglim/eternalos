@@ -9,6 +9,7 @@ import styles from './FloatingChrome.module.css';
 export function FloatingChrome({
   windowRef,
   windowId,
+  isActive: _isActive,
   collapsed,
   minimized,
   position,

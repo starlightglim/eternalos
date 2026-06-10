@@ -538,7 +538,7 @@ function AgentChatThreadPane({
     let cancelled = false;
     const token = getAuthToken();
 
-    if (!user?.uid || !token) {
+    if (!user || !token) {
       setWsToken(null);
       setWsReady(true);
       return () => {

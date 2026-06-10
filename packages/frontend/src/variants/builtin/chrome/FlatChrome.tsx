@@ -9,6 +9,7 @@ import styles from './FlatChrome.module.css';
 export function FlatChrome({
   windowRef,
   windowId,
+  isActive: _isActive,
   collapsed,
   minimized,
   position,
