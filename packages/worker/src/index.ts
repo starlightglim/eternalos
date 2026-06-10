@@ -13,7 +13,9 @@ import { handleUpload, handleServeFile, handleWallpaperUpload, handleServeWallpa
 import { handleSoundUpload, handleServeSound, handleListSounds, handleDeleteSound } from './routes/sounds';
 import { handleCursorUpload, handleServeCursor, handleListCursors, handleDeleteCursor } from './routes/cursors';
 import { handleBazaarPublish, handleBazaarBrowse, handleBazaarGetPack, handleBazaarInstall, handleBazaarDelete, handleBazaarServeAsset, handleBazaarMyPacks, handleBazaarPublishEstheme } from './routes/bazaar';
-import { handleAppCapability, handleAppFsList, handleAppFsRead } from './routes/apps';
+import { handleAppCapability, handleAppFsList, handleAppFsRead, handleAppDevDeploy, handleGetAppSourceRoute } from './routes/apps';
+import { handleGamePlay, handleGameCapability, handleListDrafts, handleGetDraft, handlePutDraft, handleDeleteDraft } from './routes/games';
+
 import { handleVisit } from './routes/visit';
 import { handleOgImage } from './routes/ogImage';
 import { trackVisitAnalytics, handleGetAnalytics } from './routes/analytics';
@@ -143,7 +145,7 @@ function getCorsHeaders(request: Request, env: Env): Record<string, string> {
 
   // In development, allow known local origins instead of wildcard
   if (!isProduction) {
-    const devOrigins = ['http://localhost:5173', 'http://localhost:8787', 'http://127.0.0.1:5173'];
+    const devOrigins = ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:8787', 'http://127.0.0.1:5173', 'http://127.0.0.1:5174'];
     const isDevAllowed = !origin || devOrigins.includes(origin);
     return {
       'Access-Control-Allow-Origin': isDevAllowed ? (origin || '*') : '',
@@ -258,6 +260,15 @@ export default {
 
     // Get environment-aware CORS headers
     const corsHeaders = getCorsHeaders(request, env);
+
+    // Game serving must run before the global OPTIONS handler: the console
+    // iframe has an opaque origin ("Origin: null"), so its preflights would
+    // fail the dev/prod origin allowlist. The per-game Dynamic Worker answers
+    // its own preflights (credential-less, capability-token auth).
+    if (path.startsWith('/api/games/play/')) {
+      const playPath = path.slice('/api/games/play/'.length);
+      return handleGamePlay(request, env, ctx, playPath);
+    }
 
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
@@ -374,6 +385,29 @@ export default {
       return withCors(agentResponse, corsHeaders);
     }
 
+    // Developer deploy endpoint: POST /api/apps/dev-deploy
+    if (path === '/api/apps/dev-deploy' && request.method === 'POST') {
+      const authResult = await requireAuth(request, env);
+      if (authResult instanceof Response) {
+        return withCors(authResult, corsHeaders);
+      }
+      const response = await handleAppDevDeploy(request, env, authResult);
+      return withCors(response, corsHeaders);
+    }
+
+    // Get App Source: GET /api/apps/:appId/source
+    const appSourceMatch = path.match(/^\/api\/apps\/([^/]+)\/source$/);
+    if (appSourceMatch && request.method === 'GET') {
+      const appId = appSourceMatch[1];
+      const authResult = await requireAuth(request, env);
+      if (authResult instanceof Response) {
+        return withCors(authResult, corsHeaders);
+      }
+      const response = await handleGetAppSourceRoute(request, env, authResult, appId);
+      return withCors(response, corsHeaders);
+    }
+
+
     // Mint a capability token for an app: POST /api/apps/:appId/capability
     // Runs before the Dynamic Worker dispatch below so the capability path
     // doesn't get swallowed by the iframe-serving code.
@@ -459,6 +493,49 @@ export default {
       }));
 
       return worker.getEntrypoint().fetch(request);
+    }
+
+    // =====================================================================
+    // Fantasy-console game routes
+    // (/api/games/play/* is dispatched earlier, before OPTIONS handling)
+    // =====================================================================
+
+    // Mint a player capability token: POST /api/games/:gameId/capability
+    const gameCapabilityMatch = path.match(/^\/api\/games\/([^/]+)\/capability$/);
+    if (gameCapabilityMatch && request.method === 'POST') {
+      const authResult = await requireAuth(request, env);
+      if (authResult instanceof Response) {
+        return withCors(authResult, corsHeaders);
+      }
+      const response = await handleGameCapability(request, env, authResult, decodeURIComponent(gameCapabilityMatch[1]));
+      return withCors(response, corsHeaders);
+    }
+
+    // Cartridge draft CRUD (auth required)
+    if (path === '/api/games/drafts' && request.method === 'GET') {
+      const authResult = await requireAuth(request, env);
+      if (authResult instanceof Response) {
+        return withCors(authResult, corsHeaders);
+      }
+      return withCors(await handleListDrafts(env, authResult), corsHeaders);
+    }
+
+    const draftMatch = path.match(/^\/api\/games\/drafts\/([^/]+)$/);
+    if (draftMatch) {
+      const authResult = await requireAuth(request, env);
+      if (authResult instanceof Response) {
+        return withCors(authResult, corsHeaders);
+      }
+      const cartId = draftMatch[1];
+      if (request.method === 'GET') {
+        return withCors(await handleGetDraft(env, authResult, cartId), corsHeaders);
+      }
+      if (request.method === 'PUT') {
+        return withCors(await handlePutDraft(request, env, authResult, cartId), corsHeaders);
+      }
+      if (request.method === 'DELETE') {
+        return withCors(await handleDeleteDraft(env, authResult, cartId), corsHeaders);
+      }
     }
 
     // Serve user-created apps via Dynamic Workers: /api/apps/:appId

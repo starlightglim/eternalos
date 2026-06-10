@@ -245,9 +245,10 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
     const workersAI = createWorkersAI({ binding: this.env.AI });
     const modelId = this.env.AGENT_CHAT_MODEL?.startsWith('@cf/')
       ? this.env.AGENT_CHAT_MODEL
-      : '@cf/moonshotai/kimi-k2.6';
+      : '@cf/meta/llama-3.1-8b-instruct';
     return workersAI(modelId as Parameters<typeof workersAI>[0]);
   }
+
 
   private getUserDesktopStub(): DurableObjectStub {
     const doId = this.env.USER_DESKTOP.idFromName(this.getOwnerUid());

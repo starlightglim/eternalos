@@ -26,6 +26,10 @@ import { ShareDialog } from '../viewers/ShareDialog';
 import { ProfileWindow } from '../viewers/ProfileWindow';
 import { AgentChatWindow } from '../viewers/AgentChatWindow';
 import { AppViewer } from '../viewers/AppViewer';
+import { DeveloperStudio } from '../viewers/DeveloperStudio';
+import { ConsolePlayer } from '../console/ConsolePlayer';
+import { CartridgeEditor } from '../console/CartridgeEditor';
+
 import { FolderView } from './FolderView';
 import { TrashView } from './TrashView';
 import { WidgetRenderer } from '../widgets';
@@ -124,6 +128,8 @@ function WindowContent({
   // Subscribe to the specific item by contentId so the component re-renders
   // when the item data changes (e.g., after API fetch replaces cached items).
   // Using getItem(fn ref) alone won't trigger re-renders on item changes.
+  const win = useWindowStore((state) => state.windows.find((w) => w.id === windowId));
+  
   const item = useDesktopStore((state) =>
     contentId && !isVisitorMode ? state.items.find((i) => i.id === contentId) : undefined
   ) ?? (contentId && isVisitorMode && visitorItems
@@ -319,6 +325,32 @@ function WindowContent({
     case 'cursor-creator':
       return <CursorCreator />;
 
+    case 'developer-studio':
+      return <DeveloperStudio />;
+
+    case 'console-player':
+      // contentId carries the gameId ('demo', 'draft:{cartId}', or a packId)
+      if (!contentId) {
+        return (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              height: '100%',
+              backgroundColor: '#000',
+            }}
+          >
+            <p style={{ color: '#888', fontSize: '12px' }}>Game not found</p>
+          </div>
+        );
+      }
+      return <ConsolePlayer gameId={contentId} windowId={windowId} />;
+
+    case 'cartridge-editor':
+      return <CartridgeEditor />;
+
+
     case 'trash':
       return <TrashView />;
 
@@ -443,7 +475,7 @@ function WindowContent({
           </div>
         );
       }
-      return <AppViewer appId={item.appManifest.appId} />;
+      return <AppViewer appId={item.appManifest.appId} windowId={windowId} launchFileId={win?.launchFileId} />;
 
     case 'app-preview':
       if (!contentId) {
@@ -461,7 +493,7 @@ function WindowContent({
           </div>
         );
       }
-      return <AppViewer previewId={contentId} />;
+      return <AppViewer previewId={contentId} windowId={windowId} />;
 
     default:
       return null;

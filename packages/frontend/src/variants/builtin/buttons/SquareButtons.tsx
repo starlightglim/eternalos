@@ -20,18 +20,21 @@ export function SquareButtons({
       <div
         className={`${styles.closeBox} closeBox`}
         eos-part="close"
+        title="Close"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={onClose}
       />
       <div
         className={`${styles.zoomBox} zoomBox`}
         eos-part="zoom"
+        title="Zoom"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={onZoom}
       />
       <div
         className={`${styles.collapseBox} collapseBox`}
         eos-part="collapse"
+        title="Collapse"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={onCollapse}
       />

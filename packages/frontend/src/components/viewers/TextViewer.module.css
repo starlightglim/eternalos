@@ -83,18 +83,23 @@
 
 .content {
   flex: 1;
-  overflow: auto;
+  overflow: hidden;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Editable textarea */
 .textarea {
   width: 100%;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   padding: 8px;
   border: none;
   outline: none;
   resize: none;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: var(--white);
   color: var(--black);
   font-family: var(--font-monaco);
@@ -119,6 +124,9 @@
 
 /* Read-only display */
 .readOnlyText {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   padding: 8px;
   font-family: var(--font-monaco);
   font-size: 12px;
@@ -132,7 +140,6 @@
   /* Allow text selection for copying */
   user-select: text;
   cursor: default;
-  min-height: 100%;
 }
 
 .emptyText {

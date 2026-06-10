@@ -282,36 +282,14 @@ export async function handleSignup(request: Request, env: Env): Promise<Response
         isPublic: true,
         textContent: `Welcome to EternalOS!
 
-Your personal corner of the internet, styled like a classic Mac.
+• Double-click items to open them
+• Drag files here to upload
+• Right-click for options
+• Right-click the desktop → Change Wallpaper
 
-=== Getting Started ===
+Your page: eternalos.app/@${normalizedUsername}
 
-• Double-click any item to open it
-• Right-click for context menus
-• Drag items to move them around
-• Drop files from your computer to upload
-
-=== Make It Yours ===
-
-• Right-click the desktop → "Change Wallpaper..."
-• Special menu → "Appearance..." for colors
-• Right-click items → "Change Icon..." for custom icons
-• Special menu → "Custom CSS..." for power users
-
-=== Share Your Desktop ===
-
-Your public items are visible at:
-  eternalos.app/@${normalizedUsername}
-
-Toggle "Public" in Get Info (⌘I) to share items.
-
-=== Need Help? ===
-
-Double-click the Desk Assistant for AI-powered help
-with customizing your desktop.
-
-Happy computing!
-— EternalOS`,
+Happy computing! — EternalOS`,
       },
       // Getting Started folder
       {

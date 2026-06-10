@@ -892,9 +892,10 @@ function getAppBuilderModel(env: Env) {
   const workersAI = createWorkersAI({ binding: env.AI });
   const modelId = env.AGENT_CHAT_MODEL?.startsWith('@cf/')
     ? env.AGENT_CHAT_MODEL
-    : '@cf/moonshotai/kimi-k2.6';
+    : '@cf/meta/llama-3.1-8b-instruct';
   return workersAI(modelId as Parameters<typeof workersAI>[0]);
 }
+
 
 function createBuildTracker() {
   const orderedStages = Object.keys(APP_BUILD_STAGE_LABELS) as AppBuildStageKey[];
@@ -978,7 +979,7 @@ function selectDefaultJsEntry(files: Record<string, string>): string | undefined
             : Object.keys(files).find((name) => name.endsWith('.js') || name.endsWith('.mjs'));
 }
 
-function createAppWorkspace(files: Record<string, string>): AppWorkspace {
+export function createAppWorkspace(files: Record<string, string>): AppWorkspace {
   const normalizedEntries = Object.entries(files)
     .filter(([name]) => typeof name === 'string' && name.trim().length > 0)
     .map(([name, content]) => [name.replace(/^\/+/, '').trim(), String(content)] as const);
@@ -1061,8 +1062,6 @@ function validateGeneratedApp(app: AppBundleInput): void {
   const forbiddenPatterns: Array<{ pattern: RegExp; message: string }> = [
     { pattern: /<script[^>]+src=["']https?:\/\//i, message: 'External script URLs are not allowed' },
     { pattern: /<link[^>]+href=["']https?:\/\//i, message: 'External stylesheet URLs are not allowed' },
-    { pattern: /\bfetch\(\s*["'`]https?:\/\//i, message: 'External fetch() calls are not allowed' },
-    { pattern: /\bnew\s+WebSocket\(\s*["'`]wss?:\/\//i, message: 'External WebSocket connections are not allowed' },
     { pattern: /\bimport\s*\(\s*["'`]https?:\/\//i, message: 'Dynamic imports from external URLs are not allowed' },
     { pattern: /\bfrom\s+["']https?:\/\//i, message: 'Imports from external URLs are not allowed' },
   ];
@@ -1762,6 +1761,27 @@ const ETERNAL_RUNTIME_JS = `(() => {
     urlFor(id) {
       return apiUrl('/fs/read/' + encodeId(id));
     },
+    async write(opts) {
+      const res = await request('/fs/write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts),
+      });
+      return res.json();
+    },
+    async patch(itemId, updates) {
+      const res = await request('/fs/patch/' + encodeId(itemId), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      });
+      return res.json();
+    },
+    async delete(itemId) {
+      await request('/fs/delete/' + encodeId(itemId), {
+        method: 'DELETE',
+      });
+    },
   };
 
   const profile = {
@@ -1783,6 +1803,7 @@ const ETERNAL_RUNTIME_JS = `(() => {
     setTitle(title) { postToParent({ type: 'eternal:window:setTitle', title: String(title == null ? '' : title) }); },
     close() { postToParent({ type: 'eternal:window:close' }); },
     requestFocus() { postToParent({ type: 'eternal:window:requestFocus' }); },
+    resize(width, height) { postToParent({ type: 'eternal:window:resize', width: Number(width || 600), height: Number(height || 500) }); },
   };
 
   function onIntent(cb) {
@@ -1794,11 +1815,83 @@ const ETERNAL_RUNTIME_JS = `(() => {
     return () => window.removeEventListener('message', handler);
   }
 
+  const storage = {
+    async get(key) {
+      try {
+        const res = await request('/storage/' + encodeId(key));
+        const data = await res.json();
+        return data.value;
+      } catch (err) {
+        if (String(err).includes('404')) return null;
+        throw err;
+      }
+    },
+    async set(key, value) {
+      await request('/storage/' + encodeId(key), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value }),
+      });
+    },
+    async delete(key) {
+      await request('/storage/' + encodeId(key), {
+        method: 'DELETE',
+      });
+    },
+    async list() {
+      const res = await request('/storage');
+      const data = await res.json();
+      return data.keys;
+    },
+  };
+
+  const ipc = {
+    emit(topic, payload) {
+      postToParent({ type: 'eternal:ipc:emit', topic, payload });
+    },
+    on(topic, cb) {
+      const handler = (e) => {
+        if (!e || !e.data || e.data.type !== 'eternal:ipc:message' || e.data.topic !== topic) return;
+        try { cb(e.data.payload, e.data.sender); } catch (_) {}
+      };
+      window.addEventListener('message', handler);
+      return () => window.removeEventListener('message', handler);
+    },
+  };
+
+  async function fetchProxy(url, init) {
+    const res = await request('/fetch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url,
+        init: {
+          method: init?.method,
+          headers: init?.headers,
+          body: init?.body,
+        },
+      }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      throw new Error(data.error);
+    }
+    return {
+      status: data.status,
+      statusText: data.statusText,
+      ok: data.status >= 200 && data.status < 300,
+      headers: new Headers(data.headers),
+      text: () => Promise.resolve(data.body),
+      json: () => Promise.resolve(JSON.parse(data.body)),
+      blob: () => Promise.resolve(new Blob([data.body])),
+    };
+  }
+
   const meta = document.querySelector('meta[name="eternal-app-id"]');
   const appId = meta ? meta.getAttribute('content') || '' : '';
 
   Object.defineProperty(window, 'eternal', {
-    value: Object.freeze({ appId, hostVersion: '1', fs, profile, window: appWindow, onIntent }),
+    value: Object.freeze({ appId, hostVersion: '1', fs, profile, window: appWindow, onIntent, storage, ipc, fetch: fetchProxy }),
     writable: false,
     configurable: false,
   });
@@ -1809,7 +1902,7 @@ const ETERNAL_RUNTIME_JS = `(() => {
  * Wrap user-provided app files into a Worker that serves the assembled HTML
  * page AND handles the `/_eternal/*` bridge calls via the ETERNAL binding.
  */
-function createWorkerModuleFiles(
+export function createWorkerModuleFiles(
   workspace: AppWorkspace,
   mountBasePath: '/api/apps' | '/api/app-previews' = '/api/apps',
 ): Record<string, string> {
@@ -1917,7 +2010,7 @@ function clampInt(value, min, max, fallback) {
 // so '*' is safe and simpler than echoing 'null' back.
 const CORS = {
   'access-control-allow-origin': '*',
-  'access-control-allow-methods': 'GET, OPTIONS',
+  'access-control-allow-methods': 'GET, POST, PATCH, DELETE, OPTIONS',
   'access-control-allow-headers': 'content-type',
   'access-control-max-age': '300',
 };
@@ -1953,6 +2046,39 @@ async function handleEternal(request, env, bridgePath) {
     }
   }
 
+  if (bridgePath === '/fs/write' && request.method === 'POST') {
+    try {
+      const body = await request.json();
+      const item = await env.ETERNAL.write(body);
+      return withCors(Response.json(item));
+    } catch (err) {
+      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+    }
+  }
+
+  if (bridgePath.startsWith('/fs/patch/') && request.method === 'POST') {
+    const id = bridgePath.slice('/fs/patch/'.length);
+    if (!id) return withCors(Response.json({ error: 'Missing id' }, { status: 400 }));
+    try {
+      const updates = await request.json();
+      const item = await env.ETERNAL.patch(id, updates);
+      return withCors(Response.json(item));
+    } catch (err) {
+      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+    }
+  }
+
+  if (bridgePath.startsWith('/fs/delete/') && request.method === 'DELETE') {
+    const id = bridgePath.slice('/fs/delete/'.length);
+    if (!id) return withCors(Response.json({ error: 'Missing id' }, { status: 400 }));
+    try {
+      await env.ETERNAL.delete(id);
+      return withCors(Response.json({ success: true }));
+    } catch (err) {
+      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+    }
+  }
+
   if (bridgePath.startsWith('/fs/read/') && request.method === 'GET') {
     const id = bridgePath.slice('/fs/read/'.length);
     if (!id) return withCors(Response.json({ error: 'Missing id' }, { status: 400 }));
@@ -1967,6 +2093,59 @@ async function handleEternal(request, env, bridgePath) {
     try {
       const profile = await env.ETERNAL.profile();
       return withCors(Response.json(profile));
+    } catch (err) {
+      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+    }
+  }
+
+  if (bridgePath === '/storage' && request.method === 'GET') {
+    try {
+      const keys = await env.ETERNAL.storageList();
+      return withCors(Response.json({ keys }));
+    } catch (err) {
+      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+    }
+  }
+
+  if (bridgePath.startsWith('/storage/') && request.method === 'GET') {
+    const key = bridgePath.slice('/storage/'.length);
+    try {
+      const value = await env.ETERNAL.storageGet(key);
+      if (value === null) {
+        return withCors(Response.json({ error: 'Not found' }, { status: 404 }));
+      }
+      return withCors(Response.json({ value }));
+    } catch (err) {
+      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+    }
+  }
+
+  if (bridgePath.startsWith('/storage/') && request.method === 'POST') {
+    const key = bridgePath.slice('/storage/'.length);
+    try {
+      const { value } = await request.json();
+      await env.ETERNAL.storageSet(key, value);
+      return withCors(Response.json({ success: true }));
+    } catch (err) {
+      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+    }
+  }
+
+  if (bridgePath.startsWith('/storage/') && request.method === 'DELETE') {
+    const key = bridgePath.slice('/storage/'.length);
+    try {
+      await env.ETERNAL.storageDelete(key);
+      return withCors(Response.json({ success: true }));
+    } catch (err) {
+      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+    }
+  }
+
+  if (bridgePath === '/fetch' && request.method === 'POST') {
+    try {
+      const { url, init } = await request.json();
+      const res = await env.ETERNAL.fetchProxy(url, init);
+      return withCors(Response.json(res));
     } catch (err) {
       return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
     }

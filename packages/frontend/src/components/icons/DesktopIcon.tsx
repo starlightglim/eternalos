@@ -224,7 +224,15 @@ function DesktopIconInner({
       onClick={handleClick}
       onContextMenu={onContextMenu}
     >
-      <div className={styles.iconImage} eos-part="icon">
+      <div className={styles.iconImage} eos-part="icon" style={{ position: 'relative' }}>
+        {!item.isPublic && (
+          <div className={styles.privateBadge} title="Private">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+              <rect x="1" y="4" width="8" height="6" rx="1" fill="#333"/>
+              <path d="M3 4V3a2 2 0 1 1 4 0v1" stroke="#333" strokeWidth="1.5" fill="none"/>
+            </svg>
+          </div>
+        )}
         {/* Custom icon takes precedence if set */}
         {item.customIcon ? (
           // Check if it's an uploaded icon (starts with "upload:") or a library icon

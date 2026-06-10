@@ -36,10 +36,10 @@
 }
 
 .iconLabel {
-  max-width: 72px;
+  max-width: 76px;
   text-align: center;
   font-family: var(--font-geneva);
-  font-size: var(--eos-icon-label-size, 9px);
+  font-size: var(--eos-icon-label-size, 11px);
   line-height: 1.2;
   color: var(--black);
   text-shadow: var(--eos-icon-label-shadow, none);
@@ -97,4 +97,20 @@
 /* Cut state - faded appearance to indicate pending move */
 .cut {
   opacity: 0.5;
+}
+
+/* Private item badge — small lock in bottom-right of icon */
+.privateBadge {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(0,0,0,0.35);
+  border-radius: 2px;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
 }

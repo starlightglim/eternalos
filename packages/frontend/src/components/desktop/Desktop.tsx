@@ -189,6 +189,10 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
   const [showWidgetPicker, setShowWidgetPicker] = useState(false);
   const [widgetPickerPosition, setWidgetPickerPosition] = useState<{ x: number; y: number } | null>(null);
 
+  // Hidden file input for "Upload Files..." context menu item
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const uploadPositionRef = useRef<{ x: number; y: number } | null>(null);
+
   // Folder drop target state (for drag-to-folder icons and folder windows)
   const [folderDropTargetId, setFolderDropTargetId] = useState<string | null>(null);
   const [folderWindowDropTargetId, setFolderWindowDropTargetId] = useState<string | null>(null);
@@ -512,6 +516,36 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
   // Icon double-click - open window
   const handleIconDoubleClick = useCallback(
     (item: DesktopItem) => {
+      // 1. Resolve custom mime-type or extension handlers
+      if (item.type !== 'folder' && item.type !== 'app' && item.type !== 'widget' && item.type !== 'sticker') {
+        const mimeType = item.mimeType || (item.name.endsWith('.md') ? 'text/markdown' : 'text/plain');
+        const extension = item.name.split('.').pop() || '';
+
+        const customHandlerApp = items.find(
+          (i) =>
+            i.type === 'app' &&
+            (i.appManifest?.permissions?.handlers?.mimeTypes?.includes(mimeType) ||
+             i.appManifest?.permissions?.handlers?.extensions?.includes(extension))
+        );
+
+        if (customHandlerApp) {
+          const w = customHandlerApp.appManifest?.windowConfig?.defaultWidth || 600;
+          const h = customHandlerApp.appManifest?.windowConfig?.defaultHeight || 500;
+          openWindow({
+            id: `app-${customHandlerApp.id}-${item.id}`,
+            title: `${customHandlerApp.appManifest?.name || customHandlerApp.name} - ${item.name}`,
+            position: { x: 100 + Math.random() * 100, y: 80 + Math.random() * 80 },
+            size: { width: w, height: h },
+            minimized: false,
+            maximized: false,
+            contentType: 'app',
+            contentId: customHandlerApp.id,
+            launchFileId: item.id,
+          });
+          return;
+        }
+      }
+
       if (item.type === 'folder') {
         openWindow({
           id: `folder-${item.id}`,
@@ -1598,6 +1632,20 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
       // Menu for empty desktop area
       return [
         {
+          id: 'upload-files',
+          label: 'Upload Files...',
+          shortcut: '⌘U',
+          action: () => {
+            if (!isApiConfigured) return;
+            uploadPositionRef.current = {
+              x: Math.floor((contextMenu?.position.x || 100) / GRID_CELL_SIZE),
+              y: Math.floor((contextMenu?.position.y || 100) / GRID_CELL_SIZE),
+            };
+            uploadInputRef.current?.click();
+          },
+        },
+        { id: 'divider-upload', label: '', divider: true },
+        {
           id: 'new-folder',
           label: 'New Folder',
           shortcut: '⇧⌘N',
@@ -1877,6 +1925,27 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
 
         {/* Upload Progress indicator */}
         {!isVisitorMode && <UploadProgress />}
+
+        {/* Hidden file input for context menu upload */}
+        {!isVisitorMode && (
+          <input
+            ref={uploadInputRef}
+            type="file"
+            multiple
+            accept="image/*,video/*,audio/*,.pdf,.txt,.md"
+            style={{ display: 'none' }}
+            onChange={async (e) => {
+              const files = Array.from(e.target.files || []);
+              if (!files.length) return;
+              const basePos = uploadPositionRef.current || { x: 1, y: 1 };
+              for (let i = 0; i < files.length; i++) {
+                const pos = findNearestAvailablePosition(basePos.x + i, basePos.y);
+                await uploadFile(files[i], null, pos);
+              }
+              e.target.value = '';
+            }}
+          />
+        )}
 
         {/* Context Menu */}
         {contextMenu && (

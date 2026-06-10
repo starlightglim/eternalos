@@ -87,6 +87,7 @@ export function CursorCreator() {
   const handleUpload = useCallback(async (state: CursorState, file: File) => {
     if (file.size > 50 * 1024) { setMessage({ type: 'error', text: 'Max 50KB per cursor image' }); return; }
     setUploading(state);
+    setSelected(state); // Auto-select so hotspot editor appears immediately
     try {
       const slot = slots[state];
       const result = await uploadCursor(file, state, slot.hotspotX, slot.hotspotY);

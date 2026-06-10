@@ -1,0 +1,261 @@
+.editor {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  background: var(--platinum, #ddd);
+  font-family: var(--font-geneva, sans-serif);
+  font-size: 11px;
+}
+
+.sidebar {
+  width: 160px;
+  min-width: 160px;
+  border-right: 1px solid var(--black, #000);
+  display: flex;
+  flex-direction: column;
+  background: var(--white, #fff);
+}
+
+.sidebarHeader {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--black, #000);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-chicago, monospace);
+}
+
+.newButton {
+  font-size: 10px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+
+.draftList {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.draftItem {
+  padding: 5px 8px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--platinum, #ddd);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draftItem:hover {
+  background: var(--platinum, #ddd);
+}
+
+.draftItemActive {
+  background: var(--black, #000);
+  color: var(--white, #fff);
+}
+
+.draftItemActive:hover {
+  background: var(--black, #000);
+}
+
+.draftMeta {
+  font-size: 9px;
+  opacity: 0.7;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--black, #000);
+  background: var(--platinum, #ddd);
+}
+
+.toolbar button {
+  font-size: 11px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+.toolbar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.runButton {
+  font-weight: bold;
+}
+
+.statusText {
+  margin-left: auto;
+  font-size: 10px;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusError {
+  color: #c00;
+}
+
+.statusOk {
+  color: #060;
+}
+
+.workArea {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.editPane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--black, #000);
+}
+
+.tabs {
+  display: flex;
+  border-bottom: 1px solid var(--black, #000);
+  background: var(--platinum, #ddd);
+}
+
+.tab {
+  padding: 4px 12px;
+  cursor: pointer;
+  border-right: 1px solid var(--black, #000);
+  font-size: 10px;
+}
+
+.tabActive {
+  background: var(--white, #fff);
+  font-weight: bold;
+}
+
+.codeArea {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  resize: none;
+  border: none;
+  outline: none;
+  padding: 8px;
+  font-family: var(--font-monaco, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  background: var(--white, #fff);
+  color: var(--black, #000);
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+}
+
+.spritesPane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.spritesPane .codeArea {
+  font-size: 9px;
+  line-height: 1.1;
+  letter-spacing: 1px;
+}
+
+.spritePreview {
+  width: 272px;
+  min-width: 272px;
+  padding: 8px;
+  border-left: 1px solid var(--black, #000);
+  background: var(--platinum, #ddd);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+}
+
+.spriteCanvas {
+  width: 256px;
+  height: 256px;
+  image-rendering: pixelated;
+  background: #000;
+  border: 1px solid var(--black, #000);
+}
+
+.metaPane {
+  flex: 1;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--white, #fff);
+  overflow-y: auto;
+}
+
+.metaField {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 360px;
+}
+
+.metaField input,
+.metaField textarea {
+  font-family: var(--font-geneva, sans-serif);
+  font-size: 11px;
+  padding: 3px 5px;
+}
+
+.previewPane {
+  width: 300px;
+  min-width: 300px;
+  display: flex;
+  flex-direction: column;
+  background: #222;
+}
+
+.previewHeader {
+  padding: 4px 8px;
+  color: #aaa;
+  font-size: 10px;
+  border-bottom: 1px solid #444;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.previewBody {
+  flex: 1;
+  min-height: 0;
+}
+
+.previewEmpty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #777;
+  text-align: center;
+  padding: 16px;
+}
+
+.emptyState {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--shadow, #666);
+}

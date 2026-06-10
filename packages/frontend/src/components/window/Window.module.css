@@ -9,7 +9,9 @@
 
 .content {
   flex: 1;
-  overflow: auto;
+  overflow: hidden;
   background: var(--white);
   position: relative;
+  display: flex;
+  flex-direction: column;
 }

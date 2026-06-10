@@ -14,10 +14,16 @@
   z-index: 2;
 }
 
-.closeBox:hover,
-.zoomBox:hover,
+.closeBox:hover {
+  background: #CC3333;
+}
+
+.zoomBox:hover {
+  background: #2266AA;
+}
+
 .collapseBox:hover {
-  background: var(--black);
+  background: #886600;
 }
 
 .closeBox:active,

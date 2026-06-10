@@ -227,6 +227,47 @@ export function MenuBar() {
     setActiveMenu(null);
   }, [openWindow]);
 
+  const handleOpenGameConsole = useCallback(() => {
+    openWindow({
+      id: 'console-player-demo',
+      title: 'Game Console',
+      position: { x: 160, y: 60 },
+      size: { width: 420, height: 460 },
+      minimized: false,
+      maximized: false,
+      contentType: 'console-player',
+      contentId: 'demo',
+    });
+    setActiveMenu(null);
+  }, [openWindow]);
+
+  const handleOpenCartridgeStudio = useCallback(() => {
+    openWindow({
+      id: 'cartridge-editor',
+      title: 'Cartridge Studio',
+      position: { x: 70, y: 45 },
+      size: { width: 860, height: 600 },
+      minimized: false,
+      maximized: false,
+      contentType: 'cartridge-editor',
+    });
+    setActiveMenu(null);
+  }, [openWindow]);
+
+  const handleOpenDeveloperStudio = useCallback(() => {
+    openWindow({
+      id: 'developer-studio',
+      title: 'Developer Studio',
+      position: { x: 60, y: 40 },
+      size: { width: 750, height: 550 },
+      minimized: false,
+      maximized: false,
+      contentType: 'developer-studio',
+    });
+    setActiveMenu(null);
+  }, [openWindow]);
+
+
   const handleShareDesktop = useCallback(() => {
     openWindow({
       id: 'share-dialog',
@@ -633,6 +674,8 @@ export function MenuBar() {
       { label: 'Clean Up', action: handleCleanUp },
     ],
     special: [
+      { label: 'Bazaar...', action: handleOpenBazaar },
+      { divider: true, label: '' },
       { label: 'About Me...', action: () => {
         const { openWindow } = useWindowStore.getState();
         openWindow({
@@ -651,9 +694,12 @@ export function MenuBar() {
       { label: 'Ask Eternal...', action: handleOpenAgentChat, disabled: !isApiConfigured },
       { divider: true, label: '' },
       { label: 'Appearance...', action: handleOpenAppearance },
-      { label: 'Bazaar...', action: handleOpenBazaar },
       { label: 'Cursor Creator...', action: handleOpenCursorCreator },
       { label: 'Custom CSS...', action: handleOpenCSSEditor },
+      { label: 'Developer Studio...', action: handleOpenDeveloperStudio },
+      { label: 'Game Console...', action: handleOpenGameConsole },
+      { label: 'Cartridge Studio...', action: handleOpenCartridgeStudio, disabled: !isApiConfigured },
+
       { label: 'Desktop Patterns...', action: handleOpenWallpaperPicker },
       { label: 'Settings...', action: handleOpenPreferences },
       { divider: true, label: '' },
@@ -745,6 +791,15 @@ export function MenuBar() {
       >
         Special
         {activeMenu === 'special' && renderDropdown(menus.special)}
+      </div>
+
+      {/* Bazaar quick-access button */}
+      <div
+        className={styles.bazaarButton}
+        onClick={handleOpenBazaar}
+        title="Open Bazaar — browse themes, cursors, apps"
+      >
+        ★ Bazaar
       </div>
 
       {/* Clock (right side) */}

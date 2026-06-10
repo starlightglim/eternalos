@@ -2,7 +2,6 @@
 
 .window {
   position: absolute;
-  user-select: none;
   will-change: transform;
   min-width: 200px;
   min-height: 150px;

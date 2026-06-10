@@ -93,3 +93,24 @@ export function canReadItem(
   if (mimeMatches(mimeType, granted.fs?.mimeTypes)) return true;
   return false;
 }
+
+export function canWriteItem(
+  granted: AppGrantedPermissions,
+  itemPath: string,
+  mimeType: string | undefined,
+): boolean {
+  if (anyGlobMatches(itemPath, granted.fs?.write)) return true;
+  if (mimeMatches(mimeType, granted.fs?.mimeTypes)) return true;
+  return false;
+}
+
+export function canDeleteItem(
+  granted: AppGrantedPermissions,
+  itemPath: string,
+  mimeType: string | undefined,
+): boolean {
+  if (anyGlobMatches(itemPath, granted.fs?.delete)) return true;
+  if (mimeMatches(mimeType, granted.fs?.mimeTypes)) return true;
+  return false;
+}
+

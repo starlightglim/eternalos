@@ -19,6 +19,7 @@ export function CircleButtons({
       <div
         className={`${styles.btn} ${styles.close}`}
         eos-part="close"
+        title="Close"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={onClose}
       >
@@ -27,6 +28,7 @@ export function CircleButtons({
       <div
         className={`${styles.btn} ${styles.collapse}`}
         eos-part="collapse"
+        title="Collapse"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={onCollapse}
       >
@@ -35,6 +37,7 @@ export function CircleButtons({
       <div
         className={`${styles.btn} ${styles.zoom}`}
         eos-part="zoom"
+        title="Zoom"
         onPointerDown={(e) => e.stopPropagation()}
         onClick={onZoom}
       >

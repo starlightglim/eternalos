@@ -280,6 +280,96 @@ export async function verifyAppCapabilityToken(
   }
 }
 
+/**
+ * Game capability token — identifies a *player* (not the game owner) to a
+ * single game's Dynamic Worker. Minted by the desktop host against the
+ * player's root JWT (POST /api/games/:gameId/capability) and passed into the
+ * console iframe; the game worker forwards it to EternalService, which
+ * verifies it statelessly here. Same wire format / shared-secret model as
+ * app capability tokens, with a distinct HMAC prefix so the token classes
+ * can never be replayed across each other.
+ */
+export interface GameCapabilityPayload {
+  typ: 'game-cap';
+  uid: string;
+  username: string;
+  gameId: string;
+  iat: number;
+  exp: number;
+  jti: string;
+}
+
+const GAME_CAPABILITY_SIGN_PREFIX = 'gamecap:';
+const GAME_CAPABILITY_DEFAULT_TTL = 10 * 60;  // 10 minutes
+const GAME_CAPABILITY_MAX_TTL = 15 * 60;      // 15 minutes hard cap
+
+export async function signGameCapabilityToken(
+  uid: string,
+  username: string,
+  gameId: string,
+  secret: string,
+  ttlSeconds: number = GAME_CAPABILITY_DEFAULT_TTL
+): Promise<{ token: string; expiresAt: number }> {
+  const now = Math.floor(Date.now() / 1000);
+  const exp = now + Math.min(ttlSeconds, GAME_CAPABILITY_MAX_TTL);
+
+  const payload: GameCapabilityPayload = {
+    typ: 'game-cap',
+    uid,
+    username,
+    gameId,
+    iat: now,
+    exp,
+    jti: crypto.randomUUID(),
+  };
+
+  const encoder = new TextEncoder();
+  const payloadBase64 = base64urlEncode(encoder.encode(JSON.stringify(payload)));
+  const key = await importKey(secret);
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    encoder.encode(GAME_CAPABILITY_SIGN_PREFIX + payloadBase64)
+  );
+  return { token: `${payloadBase64}.${base64urlEncode(signature)}`, expiresAt: exp };
+}
+
+export async function verifyGameCapabilityToken(
+  token: string,
+  secret: string,
+  options: { expectedGameId?: string } = {}
+): Promise<GameCapabilityPayload | null> {
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+
+  const [payloadBase64, signatureBase64] = parts;
+
+  try {
+    const encoder = new TextEncoder();
+    const key = await importKey(secret);
+    const signature = base64urlDecode(signatureBase64);
+    const valid = await crypto.subtle.verify(
+      'HMAC',
+      key,
+      signature,
+      encoder.encode(GAME_CAPABILITY_SIGN_PREFIX + payloadBase64)
+    );
+    if (!valid) return null;
+
+    const decoder = new TextDecoder();
+    const payload = JSON.parse(decoder.decode(base64urlDecode(payloadBase64))) as Partial<GameCapabilityPayload>;
+
+    if (payload.typ !== 'game-cap') return null;
+    if (!payload.uid || !payload.gameId || typeof payload.exp !== 'number') return null;
+    if (Math.floor(Date.now() / 1000) > payload.exp) return null;
+    if (options.expectedGameId && payload.gameId !== options.expectedGameId) return null;
+
+    return payload as GameCapabilityPayload;
+  } catch {
+    return null;
+  }
+}
+
 export async function signChatWebSocketToken(
   uid: string,
   secret: string,

@@ -3,8 +3,9 @@
 
 name = "eternalos-api"
 main = "src/index.ts"
-compatibility_date = "2026-04-15"
+compatibility_date = "2026-03-24"
 compatibility_flags = ["nodejs_compat"]
+
 
 # Durable Objects
 [[durable_objects.bindings]]

@@ -121,6 +121,25 @@ export interface DesktopItem {
   appManifest?: AppManifest;
 }
 
+export interface AppPermissions {
+  fs?: {
+    read?: string[];
+    write?: string[];
+    delete?: string[];
+    mimeTypes?: string[];
+  };
+  profile?: {
+    read?: Array<'username' | 'displayName' | 'bio' | 'avatar'>;
+  };
+  network?: {
+    outbound?: string[];
+  };
+  handlers?: {
+    mimeTypes?: string[];
+    extensions?: string[];
+  };
+}
+
 /**
  * App manifest for user-created apps (Dynamic Workers)
  */
@@ -137,6 +156,37 @@ export interface AppManifest {
     frameless?: boolean;
   };
   appId: string;
+  permissions?: AppPermissions;
+}
+
+/**
+ * Cartridge format for the fantasy game console.
+ * Mirrors packages/worker/src/utils/cartridge.ts.
+ */
+export interface CartridgeMeta {
+  name: string;
+  description?: string;
+  author: string;
+  version: string;
+}
+
+export interface Cartridge {
+  formatVersion: 1;
+  meta: CartridgeMeta;
+  code: string;
+  /** 128 rows x 128 hex nibbles (one palette index per pixel), '\n'-joined */
+  spritesheet: string;
+  /** Optional 16-entry hex color palette override */
+  palette?: string[];
+  /** Optional 512 hex chars of per-sprite flags */
+  flags?: string;
+}
+
+export interface CartridgeDraftSummary {
+  cartId: string;
+  name: string;
+  version: string;
+  updatedAt: number;
 }
 
 /**
@@ -155,8 +205,10 @@ export interface WindowState {
   preMaximizedPosition?: { x: number; y: number };
   preMaximizedSize?: { width: number; height: number };
   // Content information
-  contentType: 'folder' | 'image' | 'text' | 'markdown' | 'code' | 'get-info' | 'about' | 'wallpaper' | 'welcome' | 'search' | 'preferences' | 'trash' | 'audio' | 'video' | 'pdf' | 'calculator' | 'clock' | 'link' | 'appearance' | 'widget' | 'css-editor' | 'share-dialog' | 'profile' | 'agent-chat' | 'bazaar' | 'cursor-creator' | 'app' | 'app-preview';
+  contentType: 'folder' | 'image' | 'text' | 'markdown' | 'code' | 'get-info' | 'about' | 'wallpaper' | 'welcome' | 'search' | 'preferences' | 'trash' | 'audio' | 'video' | 'pdf' | 'calculator' | 'clock' | 'link' | 'appearance' | 'widget' | 'css-editor' | 'share-dialog' | 'profile' | 'agent-chat' | 'bazaar' | 'cursor-creator' | 'developer-studio' | 'app' | 'app-preview' | 'console-player' | 'cartridge-editor';
+
   contentId?: string; // Reference to DesktopItem id if applicable
+  launchFileId?: string; // Double-clicked file ID to pass to a custom handler app
 }
 
 /**

@@ -155,11 +155,35 @@
 }
 
 /* ============================================
+   BAZAAR QUICK-ACCESS BUTTON
+   Persistent shortcut in menu bar right area
+   ============================================ */
+
+.bazaarButton {
+  margin-left: auto;
+  padding: 0 10px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  cursor: default;
+  font-family: var(--font-chicago);
+  font-size: var(--font-size-ui);
+  border-left: 1px solid var(--shadow);
+  border-right: 1px solid var(--shadow);
+  letter-spacing: 0.5px;
+}
+
+.bazaarButton:hover {
+  background: var(--black);
+  color: var(--white);
+}
+
+/* ============================================
    CLOCK (Right side of menu bar)
    ============================================ */
 
 .clock {
-  margin-left: auto;
+  margin-left: 0;
   padding: 0 8px;
   font-family: var(--font-chicago);
   font-size: var(--font-size-ui);

@@ -16,6 +16,8 @@ import type { AppGrantedPermissions, AppCapabilityPayload } from '../utils/jwt';
 import type { DesktopItem } from '../types';
 import { signAppCapabilityToken, verifyAppCapabilityToken } from '../utils/jwt';
 import { buildItemPath, pathMatchesGlob as sharedPathMatchesGlob, canReadItem as sharedCanReadItem } from '../utils/fsPolicy';
+import { createWorker } from '@cloudflare/worker-bundler';
+import { createAppWorkspace, createWorkerModuleFiles } from '../agents/tools/appTools';
 
 // Pack of permission names a client may request. The server validates
 // unknown keys out rather than fail the whole mint.
@@ -332,4 +334,204 @@ export async function handleAppFsRead(
 
   return new Response(object.body, { headers });
 }
+
+/**
+ * POST /api/apps/dev-deploy
+ *
+ * Developer deployment endpoint. Allows developers to manually upload and compile
+ * their application workspaces directly onto their EternalOS desktop.
+ *
+ * Auth: Bearer user JWT (requireAuth)
+ */
+export async function handleAppDevDeploy(
+  request: Request,
+  env: Env,
+  auth: AuthContext,
+): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      appId?: string; // present if updating
+      manifest: {
+        name: string;
+        description?: string;
+        version: string;
+        windowConfig: { defaultWidth: number; defaultHeight: number; resizable?: boolean };
+        permissions?: any;
+        rationale?: string;
+      };
+      files: Record<string, string>;
+    };
+
+    const { appId: inputAppId, manifest, files } = body;
+    const uid = auth.uid;
+
+    let appId = inputAppId;
+    let isUpdate = false;
+    let oldDesktopItemId: string | null = null;
+    let version = 1;
+
+    if (appId) {
+      // Update flow
+      const appMeta = await env.DESKTOP_KV.get<{ uid: string; version: number; granted?: any; r2Prefix?: string }>(`app:${appId}`, 'json');
+      if (!appMeta) {
+        return Response.json({ error: 'App not found' }, { status: 404 });
+      }
+      if (appMeta.uid !== uid) {
+        return Response.json({ error: 'Not authorized' }, { status: 403 });
+      }
+      isUpdate = true;
+      version = (appMeta.version || 1) + 1;
+    } else {
+      // Create flow
+      appId = crypto.randomUUID();
+    }
+
+    const r2Prefix = `apps/${uid}/${appId}`;
+
+    // 1. Create workspace & bundle
+    const workspace = createAppWorkspace(files);
+    const workerFiles = createWorkerModuleFiles(workspace, '/api/apps');
+    const { mainModule, modules } = await createWorker({
+      files: {
+        ...workerFiles,
+        ['__eternal_worker__.js']: workerFiles['__eternal_worker__.js'].replaceAll('__APP_ID__', appId),
+      },
+      entryPoint: '__eternal_worker__.js',
+    });
+
+    // 2. Write to R2
+    await env.ETERNALOS_FILES.put(`${r2Prefix}/bundle.json`, JSON.stringify({ mainModule, modules }));
+    await env.ETERNALOS_FILES.put(`${r2Prefix}/source.json`, JSON.stringify(workspace.files));
+    await env.ETERNALOS_FILES.put(`${r2Prefix}/metadata.json`, JSON.stringify({
+      id: appId,
+      uid,
+      name: manifest.name,
+      description: manifest.description,
+      version,
+      r2Prefix,
+    }));
+
+    // 3. Register in KV
+    const granted = manifest.permissions || {}; // Dev deploys auto-grant declared permissions
+    await env.DESKTOP_KV.put(
+      `app:${appId}`,
+      JSON.stringify({
+        uid,
+        version,
+        granted,
+        r2Prefix,
+      })
+    );
+
+    // 4. Create or Update Desktop Item
+    const doId = env.USER_DESKTOP.idFromName(uid);
+    const stub = env.USER_DESKTOP.get(doId);
+
+    const appManifestObj = {
+      name: manifest.name,
+      description: manifest.description,
+      version: String(version),
+      windowConfig: {
+        defaultWidth: manifest.windowConfig?.defaultWidth || 600,
+        defaultHeight: manifest.windowConfig?.defaultHeight || 500,
+        resizable: manifest.windowConfig?.resizable !== false,
+      },
+      appId,
+      permissions: manifest.permissions,
+      rationale: manifest.rationale,
+    };
+
+    if (isUpdate) {
+      // Find the existing desktop item by scanning items in the user desktop DO
+      const doRes = await stub.fetch(new Request('http://internal/items'));
+      if (doRes.ok) {
+        const data = await doRes.json<{ items: DesktopItem[] }>();
+        const existingItem = data.items.find((item) => item.type === 'app' && item.appManifest?.appId === appId);
+        if (existingItem) {
+          oldDesktopItemId = existingItem.id;
+        }
+      }
+
+      if (oldDesktopItemId) {
+        // Update Desktop Item
+        await stub.fetch(
+          new Request('http://internal/items', {
+            method: 'PATCH',
+            body: JSON.stringify([{
+              id: oldDesktopItemId,
+              updates: {
+                name: manifest.name,
+                appManifest: appManifestObj,
+                grantedPermissions: granted,
+              },
+            }]),
+          })
+        );
+      }
+    } else {
+      // Create new Desktop Item
+      const position = { x: 2 + Math.floor(Math.random() * 4), y: 2 + Math.floor(Math.random() * 4) }; // place it around the middle
+      await stub.fetch(
+        new Request('http://internal/items', {
+          method: 'POST',
+          body: JSON.stringify({
+            type: 'app',
+            name: manifest.name,
+            parentId: null,
+            position,
+            isPublic: false,
+            appManifest: appManifestObj,
+            grantedPermissions: granted,
+            permissionGrantedAt: Date.now(),
+          }),
+        })
+      );
+    }
+
+    return Response.json({ success: true, appId, version, isUpdate });
+  } catch (error) {
+    console.error('Developer deployment error:', error);
+    return Response.json({ error: error instanceof Error ? error.message : 'Deployment failed' }, { status: 500 });
+  }
+}
+
+/**
+ * GET /api/apps/:appId/source
+ * Returns the raw source files { "index.html": "...", "app.js": "..." } of an app.
+ * Auth: Bearer user JWT (requireAuth)
+ */
+export async function handleGetAppSourceRoute(
+  request: Request,
+  env: Env,
+  auth: AuthContext,
+  appId: string,
+): Promise<Response> {
+  try {
+    const uid = auth.uid;
+
+    // Check app ownership in KV
+    const appMeta = await env.DESKTOP_KV.get<{ uid: string; r2Prefix?: string }>(`app:${appId}`, 'json');
+    if (!appMeta) {
+      return Response.json({ error: 'App not found' }, { status: 404 });
+    }
+    if (appMeta.uid !== uid) {
+      return Response.json({ error: 'Not authorized' }, { status: 403 });
+    }
+
+    const r2Prefix = appMeta.r2Prefix || `apps/${uid}/${appId}`;
+    const sourceObj = await env.ETERNALOS_FILES.get(`${r2Prefix}/source.json`);
+    if (!sourceObj) {
+      return Response.json({ error: 'Source files not found' }, { status: 404 });
+    }
+
+    const sourceText = await sourceObj.text();
+    const sourceFiles = JSON.parse(sourceText);
+
+    return Response.json({ success: true, files: sourceFiles });
+  } catch (error) {
+    console.error('Failed to get app source:', error);
+    return Response.json({ error: error instanceof Error ? error.message : 'Failed to retrieve source' }, { status: 500 });
+  }
+}
+
 

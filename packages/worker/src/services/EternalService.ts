@@ -15,8 +15,9 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { Env } from '../index';
 import type { DesktopItem, UserProfile } from '../types';
-import type { AppGrantedPermissions } from '../utils/jwt';
-import { buildItemPath, canReadItem, mimeMatches } from '../utils/fsPolicy';
+import type { AppGrantedPermissions, GameCapabilityPayload } from '../utils/jwt';
+import { verifyGameCapabilityToken } from '../utils/jwt';
+import { buildItemPath, canReadItem, mimeMatches, canWriteItem, canDeleteItem } from '../utils/fsPolicy';
 
 /**
  * Per-instance context baked into the service binding at Dynamic Worker load
@@ -221,5 +222,310 @@ export class EternalService extends WorkerEntrypoint<Env> {
    */
   async whoami(): Promise<{ appId: string; hostVersion: string }> {
     return { appId: this.props.appId, hostVersion: '1' };
+  }
+
+  /**
+   * Write content to a file path. Will create any directories in the path if they do not exist.
+   * Resolves paths relative to the desktop root.
+   */
+  async write(options: { path: string; content: string; mimeType?: string; type?: DesktopItem['type']; parentId?: string | null }): Promise<EternalItem> {
+    const { granted } = this.props;
+    if (!granted.fs) {
+      throw new Error('Not permitted: fs access not granted');
+    }
+
+    const path = options.path;
+    const mimeType = options.mimeType || 'text/plain';
+    const type = options.type || 'text';
+
+    if (!canWriteItem(granted, path, mimeType)) {
+      throw new Error(`Not permitted: write access to ${path} denied`);
+    }
+
+    let parentId = options.parentId || null;
+    let name = path.split('/').pop() || 'Untitled';
+
+    if (path.startsWith('/') && !options.parentId) {
+      const segments = path.split('/').filter(Boolean);
+      if (segments.length > 1) {
+        const parentPath = '/' + segments.slice(0, -1).join('/');
+        name = segments[segments.length - 1];
+
+        const snapshot = await this.loadSnapshot();
+        const itemsMap = new Map(snapshot.items.map((item) => [item.id, item]));
+        const parentFolder = snapshot.items.find(
+          (item) => item.type === 'folder' && buildItemPath(item.id, itemsMap) === parentPath
+        );
+
+        if (parentFolder) {
+          parentId = parentFolder.id;
+        } else {
+          // Parent folder not found. Recursively create directory chain.
+          let currentParentId: string | null = null;
+          let currentPath = '';
+          for (const segment of segments.slice(0, -1)) {
+            currentPath += '/' + segment;
+            const existingFolder = snapshot.items.find(
+              (item) => item.type === 'folder' && buildItemPath(item.id, itemsMap) === currentPath
+            );
+            if (existingFolder) {
+              currentParentId = existingFolder.id;
+            } else {
+              const createFolderRes = await this.getDesktopStub().fetch(
+                new Request('http://internal/items', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    type: 'folder',
+                    name: segment,
+                    parentId: currentParentId,
+                  }),
+                })
+              );
+              if (!createFolderRes.ok) {
+                throw new Error('Failed to create parent directory chain');
+              }
+              const newFolder = await createFolderRes.json<DesktopItem>();
+              currentParentId = newFolder.id;
+              snapshot.items.push(newFolder);
+              itemsMap.set(newFolder.id, newFolder);
+            }
+          }
+          parentId = currentParentId;
+        }
+      }
+    }
+
+    const response = await this.getDesktopStub().fetch(
+      new Request('http://internal/items', {
+        method: 'POST',
+        body: JSON.stringify({
+          type,
+          name,
+          parentId,
+          textContent: options.content,
+          mimeType,
+        }),
+      })
+    );
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`Failed to write file: ${err}`);
+    }
+
+    const newItem = await response.json<DesktopItem>();
+    return toEternalItem(newItem, path);
+  }
+
+  /**
+   * Update properties on an existing item (e.g. metadata or widget configuration).
+   */
+  async patch(itemId: string, updates: Partial<DesktopItem>): Promise<EternalItem> {
+    const { granted } = this.props;
+    if (!granted.fs) {
+      throw new Error('Not permitted: fs access not granted');
+    }
+
+    const snapshot = await this.loadSnapshot();
+    const itemsMap = new Map(snapshot.items.map((item) => [item.id, item]));
+    const item = itemsMap.get(itemId);
+    if (!item) {
+      throw new Error('Item not found');
+    }
+
+    const itemPath = buildItemPath(item.id, itemsMap);
+    if (!canWriteItem(granted, itemPath, item.mimeType)) {
+      throw new Error(`Not permitted: write access to ${itemPath} denied`);
+    }
+
+    const response = await this.getDesktopStub().fetch(
+      new Request('http://internal/items', {
+        method: 'PATCH',
+        body: JSON.stringify([{ id: itemId, updates }]),
+      })
+    );
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`Failed to update item: ${err}`);
+    }
+
+    const updated = await response.json<DesktopItem[]>();
+    if (updated.length === 0) {
+      throw new Error('Failed to update item');
+    }
+
+    return toEternalItem(updated[0], buildItemPath(updated[0].id, itemsMap));
+  }
+
+  /**
+   * Delete an existing item.
+   */
+  async delete(itemId: string): Promise<void> {
+    const { granted } = this.props;
+    if (!granted.fs) {
+      throw new Error('Not permitted: fs access not granted');
+    }
+
+    const snapshot = await this.loadSnapshot();
+    const itemsMap = new Map(snapshot.items.map((item) => [item.id, item]));
+    const item = itemsMap.get(itemId);
+    if (!item) {
+      throw new Error('Item not found');
+    }
+
+    const itemPath = buildItemPath(item.id, itemsMap);
+    if (!canDeleteItem(granted, itemPath, item.mimeType)) {
+      throw new Error(`Not permitted: delete access to ${itemPath} denied`);
+    }
+
+    const response = await this.getDesktopStub().fetch(
+      new Request(`http://internal/items/${itemId}`, {
+        method: 'DELETE',
+      })
+    );
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`Failed to delete item: ${err}`);
+    }
+  }
+
+  /**
+   * Read a value from private, sandboxed app KV storage.
+   */
+  async storageGet(key: string): Promise<string | null> {
+    const { uid, appId } = this.props;
+    if (!key || key.length > 256 || key.includes(':')) {
+      throw new Error('Invalid storage key');
+    }
+    return this.env.DESKTOP_KV.get(`app-storage:${uid}:${appId}:${key}`);
+  }
+
+  /**
+   * Write a value to private, sandboxed app KV storage.
+   */
+  async storageSet(key: string, value: string): Promise<void> {
+    const { uid, appId } = this.props;
+    if (!key || key.length > 256 || key.includes(':')) {
+      throw new Error('Invalid storage key');
+    }
+    if (value.length > 1024 * 1024) {
+      throw new Error('Value too large (max 1MB)');
+    }
+    await this.env.DESKTOP_KV.put(`app-storage:${uid}:${appId}:${key}`, value);
+  }
+
+  /**
+   * Delete a key from private, sandboxed app KV storage.
+   */
+  async storageDelete(key: string): Promise<void> {
+    const { uid, appId } = this.props;
+    if (!key || key.length > 256 || key.includes(':')) {
+      throw new Error('Invalid storage key');
+    }
+    await this.env.DESKTOP_KV.delete(`app-storage:${uid}:${appId}:${key}`);
+  }
+
+  /**
+   * List all stored keys for this app instance.
+   */
+  async storageList(): Promise<string[]> {
+    const { uid, appId } = this.props;
+    const prefix = `app-storage:${uid}:${appId}:`;
+    const listResult = await this.env.DESKTOP_KV.list({ prefix });
+    return listResult.keys.map((k) => k.name.slice(prefix.length));
+  }
+
+  // -------------------------------------------------------------------------
+  // Fantasy-console game bridge. Unlike app storage (scoped to the app
+  // *owner*), game saves are scoped to the *player* whose identity arrives
+  // in a short-lived game capability token — so progress persists per player
+  // even on games authored by someone else.
+  // -------------------------------------------------------------------------
+
+  private static readonly MAX_GAME_SAVE_BYTES = 32 * 1024;
+
+  /**
+   * Verify a player capability for the game this binding was minted for.
+   * Game bindings carry props.appId = `game:{gameId}` so a capability for
+   * one game can never be used through another game's worker.
+   */
+  private async verifyGameCapability(capToken: string): Promise<GameCapabilityPayload> {
+    const { appId } = this.props;
+    if (!appId.startsWith('game:')) {
+      throw new Error('Not a game binding');
+    }
+    const expectedGameId = appId.slice('game:'.length);
+    const payload = await verifyGameCapabilityToken(capToken, this.env.JWT_SECRET, { expectedGameId });
+    if (!payload) {
+      throw new Error('Invalid or expired capability');
+    }
+    return payload;
+  }
+
+  /** Read the calling player's save blob for this game. */
+  async gameSaveGet(capToken: string): Promise<string | null> {
+    const payload = await this.verifyGameCapability(capToken);
+    return this.env.DESKTOP_KV.get(`gamesave:${payload.gameId}:${payload.uid}`);
+  }
+
+  /** Write the calling player's save blob for this game (≤ 32KB JSON). */
+  async gameSavePut(capToken: string, data: string): Promise<void> {
+    const payload = await this.verifyGameCapability(capToken);
+    if (typeof data !== 'string') {
+      throw new Error('Save data must be a string');
+    }
+    if (new TextEncoder().encode(data).length > EternalService.MAX_GAME_SAVE_BYTES) {
+      throw new Error('Save data too large (max 32KB)');
+    }
+    // Must parse as JSON — keeps the namespace inert (no HTML smuggling).
+    try {
+      JSON.parse(data);
+    } catch {
+      throw new Error('Save data must be valid JSON');
+    }
+    await this.env.DESKTOP_KV.put(`gamesave:${payload.gameId}:${payload.uid}`, data);
+  }
+
+  /**
+   * Make a domain-allowlisted outbound network fetch.
+   */
+  async fetchProxy(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }): Promise<{ status: number; statusText: string; body: string; headers: Record<string, string> }> {
+    const { granted } = this.props;
+    if (!granted.network?.outbound) {
+      throw new Error('Not permitted: outbound network access not granted');
+    }
+
+    const targetUrl = new URL(url);
+    const isAllowed = granted.network.outbound.some((pattern) => {
+      if (pattern === '*') return true;
+      if (pattern === targetUrl.hostname) return true;
+      if (pattern.startsWith('*.') && targetUrl.hostname.endsWith(pattern.slice(2))) return true;
+      return false;
+    });
+
+    if (!isAllowed) {
+      throw new Error(`Not permitted: outbound access to ${targetUrl.hostname} is not allowed`);
+    }
+
+    const res = await fetch(url, {
+      method: init?.method,
+      headers: init?.headers,
+      body: init?.body,
+    });
+
+    const bodyText = await res.text();
+    const resHeaders: Record<string, string> = {};
+    res.headers.forEach((v, k) => {
+      resHeaders[k] = v;
+    });
+
+    return {
+      status: res.status,
+      statusText: res.statusText,
+      body: bodyText,
+      headers: resHeaders,
+    };
   }
 }

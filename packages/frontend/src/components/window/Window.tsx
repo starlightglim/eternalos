@@ -9,7 +9,7 @@ import styles from './Window.module.css';
 // Tags considered interactive — clicks on these shouldn't trigger body-drag
 const INTERACTIVE_TAGS = new Set([
   'button', 'a', 'input', 'textarea', 'select',
-  'video', 'audio', 'canvas', 'label',
+  'video', 'audio', 'canvas', 'label', 'iframe',
 ]);
 
 // Containers that handle their own pointer interactions (e.g. folder selection rect)
