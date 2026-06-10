@@ -270,6 +270,16 @@ export interface AuthUser {
   emailVerified?: boolean;
 }
 
+export type HyperEvmChainId = 998 | 999;
+
+export interface LinkedWallet {
+  provider: 'hyperevm';
+  chainId: HyperEvmChainId;
+  address: string;
+  linkedAt: number;
+  lastVerifiedAt: number;
+}
+
 /**
  * Menu item for the menu bar
  */

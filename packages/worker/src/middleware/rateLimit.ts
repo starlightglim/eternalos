@@ -206,7 +206,9 @@ export function addRateLimitHeaders(
   newHeaders.set('X-RateLimit-Remaining', String(result.remaining));
   newHeaders.set('X-RateLimit-Reset', String(Math.ceil(result.resetAt / 1000)));
 
-  return new Response(response.body, {
+  const mustRemainBodyless = response.status === 101 || response.status === 204 || response.status === 205 || response.status === 304;
+  const body = response.body ?? (mustRemainBodyless ? null : '');
+  return new Response(body, {
     status: response.status,
     statusText: response.statusText,
     headers: newHeaders,
