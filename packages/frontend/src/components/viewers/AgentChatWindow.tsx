@@ -83,6 +83,26 @@ type CreateFolderOutput = {
   }>;
 };
 
+type ReadTextFileOutput = {
+  found: boolean;
+  id?: string;
+  name?: string;
+  location?: string;
+  truncated?: boolean;
+  message?: string;
+  candidates?: Array<{ id: string; name: string; location: string }>;
+};
+
+type CreateTextNoteOutput = {
+  note: {
+    id: string;
+    name: string;
+    type: DesktopItem['type'];
+  };
+  location: string;
+  characters: number;
+};
+
 type ListAppsOutput = {
   apps: Array<{
     id: string;
@@ -577,6 +597,7 @@ function AgentChatThreadPane({
     const refreshToolTypes = [
       'tool-createFolder',
       'tool-moveItems',
+      'tool-createTextNote',
       'tool-codemode',
       'tool-previewAppFromPrompt',
       'tool-installAppPreview',
@@ -774,6 +795,135 @@ function AgentChatThreadPane({
           ) : null}
         </div>
       );
+    }
+
+    if (part.type === 'tool-readTextFile') {
+      if (part.state === 'output-error') {
+        return (
+          <div key={`read-text-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Read file failed</div>
+            <div className={styles.errorText}>{String(part.errorText ?? 'Unknown error')}</div>
+          </div>
+        );
+      }
+
+      if (part.state !== 'output-available') {
+        const input = (part.input as { name?: string } | undefined) ?? {};
+        return (
+          <div key={`read-text-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Reading file</div>
+            <div className={styles.toolBody}>{input.name ? `Opening "${input.name}"...` : 'Opening file...'}</div>
+          </div>
+        );
+      }
+
+      const output = part.output as ReadTextFileOutput;
+      if (!output.found) {
+        return (
+          <div key={`read-text-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>File not found</div>
+            <div className={styles.toolBody}>{output.message ?? 'No matching text file.'}</div>
+            {output.candidates && output.candidates.length > 0 ? (
+              <div className={styles.resultList}>
+                {output.candidates.map((item) => (
+                  <div key={item.id} className={styles.resultRow}>
+                    <div className={styles.resultHeading}>
+                      {renderItemButton({ id: item.id, name: item.name, type: 'text' })}
+                    </div>
+                    <div className={styles.resultMeta}>In {item.location}</div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        );
+      }
+
+      return (
+        <div key={`read-text-${index}`} className={styles.toolCard}>
+          <div className={styles.toolTitle}>Read file</div>
+          <div className={styles.toolBody}>
+            {renderItemButton({ id: output.id ?? '', name: output.name ?? 'file', type: 'text' })} from {output.location}
+            {output.truncated ? ' (long file — read a truncated copy)' : ''}.
+          </div>
+        </div>
+      );
+    }
+
+    if (part.type === 'tool-createTextNote') {
+      const input = (part.input as { name?: string; content?: string } | undefined) ?? {};
+
+      if (part.state === 'approval-requested') {
+        const preview = (input.content ?? '').slice(0, 240);
+        return (
+          <div key={`create-note-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Approval required</div>
+            <div className={styles.toolBody}>
+              Create note: <strong>{input.name || ''}</strong>
+              {preview ? (
+                <div className={styles.resultSummary}>
+                  {preview}{(input.content?.length ?? 0) > 240 ? '…' : ''}
+                </div>
+              ) : null}
+            </div>
+            <div className={styles.approvalRow}>
+              <button
+                type="button"
+                className={styles.actionButton}
+                onClick={() => {
+                  if (part.approval?.id) {
+                    void addToolApprovalResponse({ id: part.approval.id, approved: true });
+                  }
+                }}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                className={styles.actionButton}
+                onClick={() => {
+                  if (part.approval?.id) {
+                    void addToolApprovalResponse({ id: part.approval.id, approved: false });
+                  }
+                }}
+              >
+                Deny
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      if (part.state === 'output-denied') {
+        return (
+          <div key={`create-note-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Create note cancelled</div>
+          </div>
+        );
+      }
+
+      if (part.state === 'output-error') {
+        return (
+          <div key={`create-note-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Create note failed</div>
+            <div className={styles.errorText}>{String(part.errorText ?? 'Unknown error')}</div>
+          </div>
+        );
+      }
+
+      if (part.state === 'output-available') {
+        const output = part.output as CreateTextNoteOutput;
+        return (
+          <div key={`create-note-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Note created</div>
+            <div className={styles.toolBody}>
+              {renderItemButton(output.note)} saved to {output.location}.
+            </div>
+          </div>
+        );
+      }
+
+      return null;
     }
 
     if (part.type === 'tool-createFolder' || part.type === 'tool-moveItems') {

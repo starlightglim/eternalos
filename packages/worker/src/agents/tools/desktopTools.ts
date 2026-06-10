@@ -44,6 +44,22 @@ function getItemSummary(item: DesktopItem): string {
   return item.mimeType || item.type;
 }
 
+const MAX_TEXT_FILE_CHARS = 8000;
+
+function formatTextFileResult(item: DesktopItem, items: DesktopItem[]) {
+  const content = item.textContent ?? '';
+  const truncated = content.length > MAX_TEXT_FILE_CHARS;
+  return {
+    found: true as const,
+    id: item.id,
+    name: item.name,
+    location: getItemLocation(item, items),
+    updatedAt: item.updatedAt,
+    truncated,
+    content: truncated ? content.slice(0, MAX_TEXT_FILE_CHARS) : content,
+  };
+}
+
 function searchItems(items: DesktopItem[], query: string): Array<{
   id: string;
   name: string;
@@ -168,6 +184,98 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
           query: input.query,
           totalMatches: results.length,
           items: results.slice(0, 10),
+        };
+      },
+    }),
+
+    readTextFile: tool({
+      description: 'Read the full contents of a text or markdown file on the desktop. Look up by item ID (from a previous search) or by name. Use when the user asks what a note or text file says.',
+      inputSchema: z.object({
+        itemId: z.string().optional().describe('Exact item ID, e.g. from a previous search result.'),
+        name: z.string().optional().describe('File name to look up when the ID is unknown. Case-insensitive, partial match.'),
+      }),
+      execute: async (input) => {
+        const needle = input.name?.trim().toLowerCase();
+        if (!input.itemId && !needle) {
+          throw new Error('Provide an itemId or a name to read.');
+        }
+
+        const snapshot = await loadSnapshot(ctx);
+        const active = snapshot.items.filter((i) => !i.isTrashed);
+
+        if (input.itemId) {
+          const item = active.find((i) => i.id === input.itemId);
+          if (!item) throw new Error(`No item with ID ${input.itemId}.`);
+          if (typeof item.textContent !== 'string') {
+            throw new Error(`"${item.name}" is a ${item.type} item without readable text content.`);
+          }
+          return formatTextFileResult(item, snapshot.items);
+        }
+
+        const matches = active.filter(
+          (i) => typeof i.textContent === 'string' && i.name.toLowerCase().includes(needle!),
+        );
+        if (matches.length === 0) {
+          return { found: false as const, message: `No text file matching "${input.name}". Try searchDesktop to locate it.` };
+        }
+        if (matches.length > 1) {
+          return {
+            found: false as const,
+            message: `${matches.length} text files match "${input.name}". Ask the user which one, or read by ID.`,
+            candidates: matches.slice(0, 10).map((i) => ({
+              id: i.id,
+              name: i.name,
+              location: getItemLocation(i, snapshot.items),
+            })),
+          };
+        }
+        return formatTextFileResult(matches[0], snapshot.items);
+      },
+    }),
+
+    createTextNote: tool({
+      description: 'Create a text note on the desktop with a name and content. Use when the user asks to write, save, jot down, or draft a note or text file. A name ending in .md renders as markdown.',
+      inputSchema: z.object({
+        name: z.string().min(1).max(80).describe('File name for the note, e.g. "Grocery List" or "ideas.md".'),
+        content: z.string().min(1).max(20000).describe('Plain text or markdown body of the note.'),
+        folderId: z.string().optional().describe('ID of an existing folder to place the note in. Omit for the root desktop.'),
+      }),
+      needsApproval: true,
+      execute: async (input) => {
+        const stub = ctx.getUserDesktopStub();
+
+        let parentId: string | null = null;
+        let locationName = 'Desktop';
+        if (input.folderId) {
+          const snapshot = await loadSnapshot(ctx);
+          const folder = snapshot.items.find((i) => i.id === input.folderId && !i.isTrashed);
+          if (!folder) throw new Error(`No folder with ID ${input.folderId}.`);
+          if (folder.type !== 'folder') throw new Error(`"${folder.name}" is not a folder.`);
+          parentId = folder.id;
+          locationName = folder.name;
+        }
+
+        // SECURITY: Default to private, same as createFolder above — the
+        // approval UI surfaces the note's name and a content preview, but not
+        // visibility. The user can make it public via Get Info afterwards.
+        const res = await stub.fetch(new Request('http://internal/items', {
+          method: 'POST',
+          body: JSON.stringify({
+            type: 'text',
+            name: input.name.trim(),
+            textContent: input.content,
+            parentId,
+            position: { x: 60, y: 60 },
+            isPublic: false,
+          }),
+        }));
+        if (!res.ok) throw new Error(`Failed to create note (${res.status})`);
+        const item = await res.json<DesktopItem>();
+
+        return {
+          note: { id: item.id, name: item.name, type: item.type },
+          location: locationName,
+          characters: input.content.length,
         };
       },
     }),

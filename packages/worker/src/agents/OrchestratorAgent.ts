@@ -59,6 +59,7 @@ Mode: Desktop assistant (read-only)
 - Use read-only desktop tools when needed:
   - getDesktopOverview
   - searchDesktop
+  - readTextFile
 - Use tools only if they materially improve the answer
 - If the user just wants a conversational answer, respond without tools`;
 
@@ -69,9 +70,13 @@ Mode: Desktop assistant (mutating)
 - Available tools:
   - getDesktopOverview
   - searchDesktop
+  - readTextFile
   - createFolder
   - moveItems
-- Prefer search/read tools before mutations when context is missing`;
+  - createTextNote
+- Prefer search/read tools before mutations when context is missing
+- For createTextNote, write the full note content yourself based on the
+  conversation — do not ask the user to dictate it verbatim unless unclear`;
 
 const APP_READ_PROMPT = `${BASE_PROMPT}
 
@@ -194,12 +199,12 @@ function classifyRoute(text: string): ChatRoute {
     return 'app-read';
   }
 
-  const desktopWritePattern = /\b(organize|group|move|sort|tidy|clean up|create folder|put .* into|file away)\b|\b(folder|folders)\b.*\b(create|make|new)\b/i;
+  const desktopWritePattern = /\b(organize|group|move|sort|tidy|clean up|create folder|put .* into|file away)\b|\b(folder|folders)\b.*\b(create|make|new)\b|\b(write|save|jot|draft|create|make)\b.*\b(note|memo|text file)\b/i;
   if (desktopWritePattern.test(normalized)) {
     return 'desktop-write';
   }
 
-  const desktopReadPattern = /\b(desktop|file|files|folder|folders|image|images|photo|photos|video|videos|audio|pdf|search|find|tag|tags|ocr|upload|overview|recent|what's on my desktop|what is on my desktop)\b/i;
+  const desktopReadPattern = /\b(desktop|file|files|folder|folders|image|images|photo|photos|video|videos|audio|pdf|search|find|tag|tags|ocr|upload|overview|recent|note|notes|memo|what's on my desktop|what is on my desktop)\b/i;
   if (desktopReadPattern.test(normalized)) {
     return 'desktop-read';
   }
@@ -289,11 +294,13 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
     const desktopReadTools = {
       getDesktopOverview: allDesktopTools.getDesktopOverview,
       searchDesktop: allDesktopTools.searchDesktop,
+      readTextFile: allDesktopTools.readTextFile,
     };
     const desktopWriteTools = {
       ...desktopReadTools,
       createFolder: allDesktopTools.createFolder,
       moveItems: allDesktopTools.moveItems,
+      createTextNote: allDesktopTools.createTextNote,
     };
 
     // Stage emitter: set inside createUIMessageStream.execute before any tool runs.
