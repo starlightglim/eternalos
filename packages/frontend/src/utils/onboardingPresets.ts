@@ -469,6 +469,98 @@ export const THEME_PRESETS: ThemePreset[] = [
       label: '#FFFFFF',
     },
   },
+  {
+    id: 'frutigerAero',
+    name: 'Frutiger Aero',
+    description: 'Glossy translucent glass over a bright humid sky.',
+    wallpaper: 'default',
+    highlights: ['Frosted-glass windows', 'Glossy aqua highlights', 'Floating bubble desktop'],
+    appearance: {
+      accentColor: '#1E9BD7',
+      desktopColor: '#8FD4F2',
+      // Translucent surfaces — the glass comes from backdrop-filter in customCSS
+      windowBgColor: 'rgba(255, 255, 255, 0.52)',
+      titleBarBgColor:
+        'linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(255,255,255,0.5) 46%, rgba(196,234,255,0.3) 52%, rgba(168,226,255,0.45) 100%)',
+      titleBarTextColor: '#0A4D6E',
+      windowBorderColor: 'rgba(255, 255, 255, 0.85)',
+      buttonBgColor:
+        'linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(228,246,255,0.8) 48%, rgba(186,231,250,0.7) 100%)',
+      buttonTextColor: '#0A4D6E',
+      buttonBorderColor: 'rgba(118, 187, 221, 0.75)',
+      labelColor: '#063A52',
+      systemFont: 'inter',
+      bodyFont: 'inter',
+      monoFont: 'monaco',
+      fontSmoothing: true,
+      windowBorderRadius: 12,
+      controlBorderRadius: 12,
+      windowShadow: 16,
+      designTokens: {
+        'window.titleBar.stripes': false,
+        'window.innerBevel': false,
+        'window.titleBar.textShadow': '0 1px 2px rgba(255,255,255,0.75)',
+        'window.closeButton.shape': 'circle',
+        'menuBar.background':
+          'linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(214,240,252,0.68) 100%)',
+        'menuBar.textColor': '#0A4D6E',
+        'scrollbar.track': 'rgba(255,255,255,0.4)',
+        'scrollbar.thumb': 'rgba(125,202,238,0.85)',
+        'icon.labelShadow': '0 1px 3px rgba(255,255,255,0.9)',
+      },
+      customCSS: `/* Frutiger Aero — frosted glass + glossy sky */
+
+/* Re-tint the platinum chrome palette to translucent glass.
+   Viewer toolbars, scrollbars, and bevels all read these vars. */
+.user-desktop {
+  --platinum: rgba(222, 242, 252, 0.55);
+  --white: rgba(255, 255, 255, 0.6);
+  --highlight: rgba(255, 255, 255, 0.85);
+  --shadow: rgba(108, 168, 200, 0.6);
+}
+
+/* Bright humid sky with a soft sun haze and floating bubbles */
+.user-desktop {
+  background:
+    radial-gradient(circle at 15% 82%, rgba(255,255,255,0.42) 0, rgba(255,255,255,0.42) 14px, rgba(255,255,255,0) 15px),
+    radial-gradient(circle at 21% 71%, rgba(255,255,255,0.3) 0, rgba(255,255,255,0.3) 8px, rgba(255,255,255,0) 9px),
+    radial-gradient(circle at 83% 60%, rgba(255,255,255,0.34) 0, rgba(255,255,255,0.34) 18px, rgba(255,255,255,0) 19px),
+    radial-gradient(circle at 89% 74%, rgba(255,255,255,0.26) 0, rgba(255,255,255,0.26) 10px, rgba(255,255,255,0) 11px),
+    radial-gradient(circle at 64% 86%, rgba(255,255,255,0.22) 0, rgba(255,255,255,0.22) 7px, rgba(255,255,255,0) 8px),
+    radial-gradient(ellipse 80% 45% at 70% 6%, rgba(255,255,255,0.55), rgba(255,255,255,0) 70%),
+    linear-gradient(165deg, #C9EEFF 0%, #8FD4F2 40%, #5AB9E6 72%, #6CCDBE 100%);
+  background-attachment: fixed;
+}
+
+/* Frosted glass windows */
+.window {
+  background: rgba(255, 255, 255, 0.32);
+  backdrop-filter: blur(18px) saturate(170%);
+  -webkit-backdrop-filter: blur(18px) saturate(170%);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  box-shadow:
+    0 16px 44px rgba(15, 90, 130, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+/* Crisp glass edge on the title strip */
+[eos-part="titlebar"] {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.65);
+}
+
+/* Aqua-gel selection glow on desktop icon labels */
+[eos-part="label"] {
+  text-shadow: 0 1px 3px rgba(255, 255, 255, 0.9);
+}`,
+    },
+    preview: {
+      desktop: '#8FD4F2',
+      titleBar: '#E3F5FF',
+      window: 'rgba(255,255,255,0.65)',
+      accent: '#1E9BD7',
+      label: '#063A52',
+    },
+  },
 ];
 
 export function buildPresetCSSSnapshot(preset: ThemePreset): string {

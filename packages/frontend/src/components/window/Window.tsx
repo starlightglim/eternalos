@@ -87,6 +87,9 @@ export function Window({
   const dragOffset = useRef({ x: 0, y: 0 });
   const resizeStart = useRef({ x: 0, y: 0, width: 0, height: 0 });
   const lastClickTime = useRef(0);
+  // Pending body-drag: press started on non-interactive content, but the drag
+  // only begins once the pointer moves past a threshold (keeps clicks working).
+  const bodyDragPending = useRef<{ x: number; y: number; pointerId: number } | null>(null);
 
   // Focus window on any click
   const handleWindowClick = useCallback(() => {
@@ -203,19 +206,52 @@ export function Window({
       if (e.clientX > rect.left + el.clientWidth) return;
       if (e.clientY > rect.top + el.clientHeight) return;
 
-      e.preventDefault();
-      e.stopPropagation();
-
-      isDragging.current = true;
-      dragOffset.current = {
-        x: e.clientX - position.x,
-        y: e.clientY - position.y,
-      };
-
+      // Don't hijack the press here: elements like list rows and tabs are
+      // plain divs with onClick handlers, and capturing the pointer on
+      // pointerdown would swallow their click. Record the press and only
+      // start dragging once the pointer actually moves (see handleBodyDragMove).
+      bodyDragPending.current = { x: e.clientX, y: e.clientY, pointerId: e.pointerId };
       focusWindow(id);
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     },
-    [position, focusWindow, id]
+    [focusWindow, id]
+  );
+
+  const handleBodyDragMove = useCallback(
+    (e: React.PointerEvent) => {
+      const pending = bodyDragPending.current;
+      if (!isDragging.current && pending && e.pointerId === pending.pointerId) {
+        // Primary button released outside the window — abandon the pending drag
+        if ((e.buttons & 1) === 0) {
+          bodyDragPending.current = null;
+          return;
+        }
+        const distance = Math.hypot(e.clientX - pending.x, e.clientY - pending.y);
+        if (distance < 5) return;
+
+        isDragging.current = true;
+        dragOffset.current = {
+          x: pending.x - position.x,
+          y: pending.y - position.y,
+        };
+        bodyDragPending.current = null;
+        try {
+          (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        } catch {
+          // Pointer may already be released (e.g. touch cancel race)
+        }
+      }
+
+      handleDragMove(e);
+    },
+    [handleDragMove, position]
+  );
+
+  const handleBodyDragEnd = useCallback(
+    (e: React.PointerEvent) => {
+      bodyDragPending.current = null;
+      handleDragEnd(e);
+    },
+    [handleDragEnd]
   );
 
   // ============================================
@@ -313,8 +349,8 @@ export function Window({
           className={`${styles.content} windowContent`}
           eos-part="content"
           onPointerDown={handleBodyDragStart}
-          onPointerMove={handleDragMove}
-          onPointerUp={handleDragEnd}
+          onPointerMove={handleBodyDragMove}
+          onPointerUp={handleBodyDragEnd}
         >
           {children}
         </div>
