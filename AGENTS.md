@@ -42,8 +42,8 @@ Gotchas:
 - `env.AI` is only referenced at call time (OrchestratorAgent, upload routes,
   appTools), so removing the binding doesn't crash the worker at startup.
 - Local accounts/desktop state live in `packages/worker/.wrangler/state`
-  (moves with the repo). Existing local test account: `<local-test-username>` /
-  `<local-test-password>` (local KV only).
+  (moves with the repo). Create disposable local test accounts as needed; do
+  not document their credentials here.
 - After restarting the Vite server, browser tabs can keep serving stale
   CSS/JS modules — hard reload (Cmd+Shift+R) before debugging "broken" UI.
 - Pre-existing lint failures (not ours): `Desktop.tsx` (react-compiler memo),
@@ -135,9 +135,9 @@ truth for all tokens).
 
 ## Git / repo facts
 
-- Repo root: `<repo-root>` (its own project — NOT inside
-  pelna-radio). npm workspaces: `packages/frontend` (React 19 + Vite + CSS
-  modules + Zustand), `packages/worker` (Workers + DO + KV + R2 + Workers AI).
+- This is a standalone npm-workspaces project. The workspaces are
+  `packages/frontend` (React 19 + Vite + CSS modules + Zustand) and
+  `packages/worker` (Workers + DO + KV + R2 + Workers AI).
 - Branch naming: `cursor/<short-description>`.
 - Never commit: `wrangler.toml` AI-binding workaround, `package-lock.json`
   churn from local installs, `.dev.vars`, `.env.local`.

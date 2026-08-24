@@ -15,6 +15,7 @@ dist/
 # Cloudflare Wrangler
 .wrangler/
 .mf/
+.wrangler*.log
 
 # Editor directories and files
 .vscode/
