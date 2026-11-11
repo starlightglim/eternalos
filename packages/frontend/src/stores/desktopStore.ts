@@ -1088,6 +1088,7 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
 
     // Sync to API if configured
     if (isApiConfigured) {
+      const version = desktopSessionVersion;
       const updates = idsArray.map((id) => {
         const item = items.find((i) => i.id === id);
         return {
@@ -1097,8 +1098,22 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
       });
       apiUpdateItems(updates).catch((error) => {
         console.error('Failed to move items to trash:', error);
+        // Roll back the optimistic trash so items don't look trashed when the
+        // server never recorded it. Only revert items still in the exact state
+        // we set (not re-touched since) and only within the same session.
+        if (version === desktopSessionVersion) {
+          set((state) => ({
+            items: state.items.map((item) => {
+              if (!allIdsToTrash.has(item.id)) return item;
+              if (!(item.isTrashed && item.trashedAt === now)) return item;
+              const original = items.find((o) => o.id === item.id);
+              return original ? { ...original } : item;
+            }),
+          }));
+          cacheItems(get().items);
+        }
         showError(
-          'Failed to move items to trash. Your changes may not be saved.',
+          'Failed to move items to trash. They have been restored.',
           'Trash Failed'
         );
       });
@@ -1141,6 +1156,8 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
 
     // Sync to API if configured
     if (isApiConfigured) {
+      const version = desktopSessionVersion;
+      const restoreIds = new Set(ids);
       const updates = ids.map((id) => {
         const item = items.find((i) => i.id === id);
         // Compute restore parentId same as above
@@ -1163,8 +1180,21 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
       });
       apiUpdateItems(updates).catch((error) => {
         console.error('Failed to restore items from trash:', error);
+        // Roll back the optimistic restore so an item doesn't look restored
+        // when the server never recorded it. Only revert items still showing
+        // as restored (not re-touched) within the same session.
+        if (version === desktopSessionVersion) {
+          set((state) => ({
+            items: state.items.map((item) => {
+              if (!restoreIds.has(item.id) || item.isTrashed) return item;
+              const original = items.find((o) => o.id === item.id);
+              return original ? { ...original } : item;
+            }),
+          }));
+          cacheItems(get().items);
+        }
         showError(
-          'Failed to restore items. Please try again.',
+          'Failed to restore items. They have been returned to the Trash.',
           'Restore Failed'
         );
       });

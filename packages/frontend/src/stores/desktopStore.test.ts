@@ -155,3 +155,36 @@ test('a position save that fails after the item moved again is not clobbered', a
   // The stale failure must not revert the newer position.
   expect(useDesktopStore.getState().getItem('note')?.position).toEqual({ x: 80, y: 80 });
 });
+
+test('a successful move-to-trash keeps the item trashed', async () => {
+  api.updateItems.mockResolvedValue([]);
+  useDesktopStore.getState().moveToTrash(['note']);
+  expect(useDesktopStore.getState().getItem('note')?.isTrashed).toBe(true);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(useDesktopStore.getState().getItem('note')?.isTrashed).toBe(true);
+});
+
+test('a failed move-to-trash restores the item', async () => {
+  api.updateItems.mockRejectedValue(new Error('Offline'));
+  useDesktopStore.getState().moveToTrash(['note']);
+  // Optimistically trashed.
+  expect(useDesktopStore.getState().getItem('note')?.isTrashed).toBe(true);
+  await vi.advanceTimersByTimeAsync(0);
+  // Rolled back after the failure — no item left looking trashed when it isn't.
+  expect(useDesktopStore.getState().getItem('note')?.isTrashed).toBeFalsy();
+});
+
+test('a failed restore returns the item to the trash', async () => {
+  const store = useDesktopStore.getState();
+  // Trash it first (succeeds).
+  api.updateItems.mockResolvedValue([]);
+  store.moveToTrash(['note']);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(useDesktopStore.getState().getItem('note')?.isTrashed).toBe(true);
+  // Now the restore fails.
+  api.updateItems.mockRejectedValue(new Error('Offline'));
+  store.restoreFromTrash(['note']);
+  expect(useDesktopStore.getState().getItem('note')?.isTrashed).toBe(false); // optimistic
+  await vi.advanceTimersByTimeAsync(0);
+  expect(useDesktopStore.getState().getItem('note')?.isTrashed).toBe(true); // rolled back
+});
