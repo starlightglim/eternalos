@@ -6,7 +6,7 @@
  * Features the classic beveled button style.
  */
 
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import styles from './AlertDialog.module.css';
 
 export type AlertType = 'error' | 'warning' | 'info' | 'confirm';
@@ -39,6 +39,18 @@ export function AlertDialog({
   buttons,
   onClose,
 }: AlertDialogProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const messageId = useId();
+
+  // Remember what had focus before the dialog opened so we can restore it on
+  // close (captured in a lazy initializer, before the primary button's
+  // autoFocus runs, so it points at the real opener).
+  const [opener] = useState<HTMLElement | null>(() =>
+    typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null
+  );
+  useEffect(() => () => { opener?.focus?.(); }, [opener]);
+
   // Default buttons based on type
   const defaultButtons = useMemo<AlertButton[]>(
     () =>
@@ -51,18 +63,43 @@ export function AlertDialog({
     [buttons, type, onClose]
   );
 
-  // Handle Escape key
+  // Escape closes; Tab is trapped inside the dialog.
+  //
+  // Enter is deliberately NOT handled here. A global Enter handler used to
+  // click the primary button regardless of what was focused — so pressing
+  // Enter while Cancel (or any other control) was focused still fired the
+  // primary, often-destructive action. Native <button> activation runs the
+  // FOCUSED button on Enter/Space instead, and the primary button's autoFocus
+  // preserves "Enter confirms" when nothing else has been tabbed to.
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         onClose?.();
-      } else if (e.key === 'Enter') {
-        // Click primary button on Enter
-        const primaryBtn = defaultButtons.find((b) => b.primary);
-        primaryBtn?.onClick();
+        return;
+      }
+      if (e.key === 'Tab') {
+        const root = dialogRef.current;
+        if (!root) return;
+        const focusables = Array.from(
+          root.querySelectorAll<HTMLElement>(
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+          )
+        ).filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement as HTMLElement | null;
+        const inside = root.contains(active);
+        if (e.shiftKey && (active === first || !inside)) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && (active === last || !inside)) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     },
-    [onClose, defaultButtons]
+    [onClose]
   );
 
   useEffect(() => {
@@ -82,7 +119,14 @@ export function AlertDialog({
 
   return (
     <div className={styles.overlay} onClick={handleOverlayClick}>
-      <div className={styles.dialog} role="alertdialog" aria-modal="true">
+      <div
+        className={styles.dialog}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={title ? titleId : messageId}
+        aria-describedby={messageId}
+        ref={dialogRef}
+      >
         <div className={styles.content}>
           {/* Icon */}
           <div className={styles.iconContainer}>
@@ -91,8 +135,8 @@ export function AlertDialog({
 
           {/* Message area */}
           <div className={styles.messageArea}>
-            {title && <div className={styles.title}>{title}</div>}
-            <div className={styles.message}>{message}</div>
+            {title && <div className={styles.title} id={titleId}>{title}</div>}
+            <div className={styles.message} id={messageId}>{message}</div>
           </div>
         </div>
 

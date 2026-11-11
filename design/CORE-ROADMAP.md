@@ -27,7 +27,7 @@ These are the former release blockers (full evidence in [RELEASE-READINESS.md](R
 | R2 | Account-deletion purge | ✅ Done | Resumable, idempotent purge in the cron (`utils/accountPurge.ts`), covering AUTH_KV/DESKTOP_KV/R2/UserDesktop DO/agent threads + published content; integration test past the deadline |
 | R6 | Dependency advisory triage | 🟡 Partial | Critical (`proxy-addr`) and reachable sanitizer (`dompurify`) fixed → 0 critical, 20 high. Remaining highs are dev/build tooling or unused transports; the rest need the `agents 0.8` + `zod 4` major bump (deferred — chat-transport risk) |
 
-**Accessibility correctness debt (ships with the surfaces it touches):** `ContextMenu.tsx` renders clickable `div`s with no keyboard/menu semantics; `AlertDialog.tsx` has no focus trap, no accessible title linkage, and a document-wide Enter handler that fires the primary action even when another control is focused — dangerous before destructive confirmations. Fix these as part of Workstream 1.
+**Accessibility correctness debt — ✅ fixed (2026-11-11):** `ContextMenu.tsx` is now a proper ARIA menu (`role="menu"`/`menuitem`/`menuitemcheckbox`, roving-tabindex arrow/Home/End navigation, Enter/Space activation, visible keyboard focus). `AlertDialog.tsx` now has a focus trap, `aria-labelledby`/`aria-describedby`, focus restoration to the opener on close, and — critically — the dangerous document-wide Enter handler was removed so Enter activates the *focused* button instead of always firing the primary (destructive) action. Recommended follow-up: a manual keyboard pass in-browser to confirm feel; the static gates (typecheck/lint/build/tests) pass.
 
 ---
 

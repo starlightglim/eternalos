@@ -28,9 +28,14 @@
 }
 
 .item:hover,
-.item:active {
+.item:active,
+.item:focus,
+.item:focus-visible {
   background: var(--accent, var(--selection));
   color: var(--selection-text);
+  /* The highlight is the focus indicator for keyboard navigation; suppress the
+     default ring so there isn't a doubled indicator. */
+  outline: none;
 }
 
 /* Disabled item */
