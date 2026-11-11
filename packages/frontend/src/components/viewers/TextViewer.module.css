@@ -5,7 +5,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--white);
+  background: var(--surface);
 }
 
 /* ============================================
@@ -26,7 +26,7 @@
 .fileName {
   font-family: var(--font-geneva);
   font-size: 11px;
-  color: var(--black);
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -45,8 +45,8 @@
 .fileNameInput {
   font-family: var(--font-geneva);
   font-size: 11px;
-  color: var(--black);
-  background: var(--white);
+  color: var(--text);
+  background: var(--surface);
   border: 1px solid var(--shadow);
   padding: 1px 4px;
   margin: -2px 0;
@@ -56,7 +56,7 @@
 
 .unsaved {
   font-size: 14px;
-  color: var(--black);
+  color: var(--text);
   line-height: 1;
 }
 
@@ -100,8 +100,8 @@
   resize: none;
   overflow-x: hidden;
   overflow-y: auto;
-  background: var(--white);
-  color: var(--black);
+  background: var(--surface);
+  color: var(--text);
   font-family: var(--font-monaco);
   font-size: 12px;
   line-height: 1.4;
@@ -131,7 +131,7 @@
   font-family: var(--font-monaco);
   font-size: 12px;
   line-height: 1.4;
-  color: var(--black);
+  color: var(--text);
   white-space: pre-wrap;
   word-wrap: break-word;
   /* Pixel-perfect text */
@@ -175,7 +175,7 @@
 }
 
 .charCountWarn {
-  color: #990000;
+  color: var(--danger);
   font-weight: bold;
   opacity: 1;
 }

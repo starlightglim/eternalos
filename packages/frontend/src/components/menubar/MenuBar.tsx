@@ -166,8 +166,8 @@ export function MenuBar() {
     openWindow({
       id: 'preferences-window',
       title: 'Settings',
-      position: { x: 120, y: 80 },
-      size: { width: 380, height: 360 },
+      position: { x: 88, y: 34 },
+      size: { width: 520, height: 620 },
       minimized: false,
       maximized: false,
       contentType: 'preferences',
@@ -179,8 +179,8 @@ export function MenuBar() {
     openWindow({
       id: 'appearance-panel',
       title: 'Appearance',
-      position: { x: 100, y: 60 },
-      size: { width: 400, height: 480 },
+      position: { x: 72, y: 38 },
+      size: { width: 620, height: 620 },
       minimized: false,
       maximized: false,
       contentType: 'appearance',
@@ -285,8 +285,8 @@ export function MenuBar() {
     openWindow({
       id: 'agent-chat',
       title: 'Ask Eternal',
-      position: { x: 140, y: 84 },
-      size: { width: 430, height: 380 },
+      position: { x: 48, y: 34 },
+      size: { width: 920, height: 620 },
       minimized: false,
       maximized: false,
       contentType: 'agent-chat',
@@ -731,7 +731,10 @@ export function MenuBar() {
           <div
             key={index}
             className={`${styles.dropdownItem} ${item.disabled ? styles.disabled : ''}`}
-            onClick={() => handleDropdownItemClick(item)}
+            onClick={(event) => {
+              event.stopPropagation();
+              handleDropdownItemClick(item);
+            }}
           >
             <span>{item.label}</span>
             {item.shortcut && <span className={styles.shortcut}>{item.shortcut}</span>}

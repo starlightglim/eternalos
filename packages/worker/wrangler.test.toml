@@ -1,0 +1,80 @@
+name = "eternalos-api-test"
+main = "src/index.ts"
+compatibility_date = "2026-03-24"
+compatibility_flags = ["nodejs_compat"]
+
+[[durable_objects.bindings]]
+name = "USER_DESKTOP"
+class_name = "UserDesktop"
+
+[[durable_objects.bindings]]
+name = "OrchestratorAgent"
+class_name = "OrchestratorAgent"
+
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiter"
+
+[[durable_objects.bindings]]
+name = "AUTH_COORDINATOR"
+class_name = "AuthCoordinator"
+
+[[durable_objects.bindings]]
+name = "BAZAAR_COORDINATOR"
+class_name = "BazaarCoordinator"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["UserDesktop"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["DesktopChatAgent"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["AppBuilderAgent"]
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["OrchestratorAgent"]
+deleted_classes = ["DesktopChatAgent", "AppBuilderAgent"]
+
+[[migrations]]
+tag = "v5"
+new_sqlite_classes = ["RateLimiter"]
+
+[[migrations]]
+tag = "v6"
+new_sqlite_classes = ["AuthCoordinator"]
+
+[[migrations]]
+tag = "v7"
+new_sqlite_classes = ["BazaarCoordinator"]
+
+[[worker_loaders]]
+binding = "LOADER"
+
+[[kv_namespaces]]
+binding = "AUTH_KV"
+id = "181861d860e5441a9467effa18a6fa16"
+
+[[kv_namespaces]]
+binding = "DESKTOP_KV"
+id = "90801c76cfcb483c8dc6f6123ed8f79a"
+
+[[r2_buckets]]
+binding = "ETERNALOS_FILES"
+bucket_name = "eternalos-files"
+
+[vars]
+ENVIRONMENT = "development"
+ALLOWED_ORIGINS = "http://localhost:5173"
+APP_BUILDER_MODEL = "@cf/zai-org/glm-4.7-flash"
+
+[triggers]
+crons = ["0 3 * * *"]
+
+[dev]
+port = 8788
+local_protocol = "http"

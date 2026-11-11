@@ -120,9 +120,11 @@ What apps can do
   mimeType, caption, tags, dominantColors, updatedAt, ... }.
 - Read the user's profile via window.eternal.profile.get() (fields the app
   was granted).
+- Use window.eternal.fetch() only through a domain allowlist declared in the
+  app manifest and approved by the user.
 - Control the window via window.eternal.window.setTitle/close/requestFocus.
-- They CANNOT make arbitrary network calls, write files (this milestone),
-  or talk to other apps (this milestone).
+- They cannot make direct browser network calls. Desktop writes/deletes,
+  network proxy calls, storage, and IPC are permission-gated.
 
 What to tell buildAppFromPrompt
 - Pass the user's intent in full. If they said "a gallery of my photos", say
@@ -246,11 +248,32 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
     initAppRegistry(this.ctx.storage.sql);
   }
 
+  /**
+   * Account hard-deletion hook for a single chat thread's agent DO. Clears the
+   * persisted chat history, resets agent state (including memories), and wipes
+   * remaining DO storage. Called by utils/accountPurge.purgeAccount for each
+   * thread in a purged account's registry. Idempotent and best-effort: each
+   * step is isolated so a partial failure still removes what it can.
+   */
+  async purgeThreadData(): Promise<{ purged: true }> {
+    try {
+      // Removes all rows from cf_ai_chat_agent_messages.
+      await this.persistMessages([]);
+    } catch { /* already empty or table absent */ }
+    try {
+      this.setState(this.initialState);
+    } catch { /* no state */ }
+    try {
+      await this.ctx.storage.deleteAll();
+    } catch { /* nothing to clear */ }
+    return { purged: true };
+  }
+
   private getModel() {
     const workersAI = createWorkersAI({ binding: this.env.AI });
     const modelId = this.env.AGENT_CHAT_MODEL?.startsWith('@cf/')
       ? this.env.AGENT_CHAT_MODEL
-      : '@cf/meta/llama-3.1-8b-instruct';
+      : '@cf/zai-org/glm-4.7-flash';
     return workersAI(modelId as Parameters<typeof workersAI>[0]);
   }
 

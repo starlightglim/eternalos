@@ -255,7 +255,7 @@ created on the deployed site will not automatically exist in local development.
 
 ### Prerequisites
 
-- Node.js 22 or newer
+- Node.js 22.23.2 (pinned in `.nvmrc` and used by CI)
 - npm (included with Node.js)
 - Git
 - Optional: a Cloudflare account if you want live Workers AI during local
@@ -267,7 +267,9 @@ the repository root unless a step says otherwise.
 ### 1. Install dependencies
 
 ```bash
-npm install
+nvm install
+nvm use
+npm ci
 ```
 
 ### 2. Create the Worker development variables
@@ -423,6 +425,10 @@ Run these from the repository root.
 | `npm run dev` | Starts the Vite frontend on port 5173 |
 | `npm run dev:worker` | Starts the local Worker on port 8787 |
 | `npm run build` | Type-checks and builds the frontend |
+| `npm run build:worker` | Bundles the Worker locally without deploying |
+| `npm run deploy:worker` | Deploys the Worker to Cloudflare |
+| `npm run check:release` | Runs both typechecks, lint, frontend/Worker tests, and both builds |
+| `npm test` | Runs frontend regressions and Worker integration tests |
 | `npm run preview` | Serves the production frontend build locally |
 | `npm run lint` | Lints the frontend |
 | `npm run test:worker` | Runs Worker integration tests |
@@ -433,11 +439,13 @@ Run these from the repository root.
 A useful pre-commit verification set is:
 
 ```bash
-npm run typecheck --workspace=@eternalos/frontend
-npm run typecheck --workspace=@eternalos/worker
-npm run test:worker
-npm run build
+npm run check:release
 ```
+
+Worker tests use `wrangler.test.toml` and the explicit `test/worker.env` fixture,
+so they do not load local `.dev.vars` credentials or call live AI/email services.
+The release check is local and never deploys. Browser journeys and external
+integration checks are tracked separately in [release readiness](design/RELEASE-READINESS.md).
 
 ## Project structure
 

@@ -138,12 +138,12 @@ function StopIcon() {
       {/* Octagon outline */}
       <polygon
         points="10,2 22,2 30,10 30,22 22,30 10,30 2,22 2,10"
-        fill="white"
-        stroke="black"
+        fill="var(--control-bg, #fff)"
+        stroke="var(--control-border, #000)"
         strokeWidth="2"
       />
       {/* Hand symbol */}
-      <rect x="8" y="14" width="16" height="4" fill="black" />
+      <rect x="8" y="14" width="16" height="4" fill="var(--danger, var(--text, #000))" />
     </svg>
   );
 }
@@ -155,13 +155,13 @@ function CautionIcon() {
       {/* Triangle */}
       <polygon
         points="16,2 30,28 2,28"
-        fill="white"
-        stroke="black"
+        fill="var(--control-bg, #fff)"
+        stroke="var(--control-border, #000)"
         strokeWidth="2"
       />
       {/* Exclamation mark */}
-      <rect x="14" y="10" width="4" height="10" fill="black" />
-      <rect x="14" y="22" width="4" height="4" fill="black" />
+      <rect x="14" y="10" width="4" height="10" fill="var(--danger, var(--text, #000))" />
+      <rect x="14" y="22" width="4" height="4" fill="var(--danger, var(--text, #000))" />
     </svg>
   );
 }
@@ -173,15 +173,15 @@ function NoteIcon() {
       {/* Document body */}
       <path
         d="M4,2 L20,2 L28,10 L28,30 L4,30 Z"
-        fill="white"
-        stroke="black"
+        fill="var(--control-bg, #fff)"
+        stroke="var(--control-border, #000)"
         strokeWidth="2"
       />
       {/* Folded corner */}
-      <path d="M20,2 L20,10 L28,10" fill="none" stroke="black" strokeWidth="2" />
+      <path d="M20,2 L20,10 L28,10" fill="none" stroke="var(--text, #000)" strokeWidth="2" />
       {/* Lines of text */}
-      <line x1="8" y1="16" x2="24" y2="16" stroke="black" strokeWidth="2" />
-      <line x1="8" y1="22" x2="20" y2="22" stroke="black" strokeWidth="2" />
+      <line x1="8" y1="16" x2="24" y2="16" stroke="var(--text, #000)" strokeWidth="2" />
+      <line x1="8" y1="22" x2="20" y2="22" stroke="var(--text, #000)" strokeWidth="2" />
     </svg>
   );
 }
@@ -191,16 +191,16 @@ function QuestionIcon() {
   return (
     <svg width="32" height="32" viewBox="0 0 32 32" className={styles.icon}>
       {/* Circle */}
-      <circle cx="16" cy="16" r="14" fill="white" stroke="black" strokeWidth="2" />
+      <circle cx="16" cy="16" r="14" fill="var(--control-bg, #fff)" stroke="var(--control-border, #000)" strokeWidth="2" />
       {/* Question mark */}
       <path
         d="M12,10 Q12,6 16,6 Q20,6 20,10 Q20,14 16,16 L16,18"
         fill="none"
-        stroke="black"
+        stroke="var(--text, #000)"
         strokeWidth="2"
         strokeLinecap="round"
       />
-      <rect x="14" y="22" width="4" height="4" fill="black" />
+      <rect x="14" y="22" width="4" height="4" fill="var(--text, #000)" />
     </svg>
   );
 }

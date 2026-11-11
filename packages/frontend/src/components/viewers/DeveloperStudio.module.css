@@ -2,8 +2,8 @@
   display: flex;
   flex-direction: row;
   height: 100%;
-  background: var(--platinum);
-  color: var(--window-text-color, #000000);
+  background: var(--surface-chrome);
+  color: var(--text);
   font-family: var(--font-geneva), -apple-system, sans-serif;
   overflow: hidden;
 }
@@ -11,8 +11,8 @@
 /* Sidebar - App Browser */
 .sidebar {
   width: 200px;
-  background: var(--platinum);
-  border-right: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border-right: 1px solid var(--control-border);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -21,7 +21,7 @@
 
 .sidebarHeader {
   padding: 8px;
-  border-bottom: 1px solid var(--shadow);
+  border-bottom: 1px solid var(--control-border);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -32,27 +32,27 @@
   font-family: var(--font-chicago);
   font-size: 10px;
   text-transform: uppercase;
-  color: var(--window-text-secondary, #666666);
+  color: var(--text-muted);
   font-weight: bold;
 }
 
 .newAppButton {
   font-family: var(--font-chicago);
   font-size: 11px;
-  background: var(--white);
-  border: 1px solid var(--black);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 3px;
   padding: 5px 8px;
   cursor: pointer;
   text-align: center;
-  color: var(--window-text-color, var(--black));
+  color: var(--control-text);
   box-shadow:
     inset 1px 1px 0 var(--highlight),
     inset -1px -1px 0 var(--shadow);
 }
 
 .newAppButton:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .newAppButton:active {
@@ -72,24 +72,45 @@
   gap: 2px;
 }
 
+.appListHeading {
+  padding: 4px 8px;
+  font-family: var(--font-chicago);
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: bold;
+  text-transform: uppercase;
+}
+
+.emptyAppList {
+  padding: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .appItem {
+  width: 100%;
   padding: 6px 8px;
   border: 1px solid transparent;
-  cursor: default;
+  cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 1px;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  background: transparent;
 }
 
 .appItem:hover {
-  background: var(--highlight);
-  border: 1px solid var(--shadow);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-chrome));
+  border: 1px solid var(--control-border);
 }
 
 .appItemActive {
   background: var(--selection) !important;
   color: var(--selection-text, var(--white)) !important;
-  border: 1px dashed var(--black);
+  border: 1px dashed var(--accent);
 }
 
 .appItemActive .appName {
@@ -101,10 +122,15 @@
   opacity: 0.8;
 }
 
+.appItem:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
 .appName {
   font-size: 11px;
   font-weight: bold;
-  color: var(--window-text-color, var(--black));
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -112,7 +138,7 @@
 
 .appMeta {
   font-size: 9px;
-  color: var(--window-text-secondary, #666666);
+  color: var(--text-muted);
 }
 
 /* Workspace */
@@ -121,7 +147,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--white);
+  background: var(--surface);
 }
 
 .noAppSelected {
@@ -130,10 +156,10 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: var(--window-text-secondary, #666666);
+  color: var(--text-muted);
   padding: 24px;
   text-align: center;
-  background: var(--platinum);
+  background: var(--surface);
   gap: 12px;
   box-shadow: inset 1px 1px 0 var(--highlight);
 }
@@ -146,7 +172,7 @@
   font-family: var(--font-chicago);
   font-size: 13px;
   margin: 0 0 6px 0;
-  color: var(--window-text-color, var(--black));
+  color: var(--text);
 }
 
 .noAppText p {
@@ -157,8 +183,8 @@
 
 /* Workspace Header & Tabs */
 .workspaceHeader {
-  background: var(--platinum);
-  border-bottom: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border-bottom: 1px solid var(--control-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -179,38 +205,59 @@
   display: flex;
   align-items: center;
   font-size: 11px;
-  color: var(--window-text-color, var(--black));
+  color: var(--text);
   cursor: pointer;
-  background: var(--white);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-bottom: none;
   border-top-left-radius: 3px;
   border-top-right-radius: 3px;
   user-select: none;
   font-family: var(--font-geneva);
   transition: background 0.1s ease;
+  font: inherit;
+  cursor: pointer;
 }
 
 .tab:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .tabActive {
   background: var(--selection);
   color: var(--selection-text, var(--white));
   font-weight: bold;
-  border-color: var(--black);
+  border-color: var(--accent);
 }
 
 .actions {
   display: flex;
   gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.releaseControls {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.releaseSelect {
+  max-width: 92px;
+  height: 22px;
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  color: var(--control-text);
+  font-family: var(--font-geneva);
+  font-size: 10px;
 }
 
 .actionBtn {
   font-family: var(--font-geneva);
   font-size: 10px;
-  border: 1px solid var(--black);
+  border: 1px solid var(--control-border);
   border-radius: 3px;
   padding: 3px 8px;
   cursor: pointer;
@@ -221,9 +268,9 @@
 
 .deployBtn {
   font-family: var(--font-chicago);
-  background: var(--white);
+  background: var(--control-bg);
   border-width: 2px;
-  border-color: var(--black);
+  border-color: var(--control-border);
   font-weight: bold;
   box-shadow:
     inset 1px 1px 0 var(--highlight),
@@ -231,7 +278,7 @@
 }
 
 .deployBtn:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .deployBtn:active {
@@ -243,17 +290,17 @@
 }
 
 .deleteBtn {
-  background: var(--platinum);
-  border-color: var(--shadow);
-  color: var(--window-text-color, var(--black));
+  background: var(--surface-chrome);
+  border-color: var(--control-border);
+  color: var(--text);
   box-shadow:
     inset 1px 1px 0 var(--highlight),
     inset -1px -1px 0 var(--shadow);
 }
 
 .deleteBtn:hover {
-  background: var(--highlight);
-  border-color: var(--black);
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface-chrome));
+  border-color: var(--danger);
 }
 
 .deleteBtn:active {
@@ -267,16 +314,16 @@
   display: flex;
   position: relative;
   overflow: hidden;
-  background: var(--white);
-  border-top: 1px solid var(--shadow);
+  background: var(--surface);
+  border-top: 1px solid var(--control-border);
 }
 
 .textarea {
   flex: 1;
   border: none;
   resize: none;
-  background: var(--white);
-  color: var(--window-text-color, var(--black));
+  background: var(--surface);
+  color: var(--text);
   font-family: var(--font-monaco), monospace;
   font-size: 12px;
   line-height: 1.5;
@@ -293,30 +340,30 @@
 }
 
 .textarea::-webkit-scrollbar-track {
-  background: var(--platinum);
-  border-left: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border-left: 1px solid var(--control-border);
 }
 
 .textarea::-webkit-scrollbar-thumb {
-  background: var(--white);
-  border: 1px solid var(--black);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
 }
 
 .textarea::-webkit-scrollbar-thumb:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 /* Status Bar */
 .statusBar {
   height: 20px;
-  background: var(--platinum);
-  border-top: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border-top: 1px solid var(--control-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 10px;
   font-size: 10px;
-  color: var(--window-text-secondary, #666666);
+  color: var(--text-muted);
   user-select: none;
   flex-shrink: 0;
   box-shadow: inset 0 1px 0 var(--highlight);
@@ -335,28 +382,28 @@
 .statusIndicator {
   width: 6px;
   height: 6px;
-  border: 1px solid var(--black);
-  background-color: var(--shadow);
+  border: 1px solid var(--control-border);
+  background-color: var(--text-muted);
 }
 
 .statusSuccess {
-  background-color: #008800;
-  box-shadow: 0 0 3px #00ff00;
+  background-color: var(--success);
+  box-shadow: 0 0 3px color-mix(in srgb, var(--success) 70%, transparent);
 }
 
 .statusError {
-  background-color: #cc0000;
-  box-shadow: 0 0 3px #ff0000;
+  background-color: var(--danger);
+  box-shadow: 0 0 3px color-mix(in srgb, var(--danger) 70%, transparent);
 }
 
 .statusTextError {
-  color: #cc0000;
+  color: var(--danger);
   font-weight: bold;
 }
 
 .statusLoading {
-  background-color: #ffaa00;
-  box-shadow: 0 0 3px #ffaa00;
+  background-color: var(--accent);
+  box-shadow: 0 0 3px color-mix(in srgb, var(--accent) 70%, transparent);
 }
 
 /* Create App Overlay Modal */
@@ -374,8 +421,8 @@
 }
 
 .modal {
-  background: var(--platinum);
-  border: 1px solid var(--black);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
   border-radius: 4px;
   width: 320px;
   padding: 16px;
@@ -388,10 +435,10 @@
 .modalTitle {
   font-family: var(--font-chicago);
   font-size: 13px;
-  color: var(--window-text-color, var(--black));
+  color: var(--text);
   margin: 0 0 4px 0;
   text-align: center;
-  border-bottom: 1px solid var(--shadow);
+  border-bottom: 1px solid var(--control-border);
   padding-bottom: 4px;
 }
 
@@ -401,19 +448,29 @@
   gap: 4px;
 }
 
+.dimensionFields {
+  display: flex;
+  gap: 12px;
+}
+
+.dimensionField {
+  flex: 1;
+  min-width: 0;
+}
+
 .label {
   font-family: var(--font-geneva);
   font-size: 10px;
-  color: var(--window-text-color, var(--black));
+  color: var(--text);
   font-weight: bold;
 }
 
 .input, .select, .modalTextarea {
-  background: var(--white);
-  border: 1px solid var(--black);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 0;
   padding: 4px 8px;
-  color: var(--window-text-color, var(--black));
+  color: var(--control-text);
   font-family: var(--font-geneva);
   font-size: 11px;
   outline: none;
@@ -421,8 +478,8 @@
 }
 
 .input:focus, .select:focus, .modalTextarea:focus {
-  border-color: var(--black);
-  box-shadow: 0 0 2px var(--selection), inset 1px 1px 0 var(--shadow);
+  border-color: var(--accent);
+  box-shadow: 0 0 2px var(--accent), inset 1px 1px 0 var(--control-border);
 }
 
 .modalTextarea {
@@ -440,28 +497,28 @@
 .modalBtn {
   font-family: var(--font-geneva);
   font-size: 11px;
-  border: 1px solid var(--black);
+  border: 1px solid var(--control-border);
   border-radius: 3px;
   padding: 4px 12px;
   cursor: pointer;
 }
 
 .cancelBtn {
-  background: var(--platinum);
-  color: var(--window-text-color, var(--black));
+  background: var(--surface-chrome);
+  color: var(--text);
   box-shadow:
     inset 1px 1px 0 var(--highlight),
     inset -1px -1px 0 var(--shadow);
 }
 
 .cancelBtn:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-chrome));
 }
 
 .submitBtn {
   font-family: var(--font-chicago);
-  background: var(--white);
-  color: var(--window-text-color, var(--black));
+  background: var(--control-bg);
+  color: var(--control-text);
   border-width: 2px;
   box-shadow:
     inset 1px 1px 0 var(--highlight),
@@ -469,10 +526,53 @@
 }
 
 .submitBtn:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .submitBtn:active {
   background: var(--selection);
   color: var(--selection-text, var(--white));
+}
+
+@media (max-width: 640px) {
+  .studio {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100%;
+    min-width: 0;
+    max-height: 150px;
+    border-right: none;
+    border-bottom: 1px solid var(--control-border);
+  }
+
+  .appList {
+    min-height: 0;
+  }
+
+  .workspaceHeader {
+    height: auto;
+    align-items: flex-start;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .dimensionFields {
+    gap: 8px;
+  }
+
+  .tabs {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .modal {
+    width: min(320px, calc(100% - 24px));
+  }
 }

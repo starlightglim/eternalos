@@ -3,8 +3,8 @@
 /* Menu container */
 .menu {
   position: fixed;
-  background: var(--white);
-  border: 1px solid var(--black);
+  background: var(--surface);
+  border: 1px solid var(--control-border);
   box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.3);
   min-width: 160px;
   padding: 2px 0;
@@ -20,7 +20,7 @@
   padding: 2px 16px 2px 20px;
   font-family: var(--font-chicago);
   font-size: 12px;
-  color: var(--window-text-color, var(--black));
+  color: var(--text);
   cursor: default;
   white-space: nowrap;
   -webkit-font-smoothing: none;
@@ -29,25 +29,25 @@
 
 .item:hover,
 .item:active {
-  background: var(--selection);
+  background: var(--accent, var(--selection));
   color: var(--selection-text);
 }
 
 /* Disabled item */
 .itemDisabled {
-  color: var(--window-text-secondary, var(--shadow));
+  color: var(--text-muted);
   cursor: default;
 }
 
 .itemDisabled:hover {
   background: transparent;
-  color: var(--window-text-secondary, var(--shadow));
+  color: var(--text-muted);
 }
 
 /* Divider line */
 .divider {
   height: 1px;
-  background: var(--shadow);
+  background: var(--control-border);
   margin: 4px 0;
 }
 

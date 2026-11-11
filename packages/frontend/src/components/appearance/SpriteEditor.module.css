@@ -10,7 +10,7 @@
   font-family: var(--font-chicago);
   font-size: 11px;
   padding-bottom: 2px;
-  border-bottom: 1px solid var(--shadow);
+  border-bottom: 1px solid var(--control-border);
   margin-top: 4px;
 }
 
@@ -37,8 +37,8 @@
 .spritePreview {
   width: 40px;
   height: 40px;
-  border: 1px solid var(--shadow);
-  background: var(--white);
+  border: 1px solid var(--control-border);
+  background: var(--surface);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -56,7 +56,7 @@
 .spriteStatus {
   font-family: var(--font-geneva);
   font-size: 10px;
-  color: var(--shadow);
+  color: var(--text-muted);
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -64,7 +64,7 @@
 }
 
 .spriteStatus.active {
-  color: var(--selection);
+  color: var(--accent, var(--selection));
   font-weight: bold;
 }
 
@@ -79,23 +79,24 @@
   font-size: 10px;
   padding: 2px 6px;
   border: 1px outset var(--highlight);
-  background: var(--platinum);
+  background: var(--control-bg);
+  color: var(--control-text);
   cursor: pointer;
   white-space: nowrap;
 }
 
 .btn:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .btn:active {
   border-style: inset;
-  background: var(--shadow);
+  background: var(--accent, var(--selection));
 }
 
 .btnRemove {
   composes: btn;
-  color: #900;
+  color: var(--danger);
 }
 
 .hiddenInput {
@@ -122,21 +123,22 @@
   font-family: var(--font-geneva);
   font-size: 10px;
   padding: 1px 3px;
-  border: 1px solid var(--black);
-  background: var(--white);
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--control-text);
 }
 
 .error {
   font-family: var(--font-geneva);
   font-size: 10px;
-  color: #c00;
+  color: var(--danger);
   padding: 2px 4px;
 }
 
 .hint {
   font-family: var(--font-geneva);
   font-size: 10px;
-  color: var(--shadow);
+  color: var(--text-muted);
   padding: 0 4px;
   font-style: italic;
 }

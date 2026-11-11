@@ -4,6 +4,7 @@ import { useSlot } from '../../variants/useSlot';
 import type { WindowButtonsSlotProps, ResizeHandleSlotProps } from '../../variants/slots';
 import { WindowChrome } from '../../variants/builtin/chrome/WindowChrome';
 import { WindowTitleBar } from '../../variants/builtin/titlebar/WindowTitleBar';
+import { getMenuBarHeight } from '../../utils/layout';
 import styles from './Window.module.css';
 
 // Tags considered interactive — clicks on these shouldn't trigger body-drag
@@ -92,7 +93,7 @@ export function Window({
   const bodyDragPending = useRef<{ x: number; y: number; pointerId: number } | null>(null);
 
   // Focus window on any click
-  const handleWindowClick = useCallback((_e: React.PointerEvent) => {
+  const handleWindowClick = useCallback(() => {
     focusWindow(id);
   }, [focusWindow, id]);
 
@@ -165,7 +166,7 @@ export function Window({
 
       const viewportWidth = window.innerWidth;
       const viewportHeight = window.innerHeight;
-      const menuBarHeight = 20;
+      const menuBarHeight = getMenuBarHeight();
 
       newX = Math.max(-size.width + 50, Math.min(newX, viewportWidth - 50));
       newY = Math.max(0, Math.min(newY, viewportHeight - 30));

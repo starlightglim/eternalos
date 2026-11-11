@@ -6,14 +6,18 @@
   "scripts": {
     "dev": "wrangler dev --inspector-port=0",
     "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run --outdir dist",
     "typecheck": "tsc --noEmit",
-    "test": "WRANGLER_LOG_PATH=../../.wrangler-test.log node --test test/**/*.test.mjs",
-    "coverage": "WORKER_COVERAGE=1 WRANGLER_LOG_PATH=../../.wrangler-test.log node --test test/**/*.test.mjs"
+    "test": "WRANGLER_CONFIG=wrangler.test.toml WRANGLER_LOG_PATH=/tmp/eternalos-wrangler-test.log node --test test/**/*.test.mjs",
+    "coverage": "WORKER_COVERAGE=1 WRANGLER_CONFIG=wrangler.test.toml WRANGLER_LOG_PATH=/tmp/eternalos-wrangler-test.log node --test test/**/*.test.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260317.1",
+    "source-map": "0.8.0",
     "typescript": "~5.9.3",
-    "wrangler": "^4.95.0"
+    "undici": "7.29.1",
+    "wrangler": "^4.95.0",
+    "ws": "8.21.3"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.64",

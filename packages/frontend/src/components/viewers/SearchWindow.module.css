@@ -1,7 +1,7 @@
 .searchWindow {
   height: 100%;
   padding: 10px;
-  background: var(--platinum);
+  background: var(--surface-chrome);
 }
 
 .searchChrome {
@@ -17,8 +17,8 @@
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  border: 1px solid var(--shadow);
-  background: var(--white);
+  border: 1px solid var(--control-border);
+  background: var(--surface);
   box-shadow:
     inset 1px 1px 0 rgba(0, 0, 0, 0.14),
     inset -1px -1px 0 var(--highlight);
@@ -27,7 +27,7 @@
 .searchGlyph {
   font-family: var(--font-chicago);
   font-size: 13px;
-  color: var(--black);
+  color: var(--text);
 }
 
 .searchInput {
@@ -37,20 +37,20 @@
   outline: none;
   font-family: var(--font-chicago);
   font-size: 13px;
-  color: var(--window-text-color, var(--black));
+  color: var(--text);
 }
 
 .searchInput::placeholder {
-  color: rgba(0, 0, 0, 0.45);
+  color: color-mix(in srgb, var(--text) 45%, transparent);
 }
 
 .shortcutHint {
   padding: 1px 6px;
-  border: 1px solid var(--shadow);
-  background: var(--platinum);
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
   font-family: var(--font-monaco);
   font-size: 10px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
 }
 
 .emptyState {
@@ -61,8 +61,8 @@
   align-items: center;
   gap: 8px;
   padding: 24px;
-  border: 1px solid var(--shadow);
-  background: var(--white);
+  border: 1px solid var(--control-border);
+  background: var(--surface);
   text-align: center;
 }
 
@@ -74,7 +74,7 @@
 .emptyCopy {
   max-width: 420px;
   line-height: 1.45;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
 }
 
 .emptyCopy code {
@@ -94,7 +94,7 @@
   display: flex;
   justify-content: space-between;
   font-size: 10px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
 }
 
 .resultsList {
@@ -105,8 +105,8 @@
   flex-direction: column;
   gap: 4px;
   padding: 0;
-  border: 1px solid var(--shadow);
-  background: var(--white);
+  border: 1px solid var(--control-border);
+  background: var(--surface);
 }
 
 .resultItem {
@@ -114,8 +114,8 @@
   display: flex;
   padding: 8px;
   border: none;
-  border-bottom: 1px solid var(--highlight);
-  background: var(--white);
+  border-bottom: 1px solid var(--control-border);
+  background: var(--surface);
   text-align: left;
   cursor: pointer;
   transition: none;
@@ -124,7 +124,7 @@
 .resultItem:hover,
 .activeResult {
   background: var(--selection);
-  color: var(--white);
+  color: var(--selection-text, var(--white));
 }
 
 .resultBody {
@@ -149,14 +149,14 @@
   align-items: center;
   justify-content: center;
   padding: 2px;
-  border: 1px solid var(--shadow);
-  background: var(--platinum);
+  border: 1px solid var(--control-border);
+  background: var(--surface-chrome);
   overflow: hidden;
 }
 
 .activeResult .resultPreviewFrame {
-  border-color: var(--white);
-  background: rgba(255, 255, 255, 0.22);
+  border-color: var(--selection-text, var(--white));
+  background: color-mix(in srgb, var(--selection-text) 22%, transparent);
 }
 
 .resultPreviewImage {
@@ -177,11 +177,11 @@
 .resultKind {
   font-family: var(--font-chicago);
   font-size: 10px;
-  color: rgba(0, 0, 0, 0.55);
+  color: color-mix(in srgb, var(--text) 55%, transparent);
 }
 
 .activeResult .resultKind {
-  color: rgba(255, 255, 255, 0.68);
+  color: color-mix(in srgb, var(--selection-text) 68%, transparent);
 }
 
 .resultName {
@@ -191,21 +191,21 @@
 
 .resultLocation {
   font-size: 10px;
-  color: rgba(0, 0, 0, 0.55);
+  color: color-mix(in srgb, var(--text) 55%, transparent);
 }
 
 .activeResult .resultLocation {
-  color: rgba(255, 255, 255, 0.7);
+  color: color-mix(in srgb, var(--selection-text) 70%, transparent);
 }
 
 .resultSummary {
   font-size: 11px;
   line-height: 1.4;
-  color: rgba(0, 0, 0, 0.75);
+  color: color-mix(in srgb, var(--text) 75%, transparent);
 }
 
 .activeResult .resultSummary {
-  color: rgba(255, 255, 255, 0.82);
+  color: color-mix(in srgb, var(--selection-text) 82%, transparent);
 }
 
 .matchTags {
@@ -216,14 +216,14 @@
 
 .matchTag {
   padding: 1px 5px;
-  border: 1px solid rgba(0, 0, 0, 0.16);
-  background: var(--platinum);
+  border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
+  background: var(--surface-chrome);
   font-size: 10px;
 }
 
 .activeResult .matchTag {
-  background: rgba(255, 255, 255, 0.2);
-  border-color: rgba(255, 255, 255, 0.28);
+  background: color-mix(in srgb, var(--selection-text) 20%, transparent);
+  border-color: color-mix(in srgb, var(--selection-text) 28%, transparent);
 }
 
 .resultsList::-webkit-scrollbar {
@@ -231,6 +231,6 @@
 }
 
 .resultsList::-webkit-scrollbar-thumb {
-  border: 1px solid var(--shadow);
-  background: var(--platinum);
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
 }

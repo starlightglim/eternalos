@@ -82,7 +82,7 @@ interface DesktopStore {
   setUid: (uid: string | null) => void;
   addItem: (item: DesktopItem) => void;
   removeItem: (id: string) => void;
-  updateItem: (id: string, updates: Partial<DesktopItem>) => void;
+  updateItem: (id: string, updates: Partial<DesktopItem>) => Promise<boolean>;
   moveItem: (id: string, position: { x: number; y: number }) => void;
   requestImageAnalysis: (id: string) => Promise<void>;
 
@@ -207,6 +207,23 @@ const mockItems: DesktopItem[] = [
 
 // Debounce timers for position updates
 const positionUpdateTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const itemWriteQueues = new Map<string, Promise<boolean>>();
+let desktopSessionVersion = 0;
+
+async function persistItemMutation(id: string, operation: () => Promise<unknown>): Promise<boolean> {
+  const version = desktopSessionVersion;
+  const previous = itemWriteQueues.get(id) ?? Promise.resolve(true);
+  const pending = previous.catch(() => false).then(async () => {
+    if (version !== desktopSessionVersion) return false;
+    await operation();
+    return version === desktopSessionVersion;
+  });
+  itemWriteQueues.set(id, pending);
+  try { return await pending; }
+  finally {
+    if (itemWriteQueues.get(id) === pending) itemWriteQueues.delete(id);
+  }
+}
 
 // Local cache key for instant load.
 // Cache is namespaced by uid so one user's items can never surface under
@@ -324,11 +341,16 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
     }
   },
 
-  setUid: (uid) => set({ uid }),
+  setUid: (uid) => {
+    if (get().uid !== uid) desktopSessionVersion += 1;
+    set({ uid });
+  },
 
   setLoading: (loading) => set({ loading }),
 
   reset: () => {
+    desktopSessionVersion += 1;
+    itemWriteQueues.clear();
     // Cancel any pending position/cache writes so they can't resurrect
     // the previous user's data after we clear.
     positionUpdateTimers.forEach((t) => clearTimeout(t));
@@ -345,6 +367,7 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
   },
 
   addItem: (item) => {
+    const version = desktopSessionVersion;
     // Update local state
     set((state) => {
       const newItems = [...state.items, item];
@@ -356,7 +379,9 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
 
     // Sync to API if configured
     if (isApiConfigured) {
-      apiCreateItem(item).catch((error) => {
+      persistItemMutation(item.id, () => apiCreateItem(item)).catch((error) => {
+        if (version !== desktopSessionVersion) return;
+        get().setItems(get().items.filter((current) => current.id !== item.id));
         console.error('Failed to create item:', error);
         showError(
           `Could not create "${item.name}". ${error instanceof Error ? error.message : 'Please try again.'}`,
@@ -367,6 +392,8 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
   },
 
   removeItem: (id) => {
+    const version = desktopSessionVersion;
+    const original = get().getItem(id);
     // Update local state
     set((state) => {
       const newItems = state.items.filter((item) => item.id !== id);
@@ -381,7 +408,9 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
 
     // Sync to API if configured
     if (isApiConfigured) {
-      apiDeleteItem(id).catch((error) => {
+      persistItemMutation(id, () => apiDeleteItem(id)).catch((error) => {
+        if (version !== desktopSessionVersion) return;
+        if (original && !get().getItem(id)) get().setItems([...get().items, original]);
         console.error('Failed to delete item:', error);
         showError(
           `Could not delete item. ${error instanceof Error ? error.message : 'Please try again.'}`,
@@ -391,9 +420,14 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
     }
   },
 
-  updateItem: (id, updates) => {
-    // Update local state
-    set((state) => {
+  updateItem: async (id, updates) => {
+    const version = desktopSessionVersion;
+    const original = get().getItem(id);
+    if (!original) return false;
+    // Privacy and document content only become authoritative after a server
+    // acknowledgement. Editors retain their own draft while the save is pending.
+    const requiresAcknowledgement = 'isPublic' in updates || 'textContent' in updates;
+    const apply = () => set((state) => {
       const newItems = state.items.map((item) =>
         item.id === id ? { ...item, ...updates, updatedAt: Date.now() } : item
       );
@@ -402,17 +436,28 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
       }
       return { items: newItems };
     });
+    if (!isApiConfigured || !requiresAcknowledgement) apply();
 
-    // Sync to API if configured
     if (isApiConfigured) {
-      apiUpdateItems([{ id, updates }]).catch((error) => {
+      const optimisticItem = get().getItem(id);
+      try {
+        const currentSession = await persistItemMutation(id, () => apiUpdateItems([{ id, updates }]));
+        if (!currentSession) return false;
+        if (requiresAcknowledgement) apply();
+      } catch (error) {
+        if (version !== desktopSessionVersion) return false;
+        if (!requiresAcknowledgement && get().getItem(id) === optimisticItem) {
+          get().setItems(get().items.map((item) => item.id === id ? original : item));
+        }
         console.error('Failed to update item:', error);
         showError(
-          'Your changes may not have been saved. Please reload to check.',
+          'Could not save your changes. Please try again.',
           'Sync Failed'
         );
-      });
+        return false;
+      }
     }
+    return true;
   },
 
   moveItem: (id, position) => {
@@ -722,6 +767,7 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
   },
 
   duplicateItems: async (itemIds, targetParentId) => {
+    const version = desktopSessionVersion;
     const { items, getItem } = get();
     const duplicates: DesktopItem[] = [];
 
@@ -746,21 +792,23 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
         updatedAt: Date.now(),
       };
 
-      duplicates.push(duplicate);
-
       // Create item via API
       if (isApiConfigured) {
         try {
-          await apiCreateItem(duplicate);
+          if (!await persistItemMutation(duplicate.id, () => apiCreateItem(duplicate))) return [];
         } catch (error) {
+          if (version !== desktopSessionVersion) return [];
           console.error('Failed to create duplicate item:', error);
+          showError(`Could not duplicate "${original.name}". Please try again.`, 'Duplicate Failed');
+          continue;
         }
       }
+      duplicates.push(duplicate);
     }
 
     // Add all duplicates to state
     if (duplicates.length > 0) {
-      const newItems = [...items, ...duplicates];
+      const newItems = [...get().items, ...duplicates];
       set({ items: newItems });
       if (isApiConfigured) {
         cacheItems(newItems);
@@ -814,6 +862,7 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
   },
 
   uploadFile: async (file, parentId, position) => {
+    const version = desktopSessionVersion;
     if (!isApiConfigured) {
       console.warn('Upload not available in demo mode');
       return null;
@@ -847,6 +896,7 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
           }));
         }
       );
+      if (version !== desktopSessionVersion) return null;
 
       // Mark upload complete
       set((state) => {
@@ -868,6 +918,7 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
 
       return result.item;
     } catch (error) {
+      if (version !== desktopSessionVersion) return null;
       const errorMessage = error instanceof Error ? error.message : 'Upload failed';
       // Mark upload as failed
       set((state) => ({
@@ -896,6 +947,7 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
   },
 
   loadDesktop: async () => {
+    const version = desktopSessionVersion;
     if (!isApiConfigured) {
       // In demo mode, items are already set from mockItems
       return;
@@ -912,6 +964,7 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
 
     try {
       const response = await apiFetchDesktop();
+      if (version !== desktopSessionVersion) return;
       set({
         items: response.items,
         loading: false,
@@ -919,6 +972,7 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
       // Cache the fresh items
       cacheItems(response.items);
     } catch (error) {
+      if (version !== desktopSessionVersion) return;
       console.error('Failed to load desktop:', error);
       set({ loading: false });
       // Only show error if we don't have a cache to fall back on

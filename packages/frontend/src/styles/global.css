@@ -7,7 +7,7 @@
 /* ============================================
    FONT FACE DECLARATIONS
    ChiKareGo2 - Chicago pixel font clone (primary UI)
-   Geneva/Monaco - Classic Mac body/monospace fonts
+   Geneva/Monaco - Classic Mac body/monospace font fallbacks
 
    Font files should be placed in public/fonts/
    If fonts are missing, we use VT323 as fallback
@@ -17,24 +17,6 @@
 @font-face {
   font-family: 'ChiKareGo2';
   src: url('/fonts/ChiKareGo2.ttf') format('truetype');
-  font-weight: normal;
-  font-style: normal;
-  font-display: swap;
-}
-
-/* Geneva - classic Mac proportional font */
-@font-face {
-  font-family: 'Geneva';
-  src: url('/fonts/Geneva.ttf') format('truetype');
-  font-weight: normal;
-  font-style: normal;
-  font-display: swap;
-}
-
-/* Monaco - classic Mac monospace font */
-@font-face {
-  font-family: 'Monaco';
-  src: url('/fonts/Monaco.ttf') format('truetype');
   font-weight: normal;
   font-style: normal;
   font-display: swap;
@@ -56,6 +38,19 @@
 
   /* Additional UI colors */
   --window-bg: #FFFFFF;
+  --text-color: #000000;
+  --text-color-secondary: #666666;
+  --surface: var(--eos-surface-content, var(--window-bg));
+  --surface-raised: var(--eos-surface-raised, var(--surface));
+  --surface-chrome: var(--eos-surface-toolbar, var(--appearance-button-bg, var(--title-bar-active, var(--platinum))));
+  --preview-bg: var(--eos-surface-preview, #222222);
+  --text: var(--text-color);
+  --text-muted: var(--text-color-secondary);
+  --control-bg: var(--appearance-button-bg, var(--white));
+  --control-text: var(--appearance-button-text, var(--text-color));
+  --control-border: var(--appearance-button-border, var(--border));
+  --danger: #990000;
+  --success: #006600;
   --title-bar-active: #000000;
   --title-bar-inactive: #888888;
   --border: #000000;
@@ -71,7 +66,7 @@
   --font-size-content: 13px;
 
   /* Spacing */
-  --menu-bar-height: 22px;
+  --menu-bar-height: 20px;
   --icon-size: 36px;
   --icon-grid-cell: 88px;
 
@@ -143,8 +138,9 @@ body {
 button, .button {
   font-family: var(--font-chicago);
   font-size: var(--font-size-ui);
-  background: var(--white);
-  border: 2px solid var(--black);
+  background: var(--control-bg);
+  color: var(--control-text);
+  border: 2px solid var(--control-border);
   border-radius: 4px;
   padding: 6px 14px;
   cursor: pointer;
@@ -154,8 +150,19 @@ button, .button {
 }
 
 button:active, .button:active {
-  background: var(--black);
-  color: var(--white);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text, var(--white));
+}
+
+button:focus-visible,
+.button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent, var(--selection));
+  outline-offset: 2px;
 }
 
 /* ============================================
@@ -165,7 +172,7 @@ button:active, .button:active {
 /* Firefox scrollbar styling */
 * {
   scrollbar-width: auto;
-  scrollbar-color: var(--platinum) var(--shadow);
+  scrollbar-color: var(--eos-scrollbar-thumb, var(--platinum)) var(--eos-scrollbar-track, var(--shadow));
 }
 
 /* Webkit scrollbar styling (Chrome, Safari, Edge) */
@@ -218,4 +225,20 @@ button:active, .button:active {
 
 .cursor-resize {
   cursor: nwse-resize;
+}
+
+.window {
+  max-width: calc(100vw - 8px);
+  max-height: calc(100vh - var(--menu-bar-height, 20px) - 8px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }

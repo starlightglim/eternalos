@@ -7,8 +7,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--white);
-  border-bottom: 1px solid var(--black);
+  background: var(--title-bar-active, var(--white));
+  border-bottom: 1px solid var(--border, var(--black));
   cursor: grab;
 }
 
@@ -26,8 +26,8 @@
     to bottom,
     transparent 0px,
     transparent 1px,
-    var(--black) 1px,
-    var(--black) 2px
+    var(--border, var(--black)) 1px,
+    var(--border, var(--black)) 2px
   );
   pointer-events: none;
 }
@@ -37,17 +37,17 @@
 }
 
 .inactive .titleBar {
-  background: var(--platinum);
+  background: var(--title-bar-inactive, var(--platinum));
 }
 
 .titleText {
   position: relative;
   z-index: 1;
-  background: var(--white);
+  background: var(--title-bar-active, var(--white));
   padding: 0 8px;
   font-family: var(--font-chicago);
   font-size: 12px;
-  color: var(--black);
+  color: var(--appearance-title-text, var(--black));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -57,8 +57,8 @@
 }
 
 .inactive .titleText {
-  background: var(--platinum);
-  color: var(--shadow);
+  background: var(--title-bar-inactive, var(--platinum));
+  color: var(--window-text-secondary, var(--shadow));
 }
 
 .collapsed .titleBar {

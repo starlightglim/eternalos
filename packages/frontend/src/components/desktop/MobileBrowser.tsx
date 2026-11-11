@@ -40,6 +40,7 @@ export function MobileBrowser({ isVisitorMode = false, visitorItems, username, o
   const currentItems = isVisitorMode
     ? items.filter((item) => item.parentId === currentFolderId)
     : getItemsByParent(currentFolderId);
+  const currentFolderName = breadcrumbs[breadcrumbs.length - 1]?.name || 'this folder';
 
   // Sort: folders first, then by name
   const sortedItems = [...currentItems].sort((a, b) => {
@@ -215,7 +216,7 @@ export function MobileBrowser({ isVisitorMode = false, visitorItems, username, o
           )}
         </div>
         {!isVisitorMode && (
-          <button className={styles.logoutButton} onClick={() => logout()}>
+          <button type="button" className={styles.logoutButton} onClick={() => logout()}>
             Log Out
           </button>
         )}
@@ -227,9 +228,12 @@ export function MobileBrowser({ isVisitorMode = false, visitorItems, username, o
           <span key={crumb.id ?? 'root'}>
             {index > 0 && <span className={styles.breadcrumbSep}>/</span>}
             <button
+              type="button"
               className={styles.breadcrumbItem}
               onClick={() => navigateToBreadcrumb(index)}
               disabled={index === breadcrumbs.length - 1}
+              aria-current={index === breadcrumbs.length - 1 ? 'page' : undefined}
+              aria-label={`Open ${crumb.name}`}
             >
               {crumb.name}
             </button>
@@ -240,15 +244,18 @@ export function MobileBrowser({ isVisitorMode = false, visitorItems, username, o
       {/* Item list */}
       <div className={styles.itemList}>
         {sortedItems.length === 0 ? (
-          <div className={styles.emptyState}>
-            <p>This folder is empty</p>
+          <div className={styles.emptyState} role="status" aria-live="polite">
+            <strong>No items here yet</strong>
+            <p>{currentFolderName} is empty</p>
           </div>
         ) : (
           sortedItems.map((item) => (
             <button
+              type="button"
               key={item.id}
               className={styles.item}
               onClick={() => handleItemTap(item)}
+              aria-label={`${item.type === 'folder' ? 'Open folder' : 'Open'} ${item.name}`}
             >
               <div className={styles.itemIcon}>{getItemIcon(item)}</div>
               <div className={styles.itemInfo}>

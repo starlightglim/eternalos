@@ -1,0 +1,365 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--window-bg, var(--white));
+  color: var(--window-text-color, var(--black));
+  font-family: var(--font-geneva);
+  font-size: 11px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--platinum);
+  border-bottom: 1px solid var(--shadow);
+}
+
+.nav,
+.filterBar,
+.packActions,
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.navButton,
+.filterButton,
+.actionButton {
+  min-height: 24px;
+  padding: 3px 9px;
+  border: 1px solid var(--shadow);
+  border-radius: var(--control-radius, 4px);
+  background: var(--appearance-button-bg, var(--white));
+  color: var(--appearance-button-text, var(--window-text-color, var(--black)));
+  font: inherit;
+  cursor: pointer;
+  box-shadow: inset 1px 1px 0 var(--highlight), inset -1px -1px 0 color-mix(in srgb, var(--shadow) 60%, transparent);
+}
+
+.navButton:hover:not(:disabled),
+.filterButton:hover:not(:disabled),
+.actionButton:hover:not(:disabled) {
+  border-color: var(--accent, var(--selection));
+  background: var(--highlight);
+}
+
+.navButton:active:not(:disabled),
+.filterButton:active:not(:disabled),
+.actionButton:active:not(:disabled) {
+  box-shadow: inset -1px -1px 0 var(--highlight), inset 1px 1px 0 var(--shadow);
+}
+
+.navButton:disabled,
+.filterButton:disabled,
+.actionButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.navButtonActive,
+.filterButtonActive,
+.primaryAction {
+  background: var(--accent, var(--selection));
+  border-color: var(--accent, var(--selection));
+  color: var(--selection-text, var(--white));
+}
+
+.search,
+.formControl {
+  min-width: 0;
+  border: 1px solid var(--shadow);
+  border-radius: var(--control-radius, 3px);
+  background: var(--window-bg, var(--white));
+  color: var(--window-text-color, var(--black));
+  font: inherit;
+}
+
+.search {
+  width: min(180px, 100%);
+  padding: 5px 8px;
+}
+
+.search:focus,
+.formControl:focus {
+  outline: 2px solid var(--accent, var(--selection));
+  outline-offset: -2px;
+}
+
+.message {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--shadow);
+}
+
+.successMessage {
+  background: color-mix(in srgb, var(--success, #006600) 16%, var(--surface, #fff));
+  color: var(--success, var(--success-text, #006600));
+}
+
+.errorMessage,
+.formError {
+  background: color-mix(in srgb, var(--danger, #990000) 16%, var(--surface, #fff));
+  color: var(--danger, var(--error-text, #990000));
+}
+
+.content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+  scrollbar-gutter: stable;
+}
+
+.filterBar {
+  margin-bottom: 10px;
+}
+
+.emptyState,
+.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 220px;
+  padding: 24px;
+  color: var(--window-text-secondary, var(--shadow));
+  text-align: center;
+}
+
+.emptyState strong {
+  color: var(--window-text-color, var(--black));
+  font-family: var(--font-chicago);
+  font-size: 13px;
+}
+
+.emptyIcon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid var(--accent, var(--selection));
+  border-radius: 50%;
+  color: var(--accent, var(--selection));
+  font-size: 22px;
+}
+
+.packGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.packCard {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--shadow);
+  border-radius: var(--window-radius, 0px);
+  background: var(--window-bg, var(--white));
+  box-shadow: inset 1px 1px 0 var(--highlight);
+}
+
+.packCard:hover {
+  border-color: var(--accent, var(--selection));
+}
+
+.packPreview {
+  width: 100%;
+  height: 92px;
+  object-fit: contain;
+  background: var(--platinum);
+  border: 1px solid var(--shadow);
+  image-rendering: pixelated;
+}
+
+.gamePreview {
+  background: var(--black);
+}
+
+.packName {
+  overflow: hidden;
+  color: var(--window-text-color, var(--black));
+  font-family: var(--font-chicago);
+  font-size: 12px;
+  font-weight: bold;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.packAuthor,
+.packMeta {
+  color: var(--window-text-secondary, var(--shadow));
+  font-size: 10px;
+  text-align: center;
+}
+
+.packActions {
+  width: 100%;
+}
+
+.packActions .actionButton {
+  flex: 1;
+}
+
+.actionButton {
+  font-size: 10px;
+  font-weight: bold;
+}
+
+.pagination {
+  justify-content: center;
+  margin-top: 12px;
+}
+
+.paginationLabel {
+  padding: 3px 8px;
+  color: var(--window-text-secondary, var(--shadow));
+}
+
+.publishForm {
+  display: flex;
+  max-width: 620px;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 auto;
+}
+
+.formTitle {
+  color: var(--window-text-color, var(--black));
+  font-family: var(--font-chicago);
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.formLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--window-text-color, var(--black));
+}
+
+.formControl {
+  width: 100%;
+  padding: 6px 8px;
+}
+
+textarea.formControl {
+  resize: vertical;
+}
+
+.codeControl {
+  min-height: 90px;
+  font-family: var(--font-monaco);
+  font-size: 10px;
+}
+
+.fileInput {
+  max-width: 100%;
+  padding: 4px;
+  border: 1px dashed var(--shadow);
+  color: var(--window-text-secondary, var(--shadow));
+}
+
+.fileList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--shadow);
+  color: var(--window-text-secondary, var(--shadow));
+  font-size: 10px;
+}
+
+.fileItem {
+  overflow-wrap: anywhere;
+}
+
+.removeButton {
+  margin-left: 6px;
+  padding: 2px 5px;
+  border: 1px solid var(--shadow);
+  background: transparent;
+  color: var(--danger, var(--error-text, #990000));
+  cursor: pointer;
+  font: inherit;
+}
+
+.formError {
+  padding: 6px 8px;
+  border: 1px solid var(--danger, var(--error-text, #990000));
+}
+
+.publishButton {
+  align-self: flex-start;
+  padding-inline: 16px;
+}
+
+.myPacks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.myPack {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid var(--shadow);
+  background: var(--window-bg, var(--white));
+}
+
+.myPackPreview {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  object-fit: contain;
+  border: 1px solid var(--shadow);
+  background: var(--platinum);
+}
+
+.myPackInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+.myPackInfo .packName,
+.myPackInfo .packMeta {
+  text-align: left;
+}
+
+.deleteButton {
+  color: var(--danger, var(--error-text, #990000));
+}
+
+@media (max-width: 520px) {
+  .header {
+    align-items: stretch;
+  }
+
+  .nav,
+  .search {
+    width: 100%;
+  }
+
+  .navButton {
+    flex: 1;
+  }
+
+  .packGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

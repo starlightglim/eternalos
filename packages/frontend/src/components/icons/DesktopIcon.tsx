@@ -3,7 +3,7 @@ import type { DesktopItem } from '../../types';
 import { FolderIcon, TextFileIcon, ImageFileIcon, LinkIcon, AudioFileIcon, VideoFileIcon, PDFFileIcon, WidgetIcon, AppIcon } from './PixelIcons';
 import { ThumbnailIcon } from './ThumbnailIcon';
 import { renderCustomIcon, CUSTOM_ICON_LIBRARY, type CustomIconId } from './customIconUtils';
-import { getCustomIconUrl } from '../../services/api';
+import { getCustomIconUrl, getApiUrl } from '../../services/api';
 import { getItemExtension } from '../../utils/itemSelectors';
 import { slugify } from '../../utils/slugify';
 import styles from './DesktopIcon.module.css';
@@ -269,6 +269,19 @@ function DesktopIconInner({
             {item.type === 'pdf' && <PDFFileIcon size={32} />}
             {item.type === 'widget' && <WidgetIcon size={32} />}
             {item.type === 'app' && <AppIcon size={32} />}
+            {/* Cartridges show their bazaar cover art when available */}
+            {item.type === 'cartridge' && (item.cartridgeRef?.coverUrl ? (
+              <img
+                src={item.cartridgeRef.coverUrl.startsWith('/') ? getApiUrl(item.cartridgeRef.coverUrl) : item.cartridgeRef.coverUrl}
+                alt={item.name}
+                width={32}
+                height={32}
+                className={styles.uploadedIcon}
+                style={{ imageRendering: 'pixelated', background: '#000' }}
+              />
+            ) : (
+              <AppIcon size={32} />
+            ))}
           </>
         )}
       </div>

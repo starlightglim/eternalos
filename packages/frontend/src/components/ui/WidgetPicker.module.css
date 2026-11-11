@@ -17,11 +17,12 @@
 }
 
 .dialog {
-  width: 420px;
-  max-width: 90vw;
+  width: min(420px, calc(100vw - 32px));
+  max-width: 100%;
   max-height: 80vh;
-  background: var(--platinum);
-  border: 2px solid var(--black);
+  background: var(--surface-chrome);
+  color: var(--text);
+  border: 2px solid var(--control-border);
   box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.3);
   display: flex;
   flex-direction: column;
@@ -29,8 +30,8 @@
 
 .header {
   padding: 8px 12px;
-  background: var(--white);
-  border-bottom: 1px solid var(--shadow);
+  background: var(--surface);
+  border-bottom: 1px solid var(--control-border);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -39,7 +40,7 @@
 .title {
   font-family: var(--font-chicago);
   font-size: 12px;
-  color: var(--black);
+  color: var(--text);
 }
 
 .widgetGrid {
@@ -56,22 +57,22 @@
   flex-direction: column;
   align-items: center;
   padding: 12px 10px;
-  background: var(--white);
-  border: 2px solid var(--shadow);
+  background: var(--surface);
+  border: 2px solid var(--control-border);
   border-radius: 4px;
   cursor: pointer;
   text-align: center;
 }
 
 .widgetCard:hover {
-  border-color: var(--black);
-  background: var(--highlight);
+  border-color: var(--accent, var(--control-border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
 }
 
 .widgetCard.selected {
-  border-color: var(--selection, #0066cc);
-  background: var(--selection, #0066cc);
-  color: var(--selection-text, var(--white));
+  border-color: var(--accent, var(--selection));
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
 }
 
 .widgetIcon {
@@ -98,8 +99,8 @@
 
 .configPanel {
   padding: 12px;
-  border-top: 1px solid var(--shadow);
-  background: var(--white);
+  border-top: 1px solid var(--control-border);
+  background: var(--surface);
 }
 
 .configLabel {
@@ -108,22 +109,21 @@
   gap: 4px;
   font-family: var(--font-geneva);
   font-size: 11px;
-  color: var(--black);
+  color: var(--text);
 }
 
 .configInput {
   padding: 6px 8px;
   font-family: var(--font-geneva);
   font-size: 11px;
-  border: 2px solid var(--black);
-  border-right-color: var(--white);
-  border-bottom-color: var(--white);
-  background: var(--white);
+  border: 2px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--control-text);
 }
 
 .configInput:focus {
   outline: none;
-  border-color: var(--selection, #0066cc);
+  border-color: var(--accent, var(--selection));
 }
 
 .footer {
@@ -131,8 +131,8 @@
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
-  border-top: 1px solid var(--shadow);
-  background: var(--platinum);
+  border-top: 1px solid var(--control-border);
+  background: var(--surface-chrome);
 }
 
 .spacer {
@@ -143,19 +143,21 @@
   padding: 6px 16px;
   font-family: var(--font-chicago);
   font-size: 11px;
-  background: var(--white);
-  border: 2px solid var(--black);
+  background: var(--control-bg);
+  color: var(--control-text);
+  border: 2px solid var(--control-border);
   border-radius: 4px;
   cursor: pointer;
   box-shadow: inset -1px -1px 0 var(--shadow), inset 1px 1px 0 var(--highlight);
 }
 
 .button:hover:not(:disabled) {
-  background: var(--platinum);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .button:active:not(:disabled) {
-  background: var(--shadow);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
   box-shadow: inset 1px 1px 0 var(--shadow), inset -1px -1px 0 var(--highlight);
 }
 
@@ -165,9 +167,9 @@
 }
 
 .primaryButton {
-  background: var(--selection, #0066cc);
-  color: var(--selection-text, var(--white));
-  border-color: var(--black);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
+  border-color: var(--control-border);
 }
 
 .primaryButton:hover:not(:disabled) {

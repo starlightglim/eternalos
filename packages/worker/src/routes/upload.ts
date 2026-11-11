@@ -1071,7 +1071,7 @@ export async function handleServeFile(
         headers.set('Content-Length', length.toString());
         headers.set('Content-Range', `bytes ${start}-${clampedEnd}/${totalSize}`);
         headers.set('Accept-Ranges', 'bytes');
-        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+        headers.set('Cache-Control', 'private, no-store');
         headers.set('ETag', etag);
 
         return new Response(object.body, { status: 206, headers });
@@ -1093,7 +1093,7 @@ export async function handleServeFile(
     const contentType = object.httpMetadata?.contentType || 'application/octet-stream';
     headers.set('Content-Type', contentType);
     headers.set('Content-Length', object.size.toString());
-    headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+    headers.set('Cache-Control', 'private, no-store');
     headers.set('ETag', object.httpEtag);
     // Prevent HTML/SVG files from rendering inline to avoid XSS
     const isInlineSafe = /^(image|video|audio)\//.test(contentType);

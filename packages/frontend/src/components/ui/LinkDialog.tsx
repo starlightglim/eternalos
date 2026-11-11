@@ -110,19 +110,19 @@ export function LinkDialog({ onSubmit, onCancel }: LinkDialogProps) {
 
   return (
     <div className={styles.overlay} onClick={handleOverlayClick}>
-      <div className={styles.dialog} role="dialog" aria-modal="true">
+      <div className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby="link-dialog-title">
         <div className={styles.header}>
           <div className={styles.icon}>
             <svg width="32" height="32" viewBox="0 0 32 32">
               {/* Globe icon */}
-              <circle cx="16" cy="16" r="12" fill="#fff" stroke="#000" strokeWidth="2"/>
-              <ellipse cx="16" cy="16" rx="5" ry="12" fill="none" stroke="#000" strokeWidth="1.5"/>
-              <line x1="4" y1="16" x2="28" y2="16" stroke="#000" strokeWidth="1.5"/>
-              <ellipse cx="16" cy="10" rx="9" ry="3" fill="none" stroke="#000" strokeWidth="1"/>
-              <ellipse cx="16" cy="22" rx="9" ry="3" fill="none" stroke="#000" strokeWidth="1"/>
+              <circle cx="16" cy="16" r="12" fill="var(--control-bg, #fff)" stroke="var(--control-border, #000)" strokeWidth="2"/>
+              <ellipse cx="16" cy="16" rx="5" ry="12" fill="none" stroke="var(--text, #000)" strokeWidth="1.5"/>
+              <line x1="4" y1="16" x2="28" y2="16" stroke="var(--text, #000)" strokeWidth="1.5"/>
+              <ellipse cx="16" cy="10" rx="9" ry="3" fill="none" stroke="var(--text, #000)" strokeWidth="1"/>
+              <ellipse cx="16" cy="22" rx="9" ry="3" fill="none" stroke="var(--text, #000)" strokeWidth="1"/>
             </svg>
           </div>
-          <div className={styles.title}>New Link</div>
+          <div id="link-dialog-title" className={styles.title}>New Link</div>
         </div>
 
         <div className={styles.content}>
@@ -166,10 +166,10 @@ export function LinkDialog({ onSubmit, onCancel }: LinkDialogProps) {
         </div>
 
         <div className={styles.buttons}>
-          <button className={styles.button} onClick={onCancel}>
+          <button type="button" className={styles.button} onClick={onCancel}>
             Cancel
           </button>
-          <button className={`${styles.button} ${styles.primaryButton}`} onClick={handleSubmit}>
+          <button type="button" className={`${styles.button} ${styles.primaryButton}`} onClick={handleSubmit}>
             Create
           </button>
         </div>

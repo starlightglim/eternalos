@@ -2,11 +2,41 @@ import { create } from 'zustand';
 import type { WindowState } from '../types';
 import { useSoundStore } from './soundStore';
 import { isApiConfigured, getAuthToken, saveWindowsToServer, type SavedWindowState } from '../services/api';
+import { getMenuBarHeight } from '../utils/layout';
 
 const WINDOW_STATE_KEY = 'eternalos-window-state';
 
 // Types that require a valid desktop item to exist
 const CONTENT_DEPENDENT_TYPES = ['folder', 'image', 'text', 'markdown', 'code', 'audio', 'video', 'pdf', 'get-info', 'widget'];
+
+function migrateLegacyWindowLayout(windowState: WindowState): WindowState {
+  if (windowState.contentType === 'appearance' && windowState.size.width === 400 && windowState.size.height === 480) {
+    return { ...windowState, size: { width: 620, height: 620 } };
+  }
+  if (windowState.contentType === 'agent-chat' && windowState.size.width === 430 && windowState.size.height === 380) {
+    return { ...windowState, size: { width: 920, height: 620 } };
+  }
+  if (windowState.contentType === 'preferences' && windowState.size.width === 380 && windowState.size.height === 360) {
+    return { ...windowState, position: { x: 88, y: 34 }, size: { width: 520, height: 620 } };
+  }
+  return windowState;
+}
+
+function clampWindowPosition(
+  position: { x: number; y: number },
+  size: { width: number; height: number },
+  viewportWidth = window.innerWidth,
+  viewportHeight = window.innerHeight,
+): { x: number; y: number } {
+  const menuBarHeight = getMenuBarHeight();
+  const maxX = Math.max(0, viewportWidth - size.width);
+  const maxY = Math.max(menuBarHeight, viewportHeight - size.height);
+
+  return {
+    x: Math.min(Math.max(0, position.x), maxX),
+    y: Math.min(Math.max(menuBarHeight, position.y), maxY),
+  };
+}
 
 // Debounce helper for localStorage (fast, 300ms)
 let saveTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -132,6 +162,7 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
 
     const newWindow: WindowState = {
       ...windowData,
+      position: clampWindowPosition(windowData.position, windowData.size),
       zIndex: nextZIndex,
       collapsed: false,
     };
@@ -264,7 +295,7 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
         };
       } else {
         // Maximize - fill screen below menu bar (20px)
-        const menuBarHeight = 20;
+        const menuBarHeight = getMenuBarHeight();
         return {
           ...w,
           maximized: true,
@@ -366,9 +397,10 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
       // Adjust positions if viewport has changed
       const viewportWidth = window.innerWidth;
       const viewportHeight = window.innerHeight;
-      const menuBarHeight = 20;
+      const menuBarHeight = getMenuBarHeight();
 
-      const adjustedWindows = validWindows.map((w) => {
+      const adjustedWindows = validWindows.map((windowState) => {
+        const w = migrateLegacyWindowLayout(windowState);
         let { position } = w;
         const size = w.size;
 
@@ -427,7 +459,7 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
       // so they match the visitor double-click behavior
       const viewportWidth = window.innerWidth;
       const viewportHeight = window.innerHeight;
-      const menuBarHeight = 20;
+      const menuBarHeight = getMenuBarHeight();
 
       const windowStates: WindowState[] = validWindows.map((w, i) => {
         // Build the visitor-style ID based on contentType
@@ -517,25 +549,14 @@ window.addEventListener('resize', () => {
     const { windows } = useWindowStore.getState();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const menuBarHeight = 20;
     let changed = false;
 
     const adjusted = windows.map((w) => {
       if (w.minimized) return w;
-      let { x, y } = w.position;
-      // Ensure at least 100px of window is visible horizontally
-      if (x + 100 > vw) {
-        x = Math.max(0, vw - 100);
-        changed = true;
-      }
-      // Ensure title bar is reachable (below menu bar, above bottom)
-      if (y + 30 > vh) {
-        y = Math.max(menuBarHeight, vh - 30);
-        changed = true;
-      }
-      if (x === w.position.x && y === w.position.y) return w;
+      const position = clampWindowPosition(w.position, w.size, vw, vh);
+      if (position.x === w.position.x && position.y === w.position.y) return w;
       changed = true;
-      return { ...w, position: { x, y } };
+      return { ...w, position };
     });
 
     if (changed) {

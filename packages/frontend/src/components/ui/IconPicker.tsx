@@ -145,12 +145,15 @@ export function IconPicker({ currentIcon, itemId, onSelect, onClose }: IconPicke
         </div>
 
         {/* Category Tabs */}
-        <div className={styles.tabs}>
+        <div className={styles.tabs} role="tablist" aria-label="Icon categories">
           {CATEGORY_ORDER.map((catId) => (
             <button
               key={catId}
+              type="button"
               className={`${styles.tab} ${activeCategory === catId ? styles.tabActive : ''}`}
               onClick={() => setActiveCategory(catId)}
+              aria-selected={activeCategory === catId}
+              role="tab"
             >
               {CATEGORY_LABELS[catId]}
             </button>
@@ -174,6 +177,7 @@ export function IconPicker({ currentIcon, itemId, onSelect, onClose }: IconPicke
               />
 
               <button
+                type="button"
                 className={styles.uploadButton}
                 onClick={handleUploadClick}
                 disabled={isUploading}
@@ -205,9 +209,11 @@ export function IconPicker({ currentIcon, itemId, onSelect, onClose }: IconPicke
                 return (
                   <button
                     key={icon.id}
+                    type="button"
                     className={`${styles.iconButton} ${isSelected ? styles.iconSelected : ''}`}
                     onClick={() => handleIconClick(icon.id)}
                     title={icon.label}
+                    aria-pressed={isSelected}
                   >
                     <div className={styles.iconPreview}>
                       <IconComponent size={32} />
@@ -222,14 +228,15 @@ export function IconPicker({ currentIcon, itemId, onSelect, onClose }: IconPicke
 
         {/* Footer with buttons */}
         <div className={styles.footer}>
-          <button className={styles.button} onClick={handleReset}>
+          <button type="button" className={styles.button} onClick={handleReset}>
             Reset to Default
           </button>
           <div className={styles.spacer} />
-          <button className={styles.button} onClick={onClose}>
+          <button type="button" className={styles.button} onClick={onClose}>
             Cancel
           </button>
           <button
+            type="button"
             className={`${styles.button} ${styles.primaryButton}`}
             onClick={handleApply}
             disabled={isUploading}

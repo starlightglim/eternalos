@@ -8,7 +8,8 @@
   flex-direction: column;
   height: 100%;
   font-family: var(--font-geneva);
-  background: var(--platinum);
+  background: var(--surface-chrome);
+  color: var(--text);
 }
 
 .toolbar {
@@ -16,7 +17,7 @@
   justify-content: space-between;
   align-items: center;
   padding: 6px 8px;
-  border-bottom: 1px solid var(--shadow);
+  border-bottom: 1px solid var(--control-border);
   flex-shrink: 0;
 }
 
@@ -28,18 +29,18 @@
 .paletteColor {
   width: 18px;
   height: 18px;
-  border: 1px solid var(--shadow);
+  border: 1px solid var(--control-border);
   cursor: pointer;
   padding: 0;
 }
 
 .paletteColor:hover {
-  border-color: var(--black);
+  border-color: var(--accent, var(--control-border));
 }
 
 .paletteColor.selected {
-  border: 2px solid var(--black);
-  box-shadow: 0 0 0 1px var(--white);
+  border: 2px solid var(--accent, var(--control-border));
+  box-shadow: 0 0 0 1px var(--surface);
 }
 
 .tools {
@@ -51,27 +52,29 @@
   padding: 3px 8px;
   font-family: var(--font-geneva);
   font-size: 10px;
-  background: var(--white);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  color: var(--control-text);
+  border: 1px solid var(--control-border);
   border-radius: 2px;
   cursor: pointer;
 }
 
 .toolButton:hover {
-  background: var(--platinum);
-  border-color: var(--black);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
+  border-color: var(--accent, var(--control-border));
 }
 
 .toolButton:active {
-  background: var(--shadow);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
 }
 
 .grid {
   flex: 1;
   display: grid;
   margin: 8px;
-  border: 2px solid var(--black);
-  background: var(--white);
+  border: 2px solid var(--control-border);
+  background: var(--surface);
   image-rendering: pixelated;
   touch-action: none; /* Prevent scrolling while drawing */
   user-select: none;

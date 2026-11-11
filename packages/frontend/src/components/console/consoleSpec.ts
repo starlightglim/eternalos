@@ -60,6 +60,50 @@ export function createStarterCartridge(name: string, author: string): Cartridge 
   };
 }
 
+/**
+ * Render a 256x256 bazaar cover image for a cartridge: dark background, the
+ * sprite sheet centered (when it has any pixels), and the game name in a
+ * banner. Good enough until gameplay screenshots land.
+ */
+export function generateCover(cartridge: Cartridge): Promise<Blob | null> {
+  const pal = cartridge.palette && cartridge.palette.length === 16 ? cartridge.palette : DEFAULT_PALETTE;
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return Promise.resolve(null);
+
+  ctx.fillStyle = pal[1];
+  ctx.fillRect(0, 0, 256, 256);
+
+  const hasPixels = /[1-9a-f]/i.test(cartridge.spritesheet);
+  if (hasPixels) {
+    const sheet = document.createElement('canvas');
+    sheet.width = CONSOLE_SCREEN;
+    sheet.height = CONSOLE_SCREEN;
+    drawSpritesheet(sheet, cartridge.spritesheet, cartridge.palette);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(sheet, 0, 0, CONSOLE_SCREEN, CONSOLE_SCREEN, 0, 0, 256, 256);
+  }
+
+  // Name banner
+  ctx.fillStyle = pal[0];
+  ctx.globalAlpha = 0.8;
+  ctx.fillRect(0, 200, 256, 56);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = pal[7];
+  ctx.font = 'bold 20px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const name = cartridge.meta.name.slice(0, 20);
+  ctx.fillText(name.toUpperCase(), 128, 222);
+  ctx.fillStyle = pal[6];
+  ctx.font = '12px monospace';
+  ctx.fillText('by ' + cartridge.meta.author, 128, 242);
+
+  return new Promise((resolve) => canvas.toBlob((b) => resolve(b), 'image/png'));
+}
+
 /** Draw a spritesheet hex grid onto a canvas (1px per pixel, caller scales). */
 export function drawSpritesheet(
   canvas: HTMLCanvasElement,

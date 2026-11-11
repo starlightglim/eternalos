@@ -2,8 +2,8 @@
 
 .panel {
   padding: 10px;
-  background: var(--white);
-  border-bottom: 1px solid var(--shadow);
+  background: var(--surface);
+  border-bottom: 1px solid var(--control-border);
   max-height: 260px;
   overflow-y: auto;
 }
@@ -18,28 +18,28 @@
 .panelTitle {
   font-family: var(--font-chicago);
   font-size: 11px;
-  color: var(--text-color);
+  color: var(--text);
 }
 
 .assetCount {
   font-family: var(--font-monaco);
   font-size: 10px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
   padding: 2px 6px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
 }
 
 .panelNote {
   font-size: 10px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
   margin-bottom: 8px;
   line-height: 1.4;
 }
 
 .panelNote code {
   font-family: var(--font-monaco);
-  background: var(--platinum);
+  background: var(--control-bg);
   padding: 1px 3px;
   font-size: 9px;
 }
@@ -61,17 +61,17 @@
   padding: 6px 12px;
   font-family: var(--font-geneva);
   font-size: 10px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   cursor: pointer;
-  color: var(--text-color);
+  color: var(--control-text);
   box-shadow:
     inset 1px 1px 0 var(--highlight),
     inset -1px -1px 0 var(--shadow);
 }
 
 .uploadButton:hover:not(:disabled) {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .uploadButton:active:not(:disabled) {
@@ -89,14 +89,14 @@
 
 .progressBar {
   height: 4px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
   margin-top: 4px;
 }
 
 .progressFill {
   height: 100%;
-  background: var(--selection);
+  background: var(--accent, var(--selection));
   transition: width 0.2s;
 }
 
@@ -106,9 +106,9 @@
 
 .error {
   padding: 6px 8px;
-  background: #FFEEEE;
-  border: 1px solid #CC0000;
-  color: #CC0000;
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  border: 1px solid var(--danger);
+  color: var(--danger);
   font-size: 10px;
   margin-bottom: 8px;
   display: flex;
@@ -130,7 +130,7 @@
 .emptyText {
   font-family: var(--font-geneva);
   font-size: 10px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
   text-align: center;
   padding: 12px 0;
 }
@@ -140,16 +140,16 @@
   align-items: center;
   gap: 8px;
   padding: 4px 6px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
 }
 
 .assetThumbnail {
   width: 28px;
   height: 28px;
   object-fit: cover;
-  border: 1px solid var(--shadow);
-  background: var(--white);
+  border: 1px solid var(--control-border);
+  background: var(--surface);
   image-rendering: auto;
   flex-shrink: 0;
 }
@@ -165,7 +165,7 @@
 .assetName {
   font-family: var(--font-geneva);
   font-size: 10px;
-  color: var(--text-color);
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -174,7 +174,7 @@
 .assetSize {
   font-family: var(--font-monaco);
   font-size: 9px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
 }
 
 .assetActions {
@@ -188,16 +188,16 @@
   padding: 3px 6px;
   font-family: var(--font-geneva);
   font-size: 9px;
-  background: var(--white);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   cursor: pointer;
-  color: var(--text-color);
+  color: var(--control-text);
   white-space: nowrap;
 }
 
 .copyButton:hover,
 .insertButton:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .copyButton:active,
@@ -209,14 +209,14 @@
 .deleteButton {
   padding: 3px 5px;
   font-size: 9px;
-  background: var(--white);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   cursor: pointer;
-  color: #CC0000;
+  color: var(--danger);
   line-height: 1;
 }
 
 .deleteButton:hover {
-  background: #FFEEEE;
-  border-color: #CC0000;
+  background: color-mix(in srgb, var(--danger) 14%, var(--control-bg));
+  border-color: var(--danger);
 }

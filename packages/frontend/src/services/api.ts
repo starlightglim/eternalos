@@ -17,10 +17,83 @@ export function getApiUrl(path: string): string {
   return `${API_URL}${path}`;
 }
 
+export interface AppCapabilityResponse {
+  token: string;
+  appId: string;
+  uid: string;
+  expiresAt: number;
+  granted: Record<string, unknown>;
+}
+
+export interface AppPermissionResponse {
+  appId: string;
+  requested: Record<string, unknown>;
+  granted: Record<string, unknown>;
+  rationale?: string;
+}
+
+export interface AppSourceResponse {
+  success: boolean;
+  files: Record<string, string>;
+}
+
+export interface AppDeployResponse {
+  success: boolean;
+  appId: string;
+  version: number;
+  isUpdate: boolean;
+}
+
+export interface AppRelease {
+  version: number;
+  r2Prefix: string;
+  name?: string;
+  description?: string;
+  createdAt?: number;
+  permissions?: Record<string, unknown>;
+  rationale?: string;
+  current: boolean;
+}
+
+export interface AppVersionsResponse {
+  appId: string;
+  currentVersion: number;
+  releases: AppRelease[];
+}
+
 // Store JWT in memory
 let authToken: string | null = null;
 let refreshToken: string | null = null;
 let refreshRequest: Promise<boolean> | null = null;
+let sessionVersion = 0;
+
+class SessionChangedError extends Error {
+  constructor() { super('Your session changed. Please try again.'); }
+}
+
+class RefreshUnavailableError extends Error {
+  constructor() { super('Unable to reconnect right now. Your session is saved; please try again.'); }
+}
+
+function readStoredSession(): { token: string; refreshToken: string } | null | undefined {
+  try {
+    const state = JSON.parse(localStorage.getItem('eternalos-auth') || 'null')?.state;
+    return typeof state?.token === 'string' && typeof state?.refreshToken === 'string'
+      ? { token: state.token, refreshToken: state.refreshToken }
+      : null;
+  } catch {
+    // Storage may be unavailable; in-memory sessions still work in this tab.
+    return undefined;
+  }
+}
+
+function tokenOwner(token: string): string | undefined {
+  try {
+    const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const uid = JSON.parse(atob(payload)).uid;
+    return typeof uid === 'string' ? uid : undefined;
+  } catch { return undefined; }
+}
 
 // Proactive JWT refresh — schedule a refresh slightly before the access token
 // expires so requests never see a 401 in the happy path. Refresh tokens rotate
@@ -77,14 +150,18 @@ function scheduleProactiveRefresh(expiresInSeconds?: number): void {
   // call site triggered this scheduling.
   delayMs = Math.max(1_000, delayMs);
   proactiveRefreshTimer = setTimeout(async () => {
-    const ok = await refreshSession();
-    if (!ok && authToken) {
-      // Refresh token rejected (probably 30-day window elapsed). Trigger the
-      // same session-expired flow that 401s on API calls take, so the user
-      // is redirected to /login instead of left with a dead token.
-      authToken = null;
-      refreshToken = null;
-      onSessionExpired?.();
+    try {
+      const ok = await refreshSession();
+      if (!ok && authToken) {
+        setAuthToken(null);
+        setRefreshToken(null);
+        onSessionExpired?.();
+      }
+    } catch (error) {
+      // Connectivity failures and rate limits are not revoked credentials.
+      if (error instanceof RefreshUnavailableError && authToken && refreshToken) {
+        scheduleProactiveRefresh(90); // Retry in 30 seconds, without a tight loop.
+      }
     }
   }, delayMs);
 }
@@ -93,6 +170,10 @@ function scheduleProactiveRefresh(expiresInSeconds?: number): void {
  * Set the auth token for API requests
  */
 export function setAuthToken(token: string | null): void {
+  // Credential rotation within one account is not an identity change.
+  if (authToken !== token && (!authToken || !token || tokenOwner(authToken) !== tokenOwner(token))) {
+    sessionVersion += 1;
+  }
   authToken = token;
   if (!token) {
     clearProactiveRefreshTimer();
@@ -114,6 +195,7 @@ export function getAuthToken(): string | null {
  * Set the refresh token for session rotation.
  */
 export function setRefreshToken(token: string | null): void {
+  if (Boolean(refreshToken) !== Boolean(token)) sessionVersion += 1;
   refreshToken = token;
   if (!token) {
     clearProactiveRefreshTimer();
@@ -129,6 +211,59 @@ export function setRefreshToken(token: string | null): void {
  */
 export function getRefreshToken(): string | null {
   return refreshToken;
+}
+
+/** Mint a short-lived capability for the authenticated owner app iframe. */
+export async function mintAppCapability(appId: string): Promise<AppCapabilityResponse> {
+  return apiRequest<AppCapabilityResponse>(`/api/apps/${encodeURIComponent(appId)}/capability`, {
+    method: 'POST',
+  });
+}
+
+export async function getAppSource(appId: string): Promise<AppSourceResponse> {
+  return apiRequest<AppSourceResponse>(`/api/apps/${encodeURIComponent(appId)}/source`);
+}
+
+export async function deployApp(input: {
+  appId?: string;
+  manifest: Record<string, unknown>;
+  files: Record<string, string>;
+}): Promise<AppDeployResponse> {
+  return apiRequest<AppDeployResponse>('/api/apps/dev-deploy', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getAppPermissions(appId: string): Promise<AppPermissionResponse> {
+  return apiRequest<AppPermissionResponse>(`/api/apps/${encodeURIComponent(appId)}/permissions`);
+}
+
+export async function updateAppPermissions(
+  appId: string,
+  granted: Record<string, unknown>,
+): Promise<AppPermissionResponse> {
+  return apiRequest<AppPermissionResponse>(`/api/apps/${encodeURIComponent(appId)}/permissions`, {
+    method: 'PATCH',
+    body: JSON.stringify({ granted }),
+  });
+}
+
+export async function listAppVersions(appId: string): Promise<AppVersionsResponse> {
+  return apiRequest<AppVersionsResponse>(`/api/apps/${encodeURIComponent(appId)}/versions`);
+}
+
+export async function rollbackApp(appId: string, version: number): Promise<{ appId: string; version: number }> {
+  return apiRequest<{ appId: string; version: number }>(`/api/apps/${encodeURIComponent(appId)}/rollback`, {
+    method: 'POST',
+    body: JSON.stringify({ version }),
+  });
+}
+
+export async function deleteAppRuntime(appId: string): Promise<{ success: boolean; deletedDesktopItem: boolean }> {
+  return apiRequest<{ success: boolean; deletedDesktopItem: boolean }>(`/api/apps/${encodeURIComponent(appId)}`, {
+    method: 'DELETE',
+  });
 }
 
 // Callback for handling session expiry — set by authStore during init
@@ -185,21 +320,48 @@ async function refreshSession(): Promise<boolean> {
     return refreshRequest;
   }
 
-  refreshRequest = (async () => {
+  const version = sessionVersion;
+  const originalToken = authToken;
+  const originalRefresh = refreshToken;
+  const rotate = async () => {
     try {
+      if (sessionVersion !== version) throw new SessionChangedError();
+      // Re-read inside the cross-tab lock: another tab may already have rotated.
+      const stored = readStoredSession();
+      if (stored === null) throw new SessionChangedError();
+      if (stored && stored.refreshToken !== originalRefresh) {
+        const uid = originalToken && tokenOwner(originalToken);
+        if (!uid || tokenOwner(stored.token) !== uid) throw new SessionChangedError();
+        authToken = stored.token;
+        refreshToken = stored.refreshToken;
+        onTokenUpdate?.(stored.token, stored.refreshToken);
+        clearFileToken();
+        scheduleProactiveRefresh();
+        return true;
+      }
       const response = await fetch(`${API_URL}/api/auth/refresh`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ refreshToken }),
+        body: JSON.stringify({ refreshToken: originalRefresh }),
       });
 
+      const latest = readStoredSession();
+      if (sessionVersion !== version || latest === null
+        || (latest && latest.refreshToken !== originalRefresh)) {
+        throw new SessionChangedError();
+      }
       if (!response.ok) {
-        return false;
+        if (response.status === 401 || response.status === 403) return false;
+        throw new RefreshUnavailableError();
       }
 
       const data = await response.json() as RefreshResponse;
+      if (sessionVersion !== version) throw new SessionChangedError();
+      if (!data.token || !data.refreshToken || !Number.isFinite(data.expiresIn)) {
+        throw new RefreshUnavailableError();
+      }
       authToken = data.token;
       refreshToken = data.refreshToken;
       // Sync new tokens to persisted store so page reloads don't restore stale tokens
@@ -212,12 +374,20 @@ async function refreshSession(): Promise<boolean> {
       // Schedule the next proactive refresh based on the server-reported TTL.
       scheduleProactiveRefresh(data.expiresIn);
       return true;
-    } catch {
-      return false;
-    } finally {
-      refreshRequest = null;
+    } catch (error) {
+      if (error instanceof SessionChangedError) throw error;
+      throw new RefreshUnavailableError();
     }
-  })();
+  };
+
+  // Web Locks serialize refresh across tabs on supported browsers. The
+  // module-local promise also deduplicates callers within each tab.
+  refreshRequest = (async () => {
+    if (typeof navigator !== 'undefined' && navigator.locks) {
+      return await navigator.locks.request('eternalos-session-refresh', rotate);
+    }
+    return await rotate();
+  })().finally(() => { refreshRequest = null; });
 
   return refreshRequest;
 }
@@ -230,6 +400,8 @@ async function apiRequest<T>(
   options: RequestInit = {},
   allowRetry = true
 ): Promise<T> {
+  const requestSessionVersion = sessionVersion;
+  const requestAuthToken = authToken;
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
     ...options.headers,
@@ -243,39 +415,21 @@ async function apiRequest<T>(
     ...options,
     headers,
   });
+  if (sessionVersion !== requestSessionVersion) throw new SessionChangedError();
 
   if (!response.ok) {
     if (response.status === 401 && authToken && allowRetry) {
-      // Retry up to 2 times after a successful refresh (covers transient edge cases
-      // where the new token hasn't propagated to KV yet)
+      if (authToken !== requestAuthToken) return apiRequest<T>(path, options, false);
+      // Refresh once. Temporary failures propagate without discarding credentials.
       const refreshed = await refreshSession();
       if (refreshed) {
         return apiRequest<T>(path, options, false);
       }
     }
-    // If refresh succeeded but the retried request also failed with 401,
-    // try one more refresh (handles edge case where first refresh token
-    // was consumed but response was lost due to network)
-    if (response.status === 401 && authToken && !allowRetry) {
-      const secondRefresh = await refreshSession();
-      if (secondRefresh) {
-        // Final attempt — if this fails, fall through to session expired
-        const retryHeaders: HeadersInit = {
-          'Content-Type': 'application/json',
-          ...options.headers,
-          'Authorization': `Bearer ${authToken}`,
-        };
-        const retryResponse = await fetch(`${API_URL}${path}`, { ...options, headers: retryHeaders });
-        if (retryResponse.ok) {
-          return retryResponse.json() as Promise<T>;
-        }
-      }
-    }
-
     // Handle expired/invalid token after refresh attempt
     if (response.status === 401 && authToken) {
-      authToken = null;
-      refreshToken = null;
+      setAuthToken(null);
+      setRefreshToken(null);
       onSessionExpired?.();
       throw new Error('Session expired. Please log in again.');
     }
@@ -299,7 +453,9 @@ async function apiRequest<T>(
     throw new Error(`${response.status} ${errorMessage}`);
   }
 
-  return response.json();
+  const data = await response.json();
+  if (sessionVersion !== requestSessionVersion) throw new SessionChangedError();
+  return data;
 }
 
 export async function mintAgentChatWebSocketToken(): Promise<string> {
@@ -357,7 +513,7 @@ export async function listCartridgeDrafts(): Promise<CartridgeDraftSummary[]> {
   return response.drafts;
 }
 
-export async function getCartridgeDraft(cartId: string): Promise<{ cartId: string; updatedAt: number; cartridge: Cartridge }> {
+export async function getCartridgeDraft(cartId: string): Promise<{ cartId: string; updatedAt: number; cartridge: Cartridge; publishedPackId: string | null }> {
   return apiRequest(`/api/games/drafts/${encodeURIComponent(cartId)}`);
 }
 
@@ -909,9 +1065,10 @@ export function getFileUrl(r2Key: string): string {
   const ft = getCachedFileToken();
   // Encode each path segment to handle special characters in filenames
   const encodedKey = r2Key.split('/').map(encodeURIComponent).join('/');
-  const baseUrl = `${API_URL}/api/files/${encodedKey}`;
+  // New cache namespace for clients that previously cached immutable file URLs.
+  const baseUrl = `${API_URL}/api/files/${encodedKey}?v=2`;
   if (ft) {
-    return `${baseUrl}?ft=${encodeURIComponent(ft)}`;
+    return `${baseUrl}&ft=${encodeURIComponent(ft)}`;
   }
   // Fire-and-forget — when the token arrives, subscribers re-render and call
   // getFileUrl again with a token attached.
@@ -1472,7 +1629,7 @@ export async function postGuestbookEntry(
 
 export interface BazaarPack {
   packId: string;
-  type: 'cursor' | 'icon' | 'sound' | 'effect' | 'skin';
+  type: 'cursor' | 'icon' | 'sound' | 'effect' | 'skin' | 'game';
   name: string;
   description: string;
   authorUid: string;
@@ -1507,7 +1664,7 @@ export async function bazaarGetPack(packId: string): Promise<{ pack: BazaarPack 
 }
 
 /** Install a pack (returns the config to apply) */
-export async function bazaarInstall(packId: string): Promise<{ success: boolean; config: Record<string, string | number | boolean>; pack: BazaarPack }> {
+export async function bazaarInstall(packId: string): Promise<{ success: boolean; config: Record<string, string | number | boolean>; pack: BazaarPack; error?: string }> {
   const response = await fetch(`${API_URL}/api/bazaar/install/${packId}`, {
     method: 'POST',
     headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
@@ -1529,6 +1686,33 @@ export async function bazaarPublish(
   }
 
   const response = await fetch(`${API_URL}/api/bazaar/publish`, {
+    method: 'POST',
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    body: formData,
+  });
+  return response.json();
+}
+
+/** Publish (or republish with packId) a game cartridge to the Bazaar */
+export async function bazaarPublishGame(
+  cartridge: Cartridge,
+  cover: Blob | null,
+  packId?: string,
+  draftId?: string,
+): Promise<{ success: boolean; pack?: BazaarPack; error?: string }> {
+  const formData = new FormData();
+  formData.append('cartridge', JSON.stringify(cartridge));
+  if (cover) {
+    formData.append('preview', new File([cover], 'cover.png', { type: 'image/png' }));
+  }
+  if (packId) {
+    formData.append('packId', packId);
+  }
+  if (draftId) {
+    formData.append('draftId', draftId);
+  }
+
+  const response = await fetch(`${API_URL}/api/bazaar/publish-game`, {
     method: 'POST',
     headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
     body: formData,

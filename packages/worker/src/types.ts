@@ -151,7 +151,7 @@ export type WidgetConfig = StickyNoteConfig | GuestbookConfig | MusicPlayerConfi
 
 export interface DesktopItem {
   id: string;
-  type: 'folder' | 'image' | 'text' | 'link' | 'audio' | 'video' | 'pdf' | 'widget' | 'sticker' | 'app';
+  type: 'folder' | 'image' | 'text' | 'link' | 'audio' | 'video' | 'pdf' | 'widget' | 'sticker' | 'app' | 'cartridge';
   name: string;
   parentId: string | null; // null = root desktop
   position: { x: number; y: number };
@@ -181,6 +181,9 @@ export interface DesktopItem {
   imageAnalysis?: ImageAnalysisMetadata;
   // User-created app (type='app')
   appManifest?: AppManifest;
+  // Installed console game (type='cartridge') — references a bazaar pack or
+  // the owner's own draft; the cartridge itself stays in R2/KV.
+  cartridgeRef?: { packId?: string; draftId?: string; coverUrl?: string };
   // For type='app': the subset of declared permissions the user approved.
   // Shape is AppGrantedPermissions from utils/jwt.ts (serialized JSON-safe).
   // Absent = no permissions granted = hermetic app (default).
@@ -215,10 +218,23 @@ export interface AppWindowConfig {
 export interface AppPermissions {
   fs?: {
     read?: string[];          // path globs: ['**'], ['/Photos/**']
+    write?: string[];
+    delete?: string[];
     mimeTypes?: string[];     // ['image/*', 'audio/*', 'text/*']
   };
   profile?: {
     read?: Array<'username' | 'displayName' | 'bio' | 'avatar'>;
+  };
+  network?: {
+    outbound?: string[];
+  };
+  ipc?: {
+    listen?: string[];
+    emit?: string[];
+  };
+  handlers?: {
+    mimeTypes?: string[];
+    extensions?: string[];
   };
 }
 
@@ -359,7 +375,7 @@ export interface EmailVerificationRecord {
 // Bazaar — Community asset marketplace
 // ---------------------------------------------------------------------------
 
-export type PackType = 'cursor' | 'icon' | 'sound' | 'effect' | 'skin';
+export type PackType = 'cursor' | 'icon' | 'sound' | 'effect' | 'skin' | 'game';
 
 export interface BazaarPack {
   packId: string;

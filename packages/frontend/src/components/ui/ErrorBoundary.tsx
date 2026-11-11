@@ -65,10 +65,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
                 </div>
               </div>
               <div className={styles.buttons}>
-                <button className={styles.button} onClick={this.handleDismiss}>
+                <button type="button" className={styles.button} onClick={this.handleDismiss}>
                   Try Again
                 </button>
-                <button className={`${styles.button} ${styles.primaryButton}`} onClick={this.handleReload}>
+                <button type="button" className={`${styles.button} ${styles.primaryButton}`} onClick={this.handleReload}>
                   Restart
                 </button>
               </div>

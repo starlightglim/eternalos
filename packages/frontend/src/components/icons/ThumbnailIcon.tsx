@@ -57,14 +57,8 @@ export function ThumbnailIcon({
   // Subscribe to file-token version so URLs are recomputed after the token
   // first loads (page refresh) or rotates (every few minutes). Without this
   // the first render after a refresh produces a tokenless URL that 401s.
-  const fileTokenVersion = useFileTokenVersion();
+  useFileTokenVersion();
   const imageUrl = getFileUrl(imageKey);
-
-  // If we previously errored (e.g. fetched without a token), retry once the
-  // token version changes so the new signed URL gets a chance to load.
-  useEffect(() => {
-    setLoadState((prev) => (prev === 'error' && isVisible ? 'loading' : prev));
-  }, [fileTokenVersion, imageUrl, isVisible]);
 
   // Set up Intersection Observer to detect when icon enters viewport
   useEffect(() => {

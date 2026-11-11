@@ -2,7 +2,7 @@
 
 .window {
   position: absolute;
-  background: var(--white);
+  background: var(--window-bg, var(--white));
   border: none;
   border-radius: 8px;
   user-select: none;

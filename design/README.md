@@ -1,22 +1,29 @@
 # EternalOS design docs
 
-Companion specifications for the EternalOS improvement roadmap. Each numbered doc is a standalone deep-dive on one surface area. The roadmap ties them together with priorities and sequencing.
+Companion specifications for EternalOS. Each numbered doc is a standalone deep-dive on one surface area.
 
-## Read in this order
+> **The authoritative plan is [CORE-ROADMAP.md](CORE-ROADMAP.md)** — a core-first product roadmap (functionality, customization, app creation, agent) with platform features deliberately parked. [RELEASE-READINESS.md](RELEASE-READINESS.md) is now a reference appendix for the detailed R1–R6 reliability evidence, and the older [ROADMAP.md](ROADMAP.md) was **archived 2026-11-11** (platform-vision backlog only).
 
-1. **[ROADMAP.md](ROADMAP.md)** — prioritized 50-item plan, research integrated (Cloudflare platform + social architecture), dependency graph, phased rollout. Start here.
-2. **[01-apps-interop.md](01-apps-interop.md)** — user apps × files × apps. Manifest v2, capability tokens, `window.eternal` bridge, IPC, mime handlers, virtual folders, network allowlist.
-3. **[12-orchestrator-v2.md](12-orchestrator-v2.md)** — general app-builder architecture. Dynamic Workers runtime, app-generation pipeline, desktop-aware bridge, permission inference, validation and repair loop.
-4. **[13-source-first-app-workspaces.md](13-source-first-app-workspaces.md)** — editable app source trees, workspace profiles, editor/preview/install flow, and how the agent should patch code without degrading it.
-5. **[02-social-v1.md](02-social-v1.md)** — D1 schema for follows / posts / forums / comments / reports / bazaar, fanout-on-read feed, Inbox DO with WS hibernation, Workers AI moderation, Vectorize search, RSS / JSON Feed.
-6. **[03-mobile.md](03-mobile.md)** — PWA scaffold, grid home screen, gestures, sheet-based UI, tablet layout, full customization parity on phones.
-7. **[04-skin-format.md](04-skin-format.md)** — `.estheme` zip bundle spec, manifest v1, export / import / fork / extend, bazaar integration, safety rules.
-8. **[05-mcp-server.md](05-mcp-server.md)** — every user's desktop as an OAuth-scoped MCP server. Tool schemas, consent UI, scope model, preferences → connections.
-9. **[06-moderation-trust.md](06-moderation-trust.md)** — Workers AI classification pipeline (llama-guard + vision), trust score, reports, admin app, bans, appeals, CSAM + DMCA legal posture.
-10. **[07-observability-ops.md](07-observability-ops.md)** — Sentry wiring, Analytics Engine, Logpush, staging env, CI/CD with manual prod gate, incident runbook, cost alerts, status page.
-11. **[08-onboarding.md](08-onboarding.md)** — demo mode, progressive signup, goal-based wizard, example desktops, empty-feed bootstrap, command palette, inline help, ricer vs beginner paths.
-12. **[09-d1-migration.md](09-d1-migration.md)** — zero-downtime KV → D1 migration plan for bazaar indexes. Phased dual-write, backfill, cutover, rollback. Unblocks social v1.
-13. **[10-privacy-tos.md](10-privacy-tos.md)** — legal posture, data we collect / don't, retention, sub-processors, draft privacy policy + ToS + AUP + DMCA, signup consent, age gating, breach response.
+## Meta
+
+- **[CORE-ROADMAP.md](CORE-ROADMAP.md)** — the authoritative core-first plan: four product workstreams, cross-cutting reliability foundations, parked features, and a suggested sequence. **Start here.**
+- **[RELEASE-READINESS.md](RELEASE-READINESS.md)** — reference appendix: verified R1–R6 blocker evidence and the baseline gates CORE-ROADMAP's Foundations section links to.
+- **[ROADMAP.md](ROADMAP.md)** (archived 2026-11-11) — the original prioritized 50-item plan with integrated research and a dependency graph. Status claims are stale; kept for the P2/P3 platform vision and as the numbered docs' link target.
+
+## Surface deep-dives
+
+1. **[01-apps-interop.md](01-apps-interop.md)** — user apps × files × apps. Manifest v2, capability tokens, `window.eternal` bridge, IPC, mime handlers, virtual folders, network allowlist.
+2. **[12-orchestrator-v2.md](12-orchestrator-v2.md)** — general app-builder architecture. Dynamic Workers runtime, app-generation pipeline, desktop-aware bridge, permission inference, validation and repair loop.
+3. **[13-source-first-app-workspaces.md](13-source-first-app-workspaces.md)** — editable app source trees, workspace profiles, editor/preview/install flow, and how the agent should patch code without degrading it.
+4. **[02-social-v1.md](02-social-v1.md)** — D1 schema for follows / posts / forums / comments / reports / bazaar, fanout-on-read feed, Inbox DO with WS hibernation, Workers AI moderation, Vectorize search, RSS / JSON Feed.
+5. **[03-mobile.md](03-mobile.md)** — PWA scaffold, grid home screen, gestures, sheet-based UI, tablet layout, full customization parity on phones.
+6. **[04-skin-format.md](04-skin-format.md)** — `.estheme` zip bundle spec, manifest v1, export / import / fork / extend, bazaar integration, safety rules.
+7. **[05-mcp-server.md](05-mcp-server.md)** — every user's desktop as an OAuth-scoped MCP server. Tool schemas, consent UI, scope model, preferences → connections.
+8. **[06-moderation-trust.md](06-moderation-trust.md)** — Workers AI classification pipeline (llama-guard + vision), trust score, reports, admin app, bans, appeals, CSAM + DMCA legal posture.
+9. **[07-observability-ops.md](07-observability-ops.md)** — Sentry wiring, Analytics Engine, Logpush, staging env, CI/CD with manual prod gate, incident runbook, cost alerts, status page.
+10. **[08-onboarding.md](08-onboarding.md)** — demo mode, progressive signup, goal-based wizard, example desktops, empty-feed bootstrap, command palette, inline help, ricer vs beginner paths.
+11. **[09-d1-migration.md](09-d1-migration.md)** — zero-downtime KV → D1 migration plan for bazaar indexes. Phased dual-write, backfill, cutover, rollback. Unblocks social v1.
+12. **[10-privacy-tos.md](10-privacy-tos.md)** — legal posture, data we collect / don't, retention, sub-processors, draft privacy policy + ToS + AUP + DMCA, signup consent, age gating, breach response.
 
 ## Format
 

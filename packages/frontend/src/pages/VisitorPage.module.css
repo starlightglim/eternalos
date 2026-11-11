@@ -10,7 +10,7 @@
 
 .desktop {
   position: absolute;
-  top: 20px; /* Account for visitor menu bar */
+  top: var(--menu-bar-height, 20px);
   left: 0;
   right: 0;
   bottom: 0;
@@ -31,7 +31,7 @@
 .loadingText {
   font-family: var(--font-chicago);
   font-size: 14px;
-  color: var(--black);
+  color: var(--text, var(--black));
 }
 
 /* Error dialog - classic Mac bomb/alert style */
@@ -41,8 +41,8 @@
   left: 50%;
   transform: translate(-50%, -50%);
   width: 320px;
-  background: var(--white);
-  border: 2px solid var(--black);
+  background: var(--surface, var(--white));
+  border: 2px solid var(--control-border, var(--black));
   box-shadow:
     inset 1px 1px 0 var(--highlight),
     inset -1px -1px 0 var(--shadow),
@@ -66,7 +66,7 @@
 .errorMessage {
   font-family: var(--font-geneva);
   font-size: 12px;
-  color: var(--black);
+  color: var(--text, var(--black));
   margin-bottom: 16px;
   line-height: 1.4;
 }
@@ -76,11 +76,11 @@
   font-family: var(--font-chicago);
   font-size: 12px;
   padding: 6px 24px;
-  background: var(--white);
-  border: 2px solid var(--black);
+  background: var(--control-bg, var(--white));
+  border: 2px solid var(--control-border, var(--black));
   border-radius: 6px;
   text-decoration: none;
-  color: var(--black);
+  color: var(--control-text, var(--black));
   cursor: pointer;
   box-shadow:
     inset 1px 1px 0 var(--highlight),
@@ -88,12 +88,12 @@
 }
 
 .errorButton:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--control-bg, var(--white)));
 }
 
 .errorButton:active {
-  background: var(--black);
-  color: var(--white);
+  background: var(--accent, var(--black));
+  color: var(--selection-text, var(--white));
   box-shadow:
     inset 1px 1px 0 var(--shadow),
     inset -1px -1px 0 var(--highlight);
@@ -106,8 +106,8 @@
   left: 50%;
   transform: translate(-50%, -50%);
   width: 280px;
-  background: var(--white);
-  border: 2px solid var(--black);
+  background: var(--surface, var(--white));
+  border: 2px solid var(--control-border, var(--black));
   box-shadow:
     inset 1px 1px 0 var(--highlight),
     inset -1px -1px 0 var(--shadow);
@@ -118,19 +118,19 @@
   background:
     repeating-linear-gradient(
       0deg,
-      var(--white) 0px,
-      var(--white) 1px,
-      var(--black) 1px,
-      var(--black) 3px
+      var(--surface, var(--white)) 0px,
+      var(--surface, var(--white)) 1px,
+      var(--control-border, var(--black)) 1px,
+      var(--control-border, var(--black)) 3px
     );
-  border-bottom: 1px solid var(--black);
+  border-bottom: 1px solid var(--control-border, var(--black));
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .emptyWindowTitle {
-  background: var(--white);
+  background: var(--surface, var(--white));
   padding: 0 8px;
   font-family: var(--font-chicago);
   font-size: 12px;
@@ -165,12 +165,12 @@
   display: flex;
   align-items: center;
   padding: 4px 10px;
-  background: rgba(255, 255, 255, 0.85);
-  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface, var(--white)) 85%, transparent);
+  border: 1px solid var(--control-border, var(--border));
   border-radius: 3px;
   font-family: var(--font-geneva);
   font-size: 10px;
-  color: var(--shadow);
+  color: var(--text-muted, var(--shadow));
   cursor: pointer;
   opacity: 0.7;
   transition: opacity 0.15s ease;
@@ -181,7 +181,7 @@
 
 .stealThemeButton:hover {
   opacity: 1;
-  color: var(--black);
+  color: var(--text, var(--black));
 }
 
 /* Made with EternalOS watermark */
@@ -190,12 +190,12 @@
   align-items: center;
   gap: 6px;
   padding: 4px 10px;
-  background: rgba(255, 255, 255, 0.85);
-  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface, var(--white)) 85%, transparent);
+  border: 1px solid var(--control-border, var(--border));
   border-radius: 3px;
   font-family: var(--font-geneva);
   font-size: 10px;
-  color: var(--shadow);
+  color: var(--text-muted, var(--shadow));
   text-decoration: none;
   opacity: 0.7;
   transition: opacity 0.15s ease;
@@ -206,7 +206,7 @@
 
 .watermark:hover {
   opacity: 1;
-  color: var(--black);
+  color: var(--text, var(--black));
 }
 
 .watermarkIcon {

@@ -16,6 +16,7 @@ import { useAuthStore } from '../../stores/authStore';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { useWindowStore } from '../../stores/windowStore';
 import { getTextFileContentType, type DesktopItem } from '../../types';
+import { AlertDialog } from '../ui/AlertDialog';
 import styles from './AgentChatWindow.module.css';
 
 const STARTER_PROMPTS = [
@@ -517,9 +518,15 @@ function AgentChatThreadPane({
   const inputRef = useRef<HTMLInputElement>(null);
   const refreshedToolCalls = useRef(new Set<string>());
   const [draft, setDraft] = useState('');
-  const [wsToken, setWsToken] = useState<string | null>(null);
-  const [wsReady, setWsReady] = useState(false);
+  const [wsSession, setWsSession] = useState<{ userId: string | null; token: string | null; ready: boolean }>({
+    userId: null,
+    token: null,
+    ready: false,
+  });
   const [mainView, setMainView] = useState<'chat' | 'history'>('chat');
+  const userId = user?.uid;
+  const wsToken = wsSession.userId === userId ? wsSession.token : null;
+  const wsReady = wsSession.userId === userId && wsSession.ready;
 
   const apiBaseUrl = useMemo(() => {
     const configured = import.meta.env.VITE_API_URL || window.location.origin;
@@ -538,34 +545,29 @@ function AgentChatThreadPane({
     let cancelled = false;
     const token = getAuthToken();
 
-    if (!user || !token) {
-      setWsToken(null);
-      setWsReady(true);
+    if (!userId || !token) {
       return () => {
         cancelled = true;
       };
     }
 
-    setWsReady(false);
     void mintAgentChatWebSocketToken()
       .then((nextWsToken) => {
         if (!cancelled) {
-          setWsToken(nextWsToken);
-          setWsReady(true);
+          setWsSession({ userId, token: nextWsToken, ready: true });
         }
       })
       .catch((mintError) => {
         console.error('Failed to mint agent chat websocket token:', mintError);
         if (!cancelled) {
-          setWsToken(null);
-          setWsReady(true);
+          setWsSession({ userId, token: null, ready: true });
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [user?.uid]);
+  }, [userId]);
 
   const agent = useAgent({
     agent: 'OrchestratorAgent',
@@ -1853,6 +1855,9 @@ export function AgentChatWindow() {
   const [threadsLoading, setThreadsLoading] = useState(false);
   const [threadsError, setThreadsError] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [showRenameDialog, setShowRenameDialog] = useState(false);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const refreshThreads = useCallback(async ({ silent = false }: { silent?: boolean } = {}): Promise<AgentThreadSummary[]> => {
     if (!user) {
@@ -1965,8 +1970,18 @@ export function AgentChatWindow() {
     if (!user || !activeThreadId) return;
 
     const activeThread = threads.find((thread) => thread.id === activeThreadId);
-    const nextTitle = window.prompt('Rename thread', activeThread?.title ?? 'New Thread')?.trim();
-    if (!nextTitle) return;
+    setRenameDraft(activeThread?.title ?? 'New Thread');
+    setShowRenameDialog(true);
+  }, [activeThreadId, threads, user]);
+
+  const commitRenameThread = useCallback(async () => {
+    if (!user || !activeThreadId) return;
+
+    const nextTitle = renameDraft.trim();
+    if (!nextTitle) {
+      setThreadsError('Enter a name for this thread.');
+      return;
+    }
 
     try {
       const updated = await renameAgentThread(activeThreadId, nextTitle);
@@ -1975,24 +1990,28 @@ export function AgentChatWindow() {
         .sort((a, b) => b.updatedAt - a.updatedAt);
       setThreads(nextThreads);
       setThreadsError(null);
+      setShowRenameDialog(false);
     } catch (renameError) {
       console.error('Failed to rename agent thread:', renameError);
       setThreadsError(renameError instanceof Error ? renameError.message : 'Failed to rename thread');
     }
-  }, [activeThreadId, threads, user]);
+  }, [activeThreadId, renameDraft, threads, user]);
 
   const handleDeleteThread = useCallback(async () => {
     if (!user || !activeThreadId) return;
 
-    const activeThread = threads.find((thread) => thread.id === activeThreadId);
-    const confirmed = window.confirm(`Delete "${activeThread?.title ?? 'this thread'}"?`);
-    if (!confirmed) return;
+    setShowDeleteConfirm(true);
+  }, [activeThreadId, user]);
+
+  const confirmDeleteThread = useCallback(async () => {
+    if (!user || !activeThreadId) return;
 
     try {
       await deleteAgentThread(activeThreadId);
       const nextThreads = threads.filter((thread) => thread.id !== activeThreadId);
       setThreads(nextThreads);
       setThreadsError(null);
+      setShowDeleteConfirm(false);
 
       if (nextThreads.length > 0) {
         const nextActiveThread = nextThreads[0];
@@ -2055,19 +2074,71 @@ export function AgentChatWindow() {
   }
 
   return (
-    <AgentChatThreadPane
-      key={activeThread.id}
-      user={user}
-      authToken={authToken}
-      activeThread={activeThread}
-      threadList={threads}
-      threadsLoading={threadsLoading}
-      threadsError={threadsError}
-      onSelectThread={handleSelectThread}
-      onCreateThread={handleCreateThread}
-      onRenameThread={handleRenameThread}
-      onDeleteThread={handleDeleteThread}
-      onThreadActivity={handleThreadActivity}
-    />
+    <>
+      <AgentChatThreadPane
+        key={activeThread.id}
+        user={user}
+        authToken={authToken}
+        activeThread={activeThread}
+        threadList={threads}
+        threadsLoading={threadsLoading}
+        threadsError={threadsError}
+        onSelectThread={handleSelectThread}
+        onCreateThread={handleCreateThread}
+        onRenameThread={handleRenameThread}
+        onDeleteThread={handleDeleteThread}
+        onThreadActivity={handleThreadActivity}
+      />
+
+      {showRenameDialog && (
+        <div
+          className={styles.threadDialogOverlay}
+          onClick={(event) => event.target === event.currentTarget && setShowRenameDialog(false)}
+        >
+          <form
+            className={styles.threadDialog}
+            onSubmit={(event) => {
+              event.preventDefault();
+              void commitRenameThread();
+            }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rename-thread-title"
+          >
+            <h3 id="rename-thread-title" className={styles.threadDialogTitle}>Rename thread</h3>
+            <label className={styles.threadDialogLabel} htmlFor="rename-thread-input">Thread name</label>
+            <input
+              id="rename-thread-input"
+              className={styles.threadDialogInput}
+              value={renameDraft}
+              onChange={(event) => setRenameDraft(event.target.value)}
+              maxLength={120}
+              autoFocus
+            />
+            <div className={styles.threadDialogActions}>
+              <button type="button" className={styles.ghostButton} onClick={() => setShowRenameDialog(false)}>
+                Cancel
+              </button>
+              <button type="submit" className={styles.primaryButton}>
+                Rename
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {showDeleteConfirm && (
+        <AlertDialog
+          type="confirm"
+          title="Delete this thread?"
+          message={`“${activeThread.title}” and its messages will be removed permanently.`}
+          onClose={() => setShowDeleteConfirm(false)}
+          buttons={[
+            { label: 'Keep Thread', onClick: () => setShowDeleteConfirm(false) },
+            { label: 'Delete', onClick: confirmDeleteThread, primary: true },
+          ]}
+        />
+      )}
+    </>
   );
 }

@@ -7,7 +7,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.3);
+  background: color-mix(in srgb, var(--black, #000) 32%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -16,11 +16,11 @@
 
 /* Dialog box - classic Mac style */
 .dialog {
-  background: var(--white);
-  border: 2px solid var(--black);
+  width: min(420px, calc(100vw - 32px));
+  background: var(--surface, var(--white));
+  border: 2px solid var(--control-border, var(--black));
   box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.4);
-  width: 420px;
-  max-width: 90vw;
+  max-width: 100%;
   max-height: 80vh;
   display: flex;
   flex-direction: column;
@@ -29,15 +29,15 @@
 /* Header */
 .header {
   padding: 12px 16px;
-  border-bottom: 1px solid var(--shadow);
-  background: var(--platinum);
+  border-bottom: 1px solid var(--control-border, var(--shadow));
+  background: var(--surface-chrome, var(--platinum));
 }
 
 .title {
   font-family: var(--font-chicago);
   font-size: 12px;
   font-weight: bold;
-  color: var(--window-text-color, var(--black));
+  color: var(--text, var(--window-text-color, var(--black)));
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
 }
@@ -48,16 +48,16 @@
   flex-wrap: wrap;
   gap: 2px;
   padding: 8px;
-  background: var(--platinum);
-  border-bottom: 1px solid var(--shadow);
+  background: var(--surface-chrome, var(--platinum));
+  border-bottom: 1px solid var(--control-border, var(--shadow));
 }
 
 .tab {
   font-family: var(--font-geneva);
   font-size: 10px;
-  color: var(--window-text-color, var(--black));
-  background: var(--white);
-  border: 1px solid var(--shadow);
+  color: var(--control-text, var(--window-text-color, var(--black)));
+  background: var(--control-bg, var(--white));
+  border: 1px solid var(--control-border, var(--shadow));
   padding: 4px 8px;
   cursor: pointer;
   -webkit-font-smoothing: none;
@@ -65,22 +65,22 @@
 }
 
 .tab:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--control-bg, var(--white)));
 }
 
 .tab:active {
-  background: var(--black);
-  color: var(--white);
+  background: var(--accent, var(--black));
+  color: var(--selection-text, var(--white));
 }
 
 .tabActive {
-  background: var(--selection);
+  background: var(--accent, var(--selection));
   color: var(--selection-text, var(--white));
-  border-color: var(--black);
+  border-color: var(--control-border, var(--black));
 }
 
 .tabActive:hover {
-  background: var(--selection);
+  background: var(--accent, var(--selection));
 }
 
 /* Icon Grid Container */
@@ -88,7 +88,7 @@
   flex: 1;
   overflow-y: auto;
   padding: 12px;
-  background: var(--window-bg, var(--white));
+  background: var(--surface, var(--window-bg, var(--white)));
   min-height: 200px;
   max-height: 300px;
 }
@@ -112,21 +112,21 @@
 }
 
 .iconButton:hover {
-  background: var(--highlight);
-  border-color: var(--shadow);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--surface, var(--white)));
+  border-color: var(--control-border, var(--shadow));
 }
 
 .iconButton:active {
-  background: var(--selection);
+  background: var(--accent, var(--selection));
 }
 
 .iconSelected {
-  background: var(--selection);
-  border-color: var(--black);
+  background: var(--accent, var(--selection));
+  border-color: var(--control-border, var(--black));
 }
 
 .iconSelected:hover {
-  background: var(--selection);
+  background: var(--accent, var(--selection));
 }
 
 .iconPreview {
@@ -141,7 +141,7 @@
 .iconLabel {
   font-family: var(--font-geneva);
   font-size: 9px;
-  color: var(--window-text-color, var(--black));
+  color: var(--text, var(--window-text-color, var(--black)));
   text-align: center;
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
@@ -161,8 +161,8 @@
   align-items: center;
   gap: 8px;
   padding: 12px 16px;
-  border-top: 1px solid var(--shadow);
-  background: var(--platinum);
+  border-top: 1px solid var(--control-border, var(--shadow));
+  background: var(--surface-chrome, var(--platinum));
 }
 
 .spacer {
@@ -173,9 +173,9 @@
 .button {
   font-family: var(--font-chicago);
   font-size: 12px;
-  color: var(--window-text-color, var(--black));
-  background: var(--white);
-  border: 2px solid var(--border);
+  color: var(--control-text, var(--window-text-color, var(--black)));
+  background: var(--control-bg, var(--white));
+  border: 2px solid var(--control-border, var(--border));
   border-radius: 4px;
   padding: 4px 12px;
   min-width: 80px;
@@ -185,12 +185,12 @@
 }
 
 .button:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--control-bg, var(--white)));
 }
 
 .button:active {
-  background: var(--black);
-  color: var(--white);
+  background: var(--accent, var(--black));
+  color: var(--selection-text, var(--white));
 }
 
 /* Primary button - bold outline, default action */
@@ -201,7 +201,7 @@
 
 .primaryButton:focus {
   outline: none;
-  box-shadow: 0 0 0 2px var(--black);
+  box-shadow: 0 0 0 2px var(--accent, var(--black));
 }
 
 /* Upload Section */
@@ -216,7 +216,7 @@
 .uploadText {
   font-family: var(--font-geneva);
   font-size: 11px;
-  color: var(--window-text-color, var(--black));
+  color: var(--text, var(--window-text-color, var(--black)));
   margin: 0 0 16px 0;
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
@@ -226,9 +226,9 @@
 .uploadButton {
   font-family: var(--font-chicago);
   font-size: 12px;
-  color: var(--window-text-color, var(--black));
-  background: var(--white);
-  border: 2px solid var(--border);
+  color: var(--control-text, var(--window-text-color, var(--black)));
+  background: var(--control-bg, var(--white));
+  border: 2px solid var(--control-border, var(--border));
   border-radius: 4px;
   padding: 8px 16px;
   cursor: pointer;
@@ -237,12 +237,12 @@
 }
 
 .uploadButton:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--control-bg, var(--white)));
 }
 
 .uploadButton:active {
-  background: var(--black);
-  color: var(--white);
+  background: var(--accent, var(--black));
+  color: var(--selection-text, var(--white));
 }
 
 .uploadButton:disabled {
@@ -253,7 +253,7 @@
 .errorText {
   font-family: var(--font-geneva);
   font-size: 10px;
-  color: #c00;
+  color: var(--danger, #c00);
   margin: 12px 0 0 0;
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
@@ -272,6 +272,6 @@
   image-rendering: pixelated;
   image-rendering: -moz-crisp-edges;
   image-rendering: crisp-edges;
-  border: 1px solid var(--shadow);
-  background: var(--white);
+  border: 1px solid var(--control-border, var(--shadow));
+  background: var(--control-bg, var(--white));
 }

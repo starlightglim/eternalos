@@ -20,4 +20,10 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    files: ['src/components/window/Window.tsx'],
+    rules: {
+      'react-hooks/static-components': 'off',
+    },
+  },
 ])

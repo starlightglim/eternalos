@@ -6,14 +6,14 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.4);
+  background: color-mix(in srgb, var(--black, #000) 42%, transparent);
   z-index: 99999;
 }
 
 .dialog {
-  width: 380px;
-  background: var(--white, #FFFFFF);
-  border: 2px solid var(--black, #000000);
+  width: min(380px, calc(100vw - 32px));
+  background: var(--surface, var(--white, #ffffff));
+  border: 2px solid var(--control-border, var(--black, #000000));
   box-shadow:
     inset 1px 1px 0 var(--highlight, #FFFFFF),
     inset -1px -1px 0 var(--shadow, #808080),
@@ -25,12 +25,12 @@
   background:
     repeating-linear-gradient(
       0deg,
-      var(--white, #FFFFFF) 0px,
-      var(--white, #FFFFFF) 1px,
-      var(--black, #000000) 1px,
-      var(--black, #000000) 3px
+      var(--surface, var(--white, #ffffff)) 0px,
+      var(--surface, var(--white, #ffffff)) 1px,
+      var(--control-border, var(--black, #000000)) 1px,
+      var(--control-border, var(--black, #000000)) 3px
     );
-  border-bottom: 1px solid var(--black, #000000);
+  border-bottom: 1px solid var(--control-border, var(--black, #000000));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -38,7 +38,7 @@
 }
 
 .titleText {
-  background: var(--white, #FFFFFF);
+  background: var(--surface, var(--white, #ffffff));
   padding: 0 8px;
   font-family: var(--font-chicago, 'Chicago', sans-serif);
   font-size: 12px;
@@ -69,7 +69,7 @@
 .mainText {
   font-family: var(--font-geneva, 'Geneva', sans-serif);
   font-size: 12px;
-  color: var(--black, #000000);
+  color: var(--text, var(--black, #000000));
   line-height: 1.5;
   margin: 0 0 8px 0;
 }
@@ -77,11 +77,11 @@
 .errorDetail {
   font-family: var(--font-monaco, 'Monaco', monospace);
   font-size: 10px;
-  color: var(--shadow, #808080);
+  color: var(--text-muted, var(--shadow, #808080));
   margin: 0;
   padding: 6px 8px;
-  background: var(--platinum, #C0C0C0);
-  border: 1px solid var(--shadow, #808080);
+  background: var(--surface-chrome, var(--platinum, #c0c0c0));
+  border: 1px solid var(--control-border, var(--shadow, #808080));
   max-height: 60px;
   overflow: auto;
   word-break: break-word;
@@ -97,8 +97,8 @@
   font-family: var(--font-chicago, 'Chicago', sans-serif);
   font-size: 12px;
   padding: 6px 20px;
-  background: var(--white, #FFFFFF);
-  border: 2px solid var(--black, #000000);
+  background: var(--control-bg, var(--white, #ffffff));
+  border: 2px solid var(--control-border, var(--black, #000000));
   border-radius: 6px;
   cursor: pointer;
   box-shadow:
@@ -107,12 +107,12 @@
 }
 
 .button:hover {
-  background: var(--highlight, #FFFFFF);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--control-bg, var(--white, #ffffff)));
 }
 
 .button:active {
-  background: var(--black, #000000);
-  color: var(--white, #FFFFFF);
+  background: var(--accent, var(--black, #000000));
+  color: var(--selection-text, var(--white, #ffffff));
   box-shadow:
     inset 1px 1px 0 var(--shadow, #808080),
     inset -1px -1px 0 var(--highlight, #FFFFFF);
@@ -122,6 +122,6 @@
   box-shadow:
     inset 1px 1px 0 var(--highlight, #FFFFFF),
     inset -1px -1px 0 var(--shadow, #808080),
-    0 0 0 3px var(--black, #000000);
+    0 0 0 3px var(--accent, var(--black, #000000));
   border-radius: 8px;
 }

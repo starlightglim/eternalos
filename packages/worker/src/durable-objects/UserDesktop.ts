@@ -249,6 +249,14 @@ export class UserDesktop {
         return Response.json(cleaned);
       }
 
+      // POST /purge - Account hard-deletion. Wipes ALL desktop state from this
+      // DO. The caller (utils/accountPurge.purgeAccount) separately sweeps the
+      // user's uid-scoped R2 objects, so this only clears DO storage.
+      if (path === '/purge' && method === 'POST') {
+        const result = await this.purgeAll();
+        return Response.json(result);
+      }
+
       // GET /quota - Get storage quota usage
       if (path === '/quota' && method === 'GET') {
         const quota = await this.getQuota();
@@ -446,6 +454,7 @@ export class UserDesktop {
       userTags: partial.userTags === undefined ? undefined : this.normalizeUserTags(partial.userTags),
       imageAnalysis: partial.imageAnalysis,
       appManifest: partial.appManifest,
+      cartridgeRef: partial.cartridgeRef,
       grantedPermissions: partial.grantedPermissions,
       permissionGrantedAt: partial.permissionGrantedAt,
     };
@@ -1188,6 +1197,31 @@ export class UserDesktop {
   /**
    * Cleanup old trashed items - permanently delete items trashed more than 30 days ago
    */
+  /**
+   * Account hard-deletion. Clears every piece of persisted desktop state and
+   * resets in-memory caches so a still-live instance cannot rewrite stale data.
+   * Idempotent: safe to call on an already-empty desktop.
+   */
+  private async purgeAll(): Promise<{ purged: true; items: number }> {
+    const itemCount = this.items.size;
+
+    await this.state.storage.deleteAll();
+
+    this.items.clear();
+    this.profile = null;
+    this.windows = [];
+    this.cssAssets = [];
+    this.cssHistory = [];
+    this.soundAssets = [];
+    this.cursorAssets = [];
+    this.pendingUploadBytes = 0;
+    // Keep `initialized = true`: storage is now authoritatively empty, so there
+    // is nothing to re-read, and we must not resurrect state from a stale load.
+    this.initialized = true;
+
+    return { purged: true, items: itemCount };
+  }
+
   private async cleanupOldTrash(): Promise<{ deleted: number; r2Keys: string[] }> {
     const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
     const oldTrashedItems = Array.from(this.items.values()).filter(

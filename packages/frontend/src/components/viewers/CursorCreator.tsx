@@ -103,7 +103,14 @@ export function CursorCreator() {
   // Remove handler
   const handleRemove = useCallback(async (state: CursorState) => {
     const slot = slots[state];
-    if (slot.cursorId) { try { await deleteCursor(slot.cursorId); } catch {} }
+    if (slot.cursorId) {
+      try {
+        await deleteCursor(slot.cursorId);
+      } catch {
+        setMessage({ type: 'error', text: 'Could not remove the saved cursor' });
+        return;
+      }
+    }
     setSlots(prev => ({ ...prev, [state]: emptySlot() }));
   }, [slots]);
 

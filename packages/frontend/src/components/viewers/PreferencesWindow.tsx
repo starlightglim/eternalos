@@ -30,10 +30,17 @@ export function PreferencesWindow() {
   // uploadProgress and uploadError moved to AppearancePanel
   const [quota, setQuota] = useState<QuotaInfo | null>(null);
   const [quotaLoading, setQuotaLoading] = useState(false);
+  const [quotaError, setQuotaError] = useState<string | null>(null);
   const [hideWatermark, setHideWatermark] = useState(profile?.hideWatermark || false);
   const [watermarkSaving, setWatermarkSaving] = useState(false);
+  const [watermarkError, setWatermarkError] = useState<string | null>(null);
   const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const [nameSaveError, setNameSaveError] = useState<string | null>(null);
+  const [soundLoading, setSoundLoading] = useState(false);
+  const [soundError, setSoundError] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   // fileInputRef removed — wallpaper upload moved to AppearancePanel
 
@@ -73,9 +80,13 @@ export function PreferencesWindow() {
   useEffect(() => {
     if (activeTab === 'account' && isApiConfigured && !quota && !quotaLoading) {
       setQuotaLoading(true);
+      setQuotaError(null);
       fetchQuota()
         .then(setQuota)
-        .catch(console.error)
+        .catch((error) => {
+          console.error(error);
+          setQuotaError('Unable to load storage details. Try again later.');
+        })
         .finally(() => setQuotaLoading(false));
     }
   }, [activeTab, quota, quotaLoading]);
@@ -84,18 +95,29 @@ export function PreferencesWindow() {
   useEffect(() => {
     if (activeTab === 'account' && profile?.analyticsEnabled && isApiConfigured && !analyticsData && !analyticsLoading) {
       setAnalyticsLoading(true);
+      setAnalyticsError(null);
       fetchAnalytics()
         .then(setAnalyticsData)
-        .catch(console.error)
+        .catch((error) => {
+          console.error(error);
+          setAnalyticsError('Unable to load visitor analytics.');
+        })
         .finally(() => setAnalyticsLoading(false));
     }
   }, [activeTab, profile?.analyticsEnabled, analyticsData, analyticsLoading]);
 
   // Load sound assets when sound tab is active
   const loadSoundAssets = useCallback(() => {
-    if (isApiConfigured) {
-      listSounds().then(setSoundAssets).catch(console.error);
-    }
+    if (!isApiConfigured) return;
+    setSoundLoading(true);
+    setSoundError(null);
+    listSounds()
+      .then(setSoundAssets)
+      .catch((error) => {
+        console.error(error);
+        setSoundError('Unable to load sound packs.');
+      })
+      .finally(() => setSoundLoading(false));
   }, []);
 
   useEffect(() => {
@@ -124,6 +146,7 @@ export function PreferencesWindow() {
 
     // Save display name via API if it actually changed
     if (trimmedName !== profile?.displayName && isApiConfigured) {
+      setNameSaveError(null);
       // Update local state immediately so the UI reflects the change
       if (profile) {
         useAuthStore.setState({
@@ -135,6 +158,7 @@ export function PreferencesWindow() {
         await updateProfile({ displayName: trimmedName });
       } catch (error) {
         console.error('Failed to save display name:', error);
+        setNameSaveError('Display name could not be saved.');
         // Revert on error — both local state and input
         if (profile) {
           useAuthStore.setState({
@@ -160,6 +184,7 @@ export function PreferencesWindow() {
 
   const handleWatermarkToggle = useCallback(async (newValue: boolean) => {
     setHideWatermark(newValue);
+    setWatermarkError(null);
     if (!isApiConfigured) return;
 
     setWatermarkSaving(true);
@@ -167,12 +192,23 @@ export function PreferencesWindow() {
       await updateProfile({ hideWatermark: newValue });
     } catch (error) {
       console.error('Failed to save watermark setting:', error);
+      setWatermarkError('Watermark setting could not be saved.');
       // Revert on error
       setHideWatermark(!newValue);
     } finally {
       setWatermarkSaving(false);
     }
   }, []);
+
+  const handleCopyUrl = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(`${window.location.origin}/@${user?.username || 'username'}`);
+      setCopyStatus('Copied');
+    } catch (error) {
+      console.error('Failed to copy public desktop URL:', error);
+      setCopyStatus('Copy failed');
+    }
+  }, [user?.username]);
 
   // Wallpaper handlers moved to AppearancePanel
 
@@ -276,10 +312,13 @@ export function PreferencesWindow() {
   return (
     <div className={styles.preferences}>
       {/* Tab bar */}
-      <div className={styles.tabBar}>
+      <div className={styles.tabBar} role="tablist" aria-label="Settings sections">
         <button
           className={`${styles.tab} ${activeTab === 'account' ? styles.activeTab : ''}`}
           onClick={() => setActiveTab('account')}
+          aria-selected={activeTab === 'account'}
+          role="tab"
+          type="button"
         >
           Account
         </button>
@@ -287,6 +326,9 @@ export function PreferencesWindow() {
         <button
           className={`${styles.tab} ${activeTab === 'sound' ? styles.activeTab : ''}`}
           onClick={() => setActiveTab('sound')}
+          aria-selected={activeTab === 'sound'}
+          role="tab"
+          type="button"
         >
           Sound
         </button>
@@ -338,13 +380,14 @@ export function PreferencesWindow() {
                     maxLength={30}
                   />
                 ) : (
-                  <span
-                    className={styles.infoValueEditable}
-                    onClick={() => setIsEditingName(true)}
-                    title="Click to edit"
-                  >
-                    {displayName || user?.username || 'Not set'}
-                  </span>
+                <button
+                  type="button"
+                  className={styles.infoValueEditable}
+                  onClick={() => setIsEditingName(true)}
+                  title="Click to edit"
+                >
+                  {displayName || user?.username || 'Not set'}
+                </button>
                 )}
               </div>
 
@@ -367,15 +410,12 @@ export function PreferencesWindow() {
                   {window.location.origin}/@{user?.username || 'username'}
                 </span>
                 <button
+                  type="button"
                   className={styles.copyButton}
-                  onClick={() => {
-                    navigator.clipboard.writeText(
-                      `${window.location.origin}/@${user?.username}`
-                    );
-                  }}
+                  onClick={handleCopyUrl}
                   title="Copy URL"
                 >
-                  Copy
+                  {copyStatus || 'Copy'}
                 </button>
               </div>
               {/* Watermark toggle */}
@@ -391,6 +431,8 @@ export function PreferencesWindow() {
                   <span>Hide "Made with EternalOS" watermark</span>
                 </label>
               )}
+              {watermarkError && <div className={styles.accountError} role="alert">{watermarkError}</div>}
+              {nameSaveError && <div className={styles.accountError} role="alert">{nameSaveError}</div>}
             </div>
 
             {/* Analytics Toggle */}
@@ -419,7 +461,7 @@ export function PreferencesWindow() {
                         Total views: <strong>{analyticsData.totalViews.toLocaleString()}</strong>
                       </span>
                     ) : (
-                      <span className={styles.analyticsEmpty}>No data yet</span>
+                      <span className={styles.analyticsEmpty}>{analyticsError || 'No data yet'}</span>
                     )}
                   </div>
                 )}
@@ -448,7 +490,7 @@ export function PreferencesWindow() {
                     </span>
                   </div>
                 ) : (
-                  <span className={styles.quotaError}>Unable to load quota</span>
+                  <span className={styles.quotaError} role="alert">{quotaError || 'Unable to load quota'}</span>
                 )}
               </div>
             )}
@@ -472,8 +514,8 @@ export function PreferencesWindow() {
                     >
                       {verifyLoading ? 'Sending...' : 'Send Verification Email'}
                     </button>
-                    {verifySuccess && <div className={styles.accountSuccess}>{verifySuccess}</div>}
-                    {verifyError && <div className={styles.accountError}>{verifyError}</div>}
+                    {verifySuccess && <div className={styles.accountSuccess} role="status">{verifySuccess}</div>}
+                    {verifyError && <div className={styles.accountError} role="alert">{verifyError}</div>}
                   </>
                 )}
               </div>
@@ -520,8 +562,8 @@ export function PreferencesWindow() {
                 >
                   {passwordLoading ? 'Changing...' : 'Change Password'}
                 </button>
-                {passwordSuccess && <div className={styles.accountSuccess}>{passwordSuccess}</div>}
-                {passwordError && <div className={styles.accountError}>{passwordError}</div>}
+                {passwordSuccess && <div className={styles.accountSuccess} role="status">{passwordSuccess}</div>}
+                {passwordError && <div className={styles.accountError} role="alert">{passwordError}</div>}
               </div>
             )}
 
@@ -557,8 +599,8 @@ export function PreferencesWindow() {
                 >
                   {usernameLoading ? 'Changing...' : 'Change Username'}
                 </button>
-                {usernameSuccess && <div className={styles.accountSuccess}>{usernameSuccess}</div>}
-                {usernameError && <div className={styles.accountError}>{usernameError}</div>}
+                {usernameSuccess && <div className={styles.accountSuccess} role="status">{usernameSuccess}</div>}
+                {usernameError && <div className={styles.accountError} role="alert">{usernameError}</div>}
               </div>
             )}
           </div>
@@ -656,7 +698,9 @@ export function PreferencesWindow() {
               {/* Sound pack editor */}
               {soundEnabled && (
                 <div style={{ marginTop: 8, borderTop: '1px solid var(--shadow)', paddingTop: 8 }}>
-                  <SoundPackEditor
+                    {soundLoading && <div className={styles.analyticsLoading} role="status">Loading sound packs…</div>}
+                    {soundError && <div className={styles.accountError} role="alert">{soundError}</div>}
+                    <SoundPackEditor
                     soundAssets={soundAssets}
                     onAssetsChange={loadSoundAssets}
                   />

@@ -36,7 +36,7 @@
 .fileName {
   font-family: 'ChiKareGo2', 'Chicago', 'Geneva', sans-serif;
   font-size: 11px;
-  color: var(--black);
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -50,9 +50,9 @@
   padding: 3px 8px;
   font-family: 'ChiKareGo2', 'Chicago', 'Geneva', sans-serif;
   font-size: 10px;
-  color: var(--black);
-  background-color: var(--platinum);
-  border: 1px solid var(--black);
+  color: var(--control-text);
+  background-color: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 0;
   cursor: pointer;
   /* Classic Mac button bevel */
@@ -102,7 +102,7 @@
   background-color: rgba(192, 192, 192, 0.9);
   font-family: 'ChiKareGo2', 'Chicago', 'Geneva', sans-serif;
   font-size: 12px;
-  color: var(--black);
+  color: var(--text);
 }
 
 /* Demo mode */
@@ -126,7 +126,7 @@
 .demoText {
   font-family: 'ChiKareGo2', 'Chicago', 'Geneva', sans-serif;
   font-size: 12px;
-  color: var(--black);
+  color: var(--text);
   text-align: center;
   margin: 0;
 }

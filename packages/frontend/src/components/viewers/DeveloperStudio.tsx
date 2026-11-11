@@ -1,6 +1,14 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useDesktopStore } from '../../stores/desktopStore';
-import { getAuthToken } from '../../services/api';
+import {
+  deleteAppRuntime,
+  deployApp,
+  getAppSource,
+  listAppVersions,
+  rollbackApp,
+  type AppRelease,
+} from '../../services/api';
+import { AlertDialog } from '../ui/AlertDialog';
 import styles from './DeveloperStudio.module.css';
 
 
@@ -15,7 +23,7 @@ interface AppItem {
 type FileTab = 'eternal.app.json' | 'index.html' | 'app.js' | 'styles.css';
 
 export function DeveloperStudio() {
-  const { items, loadDesktop } = useDesktopStore();
+  const { items, loadDesktop, removeItem } = useDesktopStore();
 
 
   const [activeApp, setActiveApp] = useState<AppItem | null>(null);
@@ -26,17 +34,33 @@ export function DeveloperStudio() {
     'app.js': '',
     'styles.css': '',
   });
+  const [sourceFiles, setSourceFiles] = useState<Record<string, string>>({});
 
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [statusMsg, setStatusMsg] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [releases, setReleases] = useState<AppRelease[]>([]);
+  const [rollbackVersion, setRollbackVersion] = useState('');
 
   // Form states for new app
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newWidth, setNewWidth] = useState(600);
   const [newHeight, setNewHeight] = useState(500);
+
+  useEffect(() => {
+    if (!showCreateModal && !showDeleteConfirm) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowCreateModal(false);
+        setShowDeleteConfirm(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showCreateModal, showDeleteConfirm]);
 
   // List all registered apps on the user's desktop
   const apps = useMemo(() => {
@@ -58,22 +82,13 @@ export function DeveloperStudio() {
     setStatusMsg(`Loading ${app.name} source files...`);
     setActiveApp(app);
     setActiveTab('index.html');
+    setReleases([]);
+    setRollbackVersion('');
 
     try {
-      const token = getAuthToken();
-      const base = import.meta.env.VITE_API_URL || window.location.origin;
-      const res = await fetch(`${base}/api/apps/${app.appId}/source`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-
-      if (!res.ok) {
-        throw new Error(`Failed to load app files: status ${res.status}`);
-      }
-
-      const data = (await res.json()) as { files: Record<string, string> };
+      const data = await getAppSource(app.appId);
       const srcFiles = data.files || {};
+      const versionData = await listAppVersions(app.appId);
 
       // Load manifest if it exists, otherwise reconstruct one
       let manifestText = '';
@@ -86,7 +101,7 @@ export function DeveloperStudio() {
           description: app.description || '',
           version: app.version,
           windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
-          permissions: { fs: { read: ["/**"], write: ["/**"], delete: ["/**"] } }
+          permissions: { profile: { read: ['username', 'displayName'] } }
         }, null, 2);
       }
 
@@ -96,6 +111,8 @@ export function DeveloperStudio() {
         'app.js': srcFiles['app.js'] || '// Write your JS logic here',
         'styles.css': srcFiles['styles.css'] || '/* Write your CSS styling here */',
       });
+      setSourceFiles(srcFiles);
+      setReleases(versionData.releases);
 
       setStatus('idle');
       setStatusMsg('');
@@ -125,36 +142,26 @@ export function DeveloperStudio() {
         throw new Error('Manifest is not valid JSON! Please check eternal.app.json.');
       }
 
-      const token = getAuthToken();
-      const base = import.meta.env.VITE_API_URL || window.location.origin;
-
-      const res = await fetch(`${base}/api/apps/dev-deploy`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+      const data = await deployApp({
+        appId: activeApp.appId,
+        manifest: manifestObj,
+        files: {
+          ...sourceFiles,
+          'index.html': files['index.html'],
+          'app.js': files['app.js'],
+          'styles.css': files['styles.css'],
         },
-        body: JSON.stringify({
-          appId: activeApp.appId,
-          manifest: manifestObj,
-          files: {
-            'index.html': files['index.html'],
-            'app.js': files['app.js'],
-            'styles.css': files['styles.css'],
-          },
-        }),
       });
-
-      const data = (await res.json()) as { error?: string; version: number };
-      if (!res.ok) {
-        throw new Error(data.error || `Deployment failed with status ${res.status}`);
-      }
 
       setStatus('success');
       setStatusMsg(`App updated successfully to version ${data.version}!`);
       
       // Update local state and trigger desktop reload
       await loadDesktop();
+      setActiveApp((previous) => previous ? { ...previous, version: String(data.version) } : previous);
+      const versionData = await listAppVersions(activeApp.appId);
+      setReleases(versionData.releases);
+      setRollbackVersion('');
       
       setTimeout(() => {
         setStatus('idle');
@@ -167,25 +174,58 @@ export function DeveloperStudio() {
     } finally {
       setIsLoading(false);
     }
-  }, [activeApp, files, loadDesktop]);
+  }, [activeApp, files, loadDesktop, sourceFiles]);
+
+  const handleRollback = useCallback(async () => {
+    if (!activeApp || !rollbackVersion) return;
+
+    const version = Number(rollbackVersion);
+    if (!Number.isInteger(version)) return;
+
+    setIsLoading(true);
+    setStatus('loading');
+    setStatusMsg(`Rolling ${activeApp.name} back to version ${version}...`);
+
+    try {
+      await rollbackApp(activeApp.appId, version);
+      await loadDesktop();
+      await handleSelectApp(activeApp);
+      setActiveApp((previous) => previous ? { ...previous, version: String(version) } : previous);
+      setStatus('success');
+      setStatusMsg(`App rolled back to version ${version}.`);
+      setRollbackVersion('');
+    } catch (err) {
+      setStatus('error');
+      setStatusMsg(err instanceof Error ? err.message : 'Rollback failed.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [activeApp, handleSelectApp, loadDesktop, rollbackVersion]);
 
   // Delete/Uninstall the app
   const handleDeleteApp = useCallback(async () => {
     if (!activeApp) return;
-
-    const confirm = window.confirm(`Are you sure you want to uninstall ${activeApp.name}? This will remove its files and icon from your desktop.`);
-    if (!confirm) return;
 
     setIsLoading(true);
     setStatus('loading');
     setStatusMsg(`Deleting ${activeApp.name}...`);
 
     try {
-      const { moveToTrash } = useDesktopStore.getState();
-      moveToTrash([activeApp.id]);
+      await deleteAppRuntime(activeApp.appId);
+      removeItem(activeApp.id);
       setActiveApp(null);
+      setFiles({
+        'eternal.app.json': '',
+        'index.html': '',
+        'app.js': '',
+        'styles.css': '',
+      });
+      setSourceFiles({});
+      setReleases([]);
+      setRollbackVersion('');
+      setShowDeleteConfirm(false);
       setStatus('success');
-      setStatusMsg('App uninstalled and moved to Trash.');
+      setStatusMsg('App uninstalled and its runtime data was removed.');
 
       await loadDesktop();
 
@@ -199,21 +239,30 @@ export function DeveloperStudio() {
     } finally {
       setIsLoading(false);
     }
-  }, [activeApp, loadDesktop]);
+  }, [activeApp, loadDesktop, removeItem]);
 
   // Create a brand new app from scratch
   const handleCreateApp = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim()) return;
 
+    const appName = newName.trim();
+    const escapedAppName = appName.replace(/[&<>'"]/g, (character) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      "'": '&#39;',
+      '"': '&quot;',
+    })[character] ?? character);
+
     setIsLoading(true);
     setStatus('loading');
-    setStatusMsg(`Scaffolding new app ${newName}...`);
+    setStatusMsg(`Scaffolding new app ${appName}...`);
     setShowCreateModal(false);
 
     try {
       const manifest = {
-        name: newName,
+        name: appName,
         description: newDesc || 'A custom sandboxed application.',
         version: '1.0.0',
         windowConfig: {
@@ -222,11 +271,6 @@ export function DeveloperStudio() {
           resizable: true,
         },
         permissions: {
-          fs: {
-            read: ['/**'],
-            write: ['/**'],
-            delete: ['/**'],
-          },
           profile: {
             read: ['username', 'displayName'],
           },
@@ -237,17 +281,22 @@ export function DeveloperStudio() {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>${newName}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapedAppName}</title>
 </head>
 <body>
-  <div style="padding: 20px; font-family: sans-serif; text-align: center;">
-    <h1 style="color: #e43f5a;">Welcome to ${newName}!</h1>
-    <p>This app was created manually in the Developer Studio.</p>
-    <button id="action-btn" style="background: #e43f5a; border: none; color: white; padding: 10px 16px; border-radius: 4px; cursor: pointer;">
-      Greet Me!
-    </button>
-    <pre id="output" style="margin-top: 20px; padding: 10px; background: #111; color: #0f0; min-height: 40px; text-align: left;"></pre>
-  </div>
+  <main class="app-shell">
+    <header class="app-header">
+      <p class="eyebrow">ETERNALOS APP</p>
+      <h1>Welcome to ${escapedAppName}</h1>
+      <p class="intro">A small, editable starting point. Make it yours in the Developer Studio.</p>
+    </header>
+    <section class="app-card" aria-live="polite">
+      <p class="card-label">READY TO EXPLORE</p>
+      <button id="action-btn" type="button">Greet me</button>
+      <output id="output" class="output">Click the button to read your EternalOS profile.</output>
+    </section>
+  </main>
 </body>
 </html>`;
 
@@ -264,44 +313,88 @@ btn.addEventListener('click', async () => {
   }
 });`;
 
-      const defaultCss = `body {
-  background-color: #1a1a2e;
-  color: #e2e2e2;
-}`;
+      const defaultCss = `:root {
+  --app-accent: #e43f5a;
+  --app-accent-strong: #b82f48;
+  --app-background: #111827;
+  --app-surface: #1f2937;
+  --app-text: #f9fafb;
+  --app-muted: #b7c1d1;
+}
 
-      const token = getAuthToken();
-      const base = import.meta.env.VITE_API_URL || window.location.origin;
+* { box-sizing: border-box; }
 
-      const res = await fetch(`${base}/api/apps/dev-deploy`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+body {
+  margin: 0;
+  min-width: 240px;
+  background: var(--app-background);
+  color: var(--app-text);
+  font: 15px/1.5 system-ui, sans-serif;
+}
+
+.app-shell {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: clamp(24px, 8vw, 64px) clamp(18px, 6vw, 48px);
+}
+
+.app-header { margin-bottom: 24px; }
+.eyebrow, .card-label {
+  margin: 0 0 8px;
+  color: var(--app-accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .14em;
+}
+h1 { margin: 0; font-size: clamp(28px, 6vw, 44px); line-height: 1.05; }
+.intro { margin: 14px 0 0; color: var(--app-muted); }
+.app-card {
+  padding: 22px;
+  background: var(--app-surface);
+  border: 1px solid color-mix(in srgb, var(--app-text) 12%, transparent);
+  border-radius: 16px;
+  box-shadow: 0 16px 40px color-mix(in srgb, #000 28%, transparent);
+}
+button {
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--app-accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+button:hover { background: var(--app-accent-strong); }
+button:focus-visible { outline: 3px solid color-mix(in srgb, var(--app-accent) 55%, #fff); outline-offset: 3px; }
+.output { display: block; margin-top: 18px; color: var(--app-muted); }
+`;
+
+      const data = await deployApp({
+        manifest,
+        files: {
+          'index.html': defaultHtml,
+          'app.js': defaultJs,
+          'styles.css': defaultCss,
         },
-        body: JSON.stringify({
-          manifest,
-          files: {
-            'index.html': defaultHtml,
-            'app.js': defaultJs,
-            'styles.css': defaultCss,
-          },
-        }),
       });
-
-      const data = (await res.json()) as { error?: string; appId: string };
-      if (!res.ok) {
-        throw new Error(data.error || `Failed to create app: status ${res.status}`);
-      }
 
       // Reload desktop and set newly created app as active
       await loadDesktop();
 
+      const createdDesktopItem = useDesktopStore.getState().items.find(
+        (item) => item.type === 'app' && item.appManifest?.appId === data.appId && !item.isTrashed,
+      );
+      if (!createdDesktopItem?.appManifest) {
+        throw new Error('App was created, but the desktop could not reload it. Please refresh and try again.');
+      }
+
       const createdApp: AppItem = {
-        id: `app-${data.appId}`, // temp or wait for reload matching
+        id: createdDesktopItem.id,
         appId: data.appId,
-        name: newName,
-        description: newDesc,
-        version: '1',
+        name: createdDesktopItem.appManifest.name || newName,
+        description: createdDesktopItem.appManifest.description || newDesc,
+        version: createdDesktopItem.appManifest.version || '1',
       };
 
       setStatus('success');
@@ -313,6 +406,14 @@ btn.addEventListener('click', async () => {
         'app.js': defaultJs,
         'styles.css': defaultCss,
       });
+      setSourceFiles({
+        'index.html': defaultHtml,
+        'app.js': defaultJs,
+        'styles.css': defaultCss,
+      });
+      const versionData = await listAppVersions(data.appId);
+      setReleases(versionData.releases);
+      setRollbackVersion('');
 
       setNewName('');
       setNewDesc('');
@@ -345,22 +446,24 @@ btn.addEventListener('click', async () => {
           </button>
         </div>
         <div className={styles.appList}>
-          <div className={styles.sidebarTitle} style={{ padding: '4px 8px' }}>My Sandbox Apps</div>
+          <div className={styles.appListHeading}>My Sandbox Apps</div>
           {apps.length === 0 ? (
-            <div style={{ padding: '8px', fontSize: '11px', color: '#666' }}>No custom apps.</div>
+            <div className={styles.emptyAppList}>No custom apps yet.</div>
           ) : (
             apps.map((app) => (
-              <div
+              <button
+                type="button"
                 key={app.id}
                 className={[
                   styles.appItem,
                   activeApp?.appId === app.appId ? styles.appItemActive : '',
                 ].filter(Boolean).join(' ')}
                 onClick={() => !isLoading && handleSelectApp(app)}
+                disabled={isLoading}
               >
                 <div className={styles.appName}>⚙️ {app.name}</div>
                 <div className={styles.appMeta}>v{app.version} | ID: {app.appId.slice(0, 8)}</div>
-              </div>
+              </button>
             ))
           )}
         </div>
@@ -374,7 +477,8 @@ btn.addEventListener('click', async () => {
             <div className={styles.workspaceHeader}>
               <div className={styles.tabs}>
                 {(['index.html', 'app.js', 'styles.css', 'eternal.app.json'] as FileTab[]).map((tab) => (
-                  <div
+                  <button
+                    type="button"
                     key={tab}
                     className={[
                       styles.tab,
@@ -384,7 +488,7 @@ btn.addEventListener('click', async () => {
                   >
                     {tab === 'eternal.app.json' ? '⚙️ ' : '📝 '}
                     {tab}
-                  </div>
+                  </button>
                 ))}
               </div>
               <div className={styles.actions}>
@@ -395,9 +499,34 @@ btn.addEventListener('click', async () => {
                 >
                   🚀 Deploy to Desktop
                 </button>
+                {releases.some((release) => !release.current) && (
+                  <div className={styles.releaseControls}>
+                    <select
+                      className={styles.releaseSelect}
+                      value={rollbackVersion}
+                      onChange={(event) => setRollbackVersion(event.target.value)}
+                      disabled={isLoading}
+                      aria-label="Select a release to roll back to"
+                    >
+                      <option value="">Rollback to...</option>
+                      {releases.filter((release) => !release.current).map((release) => (
+                        <option key={release.version} value={release.version}>
+                          v{release.version}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      className={styles.actionBtn}
+                      onClick={handleRollback}
+                      disabled={isLoading || !rollbackVersion}
+                    >
+                      ↩ Rollback
+                    </button>
+                  </div>
+                )}
                 <button
                   className={[styles.actionBtn, styles.deleteBtn].join(' ')}
-                  onClick={handleDeleteApp}
+                  onClick={() => setShowDeleteConfirm(true)}
                   disabled={isLoading}
                 >
                   🗑️ Uninstall
@@ -413,6 +542,7 @@ btn.addEventListener('click', async () => {
                 onChange={(e) => {
                   const val = e.target.value;
                   setFiles((prev) => ({ ...prev, [activeTab]: val }));
+                  setSourceFiles((prev) => ({ ...prev, [activeTab]: val }));
                 }}
                 disabled={isLoading}
                 spellCheck={false}
@@ -451,13 +581,23 @@ btn.addEventListener('click', async () => {
 
       {/* Scaffold App Modal */}
       {showCreateModal && (
-        <div className={styles.modalOverlay}>
-          <form className={styles.modal} onSubmit={handleCreateApp}>
-            <h3 className={styles.modalTitle}>Create Sandbox App</h3>
+        <div
+          className={styles.modalOverlay}
+          onClick={(event) => event.target === event.currentTarget && setShowCreateModal(false)}
+        >
+          <form
+            className={styles.modal}
+            onSubmit={handleCreateApp}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-app-title"
+          >
+            <h3 id="create-app-title" className={styles.modalTitle}>Create Sandbox App</h3>
             
             <div className={styles.formGroup}>
-              <label className={styles.label}>Application Name</label>
+              <label className={styles.label} htmlFor="new-app-name">Application Name</label>
               <input
+                id="new-app-name"
                 className={styles.input}
                 type="text"
                 value={newName}
@@ -469,8 +609,9 @@ btn.addEventListener('click', async () => {
             </div>
 
             <div className={styles.formGroup}>
-              <label className={styles.label}>Description</label>
+              <label className={styles.label} htmlFor="new-app-description">Description</label>
               <textarea
+                id="new-app-description"
                 className={styles.modalTextarea}
                 value={newDesc}
                 onChange={(e) => setNewDesc(e.target.value)}
@@ -479,10 +620,11 @@ btn.addEventListener('click', async () => {
               />
             </div>
 
-            <div style={{ display: 'flex', gap: '12px' }}>
-              <div className={styles.formGroup} style={{ flex: 1 }}>
-                <label className={styles.label}>Default Width (px)</label>
+            <div className={styles.dimensionFields}>
+              <div className={`${styles.formGroup} ${styles.dimensionField}`}>
+                <label className={styles.label} htmlFor="new-app-width">Default Width (px)</label>
                 <input
+                  id="new-app-width"
                   className={styles.input}
                   type="number"
                   value={newWidth}
@@ -492,9 +634,10 @@ btn.addEventListener('click', async () => {
                   required
                 />
               </div>
-              <div className={styles.formGroup} style={{ flex: 1 }}>
-                <label className={styles.label}>Default Height (px)</label>
+              <div className={`${styles.formGroup} ${styles.dimensionField}`}>
+                <label className={styles.label} htmlFor="new-app-height">Default Height (px)</label>
                 <input
+                  id="new-app-height"
                   className={styles.input}
                   type="number"
                   value={newHeight}
@@ -523,6 +666,19 @@ btn.addEventListener('click', async () => {
             </div>
           </form>
         </div>
+      )}
+
+      {showDeleteConfirm && activeApp && (
+        <AlertDialog
+          type="confirm"
+          title={`Uninstall ${activeApp.name}?`}
+          message="This removes the app files and its desktop icon. This cannot be undone."
+          onClose={() => setShowDeleteConfirm(false)}
+          buttons={[
+            { label: 'Keep App', onClick: () => setShowDeleteConfirm(false) },
+            { label: 'Uninstall', onClick: handleDeleteApp, primary: true },
+          ]}
+        />
       )}
     </div>
   );

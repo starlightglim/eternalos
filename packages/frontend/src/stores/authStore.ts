@@ -492,7 +492,33 @@ export const useAuthStore = create<AuthStore>()(
           });
         }
 
-        return () => {};
+        const onStorage = (event: StorageEvent) => {
+          if (event.key !== 'eternalos-auth' && event.key !== null) return;
+          let next: Partial<AuthState> | null;
+          try {
+            next = event.newValue ? JSON.parse(event.newValue)?.state : null;
+          } catch { return; }
+
+          if (!next?.token || !next.refreshToken || next.user?.uid !== get().user?.uid) {
+            // Do not persist an empty session over another tab's new account.
+            // Reload rehydrates the new identity and discards all old requests.
+            setAuthToken(null);
+            setRefreshToken(null);
+            clearFileToken();
+            useWindowStore.getState().resetOnLogout();
+            useDesktopStore.getState().reset();
+            window.location.reload();
+            return;
+          }
+          if (next.token !== get().token || next.refreshToken !== get().refreshToken) {
+            setAuthToken(next.token);
+            setRefreshToken(next.refreshToken);
+            clearFileToken();
+            set({ token: next.token, refreshToken: next.refreshToken });
+          }
+        };
+        window.addEventListener('storage', onStorage);
+        return () => window.removeEventListener('storage', onStorage);
       },
     }),
     {

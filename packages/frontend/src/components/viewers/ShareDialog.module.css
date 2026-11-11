@@ -8,7 +8,7 @@
   height: 100%;
   box-sizing: border-box;
   overflow-y: auto;
-  background: var(--window-bg, var(--white));
+  background: var(--surface, var(--window-bg, var(--white)));
 }
 
 /* Section labels */
@@ -16,7 +16,7 @@
   font-family: var(--font-chicago);
   font-size: 12px;
   font-weight: bold;
-  color: var(--window-text-color, var(--black));
+  color: var(--text, var(--window-text-color, var(--black)));
   margin-bottom: 6px;
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
@@ -32,8 +32,8 @@
   position: relative;
   width: 100%;
   aspect-ratio: 1200 / 630;
-  background: var(--platinum);
-  border: 2px solid var(--border);
+  background: var(--preview-bg, var(--platinum));
+  border: 2px solid var(--control-border, var(--border));
   overflow: hidden;
 }
 
@@ -85,11 +85,11 @@
   font-family: var(--font-geneva);
   font-size: 11px;
   padding: 6px 8px;
-  border: 2px solid var(--border);
+  border: 2px solid var(--control-border, var(--border));
   border-top-color: var(--shadow);
   border-left-color: var(--shadow);
-  background: var(--white);
-  color: var(--window-text-color, var(--black));
+  background: var(--control-bg, var(--white));
+  color: var(--control-text, var(--window-text-color, var(--black)));
   resize: vertical;
   min-height: 40px;
   -webkit-font-smoothing: none;
@@ -98,7 +98,7 @@
 
 .descriptionInput:focus {
   outline: none;
-  border-color: var(--selection, #000080);
+  border-color: var(--accent, var(--selection, #000080));
 }
 
 .descriptionInput::placeholder {
@@ -125,7 +125,7 @@
 .savedIndicator {
   font-weight: normal;
   font-size: 10px;
-  color: var(--selection, #000080);
+  color: var(--accent, var(--selection, #000080));
 }
 
 /* URL Section */
@@ -144,11 +144,11 @@
   font-family: var(--font-monaco);
   font-size: 11px;
   padding: 6px 8px;
-  border: 2px solid var(--border);
+  border: 2px solid var(--control-border, var(--border));
   border-top-color: var(--shadow);
   border-left-color: var(--shadow);
-  background: var(--white);
-  color: var(--window-text-color, var(--black));
+  background: var(--control-bg, var(--white));
+  color: var(--control-text, var(--window-text-color, var(--black)));
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
 }
@@ -162,27 +162,27 @@
   font-size: 12px;
   padding: 6px 12px;
   min-width: 60px;
-  background: var(--white);
-  border: 2px solid var(--border);
+  background: var(--control-bg, var(--white));
+  border: 2px solid var(--control-border, var(--border));
   border-radius: 4px;
   cursor: pointer;
-  color: var(--window-text-color, var(--black));
+  color: var(--control-text, var(--window-text-color, var(--black)));
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
   transition: background 0.1s ease;
 }
 
 .copyButton:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--control-bg, var(--white)));
 }
 
 .copyButton:active {
-  background: var(--black);
-  color: var(--white);
+  background: var(--accent, var(--black));
+  color: var(--selection-text, var(--white));
 }
 
 .copyButton.copied {
-  background: var(--selection, #000080);
+  background: var(--accent, var(--selection, #000080));
   color: var(--selection-text, var(--white));
 }
 
@@ -205,23 +205,23 @@
   font-family: var(--font-chicago);
   font-size: 12px;
   padding: 8px 12px;
-  background: var(--white);
-  border: 2px solid var(--border);
+  background: var(--control-bg, var(--white));
+  border: 2px solid var(--control-border, var(--border));
   border-radius: 4px;
   cursor: pointer;
-  color: var(--window-text-color, var(--black));
+  color: var(--control-text, var(--window-text-color, var(--black)));
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
   transition: background 0.1s ease;
 }
 
 .shareButton:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--control-bg, var(--white)));
 }
 
 .shareButton:active {
-  background: var(--black);
-  color: var(--white);
+  background: var(--accent, var(--black));
+  color: var(--selection-text, var(--white));
 }
 
 .icon {
@@ -236,8 +236,8 @@
   align-items: flex-start;
   gap: 8px;
   padding: 10px;
-  background: var(--highlight);
-  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 10%, var(--surface, var(--white)));
+  border: 1px solid var(--control-border, var(--border));
 }
 
 .infoIcon {

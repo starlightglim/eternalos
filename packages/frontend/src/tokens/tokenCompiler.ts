@@ -431,6 +431,10 @@ const STYLE_ID = 'eternalos-appearance-overrides';
 export function applyCompiledTokens(compiled: CompiledCSS): void {
   const root = document.documentElement;
 
+  for (const cssVar of getAllCSSVars()) {
+    root.style.removeProperty(cssVar);
+  }
+
   // Set CSS variables on :root
   for (const [prop, value] of compiled.cssVars) {
     root.style.setProperty(prop, value);

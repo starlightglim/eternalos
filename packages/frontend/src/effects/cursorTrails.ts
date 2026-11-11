@@ -3,7 +3,7 @@
  * Each is a simple object with init/spawn/update/render methods.
  */
 
-interface TrailParticle {
+export interface TrailParticle {
   x: number; y: number;
   vx: number; vy: number;
   life: number; maxLife: number;

@@ -8,7 +8,7 @@
   flex-direction: column;
   height: 100%;
   font-family: var(--font-geneva);
-  background: var(--window-bg, var(--white));
+  background: var(--surface);
 }
 
 .grid {
@@ -28,7 +28,7 @@
   justify-content: center;
   height: 100%;
   font-size: 11px;
-  color: var(--shadow);
+  color: var(--text-muted);
   font-style: italic;
 }
 
@@ -37,8 +37,8 @@
   flex-direction: column;
   align-items: center;
   padding: 8px 4px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
   border-radius: 4px;
   cursor: pointer;
   position: relative;
@@ -46,12 +46,12 @@
 }
 
 .linkItem:hover {
-  background: var(--highlight);
-  border-color: var(--black);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-chrome));
+  border-color: var(--accent, var(--control-border));
 }
 
 .linkItem:active {
-  background: var(--shadow);
+  background: var(--accent, var(--selection));
 }
 
 .linkIcon {
@@ -82,7 +82,7 @@
 
 .linkTitle {
   font-size: 10px;
-  color: var(--window-text-color, var(--black));
+  color: var(--text);
   text-align: center;
   word-break: break-word;
   line-height: 1.2;
@@ -114,27 +114,27 @@
   align-items: center;
   justify-content: center;
   font-size: 10px;
-  background: var(--white);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 2px;
   cursor: pointer;
   padding: 0;
 }
 
 .editButton:hover {
-  background: #ffc;
-  border-color: #660;
+  background: color-mix(in srgb, var(--accent) 14%, var(--control-bg));
+  border-color: var(--accent, var(--control-border));
 }
 
 .removeButton:hover {
-  background: #fcc;
-  border-color: #600;
+  background: color-mix(in srgb, var(--danger) 14%, var(--control-bg));
+  border-color: var(--danger);
 }
 
 .addSection {
   padding: 8px;
-  border-top: 1px solid var(--shadow);
-  background: var(--platinum);
+  border-top: 1px solid var(--control-border);
+  background: var(--surface-chrome);
   flex-shrink: 0;
 }
 
@@ -143,15 +143,15 @@
   padding: 6px;
   font-family: var(--font-geneva);
   font-size: 10px;
-  background: var(--white);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 3px;
   cursor: pointer;
 }
 
 .addLinkButton:hover {
-  background: var(--platinum);
-  border-color: var(--black);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
+  border-color: var(--accent, var(--control-border));
 }
 
 .addForm {
@@ -164,13 +164,14 @@
   padding: 4px 6px;
   font-family: var(--font-geneva);
   font-size: 10px;
-  border: 1px solid var(--shadow);
-  background: var(--white);
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--control-text);
 }
 
 .addInput:focus {
   outline: none;
-  border-color: var(--black);
+  border-color: var(--accent, var(--control-border));
 }
 
 .addButtons {
@@ -185,18 +186,18 @@
   padding: 4px 8px;
   font-family: var(--font-geneva);
   font-size: 10px;
-  background: var(--white);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 3px;
   cursor: pointer;
 }
 
 .saveButton:hover {
-  background: #cfc;
-  border-color: #060;
+  background: color-mix(in srgb, var(--success) 14%, var(--control-bg));
+  border-color: var(--success);
 }
 
 .cancelButton:hover {
-  background: #fcc;
-  border-color: #600;
+  background: color-mix(in srgb, var(--danger) 14%, var(--control-bg));
+  border-color: var(--danger);
 }

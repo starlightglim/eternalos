@@ -4,7 +4,9 @@
   width: 100%;
   height: 100%;
   min-height: 100vh;
-  background-color: var(--platinum);
+  background:
+    radial-gradient(circle at 50% -10%, #f4f4f4 0%, transparent 42%),
+    linear-gradient(135deg, #b7b7b7 0%, var(--platinum) 48%, #aaaaaa 100%);
   position: relative;
   overflow: auto;
 }
@@ -105,13 +107,14 @@
 .heroWindow {
   background: var(--white);
   border: 2px solid var(--black);
+  border-radius: 4px;
   box-shadow:
     1px 0 0 var(--shadow),
     0 1px 0 var(--shadow),
     2px 1px 0 var(--shadow),
     1px 2px 0 var(--shadow),
     2px 2px 0 var(--shadow);
-  max-width: 520px;
+  max-width: 720px;
   width: 100%;
 }
 
@@ -166,7 +169,7 @@
 }
 
 .windowContent {
-  padding: 24px;
+  padding: 28px;
 }
 
 /* Hero content */
@@ -307,6 +310,36 @@
   text-align: center;
   margin: 16px 0 0 0;
   -webkit-font-smoothing: none;
+}
+
+@media (min-width: 700px) {
+  .features {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .feature {
+    flex-direction: column;
+    gap: 8px;
+    min-height: 150px;
+    padding: 12px;
+    border: 1px solid var(--shadow);
+    background: #f7f7f7;
+  }
+
+  .featureText p {
+    line-height: 1.5;
+  }
+
+  .cta {
+    flex-direction: row;
+  }
+
+  .primaryButton,
+  .secondaryButton {
+    flex: 1;
+  }
 }
 
 /* Demo section */

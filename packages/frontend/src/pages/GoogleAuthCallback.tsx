@@ -9,7 +9,17 @@ import { verifyOAuthState, getOAuthRedirectUri } from '../utils/googleOAuth'
 import styles from './AuthPage.module.css'
 
 export function GoogleAuthCallback() {
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search)
+    const errorParam = params.get('error')
+    if (errorParam && errorParam !== 'access_denied') {
+      return `Google sign-in failed: ${errorParam}`
+    }
+    if (!params.get('code') || !params.get('state')) {
+      return 'Invalid callback. Missing authorization code.'
+    }
+    return null
+  })
   const { googleLogin } = useAuthStore()
   const navigate = useNavigate()
 
@@ -23,20 +33,17 @@ export function GoogleAuthCallback() {
     if (errorParam) {
       if (errorParam === 'access_denied') {
         navigate('/login', { replace: true })
-      } else {
-        setError(`Google sign-in failed: ${errorParam}`)
       }
       return
     }
 
     if (!code || !state) {
-      setError('Invalid callback. Missing authorization code.')
       return
     }
 
     // Verify CSRF state token
     if (!verifyOAuthState(state)) {
-      setError('Security check failed. Please try signing in again.')
+      queueMicrotask(() => setError('Security check failed. Please try signing in again.'))
       return
     }
 

@@ -2,6 +2,9 @@
   "name": "eternalos",
   "private": true,
   "version": "0.1.0",
+  "engines": {
+    "node": ">=22.23.2 <23"
+  },
   "workspaces": [
     "packages/frontend",
     "packages/worker"
@@ -10,7 +13,11 @@
     "dev": "npm run dev --workspace=@eternalos/frontend",
     "dev:worker": "npm run dev --workspace=@eternalos/worker",
     "build": "npm run build --workspace=@eternalos/frontend",
-    "build:worker": "npm run deploy --workspace=@eternalos/worker",
+    "build:worker": "npm run build --workspace=@eternalos/worker",
+    "deploy:worker": "npm run deploy --workspace=@eternalos/worker",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm run test --workspaces",
+    "check:release": "npm run typecheck && npm run lint && npm test && npm run build && npm run build:worker",
     "lint": "npm run lint --workspace=@eternalos/frontend",
     "preview": "npm run preview --workspace=@eternalos/frontend",
     "test:worker": "npm run test --workspace=@eternalos/worker",

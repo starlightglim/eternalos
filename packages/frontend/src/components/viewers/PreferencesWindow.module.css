@@ -4,7 +4,10 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--platinum);
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface-chrome);
+  color: var(--text);
   font-family: var(--font-geneva);
   font-size: 11px;
 }
@@ -16,16 +19,17 @@
 
 .tabBar {
   display: flex;
+  flex-shrink: 0;
   padding: 8px 8px 0;
   gap: 2px;
-  background: var(--platinum);
-  border-bottom: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border-bottom: 1px solid var(--control-border);
 }
 
 .tab {
   padding: 6px 16px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-bottom: none;
   border-radius: 4px 4px 0 0;
   font-family: var(--font-chicago);
@@ -40,19 +44,19 @@
 }
 
 .tab:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .activeTab {
-  background: var(--white);
-  border-bottom: 1px solid var(--white);
+  background: var(--surface);
+  border-bottom: 1px solid var(--surface);
   box-shadow:
     inset 1px 1px 0 var(--highlight),
     inset -1px 0 0 var(--shadow);
 }
 
 .activeTab:hover {
-  background: var(--white);
+  background: var(--surface);
 }
 
 /* ============================================
@@ -61,12 +65,14 @@
 
 .content {
   flex: 1;
-  background: var(--white);
-  border: 1px solid var(--shadow);
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--control-border);
   border-top: none;
   margin: 0 8px 8px;
   padding: 16px;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 /* ============================================
@@ -95,8 +101,8 @@
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
 }
 
 .infoRow {
@@ -108,28 +114,40 @@
 .infoLabel {
   flex-shrink: 0;
   width: 100px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
   text-align: right;
 }
 
 .infoValue {
   flex: 1;
-  color: var(--text-color);
+  color: var(--text);
   word-break: break-word;
 }
 
 .infoValueEditable {
   flex: 1;
-  color: var(--text-color);
+  color: var(--text);
   cursor: pointer;
   padding: 2px 4px;
   border: 1px solid transparent;
   border-radius: 2px;
+  background: transparent;
+  font: inherit;
+  text-align: left;
 }
 
 .infoValueEditable:hover {
-  border-color: var(--shadow);
-  background: var(--highlight);
+  border-color: var(--accent, var(--control-border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-chrome));
+}
+
+.infoValueEditable:focus-visible,
+.copyButton:focus-visible,
+.accountButton:focus-visible,
+.testButton:focus-visible,
+.tab:focus-visible {
+  outline: 2px solid var(--accent, var(--selection));
+  outline-offset: 1px;
 }
 
 .nameInput {
@@ -137,13 +155,14 @@
   font-family: var(--font-geneva);
   font-size: 11px;
   padding: 2px 4px;
-  border: 1px solid var(--black);
-  background: var(--white);
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--control-text);
 }
 
 .nameInput:focus {
   outline: none;
-  box-shadow: 0 0 0 1px var(--selection);
+  box-shadow: 0 0 0 1px var(--accent, var(--selection));
 }
 
 /* ============================================
@@ -155,13 +174,13 @@
   flex-direction: column;
   gap: 6px;
   padding: 12px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
 }
 
 .visitorLabel {
   font-weight: bold;
-  color: var(--text-color);
+  color: var(--text);
 }
 
 .visitorUrl {
@@ -174,10 +193,10 @@
   flex: 1;
   font-family: var(--font-monaco);
   font-size: 10px;
-  color: var(--selection);
-  background: var(--white);
+  color: var(--accent, var(--selection));
+  background: var(--surface);
   padding: 4px 8px;
-  border: 1px solid var(--shadow);
+  border: 1px solid var(--control-border);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -187,8 +206,8 @@
   padding: 4px 12px;
   font-family: var(--font-geneva);
   font-size: 10px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 3px;
   cursor: pointer;
   /* Classic Mac button bevel */
@@ -198,12 +217,12 @@
 }
 
 .copyButton:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .copyButton:active {
-  background: var(--shadow);
-  color: var(--white);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
   box-shadow:
     inset -1px -1px 0 var(--highlight),
     inset 1px 1px 0 var(--shadow);
@@ -216,7 +235,7 @@
   margin-top: 8px;
   font-family: var(--font-geneva);
   font-size: 11px;
-  color: var(--text-color-secondary, var(--shadow));
+  color: var(--text-muted);
   cursor: pointer;
   user-select: none;
 }
@@ -237,13 +256,13 @@
 
 .sectionHeader {
   padding-bottom: 8px;
-  border-bottom: 1px solid var(--shadow);
+  border-bottom: 1px solid var(--control-border);
 }
 
 .sectionTitle {
   font-family: var(--font-chicago);
   font-size: 12px;
-  color: var(--text-color);
+  color: var(--text);
 }
 
 .patternGrid {
@@ -258,8 +277,8 @@
   align-items: center;
   gap: 4px;
   padding: 6px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 4px;
   cursor: pointer;
   /* Button bevel */
@@ -269,19 +288,19 @@
 }
 
 .patternButton:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .patternButton.selected {
-  background: var(--selection);
-  color: var(--white);
-  border-color: var(--black);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
+  border-color: var(--control-border);
 }
 
 .patternPreview {
   width: 40px;
   height: 30px;
-  border: 1px solid var(--black);
+  border: 1px solid var(--control-border);
   image-rendering: pixelated;
   image-rendering: crisp-edges;
 }
@@ -296,7 +315,7 @@
 }
 
 .selected .patternName {
-  color: var(--white);
+  color: var(--selection-text);
 }
 
 /* ============================================
@@ -308,18 +327,18 @@
 }
 
 .content::-webkit-scrollbar-track {
-  background: var(--platinum);
-  border-left: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border-left: 1px solid var(--control-border);
 }
 
 .content::-webkit-scrollbar-thumb {
-  background: var(--white);
-  border: 1px solid var(--black);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 0;
 }
 
 .content::-webkit-scrollbar-thumb:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 /* ============================================
@@ -348,8 +367,8 @@
   flex-direction: column;
   gap: 12px;
   padding: 12px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
 }
 
 .soundRow {
@@ -371,13 +390,13 @@
   width: 14px;
   height: 14px;
   cursor: pointer;
-  accent-color: var(--selection);
+  accent-color: var(--accent, var(--selection));
 }
 
 .volumeLabel {
   flex-shrink: 0;
   width: 60px;
-  color: var(--text-color);
+  color: var(--text);
   font-family: var(--font-geneva);
   font-size: 11px;
 }
@@ -399,8 +418,8 @@
   height: 8px;
   -webkit-appearance: none;
   appearance: none;
-  background: var(--white);
-  border: 1px solid var(--shadow);
+  background: var(--surface);
+  border: 1px solid var(--control-border);
   border-radius: 0;
   cursor: pointer;
 }
@@ -409,8 +428,8 @@
   -webkit-appearance: none;
   width: 14px;
   height: 18px;
-  background: var(--platinum);
-  border: 1px solid var(--black);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 0;
   cursor: pointer;
   box-shadow:
@@ -421,8 +440,8 @@
 .volumeSlider::-moz-range-thumb {
   width: 14px;
   height: 18px;
-  background: var(--platinum);
-  border: 1px solid var(--black);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 0;
   cursor: pointer;
 }
@@ -438,13 +457,13 @@
   text-align: right;
   font-family: var(--font-monaco);
   font-size: 10px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
 }
 
 .testLabel {
   flex-shrink: 0;
   width: 80px;
-  color: var(--text-color);
+  color: var(--text);
   font-family: var(--font-geneva);
   font-size: 11px;
 }
@@ -459,8 +478,8 @@
   padding: 4px 10px;
   font-family: var(--font-geneva);
   font-size: 10px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 3px;
   cursor: pointer;
   /* Classic Mac button bevel */
@@ -470,12 +489,12 @@
 }
 
 .testButton:hover:not(:disabled) {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .testButton:active:not(:disabled) {
-  background: var(--shadow);
-  color: var(--white);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
   box-shadow:
     inset -1px -1px 0 var(--highlight),
     inset 1px 1px 0 var(--shadow);
@@ -523,27 +542,27 @@
   display: flex;
   flex-direction: column;
   padding: 8px;
-  background: var(--platinum);
-  border: 2px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 2px solid var(--control-border);
   border-radius: 4px;
   cursor: pointer;
   transition: border-color 0.1s;
 }
 
 .themeCard:hover {
-  border-color: var(--black);
+  border-color: var(--accent, var(--control-border));
 }
 
 .themeCard.selectedTheme {
-  border-color: var(--selection);
-  box-shadow: 0 0 0 2px var(--selection);
+  border-color: var(--accent, var(--selection));
+  box-shadow: 0 0 0 2px var(--accent, var(--selection));
 }
 
 .themePreview {
   display: flex;
   flex-direction: column;
   height: 50px;
-  border: 1px solid var(--black);
+  border: 1px solid var(--control-border);
   border-radius: 2px;
   overflow: hidden;
   margin-bottom: 6px;
@@ -568,7 +587,7 @@
 .themeWindow {
   width: 24px;
   height: 20px;
-  border: 1px solid #000;
+  border: 1px solid var(--control-border);
   display: flex;
   flex-direction: column;
 }
@@ -583,8 +602,8 @@
 .themeWindowTitleDot {
   width: 3px;
   height: 3px;
-  border: 1px solid #000;
-  background: #fff;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
 }
 
 .themeWindowContent {
@@ -595,20 +614,20 @@
   font-family: var(--font-chicago);
   font-size: 11px;
   font-weight: bold;
-  color: var(--text-color);
+  color: var(--text);
   text-align: center;
 }
 
 .themeDescription {
   font-family: var(--font-geneva);
   font-size: 9px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
   text-align: center;
   margin-top: 2px;
 }
 
 .selectedTheme .themeName {
-  color: var(--selection);
+  color: var(--accent, var(--selection));
 }
 
 /* ============================================
@@ -618,7 +637,7 @@
 .customWallpaperSection {
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid var(--shadow);
+  border-top: 1px solid var(--control-border);
 }
 
 .customWallpaperPreview {
@@ -627,8 +646,8 @@
   align-items: center;
   gap: 8px;
   padding: 12px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
   margin-bottom: 12px;
 }
 
@@ -642,7 +661,7 @@
 
 .customWallpaperLabel {
   font-size: 10px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
 }
 
 .uploadSection {
@@ -651,8 +670,8 @@
   align-items: center;
   gap: 8px;
   padding: 12px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
 }
 
 .hiddenFileInput {
@@ -663,8 +682,8 @@
   padding: 8px 20px;
   font-family: var(--font-chicago);
   font-size: 11px;
-  background: var(--white);
-  border: 2px solid var(--black);
+  background: var(--control-bg);
+  border: 2px solid var(--control-border);
   border-radius: 6px;
   cursor: pointer;
   /* Classic Mac rounded button bevel */
@@ -674,12 +693,12 @@
 }
 
 .uploadButton:hover:not(:disabled) {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .uploadButton:active:not(:disabled) {
-  background: var(--shadow);
-  color: var(--white);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
   box-shadow:
     inset -1px -1px 0 var(--highlight),
     inset 1px 1px 0 var(--shadow);
@@ -692,16 +711,16 @@
 
 .uploadHint {
   font-size: 9px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
 }
 
 .uploadError {
   margin-top: 8px;
   padding: 8px;
   font-size: 10px;
-  color: #990000;
-  background: #FFCCCC;
-  border: 1px solid #990000;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  border: 1px solid var(--danger);
   text-align: center;
 }
 
@@ -714,13 +733,13 @@
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
 }
 
 .analyticsLabel {
   font-weight: bold;
-  color: var(--text-color);
+  color: var(--text);
   font-family: var(--font-chicago);
   font-size: 11px;
 }
@@ -731,7 +750,7 @@
   gap: 6px;
   font-family: var(--font-geneva);
   font-size: 11px;
-  color: var(--text-color-secondary, var(--shadow));
+  color: var(--text-muted);
   cursor: pointer;
   user-select: none;
 }
@@ -744,7 +763,7 @@
   padding: 6px 0 0;
   font-family: var(--font-geneva);
   font-size: 11px;
-  color: var(--text-color);
+  color: var(--text);
 }
 
 .analyticsCount {
@@ -753,18 +772,18 @@
 }
 
 .analyticsCount strong {
-  color: var(--selection);
+  color: var(--accent, var(--selection));
 }
 
 .analyticsLoading {
   font-size: 10px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
   font-style: italic;
 }
 
 .analyticsEmpty {
   font-size: 10px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
   font-style: italic;
 }
 
@@ -777,20 +796,20 @@
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
 }
 
 .quotaLabel {
   font-weight: bold;
-  color: var(--text-color);
+  color: var(--text);
   font-family: var(--font-chicago);
   font-size: 11px;
 }
 
 .quotaLoading {
   font-size: 10px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
   font-style: italic;
 }
 
@@ -802,8 +821,8 @@
 
 .quotaBar {
   height: 12px;
-  background: var(--white);
-  border: 1px solid var(--shadow);
+  background: var(--surface);
+  border: 1px solid var(--control-border);
   border-radius: 0;
   overflow: hidden;
   /* Classic Mac inset */
@@ -816,26 +835,26 @@
   height: 100%;
   background: linear-gradient(
     90deg,
-    var(--selection) 0%,
-    #6699CC 100%
+    var(--accent, var(--selection)) 0%,
+    color-mix(in srgb, var(--accent, var(--selection)) 62%, var(--highlight)) 100%
   );
   transition: width 0.3s ease;
 }
 
 .quotaText {
   font-size: 10px;
-  color: var(--text-color);
+  color: var(--text);
   font-family: var(--font-monaco);
 }
 
 .quotaFiles {
   font-size: 9px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
 }
 
 .quotaError {
   font-size: 10px;
-  color: #990000;
+  color: var(--danger);
 }
 
 /* ============================================
@@ -847,13 +866,13 @@
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
 }
 
 .accountSectionTitle {
   font-weight: bold;
-  color: var(--text-color);
+  color: var(--text);
   font-family: var(--font-chicago);
   font-size: 11px;
   margin-bottom: 4px;
@@ -869,7 +888,7 @@
   flex-shrink: 0;
   width: 110px;
   text-align: right;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
   font-size: 11px;
 }
 
@@ -878,22 +897,24 @@
   font-family: var(--font-geneva);
   font-size: 11px;
   padding: 3px 6px;
-  border: 1px solid var(--black);
-  background: var(--white);
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--control-text);
   min-width: 0;
 }
 
 .accountInput:focus {
   outline: none;
-  box-shadow: 0 0 0 1px var(--selection);
+  box-shadow: 0 0 0 1px var(--accent, var(--selection));
 }
 
 .accountButton {
   padding: 5px 14px;
   font-family: var(--font-geneva);
   font-size: 10px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  color: var(--control-text);
+  border: 1px solid var(--control-border);
   border-radius: 3px;
   cursor: pointer;
   white-space: nowrap;
@@ -903,12 +924,12 @@
 }
 
 .accountButton:hover:not(:disabled) {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .accountButton:active:not(:disabled) {
-  background: var(--shadow);
-  color: var(--white);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
   box-shadow:
     inset -1px -1px 0 var(--highlight),
     inset 1px 1px 0 var(--shadow);
@@ -921,18 +942,18 @@
 
 .accountSuccess {
   font-size: 10px;
-  color: #006600;
+  color: var(--success);
   padding: 4px 8px;
-  background: #CCFFCC;
-  border: 1px solid #006600;
+  background: color-mix(in srgb, var(--success) 14%, var(--surface));
+  border: 1px solid var(--success);
 }
 
 .accountError {
   font-size: 10px;
-  color: #990000;
+  color: var(--danger);
   padding: 4px 8px;
-  background: #FFCCCC;
-  border: 1px solid #990000;
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  border: 1px solid var(--danger);
 }
 
 .verificationBadge {
@@ -946,16 +967,16 @@
 
 .verifiedBadge {
   composes: verificationBadge;
-  color: #006600;
-  background: #CCFFCC;
-  border: 1px solid #006600;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 14%, var(--surface));
+  border: 1px solid var(--success);
 }
 
 .unverifiedBadge {
   composes: verificationBadge;
-  color: #996600;
-  background: #FFF3CC;
-  border: 1px solid #996600;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+  border: 1px solid var(--danger);
 }
 
 .verifyButton {
@@ -963,4 +984,37 @@
   font-size: 9px;
   padding: 3px 8px;
   margin-left: 4px;
+}
+
+@media (max-width: 420px) {
+  .content {
+    margin: 0 4px 4px;
+    padding: 10px;
+  }
+
+  .infoRow,
+  .accountFormRow,
+  .soundRow {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .infoLabel,
+  .accountFormRow label,
+.volumeLabel,
+.testLabel {
+    width: auto;
+    text-align: left;
+  }
+
+  .infoValue,
+  .infoValueEditable,
+  .accountInput {
+    width: 100%;
+  }
+
+  .volumeControl {
+    width: 100%;
+  }
 }
