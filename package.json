@@ -9,6 +9,10 @@
     "packages/frontend",
     "packages/worker"
   ],
+  "//overrides": "Security pins for transitive deps. proxy-addr: GHSA-jqcg-44mw-7w3h (critical, IPv4-mapped IPv6 trust spoofing), pulled in via agents -> @modelcontextprotocol/sdk -> express (an MCP HTTP-server transport this app never runs); pinned defensively to the patched release, which express accepts (^2.0.7).",
+  "overrides": {
+    "proxy-addr": "^2.0.8"
+  },
   "scripts": {
     "dev": "npm run dev --workspace=@eternalos/frontend",
     "dev:worker": "npm run dev --workspace=@eternalos/worker",

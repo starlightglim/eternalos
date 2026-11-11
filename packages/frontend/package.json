@@ -16,7 +16,7 @@
     "@cloudflare/ai-chat": "^0.1.8",
     "@types/dompurify": "^3.0.5",
     "agents": "^0.7.5",
-    "dompurify": "^3.3.3",
+    "dompurify": "^3.4.17",
     "jszip": "^3.10.1",
     "marked": "^17.0.5",
     "prism-react-renderer": "^2.4.1",

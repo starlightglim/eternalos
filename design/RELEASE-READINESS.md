@@ -21,7 +21,7 @@ This review does not certify production readiness. Code findings below are disti
 | R3 — Failed writes / false local state | 🟡 Partial | Position-save path still fire-and-forget; save-status UI |
 | R4 — Cross-tab session refresh | 🟡 Partial | No cross-tab coordination yet (locks/BroadcastChannel) |
 | R5 — Reproducible verification | ✅ Done | Minor: no browser smoke step or clean-install gate |
-| R6 — Dependency advisory triage | ❌ Open | 33 prod advisories (21 high, 1 critical) — worse than the original 27 |
+| R6 — Dependency advisory triage | 🟡 Partial | Critical + reachable sanitizer fixed (0 critical, 20 high); rest deferred behind `agents 0.8`/`zod 4` |
 
 Of six original blockers, two are fully open (R2, R6) and two are partially done (R3, R4). R1 and R5 are complete.
 
@@ -38,7 +38,7 @@ Re-run 2026-11-11 (Node 25.6.1 locally; CI pins 22.23.2 via `.nvmrc`):
 | Worker integration suite | 19/19 passed (~5.6s) — the `source-map` import that previously blocked it is now a declared dependency |
 | Frontend automated tests | 21 passed (4 `node --test` cache tests + 17 vitest), via new `vitest.config.ts` and `test/` setup |
 | Consolidated release check (`npm run check:release`) | Exists and is what CI runs; covers typecheck + lint + tests + both builds. Does NOT yet run a browser smoke step |
-| Dependency audit (`npm audit --omit=dev`) | 33 advisories: 21 high, 4 moderate, 7 low, **1 critical** — worse than the original 27/0-critical (mostly dev-tooling: `source-map-js`, `vite`). Still advisories, not demonstrated exploits; establish reachability before assigning application severity |
+| Dependency audit (`npm audit --omit=dev`) | 31 advisories: 20 high, 4 moderate, 7 low, **0 critical** (after R6 triage — down from 33/1-critical). Critical `proxy-addr` and reachable `dompurify` fixed; the rest are dev-tooling, unused transports, or blocked behind an `agents 0.8`/`zod 4` major bump |
 | CI | `.github/workflows/ci.yml` runs `npm ci` then `npm run check:release` on `.nvmrc` Node |
 | Browser smoke check | Not automated; manual landing / Try Demo / open-file still the only coverage |
 
@@ -125,11 +125,20 @@ Remaining minor gaps (do not block, but close before calling the gate complete):
 
 Acceptance: largely met for a clean CI checkout; add the browser smoke step to fully satisfy it. A separate staging integration suite for external integrations is still required.
 
-### R6 — Dependency advisory triage — ❌ Open, regressed (2026-11-11)
+### R6 — Dependency advisory triage — 🟡 Partial (2026-11-11)
 
-The production audit has grown since the original review: **33 advisories (21 high, 4 moderate, 7 low, 1 critical)**, up from 27/0-critical. Highlighted entries include `source-map-js` (event-loop DoS, high — note this is now a declared dependency via R5) and `vite` (file-serving path traversal, high); others span routing, sanitization, and AI transport. Most are dev/build tooling with questionable runtime reachability, but the audit is not proof of exploitation.
+Triaged and reduced from **33 (1 critical, 21 high)** to **31 (0 critical, 20 high)**:
 
-Required work: **triage the single critical advisory first** and record its reachability. Then map each high advisory to installed version and reachable usage, apply compatible upgrades, align the frontend/worker AI transport packages deliberately, and document remaining non-applicable findings. Avoid a blanket forced major-version update.
+- **Critical fixed:** `proxy-addr` (GHSA-jqcg-44mw-7w3h, IPv4-mapped IPv6 trust spoofing) was pinned to the patched `2.0.8` via a root `overrides`. It reaches the tree only through `agents → @modelcontextprotocol/sdk → express` — the MCP HTTP-server transport, which this app never runs (verified: no `express`/`proxy-addr` import in source). Pinned defensively regardless.
+- **Reachable high fixed:** `dompurify` (FORBID_TAGS bypass) bumped `^3.3.3 → ^3.4.17` (in-range, no major bump). This one is genuinely reachable — it sanitizes rendered markdown in `MarkdownViewer.tsx`.
+
+Reachability triage of the remaining 20 highs:
+
+- **Not reachable** — `react-router`/`react-router-dom` (turbo-stream RCE needs data-router/SSR APIs; the app uses none), `hono` (no `hono` import — the worker hand-rolls its router), `lodash` (`_.template` not used), and the `express` subtree (`body-parser`, `path-to-regexp`, `fast-uri` — MCP server transport, not run).
+- **Dev/build tooling** (not in the deployed Worker or browser bundle) — `vite`, `rollup`, `postcss`, `browserslist`, `source-map-js`.
+- **Blocked behind a major bump** — the remaining fixes want `agents 0.7 → 0.8`, which peer-requires `zod ^4` (a major bump). Deferred deliberately: the chat transport and app-builder ride on `agents`, and the roadmap forbids a blanket major-version update without a transport regression pass. Candidates here include `zod` (oversized-collection DoS), `@modelcontextprotocol/sdk`, `@cloudflare/ai-chat`, `nanoid` (negative-size loop — not called with negative size).
+
+Remaining work: schedule the `agents 0.8` + `zod 4` upgrade as its own task with a chat/app-builder regression pass, then re-audit. Acceptance (no unaddressed *reachable* high/critical) is met for everything except that deferred, non-reachable set.
 
 Acceptance: no unaddressed reachable high/critical issue, and sanitizer, app sandbox, and chat transport regressions pass after upgrades.
 

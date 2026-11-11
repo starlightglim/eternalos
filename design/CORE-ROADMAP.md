@@ -25,7 +25,7 @@ These are the former release blockers (full evidence in [RELEASE-READINESS.md](R
 | R3 | Failed writes / false local state | 🟡 Partial | Position-save path still fire-and-forget (`desktopStore.ts:486`); no saved/saving/failed UI |
 | R4 | Cross-tab session refresh | 🟡 Partial | No cross-tab coordination yet (`navigator.locks` + `BroadcastChannel`); logout propagation |
 | R2 | Account-deletion purge | ✅ Done | Resumable, idempotent purge in the cron (`utils/accountPurge.ts`), covering AUTH_KV/DESKTOP_KV/R2/UserDesktop DO/agent threads + published content; integration test past the deadline |
-| R6 | Dependency advisory triage | ❌ Not started | 33 prod advisories (21 high, 1 critical) — triage the critical first |
+| R6 | Dependency advisory triage | 🟡 Partial | Critical (`proxy-addr`) and reachable sanitizer (`dompurify`) fixed → 0 critical, 20 high. Remaining highs are dev/build tooling or unused transports; the rest need the `agents 0.8` + `zod 4` major bump (deferred — chat-transport risk) |
 
 **Accessibility correctness debt (ships with the surfaces it touches):** `ContextMenu.tsx` renders clickable `div`s with no keyboard/menu semantics; `AlertDialog.tsx` has no focus trap, no accessible title linkage, and a document-wide Enter handler that fires the primary action even when another control is focused — dangerous before destructive confirmations. Fix these as part of Workstream 1.
 
