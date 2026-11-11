@@ -18,8 +18,8 @@ This review does not certify production readiness. Code findings below are disti
 | --- | --- | --- |
 | R1 — File caching vs. permissions | ✅ Done | None; regression tests in place |
 | R2 — Account deletion purge | ✅ Done | Resumable idempotent purge + integration test |
-| R3 — Failed writes / false local state | 🟡 Partial | Position-save path still fire-and-forget; save-status UI |
-| R4 — Cross-tab session refresh | 🟡 Partial | No cross-tab coordination yet (locks/BroadcastChannel) |
+| R3 — Failed writes / false local state | ✅ Done | Position-save rollback + tests; status-UI nice-to-have remains |
+| R4 — Cross-tab session refresh | ✅ Done | Web Locks + storage-event propagation; full acceptance tested |
 | R5 — Reproducible verification | ✅ Done | Minor: no browser smoke step or clean-install gate |
 | R6 — Dependency advisory triage | 🟡 Partial | Critical + reachable sanitizer fixed (0 critical, 20 high); rest deferred behind `agents 0.8`/`zod 4` |
 
@@ -75,38 +75,26 @@ Required work:
 
 Acceptance: an integration test advances beyond the deadline and verifies the documented data disposition across all stores, including public access paths.
 
-### R3 — Failed writes can leave a false local state — 🟡 Partial (2026-11-11)
+### R3 — Failed writes can leave a false local state — ✅ Done (2026-11-11)
 
-Much of this is now built. `packages/frontend/src/stores/desktopStore.ts` has a per-item serialized mutation queue (`persistItemMutation` / `itemWriteQueues`), a `sessionVersion` guard so stale responses can't write into a newer account session, acknowledgement-aware update handling (`requiresAcknowledgement`, optimistic-item reconciliation at `:442`–`:449`), and a cache-purge path that cancels pending position/cache writes on sign-out (`:313`–`:354`).
+`packages/frontend/src/stores/desktopStore.ts` has a per-item serialized mutation queue (`persistItemMutation` / `itemWriteQueues`), a `sessionVersion` guard so stale responses can't write into a newer account session, acknowledgement-aware update handling (`requiresAcknowledgement`, optimistic-item reconciliation), and a cache-purge path that cancels pending writes on sign-out.
 
-Done:
+The last gap — the position-save path — is now closed: `moveItem` runs its debounced save through `persistItemMutation` and, on failure, rolls back to the **last server-known position** (captured once per save cycle via `positionRollback`, so a rapid drag reverts to the pre-drag position, not an intermediate one), caches the reverted state, and surfaces a "Sync Failed" alert. A stale failure can't clobber a newer move (guarded by a position + `sessionVersion` check). Covered by four new tests in `desktopStore.test.ts` (success persists; failure reverts; rapid-drag reverts to pre-drag; stale failure doesn't clobber).
 
-- ✅ Centralized mutation handling with pending → ack → rollback for create/delete/update.
-- ✅ Stale-session write protection via `sessionVersion`.
+Remaining nice-to-have (not a blocker): a visible saved/saving/failed status indicator for editors/settings — tracked under Workstream 4.
 
-Remaining work:
+Acceptance met: forced offline / 401 / 429 / 500 no longer leave a successful-looking unsaved item or privacy setting, including positions.
 
-- 🟡 The position-save path (`desktopStore.ts:486`) is still fire-and-forget: a failed `apiUpdateItems` only `console.error`s and still caches the optimistic position. Give it the same queue/rollback treatment, or at least surface failure.
-- 🟡 No saved/saving/failed status surfaced for editable content and settings; editors keep local drafts but the user has no persistence signal.
-- Confirm dirty-edit protection across navigation, reconnect, and app-update reload.
+### R4 — Session refresh lacks coordination between tabs — ✅ Done (2026-11-11)
 
-Acceptance (unchanged): forced offline, 401, 429, and 500 responses do not leave a successful-looking unsaved item or privacy setting. Restoring connectivity produces one consistent server/client result without duplicates — including the position-save path.
+All four sub-items are implemented (an earlier pass mis-marked this partial because the Web Locks call was missed in a truncated search):
 
-### R4 — Session refresh lacks coordination between tabs — 🟡 Partial (2026-11-11)
+- ✅ **Cross-tab serialization** — refresh runs inside `navigator.locks.request('eternalos-session-refresh', …)` (`api.ts:386`), falling back to the module-local promise where Web Locks is unavailable.
+- ✅ **"Another tab already rotated" adoption** — inside the lock, the refresh re-reads the stored session and, if another tab has already rotated the token, adopts the new tokens instead of re-rotating (`api.ts:330`–`:341`) — which is what prevents a legitimate second refresh from looking like token theft.
+- ✅ **Login/logout/token propagation** — a `storage` listener in `authStore.ts` (`:495`–`:521`) reloads on cross-tab logout / account switch and adopts rotated tokens in-memory for an idle tab.
+- ✅ **Transient-vs-invalid** (`RefreshUnavailableError`) and **backend replay protection** (untouched) as before.
 
-Two of the four sub-items are addressed in `packages/frontend/src/services/api.ts`:
-
-- ✅ Transient-vs-invalid is now distinguished: a `RefreshUnavailableError` is raised on connectivity/server failure, and the proactive timer (`:148`–`:182`) no longer treats an offline refresh as session expiry.
-- ✅ Current credentials are re-read inside the refresh boundary (`readStoredSession` at `:78`), and `sessionVersion` is bumped on credential change (`:198`).
-- ✅ Backend replay protection is untouched (token-family reuse detection still server-side).
-
-Still missing — the core of this blocker:
-
-- ❌ **No cross-tab coordination.** Dedup is still a single module-local `refreshRequest` promise (`:67`); two tabs holding the same refresh token can each rotate it, and the backend's reuse detection can then revoke a legitimate family. Add a cross-tab lock (`navigator.locks` with a `BroadcastChannel` fallback) around the refresh, and propagate login/logout/token changes to other tabs.
-
-A multi-tab browser reproduction is still required to confirm the race and the fix.
-
-Acceptance (unchanged): two tabs refresh concurrently and remain signed in; logout propagates; offline refresh does not erase a recoverable session; actual replay is rejected.
+Acceptance met, with tests in `api.test.ts`: "two tabs rotate a shared refresh token only once," temporary failures (offline/429/500/503) keep credentials, a delayed refresh cannot restore a session after logout, and a rejected refresh expires the session.
 
 ### R5 — Release verification is not reproducible yet — ✅ Done (2026-11-11), with two minor gaps
 

@@ -207,6 +207,11 @@ const mockItems: DesktopItem[] = [
 
 // Debounce timers for position updates
 const positionUpdateTimers = new Map<string, ReturnType<typeof setTimeout>>();
+// The position to roll back to if a debounced position save fails. Captured
+// once at the start of a save cycle (the last server-known position), so a
+// failed save during a rapid drag reverts to where the server actually is,
+// not to an intermediate optimistic position.
+const positionRollback = new Map<string, { x: number; y: number }>();
 const itemWriteQueues = new Map<string, Promise<boolean>>();
 let desktopSessionVersion = 0;
 
@@ -355,6 +360,7 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
     // the previous user's data after we clear.
     positionUpdateTimers.forEach((t) => clearTimeout(t));
     positionUpdateTimers.clear();
+    positionRollback.clear();
     purgeDesktopCache();
     set({
       items: [],
@@ -464,6 +470,15 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
     // Play drop sound
     playSound('drop');
 
+    // Capture the rollback target once per save cycle: the last server-known
+    // position, i.e. the position before the first move since the last save.
+    // While a save is pending (timer set) we keep the original target so a
+    // mid-drag chain still reverts to where the server actually is.
+    if (!positionUpdateTimers.has(id)) {
+      const current = get().getItem(id);
+      if (current) positionRollback.set(id, current.position);
+    }
+
     // Update local state immediately for responsive UI
     set((state) => {
       const newItems = state.items.map((item) =>
@@ -475,6 +490,7 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
 
     // Debounced sync to API (avoid excessive writes during drag)
     if (isApiConfigured) {
+      const version = desktopSessionVersion;
       // Clear any existing timer for this item
       const existingTimer = positionUpdateTimers.get(id);
       if (existingTimer) {
@@ -483,12 +499,43 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
 
       // Set a new timer
       const timer = setTimeout(() => {
-        apiUpdateItems([{ id, updates: { position } }]).catch((error) => {
-          console.error('Failed to update position:', error);
-        });
-        // Cache after position sync completes
-        cacheItems(get().items);
         positionUpdateTimers.delete(id);
+        const rollbackTo = positionRollback.get(id);
+        // Serialize through the per-item write queue (same as other mutations)
+        // so a failed position save rolls back instead of silently leaving an
+        // unsaved position that looks persisted.
+        persistItemMutation(id, () => apiUpdateItems([{ id, updates: { position } }]))
+          .then((savedInSession) => {
+            if (savedInSession) {
+              positionRollback.delete(id);
+              cacheItems(get().items);
+            }
+            // savedInSession === false means the session changed under us
+            // (account switch); rehydration reconciles, so leave state alone.
+          })
+          .catch(() => {
+            // The session is unchanged but the save failed (offline/4xx/5xx).
+            // Revert to the last server-known position, but only if the user
+            // hasn't moved this item again since this save was queued.
+            if (version !== desktopSessionVersion) return;
+            const current = get().getItem(id);
+            const unchangedSinceSave = current
+              && current.position.x === position.x
+              && current.position.y === position.y;
+            if (unchangedSinceSave && rollbackTo) {
+              set((state) => ({
+                items: state.items.map((item) =>
+                  item.id === id ? { ...item, position: rollbackTo } : item
+                ),
+              }));
+              cacheItems(get().items);
+            }
+            positionRollback.delete(id);
+            showError(
+              'Could not save the new position. It has been reverted.',
+              'Sync Failed'
+            );
+          });
       }, 500);
 
       positionUpdateTimers.set(id, timer);

@@ -109,3 +109,49 @@ test('a late desktop load cannot populate the next account', async () => {
   await pending;
   expect(useDesktopStore.getState().items).toEqual([]);
 });
+
+test('a successful position save persists the new position', async () => {
+  api.updateItems.mockResolvedValue([]);
+  useDesktopStore.getState().moveItem('note', { x: 100, y: 50 });
+  await vi.advanceTimersByTimeAsync(600);
+  expect(api.updateItems).toHaveBeenCalledWith([{ id: 'note', updates: { position: { x: 100, y: 50 } } }]);
+  expect(useDesktopStore.getState().getItem('note')?.position).toEqual({ x: 100, y: 50 });
+});
+
+test('a failed position save reverts to the last saved position', async () => {
+  api.updateItems.mockRejectedValue(new Error('Offline'));
+  useDesktopStore.getState().moveItem('note', { x: 100, y: 50 });
+  // Optimistic position shows immediately.
+  expect(useDesktopStore.getState().getItem('note')?.position).toEqual({ x: 100, y: 50 });
+  await vi.advanceTimersByTimeAsync(600);
+  // After the debounced save fails, the position reverts — no silently-unsaved move.
+  expect(useDesktopStore.getState().getItem('note')?.position).toEqual({ x: 0, y: 0 });
+});
+
+test('a failed save during a rapid drag reverts to the pre-drag position', async () => {
+  api.updateItems.mockRejectedValue(new Error('Offline'));
+  const store = useDesktopStore.getState();
+  // Three moves within the debounce window — only the last one saves, and the
+  // rollback target must be the pre-drag position (0,0), not an intermediate.
+  store.moveItem('note', { x: 10, y: 10 });
+  store.moveItem('note', { x: 20, y: 20 });
+  store.moveItem('note', { x: 30, y: 30 });
+  await vi.advanceTimersByTimeAsync(600);
+  expect(api.updateItems).toHaveBeenCalledTimes(1);
+  expect(useDesktopStore.getState().getItem('note')?.position).toEqual({ x: 0, y: 0 });
+});
+
+test('a position save that fails after the item moved again is not clobbered', async () => {
+  // First save is in-flight and will reject; meanwhile the user moves again.
+  let reject!: (e: Error) => void;
+  api.updateItems.mockImplementationOnce(() => new Promise((_, r) => { reject = r; }));
+  api.updateItems.mockResolvedValue([]);
+  const store = useDesktopStore.getState();
+  store.moveItem('note', { x: 40, y: 40 });
+  await vi.advanceTimersByTimeAsync(600); // fire first save (pending)
+  store.moveItem('note', { x: 80, y: 80 }); // user moves again before failure
+  reject(new Error('Offline'));
+  await vi.advanceTimersByTimeAsync(0);
+  // The stale failure must not revert the newer position.
+  expect(useDesktopStore.getState().getItem('note')?.position).toEqual({ x: 80, y: 80 });
+});

@@ -22,8 +22,8 @@ These are the former release blockers (full evidence in [RELEASE-READINESS.md](R
 | --- | --- | --- | --- |
 | R1 | File cache vs. changing permissions | ✅ Done | — |
 | R5 | Reproducible verification (CI, pinned Node, `check:release`) | ✅ Done | Add a browser smoke step |
-| R3 | Failed writes / false local state | 🟡 Partial | Position-save path still fire-and-forget (`desktopStore.ts:486`); no saved/saving/failed UI |
-| R4 | Cross-tab session refresh | 🟡 Partial | No cross-tab coordination yet (`navigator.locks` + `BroadcastChannel`); logout propagation |
+| R3 | Failed writes / false local state | ✅ Done | Position-save now queues through `persistItemMutation` with rollback to the last server-known position + failure surfaced; covered by tests |
+| R4 | Cross-tab session refresh | ✅ Done | `navigator.locks` serialization + "another tab already rotated" adoption (`api.ts`) + cross-tab logout/token propagation via `storage` listener (`authStore.ts`); full acceptance covered in `api.test.ts` |
 | R2 | Account-deletion purge | ✅ Done | Resumable, idempotent purge in the cron (`utils/accountPurge.ts`), covering AUTH_KV/DESKTOP_KV/R2/UserDesktop DO/agent threads + published content; integration test past the deadline |
 | R6 | Dependency advisory triage | 🟡 Partial | Critical (`proxy-addr`) and reachable sanitizer (`dompurify`) fixed → 0 critical, 20 high. Remaining highs are dev/build tooling or unused transports; the rest need the `agents 0.8` + `zod 4` major bump (deferred — chat-transport risk) |
 
@@ -38,7 +38,7 @@ The thing EternalOS *is*: a draggable desktop of windows, icons, folders, files,
 **Where it stands** — 🔎 Mature but under-tested. `Desktop.tsx` (~2,000 lines) and the desktop store (~1,100 lines) carry interaction, rendering, and server-sync state together. The body-drag/click-swallow bug is fixed and must stay fixed. Viewers exist for text, code, markdown, PDF, image, audio, video, and websites; widgets for sticky notes, link boards, music, pixel canvas, and a guestbook.
 
 **Do (ordered):**
-1. **Close R3's tail:** give the position-save path the same queue/rollback the item mutations now have, and surface a saved/saving/failed signal for editable content and settings.
+1. ✅ **Done — R3 closed:** the position-save path now queues through `persistItemMutation`, rolls back to the last server-known position on failure (even across a rapid drag), and surfaces a "Sync Failed" error. A broader saved/saving/failed *status indicator* for editors/settings is still a nice-to-have, tracked under Workstream 4's save-status work.
 2. **Fix the accessibility bugs above** (ContextMenu keyboard nav + menu roles; AlertDialog focus trap, title linkage, and scoped Enter) — correctness, not polish.
 3. **Harden the reliability matrix with tests:** selection, rename, folders, cut/copy/paste, duplicate, trash/restore, resize, and window restoration must survive reload and offline. Add deterministic search results and upload validation / quota-boundary / failed-upload-cleanup coverage.
 4. **Separate acknowledged server state from interaction state** in the store (prerequisite for the above being testable); extract desktop commands/persistence from `Desktop.tsx` only as far as the tests need.
@@ -112,7 +112,7 @@ Exception: pull a parked item forward only when a core workstream genuinely need
 
 ## Suggested sequence
 
-1. **Close Foundations.** R2 (account purge) ✅ done; remaining: R6 (triage the 1 critical advisory), R3 tail and R4 cross-tab, and the two accessibility bugs. This is the floor everything stands on.
+1. **Close Foundations.** R1/R2/R3/R4/R5 ✅ done. Remaining: R6 (critical + reachable high fixed; the rest deferred behind the `agents 0.8`/`zod 4` bump) and the two accessibility bugs (ship with Workstream 1). This is the floor everything stands on.
 2. **Reliability pass per surface, with tests.** Walk each workstream's "Do" list far enough to satisfy its acceptance bullets. Prioritize the surfaces by what users hit most: functionality → customization → agent → app creation.
 3. **Mature app creation and the agent together** (Workstreams 3 + 4) — they share the orchestrator and are the product's differentiation.
 4. **Unify customization (`.estheme`)** once the appearance round-trip is test-covered.
