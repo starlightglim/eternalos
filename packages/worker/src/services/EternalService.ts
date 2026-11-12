@@ -99,7 +99,12 @@ function isPrivateNetworkHost(hostname: string): boolean {
     const [first, second] = octets;
     if (first === 10 || first === 127 || first === 192 && second === 168 || first === 172 && second >= 16 && second <= 31) return true;
   }
-  return host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:');
+  // IPv6 unique-local (fc00::/7) and link-local (fe80::/10). Gate on the host
+  // actually being an IPv6 literal (contains ':'); a bare prefix check would
+  // misclassify public DNS names that merely start with "fc"/"fd" — e.g.
+  // fcc.gov, fdic.gov — as private and wrongly block granted outbound fetches.
+  if (host.includes(':') && (host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:'))) return true;
+  return false;
 }
 
 function toEternalItem(item: DesktopItem, path: string): EternalItem {

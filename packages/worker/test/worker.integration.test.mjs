@@ -776,6 +776,60 @@ describe('worker integration', () => {
     assert.match(await allowedRead.text(), /inside gallery/);
   });
 
+  it('classifies outbound hosts for SSRF without false-positives on fc/fd domains', async () => {
+    const user = await signupUser();
+    const app = await expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name: 'Net App',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+          permissions: { network: { outbound: ['api.example.com'] } },
+        },
+        files: { 'index.html': '<!doctype html><html><body>net</body></html>' },
+      }),
+    });
+    await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { network: { outbound: ['api.example.com'] } } }),
+    });
+    const capability = await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/capability`, {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({}),
+    });
+    const bearer = authHeaders(capability.token, JSON_HEADERS);
+    const proxyFetch = (targetUrl) =>
+      fetchJson(`/api/apps/${encodeURIComponent(app.appId)}/_eternal/fetch`, {
+        method: 'POST',
+        headers: bearer,
+        body: JSON.stringify({ url: targetUrl }),
+      });
+
+    // Regression: a public DNS host starting with "fc"/"fd" (e.g. fdic.gov)
+    // must NOT be treated as a private IPv6 ULA address. It isn't on the
+    // allowlist here, so it reaches the allowlist rejection ("Not permitted"),
+    // which proves it passed the SSRF gate — no real network call is made.
+    const fdDomain = await proxyFetch('https://fdic.gov/data');
+    assert.equal(fdDomain.response.status, 500);
+    assert.match(fdDomain.body.error, /Not permitted: outbound access to fdic\.gov/);
+    assert.doesNotMatch(fdDomain.body.error, /Network URL is not allowed/);
+
+    // Actual private targets stay blocked at the SSRF gate (before the
+    // allowlist): an RFC1918 IPv4 host and an IPv6 ULA literal both fail with
+    // the SSRF error, confirming the fix didn't widen the private-host net.
+    const loopback = await proxyFetch('http://127.0.0.1/');
+    assert.equal(loopback.response.status, 500);
+    assert.match(loopback.body.error, /Network URL is not allowed/);
+
+    const ulaLiteral = await proxyFetch('http://[fd00::1]/');
+    assert.equal(ulaLiteral.response.status, 500);
+    assert.match(ulaLiteral.body.error, /Network URL is not allowed/);
+  });
+
   it('normalizes malformed custom permission declarations safely', async () => {
     const user = await signupUser();
     const app = await expectOk('/api/apps/dev-deploy', {
