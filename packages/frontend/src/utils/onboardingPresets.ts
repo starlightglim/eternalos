@@ -359,7 +359,10 @@ export const THEME_PRESETS: ThemePreset[] = [
       desktopColor: '#FFB6C1',
       windowBgColor: '#FFF0F5',
       titleBarBgColor: '#FF69B4',
-      titleBarTextColor: '#FFFFFF',
+      // Dark-magenta ink (the same #8B0040 used for buttons/labels) rather than
+      // white: white on #FF69B4 is only 2.65:1 and reads as a blur. This keeps
+      // the kawaii palette consistent and clears the readability floor.
+      titleBarTextColor: '#8B0040',
       windowBorderColor: '#FF1493',
       buttonBgColor: '#FFD1DC',
       buttonTextColor: '#8B0040',
