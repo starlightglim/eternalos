@@ -4,137 +4,8 @@ import { useWindowStore } from '../../stores/windowStore';
 import { getFileUrl } from '../../services/api';
 import { useFileTokenVersion } from '../../hooks/useFileToken';
 import { getTextFileContentType, type DesktopItem } from '../../types';
+import { searchItems, getLocationName } from '../../utils/search';
 import styles from './SearchWindow.module.css';
-
-interface SearchResult {
-  item: DesktopItem;
-  score: number;
-  summary: string;
-  matchedIn: string[];
-}
-
-const SEARCH_SYNONYMS: Record<string, string[]> = {
-  road: ['street', 'highway', 'lane', 'path', 'route'],
-  street: ['road', 'avenue', 'boulevard', 'lane'],
-  car: ['vehicle', 'automobile', 'sedan', 'truck'],
-  vehicle: ['car', 'truck', 'van', 'automobile'],
-  portrait: ['person', 'face', 'selfie', 'headshot'],
-  person: ['portrait', 'face', 'human', 'people'],
-  city: ['urban', 'downtown', 'street', 'buildings'],
-  urban: ['city', 'street', 'downtown'],
-  ocean: ['sea', 'water', 'beach', 'coast'],
-  beach: ['shore', 'coast', 'ocean', 'sand'],
-  forest: ['woods', 'trees', 'nature'],
-  mountain: ['peak', 'hill', 'alps', 'range'],
-  flower: ['plant', 'blossom', 'petal'],
-  house: ['home', 'building', 'residence'],
-  room: ['interior', 'indoors', 'bedroom', 'living room'],
-  sign: ['text', 'poster', 'billboard', 'logo'],
-  night: ['dark', 'evening', 'nighttime'],
-  sunset: ['dusk', 'sunrise', 'sky'],
-  dog: ['puppy', 'canine', 'pet'],
-  cat: ['kitten', 'feline', 'pet'],
-};
-
-interface QueryTerm {
-  exact: string;
-  variants: string[];
-}
-
-function tokenizeQuery(query: string): string[] {
-  return query
-    .toLowerCase()
-    .split(/\s+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-function expandQueryTerms(query: string): QueryTerm[] {
-  return tokenizeQuery(query).map((term) => ({
-    exact: term,
-    variants: [term, ...(SEARCH_SYNONYMS[term] || [])],
-  }));
-}
-
-function getLocationName(item: DesktopItem, items: DesktopItem[]): string {
-  if (!item.parentId) return 'Desktop';
-  const parent = items.find((candidate) => candidate.id === item.parentId);
-  return parent?.name || 'Desktop';
-}
-
-function getSearchableTags(item: DesktopItem): string[] {
-  if (item.userTags !== undefined) {
-    return item.userTags;
-  }
-
-  return item.imageAnalysis?.tags ?? [];
-}
-
-function buildSearchResult(item: DesktopItem, items: DesktopItem[], terms: QueryTerm[]): SearchResult | null {
-  const tags = getSearchableTags(item);
-  const haystacks = [
-    { label: 'Name', value: item.name, weight: 10 },
-    { label: 'Tags', value: tags.join(' '), weight: 9 },
-    { label: 'Text', value: item.textContent, weight: 5 },
-    { label: 'URL', value: item.url, weight: 5 },
-    { label: 'Caption', value: item.imageAnalysis?.caption, weight: 7 },
-    { label: 'Image Text', value: item.imageAnalysis?.detectedText?.join(' '), weight: 6 },
-    { label: 'Colors', value: item.imageAnalysis?.dominantColors?.join(' '), weight: 4 },
-    { label: 'Type', value: item.type, weight: 2 },
-    { label: 'Location', value: getLocationName(item, items), weight: 3 },
-  ];
-
-  let score = 0;
-  const matchedIn = new Set<string>();
-  let bestSummary = item.imageAnalysis?.caption || item.textContent || item.url || '';
-
-  for (const term of terms) {
-    let termMatched = false;
-
-    for (const haystack of haystacks) {
-      if (!haystack.value) continue;
-      const lowerValue = haystack.value.toLowerCase();
-      let matchedVariant: string | null = null;
-
-      for (const variant of term.variants) {
-        if (lowerValue.includes(variant)) {
-          matchedVariant = variant;
-          break;
-        }
-      }
-
-      if (matchedVariant) {
-        const isExact = matchedVariant === term.exact;
-        score += isExact ? haystack.weight : Math.max(1, haystack.weight - 3);
-        matchedIn.add(isExact ? haystack.label : `${haystack.label} (Related)`);
-        termMatched = true;
-
-        if (!bestSummary || haystack.weight > 5) {
-          bestSummary = haystack.value;
-        }
-
-        if (lowerValue.startsWith(matchedVariant)) {
-          score += isExact ? 2 : 1;
-        }
-      }
-    }
-
-    if (!termMatched) {
-      return null;
-    }
-  }
-
-  if (terms.length > 1) {
-    score += 4;
-  }
-
-  return {
-    item,
-    score,
-    summary: bestSummary,
-    matchedIn: Array.from(matchedIn),
-  };
-}
 
 function formatSummary(summary: string): string {
   const normalized = summary.replace(/\s+/g, ' ').trim();
@@ -187,22 +58,7 @@ export function SearchWindow() {
     inputRef.current?.select();
   }, []);
 
-  const results = useMemo(() => {
-    const trimmedQuery = query.trim();
-    if (!trimmedQuery) return [];
-
-    const terms = expandQueryTerms(trimmedQuery);
-
-    return items
-      .filter((item) => !item.isTrashed)
-      .map((item) => buildSearchResult(item, items, terms))
-      .filter((result): result is SearchResult => result !== null)
-      .sort((a, b) => {
-        if (b.score !== a.score) return b.score - a.score;
-        return b.item.updatedAt - a.item.updatedAt;
-      })
-      .slice(0, 24);
-  }, [items, query]);
+  const results = useMemo(() => searchItems(items, query), [items, query]);
 
   const closeSearchWindow = useCallback(() => {
     const searchWindow = windows.find((window) => window.contentType === 'search');
