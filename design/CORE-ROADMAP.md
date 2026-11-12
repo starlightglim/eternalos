@@ -55,7 +55,7 @@ Half the product's personality. Today it spans custom CSS, color tokens, typogra
 
 **Do (ordered):**
 1. **Preset readability matrix:** verify every shipped preset is legible across windows, menus, dialogs, editors, and widgets (XP, Frutiger Aero, and friends). This is the most visible quality signal and the cheapest to regress.
-2. **Lock down the customization round-trip:** save/reload, reset, CSS sanitization, CSS history restore, and theme import/export each need a test. Sanitizer regressions are a security surface, not just cosmetics.
+2. **Lock down the customization round-trip:** save/reload, reset, CSS sanitization, CSS history restore, and theme import/export each need a test. Sanitizer regressions are a security surface, not just cosmetics. 🟡 **In progress:** the CSS sanitizer was extracted from `appearanceStore` into a pure, unit-tested `utils/cssSanitizer.ts` (url() allowlisting, `@font-face` stripping, `.user-desktop` scoping — covered by `cssSanitizer.test.ts`), and the save/reload round-trip (`profileToAppearance` ↔ `appearanceToProfileFields`, `buildTokenUpdate`/`getTokenValue` token routing) is covered by `appearanceStore.test.ts`. The init-time `applyAppearance` paint is now DOM-guarded. **Remaining:** CSS history restore and theme import/export (`.estheme`) round-trip tests, and a `resetAppearance` test.
 3. **Unify `.estheme`:** finish the single-bundle path so a theme carries CSS + cursors + sounds + wallpaper + variants together, with preview-before-install ("Keep"/"Revert") and fork lineage. Keep it drag-and-drop.
 4. **Editors pass:** CSSEditor, CursorEditor/Creator, SpriteEditor, WallpaperPicker, VariantPicker — confirm each writes back through the token pipeline and survives reload.
 
