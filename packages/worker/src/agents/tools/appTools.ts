@@ -1236,11 +1236,15 @@ export function validateGeneratedApp(app: AppBundleInput): void {
   }
 
   const fullSource = Object.values(files).join('\n');
+  // `(?:https?:)?\/\/` catches protocol-relative URLs (`//evil.com/x`) too, not
+  // just explicit http(s) — otherwise `<script src="//evil.com/app.js">` slips
+  // past this check (the served CSP's `script-src 'self'` still blocks it at
+  // runtime, so this is defense-in-depth, but the check should match its intent).
   const forbiddenPatterns: Array<{ pattern: RegExp; message: string }> = [
-    { pattern: /<script[^>]+src=["']https?:\/\//i, message: 'External script URLs are not allowed' },
-    { pattern: /<link[^>]+href=["']https?:\/\//i, message: 'External stylesheet URLs are not allowed' },
-    { pattern: /\bimport\s*\(\s*["'`]https?:\/\//i, message: 'Dynamic imports from external URLs are not allowed' },
-    { pattern: /\bfrom\s+["']https?:\/\//i, message: 'Imports from external URLs are not allowed' },
+    { pattern: /<script[^>]+src=["'](?:https?:)?\/\//i, message: 'External script URLs are not allowed' },
+    { pattern: /<link[^>]+href=["'](?:https?:)?\/\//i, message: 'External stylesheet URLs are not allowed' },
+    { pattern: /\bimport\s*\(\s*["'`](?:https?:)?\/\//i, message: 'Dynamic imports from external URLs are not allowed' },
+    { pattern: /\bfrom\s+["'](?:https?:)?\/\//i, message: 'Imports from external URLs are not allowed' },
   ];
 
   for (const { pattern, message } of forbiddenPatterns) {

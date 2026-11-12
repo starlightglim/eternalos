@@ -108,9 +108,12 @@ async function expectOk(url, init, expectedStatus = 200) {
 
 async function signupUser() {
   const identity = createTestIdentity();
+  // Each signup gets its own client IP (see freshAuthIp) so the per-IP auth
+  // rate limit (60/min) can't be exhausted by the suite's many signups sharing
+  // one bucket — which made the whole suite flaky under small timing shifts.
   const body = await expectOk('/api/auth/signup', {
     method: 'POST',
-    headers: JSON_HEADERS,
+    headers: freshAuthIp('signup'),
     body: JSON.stringify(identity),
   });
 
@@ -163,10 +166,17 @@ async function revertCSSHistoryVersion(token, versionId) {
   });
 }
 
+// Unique client IP for auth requests that don't otherwise pin one, so the
+// per-IP auth rate limit (60/min) can't be exhausted by the suite's many auth
+// calls sharing the default bucket.
+function freshAuthIp(tag = 'auth') {
+  return { ...JSON_HEADERS, 'CF-Connecting-IP': `${tag}-${Date.now()}-${Math.random().toString(36).slice(2)}` };
+}
+
 async function loginUser(email, password) {
   return expectOk('/api/auth/login', {
     method: 'POST',
-    headers: JSON_HEADERS,
+    headers: freshAuthIp('login'),
     body: JSON.stringify({ email, password }),
   });
 }
@@ -548,6 +558,24 @@ describe('worker integration', () => {
     });
     assert.equal(rejected.response.status, 400);
     assert.match(rejected.body.error, /External script URLs are not allowed/);
+
+    // Protocol-relative URLs (`//host`) must be rejected too — they resolve to
+    // an external origin just like https://. (Reuses the same user to avoid an
+    // extra signup against the shared rate-limit bucket.)
+    const protoRelative = await fetchJson('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name: 'Proto Relative App',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+        },
+        files: { 'index.html': '<script src="//evil.example/app.js"></script>' },
+      }),
+    });
+    assert.equal(protoRelative.response.status, 400);
+    assert.match(protoRelative.body.error, /External script URLs are not allowed/);
   });
 
   it('normalizes malformed custom permission declarations safely', async () => {
@@ -634,14 +662,14 @@ describe('worker integration', () => {
 
     const forgotPassword = await expectOk('/api/auth/forgot-password', {
       method: 'POST',
-      headers: JSON_HEADERS,
+      headers: freshAuthIp('forgot'),
       body: JSON.stringify({ email: user.email }),
     });
     assert.ok(forgotPassword.resetToken);
 
     await expectOk('/api/auth/reset-password', {
       method: 'POST',
-      headers: JSON_HEADERS,
+      headers: freshAuthIp('reset'),
       body: JSON.stringify({
         token: forgotPassword.resetToken,
         newPassword,
@@ -655,7 +683,7 @@ describe('worker integration', () => {
 
     const oldPasswordLogin = await fetchJson('/api/auth/login', {
       method: 'POST',
-      headers: JSON_HEADERS,
+      headers: freshAuthIp('login'),
       body: JSON.stringify({ email: user.email, password: user.password }),
     });
     assert.equal(oldPasswordLogin.response.status, 401);
@@ -664,7 +692,7 @@ describe('worker integration', () => {
 
     await expectOk('/api/auth/logout', {
       method: 'POST',
-      headers: authHeaders(freshLogin.token),
+      headers: authHeaders(freshLogin.token, freshAuthIp('logout')),
     });
 
     const loggedOutSession = await fetchJson('/api/desktop', {
@@ -924,15 +952,7 @@ describe('worker integration', () => {
   });
 
   it('allows customCSS url() to first-party bazaar assets but rejects cross-origin', async () => {
-    // Dedicated client IP so this test's signup uses its own rate-limit bucket
-    // and doesn't drain the shared default-IP signup budget other tests rely on.
-    const identity = createTestIdentity();
-    const signup = await expectOk('/api/auth/signup', {
-      method: 'POST',
-      headers: { ...JSON_HEADERS, 'CF-Connecting-IP': `css-test-${Date.now()}-${Math.random().toString(36).slice(2)}` },
-      body: JSON.stringify(identity),
-    });
-    const user = { ...identity, ...signup };
+    const user = await signupUser();
 
     // Regression: the customCSS url() allowlist was missing /api/bazaar/assets/
     // (present in the designTokens allowlist and the client sanitizer), so CSS
