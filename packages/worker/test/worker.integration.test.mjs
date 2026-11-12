@@ -91,9 +91,35 @@ async function fetchJson(url, init) {
       headers: { ...init.headers, ...multipart.headers },
     };
   }
-  const response = await worker.fetch(`${BASE_URL}${url}`, requestInit);
-  const body = await readJson(response);
-  return { response, body };
+
+  // Every product response this helper is used for is JSON — product errors
+  // included (Response.json({ error }, { status })). A body that is NOT valid
+  // JSON therefore means the local runtime (miniflare) hiccuped and returned
+  // its own plain-text error page ("Your worker threw…"), usually on the
+  // request right after a heavy operation like the scheduled purge. That is a
+  // transient infra failure, not product behavior, so retry a few times before
+  // giving up. We never retry a well-formed JSON response, so real 4xx/5xx
+  // product errors are surfaced unchanged.
+  const maxAttempts = 4;
+  let lastText = '';
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const response = await worker.fetch(`${BASE_URL}${url}`, requestInit);
+    lastText = await response.text();
+    if (!lastText) return { response, body: null };
+    try {
+      return { response, body: JSON.parse(lastText) };
+    } catch {
+      if (attempt === maxAttempts) {
+        // Exhausted retries — surface a clear error instead of an opaque
+        // JSON SyntaxError so a genuine regression here is debuggable.
+        throw new Error(
+          `Non-JSON response from ${url} after ${maxAttempts} attempts ` +
+          `(status ${response.status}): ${lastText.slice(0, 120)}`
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+    }
+  }
 }
 
 async function expectOk(url, init, expectedStatus = 200) {
