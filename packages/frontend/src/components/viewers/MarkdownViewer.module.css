@@ -4,7 +4,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--white);
+  background: var(--surface);
 }
 
 /* ============================================
@@ -24,7 +24,7 @@
 .fileName {
   font-family: var(--font-chicago);
   font-size: 11px;
-  color: var(--black);
+  color: var(--text);
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
 }
@@ -41,8 +41,8 @@
   font-family: var(--font-chicago);
   font-size: 11px;
   padding: 1px 4px;
-  border: 1px solid var(--black);
-  background: var(--white);
+  border: 1px solid var(--control-border);
+  background: var(--surface);
   outline: none;
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
@@ -58,8 +58,8 @@
   font-family: var(--font-chicago);
   font-size: 10px;
   padding: 2px 8px;
-  background: var(--white);
-  border: 1px solid var(--black);
+  background: var(--surface);
+  border: 1px solid var(--control-border);
   cursor: pointer;
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
@@ -70,8 +70,8 @@
 }
 
 .viewToggle.active {
-  background: var(--black);
-  color: var(--white);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text, var(--white));
 }
 
 .readOnly {
@@ -97,7 +97,7 @@
   font-family: var(--font-monaco);
   font-size: 11px;
   line-height: 1.4;
-  color: var(--black);
+  color: var(--text);
   white-space: pre-wrap;
   word-wrap: break-word;
   -webkit-font-smoothing: none;
@@ -109,7 +109,7 @@
   font-family: var(--font-geneva);
   font-size: 12px;
   line-height: 1.5;
-  color: var(--black);
+  color: var(--text);
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
 }
@@ -184,7 +184,7 @@
 }
 
 .renderedView a:hover {
-  color: var(--black);
+  color: var(--text);
 }
 
 .renderedView strong {
@@ -240,8 +240,8 @@
   font-family: var(--font-chicago);
   font-size: 10px;
   padding: 2px 8px;
-  background: var(--white);
-  border: 1px solid var(--black);
+  background: var(--surface);
+  border: 1px solid var(--control-border);
   cursor: pointer;
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
@@ -252,6 +252,6 @@
 }
 
 .downloadButton:active {
-  background: var(--black);
-  color: var(--white);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text, var(--white));
 }

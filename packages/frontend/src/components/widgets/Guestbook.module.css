@@ -8,7 +8,7 @@
   flex-direction: column;
   height: 100%;
   font-family: var(--font-geneva);
-  background: var(--window-bg, var(--white));
+  background: var(--surface);
 }
 
 .header {
@@ -16,20 +16,20 @@
   justify-content: space-between;
   align-items: center;
   padding: 8px 10px;
-  border-bottom: 1px solid var(--shadow);
-  background: var(--platinum);
+  border-bottom: 1px solid var(--control-border);
+  background: var(--surface-chrome);
   flex-shrink: 0;
 }
 
 .title {
   font-family: var(--font-chicago);
   font-size: 12px;
-  color: var(--window-text-color, var(--black));
+  color: var(--text);
 }
 
 .count {
   font-size: 10px;
-  color: var(--window-text-secondary, var(--shadow));
+  color: var(--text-muted);
 }
 
 .entries {
@@ -44,7 +44,7 @@
   justify-content: center;
   height: 100%;
   font-size: 11px;
-  color: var(--shadow);
+  color: var(--text-muted);
   font-style: italic;
   text-align: center;
   padding: 20px;
@@ -53,8 +53,8 @@
 .entry {
   padding: 8px;
   margin-bottom: 8px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
   border-radius: 2px;
 }
 
@@ -72,26 +72,26 @@
 .entryName {
   font-family: var(--font-chicago);
   font-size: 11px;
-  color: var(--black);
+  color: var(--text);
 }
 
 .entryDate {
   font-size: 9px;
-  color: var(--shadow);
+  color: var(--text-muted);
 }
 
 .entryMessage {
   font-size: 11px;
   line-height: 1.4;
-  color: var(--black);
+  color: var(--text);
   white-space: pre-wrap;
   word-wrap: break-word;
 }
 
 .form {
   padding: 10px;
-  border-top: 1px solid var(--shadow);
-  background: var(--platinum);
+  border-top: 1px solid var(--control-border);
+  background: var(--surface-chrome);
   flex-shrink: 0;
 }
 
@@ -102,7 +102,7 @@
 .label {
   display: block;
   font-size: 10px;
-  color: var(--black);
+  color: var(--text);
   margin-bottom: 2px;
 }
 
@@ -111,16 +111,15 @@
   padding: 4px 6px;
   font-family: var(--font-geneva);
   font-size: 11px;
-  border: 2px solid var(--black);
-  border-right-color: var(--white);
-  border-bottom-color: var(--white);
-  background: var(--white);
+  border: 2px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--control-text);
   box-sizing: border-box;
 }
 
 .input:focus {
   outline: none;
-  border-color: var(--selection, var(--black));
+  border-color: var(--accent, var(--selection));
 }
 
 .textarea {
@@ -128,28 +127,27 @@
   padding: 4px 6px;
   font-family: var(--font-geneva);
   font-size: 11px;
-  border: 2px solid var(--black);
-  border-right-color: var(--white);
-  border-bottom-color: var(--white);
-  background: var(--white);
+  border: 2px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--control-text);
   resize: none;
   box-sizing: border-box;
 }
 
 .textarea:focus {
   outline: none;
-  border-color: var(--selection, var(--black));
+  border-color: var(--accent, var(--selection));
 }
 
 .error {
   font-size: 10px;
-  color: #c00;
+  color: var(--danger);
   margin-bottom: 8px;
 }
 
 .success {
   font-size: 10px;
-  color: #060;
+  color: var(--success);
   margin-bottom: 8px;
 }
 
@@ -158,19 +156,21 @@
   padding: 6px 12px;
   font-family: var(--font-chicago);
   font-size: 11px;
-  background: var(--white);
-  border: 2px solid var(--black);
+  background: var(--control-bg);
+  color: var(--control-text);
+  border: 2px solid var(--control-border);
   border-radius: 4px;
   cursor: pointer;
   box-shadow: inset -1px -1px 0 var(--shadow), inset 1px 1px 0 var(--highlight);
 }
 
 .submitButton:hover:not(:disabled) {
-  background: var(--platinum);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .submitButton:active:not(:disabled) {
-  background: var(--shadow);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
   box-shadow: inset 1px 1px 0 var(--shadow), inset -1px -1px 0 var(--highlight);
 }
 
@@ -181,8 +181,8 @@
 
 .ownerControls {
   padding: 10px;
-  border-top: 1px solid var(--shadow);
-  background: var(--platinum);
+  border-top: 1px solid var(--control-border);
+  background: var(--surface-chrome);
   flex-shrink: 0;
   display: flex;
   justify-content: flex-end;
@@ -192,17 +192,18 @@
   padding: 4px 12px;
   font-family: var(--font-geneva);
   font-size: 10px;
-  background: var(--white);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 3px;
   cursor: pointer;
 }
 
 .clearButton:hover {
-  background: #ffcccc;
-  border-color: #c00;
+  background: color-mix(in srgb, var(--danger) 14%, var(--control-bg));
+  border-color: var(--danger);
 }
 
 .clearButton:active {
-  background: #ff9999;
+  background: var(--danger);
+  color: var(--selection-text);
 }

@@ -44,6 +44,18 @@ Implementation note, 2026-04-22:
 this doc defines the orchestration and runtime pipeline. The editable-project
 model for generated apps now lives in [13-source-first-app-workspaces.md](13-source-first-app-workspaces.md).
 
+Current implementation status:
+
+- The server pipeline now performs spec generation, structured file generation,
+  bounded retries, deterministic source validation, bundling, preview, and
+  install.
+- Custom deployments use the same workspace and validation rules as AI-built
+  apps, with normalized permissions and transactional cleanup on failure.
+- Apps start hermetic, request user approval for declared capabilities, and can
+  be updated, rolled back, revoked, and deleted through the app lifecycle API.
+- Release history is capped at 20 retained versions; the current release is
+  always retained for safe rollback behavior.
+
 ## What current research says
 
 ### 1. Dynamic Workers are the right runtime substrate

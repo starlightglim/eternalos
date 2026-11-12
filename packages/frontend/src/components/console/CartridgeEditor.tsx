@@ -5,10 +5,12 @@ import {
   getCartridgeDraft,
   saveCartridgeDraft,
   deleteCartridgeDraft,
+  bazaarPublishGame,
 } from '../../services/api';
 import { useAuthStore } from '../../stores/authStore';
 import { ConsolePlayer } from './ConsolePlayer';
-import { createStarterCartridge, drawSpritesheet, CONSOLE_SCREEN } from './consoleSpec';
+import { createStarterCartridge, drawSpritesheet, generateCover, CONSOLE_SCREEN } from './consoleSpec';
+import { AlertDialog } from '../ui/AlertDialog';
 import styles from './CartridgeEditor.module.css';
 
 type EditorTab = 'code' | 'sprites' | 'meta';
@@ -23,8 +25,11 @@ export function CartridgeEditor() {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   // 0 = never run; bumping reloads the embedded player against the saved draft
   const [runKey, setRunKey] = useState(0);
+  // Bazaar pack this draft was published as (re-publish updates in place)
+  const [publishedPackId, setPublishedPackId] = useState<string | null>(null);
   const spriteCanvasRef = useRef<HTMLCanvasElement>(null);
 
   const refreshDrafts = useCallback(async () => {
@@ -61,6 +66,7 @@ export function CartridgeEditor() {
     setCartridge(createStarterCartridge('My Game', username));
     setTab('code');
     setRunKey(0);
+    setPublishedPackId(null);
     setDirty(true);
     setStatus({ kind: 'ok', text: 'New cartridge — save or run to store it' });
   }, [username]);
@@ -69,11 +75,12 @@ export function CartridgeEditor() {
     setBusy(true);
     setStatus(null);
     try {
-      const { cartridge: cart } = await getCartridgeDraft(id);
+      const { cartridge: cart, publishedPackId: packId } = await getCartridgeDraft(id);
       setCartId(id);
       setCartridge(cart);
       setTab('code');
       setRunKey(0);
+      setPublishedPackId(packId);
       setDirty(false);
     } catch {
       setStatus({ kind: 'error', text: 'Failed to load draft' });
@@ -118,15 +125,36 @@ export function CartridgeEditor() {
     }
   }, [persistDraft]);
 
+  const handlePublish = useCallback(async () => {
+    if (!cartId || !cartridge) return;
+    if (!(await persistDraft())) return;
+    setBusy(true);
+    setStatus({ kind: 'ok', text: publishedPackId ? 'Updating published game…' : 'Publishing to Bazaar…' });
+    try {
+      const cover = await generateCover(cartridge);
+      const result = await bazaarPublishGame(cartridge, cover, publishedPackId ?? undefined, cartId);
+      if (result.success && result.pack) {
+        setPublishedPackId(result.pack.packId);
+        setStatus({ kind: 'ok', text: publishedPackId ? 'Published update is live!' : 'Published to the Bazaar!' });
+      } else {
+        setStatus({ kind: 'error', text: result.error || 'Publish failed' });
+      }
+    } catch (err) {
+      setStatus({ kind: 'error', text: err instanceof Error ? err.message : 'Publish failed' });
+    } finally {
+      setBusy(false);
+    }
+  }, [cartId, cartridge, publishedPackId, persistDraft]);
+
   const handleDelete = useCallback(async () => {
     if (!cartId) return;
-    if (!window.confirm('Delete this cartridge draft? This cannot be undone.')) return;
     setBusy(true);
     try {
       await deleteCartridgeDraft(cartId);
       setCartId(null);
       setCartridge(null);
       setRunKey(0);
+      setShowDeleteConfirm(false);
       await refreshDrafts();
       setStatus({ kind: 'ok', text: 'Draft deleted' });
     } catch {
@@ -145,19 +173,18 @@ export function CartridgeEditor() {
         </div>
         <div className={styles.draftList}>
           {drafts.map((d) => (
-            <div
+            <button
+              type="button"
               key={d.cartId}
               className={`${styles.draftItem} ${d.cartId === cartId ? styles.draftItemActive : ''}`}
               onClick={() => handleSelect(d.cartId)}
             >
               <div>{d.name}</div>
               <div className={styles.draftMeta}>v{d.version}</div>
-            </div>
+            </button>
           ))}
           {drafts.length === 0 && (
-            <div className={styles.draftItem} style={{ cursor: 'default', opacity: 0.6 }}>
-              No drafts yet
-            </div>
+            <div className={styles.emptyDrafts}>No drafts yet.</div>
           )}
         </div>
       </div>
@@ -177,7 +204,10 @@ export function CartridgeEditor() {
               <button type="button" onClick={handleSave} disabled={busy || !dirty}>
                 Save
               </button>
-              <button type="button" onClick={handleDelete} disabled={busy}>
+              <button type="button" onClick={handlePublish} disabled={busy}>
+                {publishedPackId ? 'Update Published' : 'Publish'}
+              </button>
+              <button type="button" onClick={() => setShowDeleteConfirm(true)} disabled={busy}>
                 Delete
               </button>
               {status && (
@@ -191,13 +221,14 @@ export function CartridgeEditor() {
               <div className={styles.editPane}>
                 <div className={styles.tabs}>
                   {(['code', 'sprites', 'meta'] as EditorTab[]).map((t) => (
-                    <div
+                    <button
+                      type="button"
                       key={t}
                       className={`${styles.tab} ${tab === t ? styles.tabActive : ''}`}
                       onClick={() => setTab(t)}
                     >
                       {t}
-                    </div>
+                    </button>
                   ))}
                 </div>
 
@@ -285,6 +316,19 @@ export function CartridgeEditor() {
           </>
         )}
       </div>
+
+      {showDeleteConfirm && (
+        <AlertDialog
+          type="confirm"
+          title="Delete cartridge draft?"
+          message="This draft and its saved source will be removed permanently."
+          onClose={() => setShowDeleteConfirm(false)}
+          buttons={[
+            { label: 'Keep Draft', onClick: () => setShowDeleteConfirm(false) },
+            { label: 'Delete', onClick: handleDelete, primary: true },
+          ]}
+        />
+      )}
     </div>
   );
 }

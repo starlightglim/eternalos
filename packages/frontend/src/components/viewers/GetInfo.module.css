@@ -5,7 +5,7 @@
   flex-direction: column;
   height: 100%;
   padding: 12px;
-  background: var(--white);
+  background: var(--surface, var(--white));
   font-family: var(--font-geneva);
   font-size: 11px;
   overflow-y: auto;
@@ -29,8 +29,8 @@
   justify-content: center;
   width: 56px;
   height: 56px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome, var(--platinum));
+  border: 1px solid var(--control-border, var(--shadow));
   border-radius: 2px;
 }
 
@@ -58,7 +58,7 @@
   font-family: var(--font-chicago);
   font-size: 12px;
   font-weight: normal;
-  color: var(--window-text-color, var(--black));
+  color: var(--text, var(--window-text-color, var(--black)));
   word-break: break-word;
   cursor: default;
   padding: 2px 4px;
@@ -69,7 +69,7 @@
 }
 
 .name:hover {
-  border-color: var(--highlight);
+  border-color: var(--accent, var(--highlight));
 }
 
 .nameInput {
@@ -79,9 +79,9 @@
   min-width: 0;
   font-family: var(--font-chicago);
   font-size: 12px;
-  color: var(--window-text-color, var(--black));
-  background: var(--white);
-  border: 1px solid var(--border);
+  color: var(--control-text, var(--window-text-color, var(--black)));
+  background: var(--control-bg, var(--white));
+  border: 1px solid var(--control-border, var(--border));
   padding: 2px 4px;
   border-radius: 2px;
   outline: none;
@@ -90,16 +90,16 @@
 }
 
 .nameInput:focus {
-  box-shadow: 0 0 0 1px var(--selection);
+  box-shadow: 0 0 0 1px var(--accent, var(--selection));
 }
 
 .nameActionButton {
   flex-shrink: 0;
   min-height: 22px;
   padding: 2px 8px;
-  border: 1px solid var(--black);
-  background: var(--platinum);
-  color: var(--window-text-color, var(--black));
+  border: 1px solid var(--control-border, var(--black));
+  background: var(--control-bg, var(--platinum));
+  color: var(--control-text, var(--window-text-color, var(--black)));
   font-family: var(--font-geneva);
   font-size: 10px;
   cursor: pointer;
@@ -109,7 +109,7 @@
 }
 
 .nameActionButton:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--control-bg, var(--platinum)));
 }
 
 .nameActionButton:active {
@@ -159,7 +159,7 @@
 }
 
 .warningText {
-  color: #cc0000;
+  color: var(--danger, #cc0000);
   font-weight: bold;
 }
 
@@ -168,7 +168,7 @@
 }
 
 .link {
-  color: var(--selection);
+  color: var(--accent, var(--selection));
   text-decoration: underline;
 }
 
@@ -189,8 +189,8 @@
   align-items: center;
   gap: 6px;
   padding: 2px 6px;
-  border: 1px solid var(--shadow);
-  background: var(--platinum);
+  border: 1px solid var(--control-border, var(--shadow));
+  background: var(--surface-chrome, var(--platinum));
   font-size: 10px;
 }
 
@@ -200,8 +200,8 @@
   gap: 6px;
   min-height: 20px;
   padding: 2px 6px 2px 8px;
-  border: 1px solid var(--shadow);
-  background: var(--platinum);
+  border: 1px solid var(--control-border, var(--shadow));
+  background: var(--surface-chrome, var(--platinum));
   box-shadow:
     inset 1px 1px 0 var(--highlight),
     inset -1px -1px 0 rgba(0, 0, 0, 0.16);
@@ -218,9 +218,9 @@
 
 .retryButton {
   padding: 3px 8px;
-  border: 1px solid var(--black);
-  background: var(--white);
-  color: var(--window-text-color, var(--black));
+  border: 1px solid var(--control-border, var(--black));
+  background: var(--control-bg, var(--white));
+  color: var(--control-text, var(--window-text-color, var(--black)));
   font-family: var(--font-geneva);
   font-size: 10px;
   cursor: pointer;
@@ -228,7 +228,7 @@
 }
 
 .retryButton:hover:not(:disabled) {
-  background: var(--platinum);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--control-bg, var(--white)));
 }
 
 .retryButton:disabled {
@@ -255,8 +255,8 @@
 
 .tagRemoveButton {
   border: none;
-  background: var(--white);
-  color: var(--window-text-color, var(--black));
+  background: var(--control-bg, var(--white));
+  color: var(--control-text, var(--window-text-color, var(--black)));
   font-family: var(--font-geneva);
   cursor: pointer;
 }
@@ -264,7 +264,7 @@
 .tagsSurface {
   padding: 6px;
   border: 1px solid var(--shadow);
-  background: var(--white);
+  background: var(--surface, var(--white));
   box-shadow:
     inset 1px 1px 0 rgba(0, 0, 0, 0.12),
     inset -1px -1px 0 var(--highlight);
@@ -276,18 +276,18 @@
   gap: 6px;
   min-height: 20px;
   padding: 2px 8px;
-  border: 1px solid var(--shadow);
-  background: var(--platinum);
+  border: 1px solid var(--control-border, var(--shadow));
+  background: var(--control-bg, var(--platinum));
   box-shadow:
     inset 1px 1px 0 var(--highlight),
     inset -1px -1px 0 rgba(0, 0, 0, 0.16);
-  color: var(--window-text-color, var(--black));
+  color: var(--control-text, var(--window-text-color, var(--black)));
   font-size: 10px;
   cursor: pointer;
 }
 
 .addTagButton:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--control-bg, var(--platinum)));
 }
 
 .addTagGlyph {
@@ -296,10 +296,10 @@
   justify-content: center;
   width: 12px;
   height: 12px;
-  border: 1px solid var(--black);
+  border: 1px solid var(--control-border, var(--black));
   font-size: 10px;
   line-height: 1;
-  background: var(--white);
+  background: var(--control-bg, var(--white));
 }
 
 .tagRemoveButton {
@@ -308,31 +308,31 @@
   justify-content: center;
   width: 12px;
   height: 12px;
-  border: 1px solid var(--black);
+  border: 1px solid var(--control-border, var(--black));
   font-size: 10px;
   line-height: 1;
   padding: 0;
-  color: var(--black);
+  color: var(--control-text, var(--black));
 }
 
 .tagRemoveButton:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--control-bg, var(--white)));
 }
 
 .tagInputPill {
   min-width: 92px;
   min-height: 20px;
   padding: 2px 8px;
-  border: 1px solid var(--black);
-  background: var(--white);
-  color: var(--window-text-color, var(--black));
+  border: 1px solid var(--control-border, var(--black));
+  background: var(--control-bg, var(--white));
+  color: var(--control-text, var(--window-text-color, var(--black)));
   font-family: var(--font-geneva);
   font-size: 10px;
   outline: none;
 }
 
 .tagInputPill:focus {
-  box-shadow: 0 0 0 1px var(--selection);
+  box-shadow: 0 0 0 1px var(--accent, var(--selection));
 }
 
 /* ============================================
@@ -363,13 +363,13 @@
   /* Custom checkbox styling for retro look */
   appearance: none;
   -webkit-appearance: none;
-  background: var(--white);
-  border: 1px solid var(--black);
+  background: var(--control-bg, var(--white));
+  border: 1px solid var(--control-border, var(--black));
   position: relative;
 }
 
 .checkbox:checked {
-  background: var(--white);
+  background: var(--control-bg, var(--white));
 }
 
 .checkbox:checked::after {
@@ -379,24 +379,24 @@
   left: 4px;
   width: 4px;
   height: 8px;
-  border: solid var(--black);
+  border: solid var(--accent, var(--black));
   border-width: 0 2px 2px 0;
   transform: rotate(45deg);
 }
 
 .checkbox:disabled {
   cursor: not-allowed;
-  background: var(--platinum);
+  background: var(--surface-chrome, var(--platinum));
 }
 
 .checkbox:focus {
   outline: none;
-  box-shadow: 0 0 0 1px var(--selection);
+  box-shadow: 0 0 0 1px var(--accent, var(--selection));
 }
 
 .checkboxText {
   font-size: 11px;
-  color: var(--window-text-color, var(--black));
+  color: var(--text, var(--window-text-color, var(--black)));
   user-select: none;
 }
 
@@ -416,18 +416,18 @@
 }
 
 .getInfo::-webkit-scrollbar-track {
-  background: var(--platinum);
-  border-left: 1px solid var(--shadow);
+  background: var(--surface-chrome, var(--platinum));
+  border-left: 1px solid var(--control-border, var(--shadow));
 }
 
 .getInfo::-webkit-scrollbar-thumb {
-  background: var(--white);
-  border: 1px solid var(--black);
+  background: var(--control-bg, var(--white));
+  border: 1px solid var(--control-border, var(--black));
   border-radius: 0;
 }
 
 .getInfo::-webkit-scrollbar-thumb:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--control-bg, var(--white)));
 }
 
 .getInfo::-webkit-scrollbar-button {

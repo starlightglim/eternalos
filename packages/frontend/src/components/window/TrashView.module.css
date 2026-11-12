@@ -4,7 +4,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--white);
+  background: var(--surface);
 }
 
 /* ============================================
@@ -44,7 +44,7 @@
 
 .toolbarButton:active:not(:disabled) {
   background: var(--shadow);
-  color: var(--white);
+  color: var(--selection-text, var(--white));
   box-shadow:
     inset -1px -1px 0 var(--highlight),
     inset 1px 1px 0 var(--shadow);
@@ -56,11 +56,11 @@
 }
 
 .emptyButton {
-  color: #800000;
+  color: var(--danger);
 }
 
 .emptyButton:hover:not(:disabled) {
-  background: #ffdddd;
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
 }
 
 .toolbarSpacer {
@@ -163,7 +163,7 @@
 .itemName {
   font-family: var(--font-geneva);
   font-size: 11px;
-  color: var(--black);
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -220,7 +220,7 @@
 
 .itemList::-webkit-scrollbar-thumb {
   background: var(--platinum);
-  border: 1px solid var(--black);
+  border: 1px solid var(--control-border);
   border-top-color: var(--highlight);
   border-left-color: var(--highlight);
   border-bottom-color: var(--shadow);

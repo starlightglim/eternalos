@@ -2,7 +2,7 @@
   display: flex;
   width: 100%;
   height: 100%;
-  background: var(--platinum, #ddd);
+  background: var(--surface-chrome, var(--platinum, #ddd));
   font-family: var(--font-geneva, sans-serif);
   font-size: 11px;
 }
@@ -10,15 +10,15 @@
 .sidebar {
   width: 160px;
   min-width: 160px;
-  border-right: 1px solid var(--black, #000);
+  border-right: 1px solid var(--control-border, var(--black, #000));
   display: flex;
   flex-direction: column;
-  background: var(--white, #fff);
+  background: var(--surface, var(--white, #fff));
 }
 
 .sidebarHeader {
   padding: 6px 8px;
-  border-bottom: 1px solid var(--black, #000);
+  border-bottom: 1px solid var(--control-border, var(--black, #000));
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -37,25 +37,38 @@
 }
 
 .draftItem {
+  display: block;
+  width: 100%;
   padding: 5px 8px;
   cursor: pointer;
-  border-bottom: 1px solid var(--platinum, #ddd);
+  border-bottom: 1px solid var(--surface-chrome, var(--platinum, #ddd));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: left;
+  font: inherit;
+  color: var(--text, var(--black, #000));
+  background: transparent;
 }
 
 .draftItem:hover {
-  background: var(--platinum, #ddd);
+  background: var(--surface-chrome, var(--platinum, #ddd));
 }
 
 .draftItemActive {
-  background: var(--black, #000);
-  color: var(--white, #fff);
+  background: var(--accent, var(--selection, #000));
+  color: var(--selection-text, var(--white, #fff));
 }
 
 .draftItemActive:hover {
-  background: var(--black, #000);
+  background: var(--accent, var(--selection, #000));
+}
+
+.emptyDrafts {
+  padding: 8px;
+  color: var(--text-muted, var(--shadow));
+  font-size: 10px;
+  line-height: 1.35;
 }
 
 .draftMeta {
@@ -75,8 +88,8 @@
   align-items: center;
   gap: 6px;
   padding: 5px 8px;
-  border-bottom: 1px solid var(--black, #000);
-  background: var(--platinum, #ddd);
+  border-bottom: 1px solid var(--control-border, var(--black, #000));
+  background: var(--surface-chrome, var(--platinum, #ddd));
 }
 
 .toolbar button {
@@ -104,11 +117,11 @@
 }
 
 .statusError {
-  color: #c00;
+  color: var(--danger, #c00);
 }
 
 .statusOk {
-  color: #060;
+  color: var(--success, #060);
 }
 
 .workArea {
@@ -122,24 +135,28 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--black, #000);
+  border-right: 1px solid var(--control-border, var(--black, #000));
 }
 
 .tabs {
   display: flex;
-  border-bottom: 1px solid var(--black, #000);
+  border-bottom: 1px solid var(--control-border, var(--black, #000));
   background: var(--platinum, #ddd);
 }
 
 .tab {
   padding: 4px 12px;
   cursor: pointer;
-  border-right: 1px solid var(--black, #000);
+  border-right: 1px solid var(--control-border, var(--black, #000));
   font-size: 10px;
+  font: inherit;
+  cursor: pointer;
+  color: var(--text, var(--black, #000));
+  background: var(--surface-chrome, var(--platinum, #ddd));
 }
 
 .tabActive {
-  background: var(--white, #fff);
+  background: var(--surface, var(--white, #fff));
   font-weight: bold;
 }
 
@@ -154,8 +171,8 @@
   font-family: var(--font-monaco, monospace);
   font-size: 11px;
   line-height: 1.45;
-  background: var(--white, #fff);
-  color: var(--black, #000);
+  background: var(--surface, var(--white, #fff));
+  color: var(--text, var(--black, #000));
   white-space: pre;
   overflow: auto;
   tab-size: 2;
@@ -177,8 +194,8 @@
   width: 272px;
   min-width: 272px;
   padding: 8px;
-  border-left: 1px solid var(--black, #000);
-  background: var(--platinum, #ddd);
+  border-left: 1px solid var(--control-border, var(--black, #000));
+  background: var(--surface-chrome, var(--platinum, #ddd));
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -189,8 +206,8 @@
   width: 256px;
   height: 256px;
   image-rendering: pixelated;
-  background: #000;
-  border: 1px solid var(--black, #000);
+  background: var(--preview-bg, #000);
+  border: 1px solid var(--control-border, var(--black, #000));
 }
 
 .metaPane {
@@ -199,7 +216,7 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  background: var(--white, #fff);
+  background: var(--surface, var(--white, #fff));
   overflow-y: auto;
 }
 
@@ -222,14 +239,14 @@
   min-width: 300px;
   display: flex;
   flex-direction: column;
-  background: #222;
+  background: var(--preview-bg, #222);
 }
 
 .previewHeader {
   padding: 4px 8px;
-  color: #aaa;
+  color: var(--text-muted, #aaa);
   font-size: 10px;
-  border-bottom: 1px solid #444;
+  border-bottom: 1px solid var(--shadow);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -245,7 +262,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #777;
+  color: var(--text-muted, #777);
   text-align: center;
   padding: 16px;
 }
@@ -258,4 +275,45 @@
   justify-content: center;
   gap: 8px;
   color: var(--shadow, #666);
+}
+
+@media (max-width: 640px) {
+  .editor {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100%;
+    min-width: 0;
+    max-height: 128px;
+    border-right: none;
+    border-bottom: 1px solid var(--control-border, var(--black, #000));
+  }
+
+  .draftList {
+    display: flex;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .draftItem {
+    min-width: 120px;
+    border-right: 1px solid var(--surface-chrome, var(--platinum, #ddd));
+    border-bottom: none;
+  }
+
+  .workArea {
+    flex-direction: column;
+  }
+
+  .editPane,
+  .previewPane {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .previewPane {
+    height: 190px;
+    min-height: 190px;
+  }
 }

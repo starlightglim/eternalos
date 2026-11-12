@@ -12,27 +12,10 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useAuthStore } from '../../stores/authStore';
 import { useSoundStore } from '../../stores/soundStore';
-import {
-  createHyperEvmWalletChallenge,
-  linkHyperEvmWallet,
-  listHyperEvmWallets,
-  listSounds,
-  unlinkHyperEvmWallet,
-  type SoundAsset,
-} from '../../services/api';
+import { listSounds, type SoundAsset } from '../../services/api';
 import SoundPackEditor from '../sound/SoundPackEditor';
 import { fetchAnalytics, type AnalyticsData } from '../../services/api';
 import { isApiConfigured, fetchQuota, updateProfile, type QuotaInfo } from '../../services/api';
-import type { HyperEvmChainId, LinkedWallet } from '../../types';
-import {
-  DEFAULT_HYPEREVM_CHAIN_ID,
-  formatWalletAddress,
-  getHyperEvmChainName,
-  HYPEREVM_MAINNET_CHAIN_ID,
-  HYPEREVM_TESTNET_CHAIN_ID,
-  requestHyperEvmWallet,
-  signHyperEvmMessage,
-} from '../../utils/hyperEvmWallet';
 import styles from './PreferencesWindow.module.css';
 
 type TabId = 'account' | 'sound';
@@ -47,10 +30,17 @@ export function PreferencesWindow() {
   // uploadProgress and uploadError moved to AppearancePanel
   const [quota, setQuota] = useState<QuotaInfo | null>(null);
   const [quotaLoading, setQuotaLoading] = useState(false);
+  const [quotaError, setQuotaError] = useState<string | null>(null);
   const [hideWatermark, setHideWatermark] = useState(profile?.hideWatermark || false);
   const [watermarkSaving, setWatermarkSaving] = useState(false);
+  const [watermarkError, setWatermarkError] = useState<string | null>(null);
   const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const [nameSaveError, setNameSaveError] = useState<string | null>(null);
+  const [soundLoading, setSoundLoading] = useState(false);
+  const [soundError, setSoundError] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   // fileInputRef removed — wallpaper upload moved to AppearancePanel
 
@@ -74,13 +64,6 @@ export function PreferencesWindow() {
   const [verifySuccess, setVerifySuccess] = useState<string | null>(null);
   const [verifyError, setVerifyError] = useState<string | null>(null);
 
-  // HyperEVM wallet state
-  const [wallets, setWallets] = useState<LinkedWallet[]>([]);
-  const [walletChainId, setWalletChainId] = useState<HyperEvmChainId>(DEFAULT_HYPEREVM_CHAIN_ID);
-  const [walletLoading, setWalletLoading] = useState(false);
-  const [walletError, setWalletError] = useState<string | null>(null);
-  const [walletSuccess, setWalletSuccess] = useState<string | null>(null);
-
   // Wallpaper state moved to AppearancePanel
 
   // Update display name when profile changes
@@ -97,9 +80,13 @@ export function PreferencesWindow() {
   useEffect(() => {
     if (activeTab === 'account' && isApiConfigured && !quota && !quotaLoading) {
       setQuotaLoading(true);
+      setQuotaError(null);
       fetchQuota()
         .then(setQuota)
-        .catch(console.error)
+        .catch((error) => {
+          console.error(error);
+          setQuotaError('Unable to load storage details. Try again later.');
+        })
         .finally(() => setQuotaLoading(false));
     }
   }, [activeTab, quota, quotaLoading]);
@@ -108,33 +95,29 @@ export function PreferencesWindow() {
   useEffect(() => {
     if (activeTab === 'account' && profile?.analyticsEnabled && isApiConfigured && !analyticsData && !analyticsLoading) {
       setAnalyticsLoading(true);
+      setAnalyticsError(null);
       fetchAnalytics()
         .then(setAnalyticsData)
-        .catch(console.error)
+        .catch((error) => {
+          console.error(error);
+          setAnalyticsError('Unable to load visitor analytics.');
+        })
         .finally(() => setAnalyticsLoading(false));
     }
   }, [activeTab, profile?.analyticsEnabled, analyticsData, analyticsLoading]);
 
-  const loadWallets = useCallback(() => {
-    if (!isApiConfigured) return;
-    listHyperEvmWallets()
-      .then((result) => setWallets(result.wallets))
-      .catch((error) => {
-        console.error('Failed to load HyperEVM wallets:', error);
-      });
-  }, []);
-
-  useEffect(() => {
-    if (activeTab === 'account' && isApiConfigured) {
-      loadWallets();
-    }
-  }, [activeTab, loadWallets]);
-
   // Load sound assets when sound tab is active
   const loadSoundAssets = useCallback(() => {
-    if (isApiConfigured) {
-      listSounds().then(setSoundAssets).catch(console.error);
-    }
+    if (!isApiConfigured) return;
+    setSoundLoading(true);
+    setSoundError(null);
+    listSounds()
+      .then(setSoundAssets)
+      .catch((error) => {
+        console.error(error);
+        setSoundError('Unable to load sound packs.');
+      })
+      .finally(() => setSoundLoading(false));
   }, []);
 
   useEffect(() => {
@@ -163,6 +146,7 @@ export function PreferencesWindow() {
 
     // Save display name via API if it actually changed
     if (trimmedName !== profile?.displayName && isApiConfigured) {
+      setNameSaveError(null);
       // Update local state immediately so the UI reflects the change
       if (profile) {
         useAuthStore.setState({
@@ -174,6 +158,7 @@ export function PreferencesWindow() {
         await updateProfile({ displayName: trimmedName });
       } catch (error) {
         console.error('Failed to save display name:', error);
+        setNameSaveError('Display name could not be saved.');
         // Revert on error — both local state and input
         if (profile) {
           useAuthStore.setState({
@@ -199,6 +184,7 @@ export function PreferencesWindow() {
 
   const handleWatermarkToggle = useCallback(async (newValue: boolean) => {
     setHideWatermark(newValue);
+    setWatermarkError(null);
     if (!isApiConfigured) return;
 
     setWatermarkSaving(true);
@@ -206,12 +192,23 @@ export function PreferencesWindow() {
       await updateProfile({ hideWatermark: newValue });
     } catch (error) {
       console.error('Failed to save watermark setting:', error);
+      setWatermarkError('Watermark setting could not be saved.');
       // Revert on error
       setHideWatermark(!newValue);
     } finally {
       setWatermarkSaving(false);
     }
   }, []);
+
+  const handleCopyUrl = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(`${window.location.origin}/@${user?.username || 'username'}`);
+      setCopyStatus('Copied');
+    } catch (error) {
+      console.error('Failed to copy public desktop URL:', error);
+      setCopyStatus('Copy failed');
+    }
+  }, [user?.username]);
 
   // Wallpaper handlers moved to AppearancePanel
 
@@ -290,52 +287,6 @@ export function PreferencesWindow() {
     }
   }, [sendVerificationEmail]);
 
-  const handleLinkHyperEvmWallet = useCallback(async () => {
-    setWalletError(null);
-    setWalletSuccess(null);
-    setWalletLoading(true);
-
-    try {
-      const { address, chainId } = await requestHyperEvmWallet(walletChainId);
-      const challenge = await createHyperEvmWalletChallenge(address, chainId, 'link');
-      const signature = await signHyperEvmMessage(challenge.message, address);
-      const result = await linkHyperEvmWallet({
-        address,
-        chainId,
-        nonce: challenge.nonce,
-        signature,
-      });
-      setWallets((current) => {
-        const filtered = current.filter((wallet) => (
-          wallet.chainId !== result.wallet.chainId ||
-          wallet.address.toLowerCase() !== result.wallet.address.toLowerCase()
-        ));
-        return [result.wallet, ...filtered];
-      });
-      setWalletSuccess(`Linked ${formatWalletAddress(result.wallet.address)} on ${getHyperEvmChainName(result.wallet.chainId)}.`);
-    } catch (error) {
-      setWalletError(error instanceof Error ? error.message : 'Failed to link HyperEVM wallet');
-    } finally {
-      setWalletLoading(false);
-    }
-  }, [walletChainId]);
-
-  const handleUnlinkHyperEvmWallet = useCallback(async (wallet: LinkedWallet) => {
-    setWalletError(null);
-    setWalletSuccess(null);
-    setWalletLoading(true);
-
-    try {
-      const result = await unlinkHyperEvmWallet(wallet.chainId, wallet.address);
-      setWallets(result.wallets);
-      setWalletSuccess(`Unlinked ${formatWalletAddress(wallet.address)}.`);
-    } catch (error) {
-      setWalletError(error instanceof Error ? error.message : 'Failed to unlink HyperEVM wallet');
-    } finally {
-      setWalletLoading(false);
-    }
-  }, []);
-
   const formatDate = (timestamp?: number) => {
     if (!timestamp) return 'Unknown';
     return new Date(timestamp).toLocaleDateString('en-US', {
@@ -361,10 +312,13 @@ export function PreferencesWindow() {
   return (
     <div className={styles.preferences}>
       {/* Tab bar */}
-      <div className={styles.tabBar}>
+      <div className={styles.tabBar} role="tablist" aria-label="Settings sections">
         <button
           className={`${styles.tab} ${activeTab === 'account' ? styles.activeTab : ''}`}
           onClick={() => setActiveTab('account')}
+          aria-selected={activeTab === 'account'}
+          role="tab"
+          type="button"
         >
           Account
         </button>
@@ -372,6 +326,9 @@ export function PreferencesWindow() {
         <button
           className={`${styles.tab} ${activeTab === 'sound' ? styles.activeTab : ''}`}
           onClick={() => setActiveTab('sound')}
+          aria-selected={activeTab === 'sound'}
+          role="tab"
+          type="button"
         >
           Sound
         </button>
@@ -423,13 +380,14 @@ export function PreferencesWindow() {
                     maxLength={30}
                   />
                 ) : (
-                  <span
-                    className={styles.infoValueEditable}
-                    onClick={() => setIsEditingName(true)}
-                    title="Click to edit"
-                  >
-                    {displayName || user?.username || 'Not set'}
-                  </span>
+                <button
+                  type="button"
+                  className={styles.infoValueEditable}
+                  onClick={() => setIsEditingName(true)}
+                  title="Click to edit"
+                >
+                  {displayName || user?.username || 'Not set'}
+                </button>
                 )}
               </div>
 
@@ -452,15 +410,12 @@ export function PreferencesWindow() {
                   {window.location.origin}/@{user?.username || 'username'}
                 </span>
                 <button
+                  type="button"
                   className={styles.copyButton}
-                  onClick={() => {
-                    navigator.clipboard.writeText(
-                      `${window.location.origin}/@${user?.username}`
-                    );
-                  }}
+                  onClick={handleCopyUrl}
                   title="Copy URL"
                 >
-                  Copy
+                  {copyStatus || 'Copy'}
                 </button>
               </div>
               {/* Watermark toggle */}
@@ -476,6 +431,8 @@ export function PreferencesWindow() {
                   <span>Hide "Made with EternalOS" watermark</span>
                 </label>
               )}
+              {watermarkError && <div className={styles.accountError} role="alert">{watermarkError}</div>}
+              {nameSaveError && <div className={styles.accountError} role="alert">{nameSaveError}</div>}
             </div>
 
             {/* Analytics Toggle */}
@@ -504,7 +461,7 @@ export function PreferencesWindow() {
                         Total views: <strong>{analyticsData.totalViews.toLocaleString()}</strong>
                       </span>
                     ) : (
-                      <span className={styles.analyticsEmpty}>No data yet</span>
+                      <span className={styles.analyticsEmpty}>{analyticsError || 'No data yet'}</span>
                     )}
                   </div>
                 )}
@@ -533,62 +490,8 @@ export function PreferencesWindow() {
                     </span>
                   </div>
                 ) : (
-                  <span className={styles.quotaError}>Unable to load quota</span>
+                  <span className={styles.quotaError} role="alert">{quotaError || 'Unable to load quota'}</span>
                 )}
-              </div>
-            )}
-
-            {/* HyperEVM Wallets */}
-            {isApiConfigured && (
-              <div className={styles.accountSection}>
-                <div className={styles.accountSectionTitle}>HyperEVM Wallets</div>
-                <div className={styles.walletHelp}>
-                  Optional wallet linking enables future HyperEVM asset provenance and wallet sign-in.
-                </div>
-                <div className={styles.walletControls}>
-                  <select
-                    className={styles.accountInput}
-                    value={walletChainId}
-                    onChange={(event) => setWalletChainId(Number(event.target.value) as HyperEvmChainId)}
-                    disabled={walletLoading}
-                  >
-                    <option value={HYPEREVM_MAINNET_CHAIN_ID}>HyperEVM Mainnet</option>
-                    <option value={HYPEREVM_TESTNET_CHAIN_ID}>HyperEVM Testnet</option>
-                  </select>
-                  <button
-                    className={styles.accountButton}
-                    onClick={handleLinkHyperEvmWallet}
-                    disabled={walletLoading}
-                  >
-                    {walletLoading ? 'Waiting for Wallet...' : 'Connect Wallet'}
-                  </button>
-                </div>
-                {wallets.length > 0 ? (
-                  <div className={styles.walletList}>
-                    {wallets.map((wallet) => (
-                      <div
-                        className={styles.walletRow}
-                        key={`${wallet.chainId}:${wallet.address}`}
-                      >
-                        <div className={styles.walletDetails}>
-                          <span className={styles.walletAddress}>{formatWalletAddress(wallet.address)}</span>
-                          <span className={styles.walletChain}>{getHyperEvmChainName(wallet.chainId)}</span>
-                        </div>
-                        <button
-                          className={styles.accountButton}
-                          onClick={() => void handleUnlinkHyperEvmWallet(wallet)}
-                          disabled={walletLoading}
-                        >
-                          Unlink
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className={styles.walletEmpty}>No HyperEVM wallets linked.</div>
-                )}
-                {walletSuccess && <div className={styles.accountSuccess}>{walletSuccess}</div>}
-                {walletError && <div className={styles.accountError}>{walletError}</div>}
               </div>
             )}
 
@@ -611,8 +514,8 @@ export function PreferencesWindow() {
                     >
                       {verifyLoading ? 'Sending...' : 'Send Verification Email'}
                     </button>
-                    {verifySuccess && <div className={styles.accountSuccess}>{verifySuccess}</div>}
-                    {verifyError && <div className={styles.accountError}>{verifyError}</div>}
+                    {verifySuccess && <div className={styles.accountSuccess} role="status">{verifySuccess}</div>}
+                    {verifyError && <div className={styles.accountError} role="alert">{verifyError}</div>}
                   </>
                 )}
               </div>
@@ -659,8 +562,8 @@ export function PreferencesWindow() {
                 >
                   {passwordLoading ? 'Changing...' : 'Change Password'}
                 </button>
-                {passwordSuccess && <div className={styles.accountSuccess}>{passwordSuccess}</div>}
-                {passwordError && <div className={styles.accountError}>{passwordError}</div>}
+                {passwordSuccess && <div className={styles.accountSuccess} role="status">{passwordSuccess}</div>}
+                {passwordError && <div className={styles.accountError} role="alert">{passwordError}</div>}
               </div>
             )}
 
@@ -696,8 +599,8 @@ export function PreferencesWindow() {
                 >
                   {usernameLoading ? 'Changing...' : 'Change Username'}
                 </button>
-                {usernameSuccess && <div className={styles.accountSuccess}>{usernameSuccess}</div>}
-                {usernameError && <div className={styles.accountError}>{usernameError}</div>}
+                {usernameSuccess && <div className={styles.accountSuccess} role="status">{usernameSuccess}</div>}
+                {usernameError && <div className={styles.accountError} role="alert">{usernameError}</div>}
               </div>
             )}
           </div>
@@ -795,7 +698,9 @@ export function PreferencesWindow() {
               {/* Sound pack editor */}
               {soundEnabled && (
                 <div style={{ marginTop: 8, borderTop: '1px solid var(--shadow)', paddingTop: 8 }}>
-                  <SoundPackEditor
+                    {soundLoading && <div className={styles.analyticsLoading} role="status">Loading sound packs…</div>}
+                    {soundError && <div className={styles.accountError} role="alert">{soundError}</div>}
+                    <SoundPackEditor
                     soundAssets={soundAssets}
                     onAssetsChange={loadSoundAssets}
                   />

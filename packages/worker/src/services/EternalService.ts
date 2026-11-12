@@ -16,7 +16,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { Env } from '../index';
 import type { DesktopItem, UserProfile } from '../types';
 import type { AppGrantedPermissions, GameCapabilityPayload } from '../utils/jwt';
-import { verifyGameCapabilityToken } from '../utils/jwt';
+import { verifyAppCapabilityToken, verifyGameCapabilityToken } from '../utils/jwt';
 import { buildItemPath, canReadItem, mimeMatches, canWriteItem, canDeleteItem } from '../utils/fsPolicy';
 
 /**
@@ -27,6 +27,7 @@ export interface EternalServiceProps {
   uid: string;
   appId: string;
   granted: AppGrantedPermissions;
+  requiresCapability?: boolean;
 }
 
 /**
@@ -55,9 +56,51 @@ export interface ListOptions {
   includeTrashed?: boolean;
 }
 
+function grantsCover(current: AppGrantedPermissions, token: AppGrantedPermissions): boolean {
+  const covers = (currentValues: string[] | undefined, tokenValues: string[] | undefined) =>
+    !tokenValues || tokenValues.every((value) => currentValues?.includes(value));
+
+  if (token.fs && (!covers(current.fs?.read, token.fs.read)
+    || !covers(current.fs?.write, token.fs.write)
+    || !covers(current.fs?.delete, token.fs.delete)
+    || !covers(current.fs?.mimeTypes, token.fs.mimeTypes)
+    || !covers(current.fs?.readMimeTypes, token.fs.readMimeTypes)
+    || !covers(current.fs?.writeMimeTypes, token.fs.writeMimeTypes)
+    || !covers(current.fs?.deleteMimeTypes, token.fs.deleteMimeTypes))) return false;
+  if (token.profile && !covers(current.profile?.read, token.profile.read)) return false;
+  if (token.ipc && (!covers(current.ipc?.listen, token.ipc.listen) || !covers(current.ipc?.emit, token.ipc.emit))) return false;
+  if (token.network && !covers(current.network?.outbound, token.network.outbound)) return false;
+  if (token.handlers && (!covers(current.handlers?.mimeTypes, token.handlers.mimeTypes) || !covers(current.handlers?.extensions, token.handlers.extensions))) return false;
+  if (token.virtualFolders && !covers(current.virtualFolders?.mountAt, token.virtualFolders.mountAt)) return false;
+  if (token.ai && !covers(current.ai?.modes, token.ai.modes)) return false;
+  return true;
+}
+
 const DEFAULT_LIST_LIMIT = 100;
 const MAX_LIST_LIMIT = 500;
 const MAX_BLOB_BYTES = 50 * 1024 * 1024;   // 50 MB per read
+const MAX_APP_STORAGE_KEYS = 200;
+const MAX_APP_STORAGE_VALUE_BYTES = 1024 * 1024;
+const MAX_NETWORK_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_NETWORK_BODY_BYTES = 1024 * 1024;
+
+function validateStorageKey(key: string): void {
+  if (!key || key.length > 256 || key.includes(':') || /[\u0000-\u001f\u007f]/.test(key)) {
+    throw new Error('Invalid storage key');
+  }
+}
+
+function isPrivateNetworkHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) return true;
+  if (host === '::1' || host === '0.0.0.0' || host === '169.254.169.254') return true;
+  const octets = host.split('.').map(Number);
+  if (octets.length === 4 && octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255)) {
+    const [first, second] = octets;
+    if (first === 10 || first === 127 || first === 192 && second === 168 || first === 172 && second >= 16 && second <= 31) return true;
+  }
+  return host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:');
+}
 
 function toEternalItem(item: DesktopItem, path: string): EternalItem {
   const tags = Array.from(new Set([
@@ -98,6 +141,20 @@ function filterProfile(
 export class EternalService extends WorkerEntrypoint<Env> {
   private get props(): EternalServiceProps {
     return (this.ctx as unknown as { props: EternalServiceProps }).props;
+  }
+
+  async authorizeApp(capability: string | null): Promise<boolean> {
+    if (!this.props.requiresCapability) return true;
+    if (!capability || !this.env.JWT_SECRET) return false;
+
+    const payload = await verifyAppCapabilityToken(capability, this.env.JWT_SECRET, {
+      expectedAppId: this.props.appId,
+      expectedUid: this.props.uid,
+    });
+    if (!payload) return false;
+
+    const appMeta = await this.env.DESKTOP_KV.get<{ uid: string; granted?: AppGrantedPermissions }>(`app:${this.props.appId}`, 'json');
+    return Boolean(appMeta && appMeta.uid === this.props.uid && grantsCover(appMeta.granted ?? {}, payload.granted ?? {}));
   }
 
   private getDesktopStub(): DurableObjectStub {
@@ -394,26 +451,39 @@ export class EternalService extends WorkerEntrypoint<Env> {
   /**
    * Read a value from private, sandboxed app KV storage.
    */
-  async storageGet(key: string): Promise<string | null> {
+  async storageGet(key: string): Promise<unknown | null> {
     const { uid, appId } = this.props;
-    if (!key || key.length > 256 || key.includes(':')) {
-      throw new Error('Invalid storage key');
+    validateStorageKey(key);
+    const value = await this.env.DESKTOP_KV.get(`app-storage:${uid}:${appId}:${key}`);
+    if (value === null) return null;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
     }
-    return this.env.DESKTOP_KV.get(`app-storage:${uid}:${appId}:${key}`);
   }
 
   /**
    * Write a value to private, sandboxed app KV storage.
    */
-  async storageSet(key: string, value: string): Promise<void> {
+  async storageSet(key: string, value: unknown): Promise<void> {
     const { uid, appId } = this.props;
-    if (!key || key.length > 256 || key.includes(':')) {
-      throw new Error('Invalid storage key');
+    validateStorageKey(key);
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(value);
+    } catch {
+      throw new Error('Storage value must be JSON serializable');
     }
-    if (value.length > 1024 * 1024) {
+    if (typeof serialized !== 'string' || new TextEncoder().encode(serialized).length > MAX_APP_STORAGE_VALUE_BYTES) {
       throw new Error('Value too large (max 1MB)');
     }
-    await this.env.DESKTOP_KV.put(`app-storage:${uid}:${appId}:${key}`, value);
+    const prefix = `app-storage:${uid}:${appId}:`;
+    const existing = await this.env.DESKTOP_KV.list({ prefix, limit: MAX_APP_STORAGE_KEYS + 1 });
+    if (!existing.keys.some((entry) => entry.name === `${prefix}${key}`) && existing.keys.length >= MAX_APP_STORAGE_KEYS) {
+      throw new Error(`Storage key limit exceeded (max ${MAX_APP_STORAGE_KEYS})`);
+    }
+    await this.env.DESKTOP_KV.put(`${prefix}${key}`, serialized);
   }
 
   /**
@@ -421,9 +491,7 @@ export class EternalService extends WorkerEntrypoint<Env> {
    */
   async storageDelete(key: string): Promise<void> {
     const { uid, appId } = this.props;
-    if (!key || key.length > 256 || key.includes(':')) {
-      throw new Error('Invalid storage key');
-    }
+    validateStorageKey(key);
     await this.env.DESKTOP_KV.delete(`app-storage:${uid}:${appId}:${key}`);
   }
 
@@ -433,8 +501,14 @@ export class EternalService extends WorkerEntrypoint<Env> {
   async storageList(): Promise<string[]> {
     const { uid, appId } = this.props;
     const prefix = `app-storage:${uid}:${appId}:`;
-    const listResult = await this.env.DESKTOP_KV.list({ prefix });
-    return listResult.keys.map((k) => k.name.slice(prefix.length));
+    const keys: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const listResult = await this.env.DESKTOP_KV.list({ prefix, cursor });
+      keys.push(...listResult.keys.map((key) => key.name.slice(prefix.length)));
+      cursor = listResult.list_complete ? undefined : listResult.cursor;
+    } while (cursor);
+    return keys;
   }
 
   // -------------------------------------------------------------------------
@@ -476,6 +550,15 @@ export class EternalService extends WorkerEntrypoint<Env> {
     if (typeof data !== 'string') {
       throw new Error('Save data must be a string');
     }
+    // Save calls arrive via service binding, bypassing the router's rate
+    // limiter — cap writes here. The runtime debounces to ~1 write/5s, so an
+    // honest client never hits this.
+    const rateKey = `gamesave-rate:${payload.gameId}:${payload.uid}`;
+    const count = parseInt((await this.env.DESKTOP_KV.get(rateKey)) ?? '0', 10);
+    if (count >= 12) {
+      throw new Error('Save rate limit exceeded — try again in a minute');
+    }
+    await this.env.DESKTOP_KV.put(rateKey, String(count + 1), { expirationTtl: 60 });
     if (new TextEncoder().encode(data).length > EternalService.MAX_GAME_SAVE_BYTES) {
       throw new Error('Save data too large (max 32KB)');
     }
@@ -497,11 +580,25 @@ export class EternalService extends WorkerEntrypoint<Env> {
       throw new Error('Not permitted: outbound network access not granted');
     }
 
+    if (typeof url !== 'string' || url.length > 2048) {
+      throw new Error('Invalid network URL');
+    }
     const targetUrl = new URL(url);
+    if (!['http:', 'https:'].includes(targetUrl.protocol) || targetUrl.username || targetUrl.password || isPrivateNetworkHost(targetUrl.hostname)) {
+      throw new Error('Network URL is not allowed');
+    }
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(method)) {
+      throw new Error('Network method is not allowed');
+    }
+    if (init?.body && new TextEncoder().encode(init.body).length > MAX_NETWORK_BODY_BYTES) {
+      throw new Error('Network request body is too large');
+    }
     const isAllowed = granted.network.outbound.some((pattern) => {
-      if (pattern === '*') return true;
-      if (pattern === targetUrl.hostname) return true;
-      if (pattern.startsWith('*.') && targetUrl.hostname.endsWith(pattern.slice(2))) return true;
+      const normalizedPattern = pattern.toLowerCase();
+      if (normalizedPattern === '*') return true;
+      if (normalizedPattern === targetUrl.hostname.toLowerCase()) return true;
+      if (normalizedPattern.startsWith('*.') && targetUrl.hostname.toLowerCase().endsWith(`.${normalizedPattern.slice(2)}`)) return true;
       return false;
     });
 
@@ -510,12 +607,21 @@ export class EternalService extends WorkerEntrypoint<Env> {
     }
 
     const res = await fetch(url, {
-      method: init?.method,
+      method,
       headers: init?.headers,
       body: init?.body,
+      redirect: 'manual',
     });
 
-    const bodyText = await res.text();
+    const contentLength = Number(res.headers.get('content-length') ?? 0);
+    if (Number.isFinite(contentLength) && contentLength > MAX_NETWORK_RESPONSE_BYTES) {
+      throw new Error('Network response is too large');
+    }
+    const bodyBytes = await res.arrayBuffer();
+    if (bodyBytes.byteLength > MAX_NETWORK_RESPONSE_BYTES) {
+      throw new Error('Network response is too large');
+    }
+    const bodyText = new TextDecoder().decode(bodyBytes);
     const resHeaders: Record<string, string> = {};
     res.headers.forEach((v, k) => {
       resHeaders[k] = v;

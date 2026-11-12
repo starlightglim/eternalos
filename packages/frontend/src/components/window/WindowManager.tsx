@@ -1,39 +1,41 @@
+import { lazy, Suspense } from 'react';
 import { Window } from './Window';
 import { useWindowStore } from '../../stores/windowStore';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { slugify } from '../../utils/slugify';
 import { getItemExtension } from '../../utils/itemSelectors';
-import { ImageViewer } from '../viewers/ImageViewer';
-import { TextViewer } from '../viewers/TextViewer';
-import { MarkdownViewer } from '../viewers/MarkdownViewer';
-import { CodeViewer } from '../viewers/CodeViewer';
-import { AudioPlayer } from '../viewers/AudioPlayer';
-import { VideoPlayer } from '../viewers/VideoPlayer';
-import { PDFViewer } from '../viewers/PDFViewer';
-import { WebsiteViewer } from '../viewers/WebsiteViewer';
 import { Calculator } from '../viewers/Calculator';
 import { Clock } from '../viewers/Clock';
-import { GetInfo } from '../viewers/GetInfo';
-import { WallpaperPicker } from '../viewers/WallpaperPicker';
-import { WelcomeReadMe } from '../viewers/WelcomeReadMe';
-import { SearchWindow } from '../viewers/SearchWindow';
-import { PreferencesWindow } from '../viewers/PreferencesWindow';
-import { AppearancePanel } from '../viewers/AppearancePanel';
-import { CSSEditor } from '../viewers/CSSEditor';
-import { BazaarWindow } from '../viewers/BazaarWindow';
-import { CursorCreator } from '../viewers/CursorCreator';
-import { ShareDialog } from '../viewers/ShareDialog';
-import { ProfileWindow } from '../viewers/ProfileWindow';
-import { AgentChatWindow } from '../viewers/AgentChatWindow';
-import { AppViewer } from '../viewers/AppViewer';
-import { DeveloperStudio } from '../viewers/DeveloperStudio';
-import { ConsolePlayer } from '../console/ConsolePlayer';
-import { CartridgeEditor } from '../console/CartridgeEditor';
 
 import { FolderView } from './FolderView';
 import { TrashView } from './TrashView';
 import { WidgetRenderer } from '../widgets';
 import type { DesktopItem } from '../../types';
+
+const ImageViewer = lazy(() => import('../viewers/ImageViewer').then(({ ImageViewer: component }) => ({ default: component })));
+const TextViewer = lazy(() => import('../viewers/TextViewer').then(({ TextViewer: component }) => ({ default: component })));
+const MarkdownViewer = lazy(() => import('../viewers/MarkdownViewer').then(({ MarkdownViewer: component }) => ({ default: component })));
+const CodeViewer = lazy(() => import('../viewers/CodeViewer').then(({ CodeViewer: component }) => ({ default: component })));
+const AudioPlayer = lazy(() => import('../viewers/AudioPlayer').then(({ AudioPlayer: component }) => ({ default: component })));
+const VideoPlayer = lazy(() => import('../viewers/VideoPlayer').then(({ VideoPlayer: component }) => ({ default: component })));
+const PDFViewer = lazy(() => import('../viewers/PDFViewer').then(({ PDFViewer: component }) => ({ default: component })));
+const WebsiteViewer = lazy(() => import('../viewers/WebsiteViewer').then(({ WebsiteViewer: component }) => ({ default: component })));
+const GetInfo = lazy(() => import('../viewers/GetInfo').then(({ GetInfo: component }) => ({ default: component })));
+const WallpaperPicker = lazy(() => import('../viewers/WallpaperPicker').then(({ WallpaperPicker: component }) => ({ default: component })));
+const WelcomeReadMe = lazy(() => import('../viewers/WelcomeReadMe').then(({ WelcomeReadMe: component }) => ({ default: component })));
+const SearchWindow = lazy(() => import('../viewers/SearchWindow').then(({ SearchWindow: component }) => ({ default: component })));
+const PreferencesWindow = lazy(() => import('../viewers/PreferencesWindow').then(({ PreferencesWindow: component }) => ({ default: component })));
+const AppearancePanel = lazy(() => import('../viewers/AppearancePanel').then(({ AppearancePanel: component }) => ({ default: component })));
+const CSSEditor = lazy(() => import('../viewers/CSSEditor').then(({ CSSEditor: component }) => ({ default: component })));
+const BazaarWindow = lazy(() => import('../viewers/BazaarWindow').then(({ BazaarWindow: component }) => ({ default: component })));
+const CursorCreator = lazy(() => import('../viewers/CursorCreator').then(({ CursorCreator: component }) => ({ default: component })));
+const ShareDialog = lazy(() => import('../viewers/ShareDialog').then(({ ShareDialog: component }) => ({ default: component })));
+const ProfileWindow = lazy(() => import('../viewers/ProfileWindow').then(({ ProfileWindow: component }) => ({ default: component })));
+const AgentChatWindow = lazy(() => import('../viewers/AgentChatWindow').then(({ AgentChatWindow: component }) => ({ default: component })));
+const AppViewer = lazy(() => import('../viewers/AppViewer').then(({ AppViewer: component }) => ({ default: component })));
+const DeveloperStudio = lazy(() => import('../viewers/DeveloperStudio').then(({ DeveloperStudio: component }) => ({ default: component })));
+const ConsolePlayer = lazy(() => import('../console/ConsolePlayer').then(({ ConsolePlayer: component }) => ({ default: component })));
+const CartridgeEditor = lazy(() => import('../console/CartridgeEditor').then(({ CartridgeEditor: component }) => ({ default: component })));
 
 interface WindowManagerProps {
   isVisitorMode?: boolean;
@@ -88,19 +90,62 @@ export function WindowManager({ isVisitorMode = false, visitorItems, folderWindo
           eosFolder={eosFolder}
         >
           {/* Window content will be rendered based on contentType */}
-          <WindowContent
-            windowId={win.id}
-            contentType={win.contentType}
-            contentId={win.contentId}
-            isVisitorMode={isVisitorMode}
-            visitorItems={visitorItems}
-            folderWindowDropTargetId={folderWindowDropTargetId}
-            ownerUid={ownerUid}
-          />
+          <Suspense fallback={<WindowContentFallback />}>
+            <WindowContent
+              windowId={win.id}
+              contentType={win.contentType}
+              contentId={win.contentId}
+              isVisitorMode={isVisitorMode}
+              visitorItems={visitorItems}
+              folderWindowDropTargetId={folderWindowDropTargetId}
+              ownerUid={ownerUid}
+            />
+          </Suspense>
         </Window>
         );
       })}
     </>
+  );
+}
+
+function WindowContentFallback() {
+  return (
+    <div
+      role="status"
+      style={{
+        display: 'grid',
+        height: '100%',
+        placeItems: 'center',
+        padding: 24,
+        background: 'var(--surface, var(--window-bg, var(--white)))',
+        color: 'var(--text-muted, var(--window-text-secondary, var(--shadow)))',
+        fontFamily: 'var(--font-geneva)',
+        fontSize: 11,
+      }}
+    >
+      Loading viewer…
+    </div>
+  );
+}
+
+function MissingContent({ message, dark = false }: { message: string; dark?: boolean }) {
+  return (
+    <div
+      role="status"
+      style={{
+        display: 'grid',
+        height: '100%',
+        placeItems: 'center',
+        padding: 24,
+        background: dark ? 'var(--preview-bg, var(--black))' : 'var(--surface-chrome, var(--platinum))',
+        color: dark ? 'var(--selection-text, var(--white))' : 'var(--text-muted, var(--shadow))',
+        fontFamily: 'var(--font-geneva)',
+        fontSize: 12,
+        textAlign: 'center',
+      }}
+    >
+      {message}
+    </div>
   );
 }
 
@@ -148,21 +193,7 @@ function WindowContent({
       );
 
     case 'image':
-      if (!item) {
-        return (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              height: '100%',
-              backgroundColor: 'var(--platinum)',
-            }}
-          >
-            <p style={{ color: 'var(--shadow)', fontSize: '12px' }}>Image not found</p>
-          </div>
-        );
-      }
+      if (!item) return <MissingContent message="Image not found" />;
       return (
         <ImageViewer
           itemId={item.id}
@@ -175,19 +206,7 @@ function WindowContent({
       );
 
     case 'text':
-      if (!item) {
-        return (
-          <div
-            style={{
-              padding: '8px',
-              fontFamily: 'var(--font-monaco)',
-              fontSize: '12px',
-            }}
-          >
-            <p style={{ color: 'var(--shadow)' }}>Text file not found</p>
-          </div>
-        );
-      }
+      if (!item) return <MissingContent message="Text file not found" />;
       return (
         <TextViewer
           itemId={item.id}
@@ -199,19 +218,7 @@ function WindowContent({
       );
 
     case 'markdown':
-      if (!item) {
-        return (
-          <div
-            style={{
-              padding: '8px',
-              fontFamily: 'var(--font-monaco)',
-              fontSize: '12px',
-            }}
-          >
-            <p style={{ color: 'var(--shadow)' }}>Markdown file not found</p>
-          </div>
-        );
-      }
+      if (!item) return <MissingContent message="Markdown file not found" />;
       return (
         <MarkdownViewer
           itemId={item.id}
@@ -223,19 +230,7 @@ function WindowContent({
       );
 
     case 'code':
-      if (!item) {
-        return (
-          <div
-            style={{
-              padding: '8px',
-              fontFamily: 'var(--font-monaco)',
-              fontSize: '12px',
-            }}
-          >
-            <p style={{ color: 'var(--shadow)' }}>Code file not found</p>
-          </div>
-        );
-      }
+      if (!item) return <MissingContent message="Code file not found" />;
       return (
         <CodeViewer
           itemId={item.id}
@@ -247,20 +242,7 @@ function WindowContent({
       );
 
     case 'get-info':
-      if (!item) {
-        return (
-          <div
-            style={{
-              padding: '12px',
-              fontFamily: 'var(--font-geneva)',
-              fontSize: '11px',
-              color: 'var(--shadow)',
-            }}
-          >
-            Item not found
-          </div>
-        );
-      }
+      if (!item) return <MissingContent message="Item not found" />;
       return <GetInfo item={item} isOwner={!isVisitorMode} />;
 
     case 'about':
@@ -330,21 +312,7 @@ function WindowContent({
 
     case 'console-player':
       // contentId carries the gameId ('demo', 'draft:{cartId}', or a packId)
-      if (!contentId) {
-        return (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              height: '100%',
-              backgroundColor: '#000',
-            }}
-          >
-            <p style={{ color: '#888', fontSize: '12px' }}>Game not found</p>
-          </div>
-        );
-      }
+      if (!contentId) return <MissingContent message="Game not found" dark />;
       return <ConsolePlayer gameId={contentId} windowId={windowId} />;
 
     case 'cartridge-editor':
@@ -355,57 +323,15 @@ function WindowContent({
       return <TrashView />;
 
     case 'audio':
-      if (!item) {
-        return (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              height: '100%',
-              backgroundColor: 'var(--platinum)',
-            }}
-          >
-            <p style={{ color: 'var(--shadow)', fontSize: '12px' }}>Audio file not found</p>
-          </div>
-        );
-      }
+      if (!item) return <MissingContent message="Audio file not found" />;
       return <AudioPlayer itemId={item.id} r2Key={item.r2Key} name={item.name} />;
 
     case 'video':
-      if (!item) {
-        return (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              height: '100%',
-              backgroundColor: '#000',
-            }}
-          >
-            <p style={{ color: 'var(--white)', fontSize: '12px' }}>Video file not found</p>
-          </div>
-        );
-      }
+      if (!item) return <MissingContent message="Video file not found" dark />;
       return <VideoPlayer itemId={item.id} r2Key={item.r2Key} name={item.name} />;
 
     case 'pdf':
-      if (!item) {
-        return (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              height: '100%',
-              backgroundColor: 'var(--platinum)',
-            }}
-          >
-            <p style={{ color: 'var(--black)', fontSize: '12px' }}>PDF file not found</p>
-          </div>
-        );
-      }
+      if (!item) return <MissingContent message="PDF file not found" />;
       return <PDFViewer itemId={item.id} r2Key={item.r2Key} name={item.name} />;
 
     case 'calculator':
@@ -415,39 +341,11 @@ function WindowContent({
       return <Clock />;
 
     case 'link':
-      if (!item) {
-        return (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              height: '100%',
-              backgroundColor: 'var(--platinum)',
-            }}
-          >
-            <p style={{ color: 'var(--shadow)', fontSize: '12px' }}>Link not found</p>
-          </div>
-        );
-      }
+      if (!item) return <MissingContent message="Link not found" />;
       return <WebsiteViewer itemId={item.id} url={item.url} name={item.name} />;
 
     case 'widget':
-      if (!item) {
-        return (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              height: '100%',
-              backgroundColor: 'var(--platinum)',
-            }}
-          >
-            <p style={{ color: 'var(--shadow)', fontSize: '12px' }}>Widget not found</p>
-          </div>
-        );
-      }
+      if (!item) return <MissingContent message="Widget not found" />;
       return <WidgetRenderer item={item} isOwner={!isVisitorMode} ownerUid={ownerUid} />;
 
     case 'share-dialog':
@@ -460,39 +358,11 @@ function WindowContent({
       return <AgentChatWindow />;
 
     case 'app':
-      if (!item?.appManifest?.appId) {
-        return (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              height: '100%',
-              backgroundColor: '#1a1a2e',
-            }}
-          >
-            <p style={{ color: '#888', fontSize: '12px' }}>App not found</p>
-          </div>
-        );
-      }
+      if (!item?.appManifest?.appId) return <MissingContent message="App not found" dark />;
       return <AppViewer appId={item.appManifest.appId} windowId={windowId} launchFileId={win?.launchFileId} />;
 
     case 'app-preview':
-      if (!contentId) {
-        return (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              height: '100%',
-              backgroundColor: '#1a1a2e',
-            }}
-          >
-            <p style={{ color: '#888', fontSize: '12px' }}>Preview not found</p>
-          </div>
-        );
-      }
+      if (!contentId) return <MissingContent message="Preview not found" dark />;
       return <AppViewer previewId={contentId} windowId={windowId} />;
 
     default:

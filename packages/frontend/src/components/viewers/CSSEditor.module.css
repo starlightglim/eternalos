@@ -4,7 +4,8 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--platinum);
+  background: var(--surface-chrome);
+  color: var(--text);
   font-family: var(--font-geneva);
   font-size: 11px;
 }
@@ -18,8 +19,8 @@
   justify-content: space-between;
   align-items: center;
   padding: 6px 8px;
-  background: var(--platinum);
-  border-bottom: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border-bottom: 1px solid var(--control-border);
 }
 
 .toolButtons {
@@ -31,20 +32,20 @@
   padding: 4px 10px;
   font-family: var(--font-geneva);
   font-size: 10px;
-  background: var(--white);
-  border: 1px solid var(--black);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   cursor: pointer;
-  color: var(--window-text-color, var(--black));
+  color: var(--control-text);
 }
 
 .toolButtonActive {
-  background: var(--selection);
-  color: var(--selection-text, var(--white));
-  border-color: var(--black);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
+  border-color: var(--control-border);
 }
 
 .toolButton:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .toolButton:active {
@@ -55,15 +56,15 @@
 .charCount {
   font-family: var(--font-monaco);
   font-size: 10px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
   padding: 2px 6px;
-  background: var(--white);
-  border: 1px solid var(--shadow);
+  background: var(--surface);
+  border: 1px solid var(--control-border);
 }
 
 .charCount[data-warning="true"] {
-  color: #CC0000;
-  background: #FFEEEE;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
 }
 
 /* ============================================
@@ -72,8 +73,8 @@
 
 .referencePanel {
   padding: 10px;
-  background: var(--white);
-  border-bottom: 1px solid var(--shadow);
+  background: var(--surface);
+  border-bottom: 1px solid var(--control-border);
   max-height: 200px;
   overflow-y: auto;
 }
@@ -90,7 +91,7 @@
   margin: 0 0 6px 0;
   font-family: var(--font-chicago);
   font-size: 11px;
-  color: var(--text-color);
+  color: var(--text);
 }
 
 .selectorList {
@@ -104,19 +105,19 @@
   gap: 8px;
   font-size: 10px;
   padding: 3px 6px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
 }
 
 .selectorItem code {
   font-family: var(--font-monaco);
   font-size: 10px;
-  color: #0000CC;
+  color: var(--accent, #0000CC);
   min-width: 120px;
 }
 
 .selectorItem span {
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
 }
 
 .exampleList {
@@ -129,17 +130,17 @@
   padding: 4px 10px;
   font-family: var(--font-geneva);
   font-size: 10px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   cursor: pointer;
-  color: var(--text-color);
+  color: var(--control-text);
   box-shadow:
     inset 1px 1px 0 var(--highlight),
     inset -1px -1px 0 var(--shadow);
 }
 
 .exampleButton:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .exampleButton:active {
@@ -152,16 +153,16 @@
 
 .referenceNote {
   font-size: 10px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
   padding: 8px;
-  background: #FFFFF0;
-  border: 1px solid #CCCC99;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--control-border));
   line-height: 1.4;
 }
 
 .referenceNote code {
   font-family: var(--font-monaco);
-  background: var(--platinum);
+  background: var(--control-bg);
   padding: 1px 4px;
 }
 
@@ -177,8 +178,8 @@
   align-items: center;
   gap: 12px;
   padding: 8px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
 }
 
 .historyInfo {
@@ -188,27 +189,27 @@
 .historyTitle {
   font-family: var(--font-chicago);
   font-size: 11px;
-  color: var(--text-color);
+  color: var(--text);
 }
 
 .historyMeta {
   margin-top: 2px;
   font-size: 10px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
 }
 
 .historyButton {
   padding: 4px 10px;
   font-family: var(--font-geneva);
   font-size: 10px;
-  background: var(--white);
-  border: 1px solid var(--black);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   cursor: pointer;
-  color: var(--window-text-color, var(--black));
+  color: var(--control-text);
 }
 
 .historyButton:hover:not(:disabled) {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .historyButton:disabled {
@@ -218,9 +219,9 @@
 
 .historyError {
   padding: 8px;
-  background: #ffeeee;
-  border: 1px solid #cc0000;
-  color: #cc0000;
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  border: 1px solid var(--danger);
+  color: var(--danger);
   font-size: 10px;
 }
 
@@ -242,10 +243,10 @@
   font-family: var(--font-monaco);
   font-size: 12px;
   line-height: 1.5;
-  background: var(--white);
+  background: var(--surface);
   border: none;
   resize: none;
-  color: var(--window-text-color, var(--black));
+  color: var(--text);
   tab-size: 2;
   -moz-tab-size: 2;
 }
@@ -255,7 +256,7 @@
 }
 
 .textarea::placeholder {
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
   opacity: 0.7;
 }
 
@@ -265,18 +266,18 @@
 }
 
 .textarea::-webkit-scrollbar-track {
-  background: var(--platinum);
-  border-left: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border-left: 1px solid var(--control-border);
 }
 
 .textarea::-webkit-scrollbar-thumb {
-  background: var(--white);
-  border: 1px solid var(--black);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 0;
 }
 
 .textarea::-webkit-scrollbar-thumb:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 /* ============================================
@@ -288,9 +289,9 @@
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
-  background: #FFEEEE;
-  border-top: 1px solid #CC0000;
-  color: #CC0000;
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  border-top: 1px solid var(--danger);
+  color: var(--danger);
   font-size: 11px;
 }
 
@@ -307,9 +308,9 @@
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
-  background: #EEFFEE;
-  border-top: 1px solid #00AA00;
-  color: #006600;
+  background: color-mix(in srgb, var(--success) 14%, var(--surface));
+  border-top: 1px solid var(--success);
+  color: var(--success);
   font-size: 11px;
 }
 
@@ -326,8 +327,8 @@
   justify-content: space-between;
   align-items: center;
   padding: 8px;
-  background: var(--platinum);
-  border-top: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border-top: 1px solid var(--control-border);
 }
 
 .actionLeft {
@@ -345,50 +346,50 @@
 .saveState {
   font-family: var(--font-geneva);
   font-size: 10px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .saveStateUnsaved {
-  color: #8a5a00;
+  color: var(--accent);
 }
 
 .saveStateSaving {
-  color: var(--shadow);
+  color: var(--text-muted);
   font-style: italic;
 }
 
 .saveStateSaved {
-  color: #2d8a2d;
+  color: var(--success);
 }
 
 .saveStateError {
-  color: #cc0000;
+  color: var(--danger);
 }
 
 .resetButton {
   padding: 6px 14px;
   font-family: var(--font-geneva);
   font-size: 11px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 3px;
   cursor: pointer;
-  color: var(--text-color);
+  color: var(--control-text);
   box-shadow:
     inset 1px 1px 0 var(--highlight),
     inset -1px -1px 0 var(--shadow);
 }
 
 .resetButton:hover:not(:disabled) {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .resetButton:active:not(:disabled) {
-  background: var(--shadow);
-  color: var(--white);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
   box-shadow:
     inset -1px -1px 0 var(--highlight),
     inset 1px 1px 0 var(--shadow);
@@ -403,15 +404,15 @@
   padding: 6px 14px;
   font-family: var(--font-geneva);
   font-size: 11px;
-  background: var(--white);
-  border: 1px solid var(--black);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 3px;
   cursor: pointer;
-  color: var(--window-text-color, var(--black));
+  color: var(--control-text);
 }
 
 .previewButton:hover:not(:disabled) {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .previewButton:active:not(:disabled) {
@@ -428,23 +429,23 @@
   padding: 6px 18px;
   font-family: var(--font-chicago);
   font-size: 11px;
-  background: var(--white);
-  border: 2px solid var(--black);
+  background: var(--control-bg);
+  border: 2px solid var(--control-border);
   border-radius: 6px;
   cursor: pointer;
-  color: var(--window-text-color, var(--black));
+  color: var(--control-text);
   box-shadow:
     inset 1px 1px 0 var(--highlight),
     inset -1px -1px 0 var(--shadow);
 }
 
 .applyButton:hover:not(:disabled) {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .applyButton:active:not(:disabled) {
-  background: var(--selection);
-  color: var(--selection-text, var(--white));
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
   box-shadow:
     inset -1px -1px 0 var(--highlight),
     inset 1px 1px 0 var(--shadow);

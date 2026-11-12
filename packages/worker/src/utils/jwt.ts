@@ -155,7 +155,10 @@ export interface AppGrantedPermissions {
     read?: string[];              // glob patterns: ['**'] | ['/Photos/**']
     write?: string[];
     delete?: string[];
-    mimeTypes?: string[];
+    mimeTypes?: string[];          // legacy/read-only MIME patterns
+    readMimeTypes?: string[];
+    writeMimeTypes?: string[];
+    deleteMimeTypes?: string[];
   };
   ipc?: {
     listen?: string[];

@@ -7,7 +7,7 @@ import { EffectsOverlay } from '../../effects/EffectsOverlay';
 import { MenuBar } from '../menubar';
 import { UploadProgress } from './UploadProgress';
 import { CSSElementPicker } from '../viewers/CSSElementPicker';
-import { LoadingOverlay, ContextMenu, LinkDialog, IconPicker, WidgetPicker, QuickStartWizard, getWidgetDefaultSize, type ContextMenuItem } from '../ui';
+import { AlertDialog, LoadingOverlay, ContextMenu, LinkDialog, IconPicker, WidgetPicker, QuickStartWizard, getWidgetDefaultSize, type ContextMenuItem } from '../ui';
 import { useWindowStore } from '../../stores/windowStore';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { useAuthStore } from '../../stores/authStore';
@@ -188,6 +188,7 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
   // Widget picker state
   const [showWidgetPicker, setShowWidgetPicker] = useState(false);
   const [widgetPickerPosition, setWidgetPickerPosition] = useState<{ x: number; y: number } | null>(null);
+  const [showStickerLimitAlert, setShowStickerLimitAlert] = useState(false);
 
   // Hidden file input for "Upload Files..." context menu item
   const uploadInputRef = useRef<HTMLInputElement>(null);
@@ -524,8 +525,9 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
         const customHandlerApp = items.find(
           (i) =>
             i.type === 'app' &&
-            (i.appManifest?.permissions?.handlers?.mimeTypes?.includes(mimeType) ||
-             i.appManifest?.permissions?.handlers?.extensions?.includes(extension))
+            !i.isTrashed &&
+            (i.grantedPermissions?.handlers?.mimeTypes?.includes(mimeType) ||
+             i.grantedPermissions?.handlers?.extensions?.includes(extension))
         );
 
         if (customHandlerApp) {
@@ -650,6 +652,21 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
           contentType: 'app',
           contentId: item.id,
         });
+      } else if (item.type === 'cartridge') {
+        const gameId = item.cartridgeRef?.packId
+          ?? (item.cartridgeRef?.draftId ? `draft:${item.cartridgeRef.draftId}` : null);
+        if (gameId) {
+          openWindow({
+            id: `console-player-${item.id}`,
+            title: item.name,
+            position: { x: 120 + Math.random() * 80, y: 60 + Math.random() * 60 },
+            size: { width: 420, height: 460 },
+            minimized: false,
+            maximized: false,
+            contentType: 'console-player',
+            contentId: gameId,
+          });
+        }
       }
     },
     [items, openWindow]
@@ -1721,7 +1738,7 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
           action: () => {
             // Check sticker limit
             if (stickerItems.length >= 20) {
-              alert('Maximum 20 stickers allowed.');
+              setShowStickerLimitAlert(true);
               return;
             }
             // Open file picker for image
@@ -2037,6 +2054,15 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
           <QuickStartWizard
             username={profile.username}
             onComplete={handleQuickStartComplete}
+          />
+        )}
+
+        {showStickerLimitAlert && (
+          <AlertDialog
+            type="info"
+            title="Sticker limit reached"
+            message="You can keep up to 20 stickers on the desktop. Remove one before adding another."
+            onClose={() => setShowStickerLimitAlert(false)}
           />
         )}
       </div>

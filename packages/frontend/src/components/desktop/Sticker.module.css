@@ -33,7 +33,7 @@
 }
 
 .stickerSelected {
-  outline: 2px dashed var(--selection, #3875D7);
+  outline: 2px dashed var(--accent, var(--selection, #3875d7));
   outline-offset: 2px;
 }
 
@@ -54,8 +54,8 @@
   position: absolute;
   width: 10px;
   height: 10px;
-  background: var(--white, #fff);
-  border: 1px solid var(--black, #000);
+  background: var(--control-bg, var(--white, #fff));
+  border: 1px solid var(--control-border, var(--black, #000));
   pointer-events: auto;
 }
 

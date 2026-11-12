@@ -4,12 +4,13 @@
 > Parent doc: [ROADMAP.md](ROADMAP.md). Related: [04-skin-format.md](04-skin-format.md).
 >
 > Implementation note, 2026-04-22:
-> the read-only desktop bridge is no longer purely hypothetical. Current app
-> runtime code already injects a same-origin `window.eternal` bridge backed by a
-> Dynamic Worker `/_eternal/*` route and an `EternalService` service binding.
-> This doc still describes the broader interop surface, including future write,
-> IPC, handlers, virtual folders, and network permissions. For the current
-> orchestrator/runtime architecture, see [12-orchestrator-v2.md](12-orchestrator-v2.md).
+> The app bridge is implemented as a host-owned `window.eternal` runtime backed
+> by a Dynamic Worker `/_eternal/*` route and an `EternalService` service
+> binding. Filesystem read/write/delete, profile reads, private app storage,
+> allowlisted network proxying, permission-gated IPC, and handler declarations
+> are implemented. Virtual folders and AI capabilities remain reserved for a
+> later extension. For the orchestrator/runtime architecture, see
+> [12-orchestrator-v2.md](12-orchestrator-v2.md).
 > For the editable source-project model used by the app builder, see
 > [13-source-first-app-workspaces.md](13-source-first-app-workspaces.md).
 
@@ -34,14 +35,13 @@
 ## Current state
 
 - Apps live at `apps/{uid}/{appId}/` in R2 — `bundle.json` (compiled Worker modules) and `source.json` (original files).
-- Registry: OrchestratorAgent's SQLite table `apps(id, name, r2_prefix, desktop_item_id, version, width, height, created_at, updated_at)` ([appTools.ts:24](../packages/worker/src/agents/tools/appTools.ts:24)).
-- KV `app:{appId}` → `{uid, version}` for the serving route.
-- DesktopItem of `type: 'app'` with `appManifest: { name, description, version, windowConfig, appId }` ([types.ts:199](../packages/worker/src/types.ts:199)).
+- Registry: KV `app:{appId}` is the serving source of truth (`uid`, current version, R2 prefix, and granted permissions). The agent SQLite row is retained for compatibility/audit history.
+- DesktopItem of `type: 'app'` with declared `appManifest` permissions plus separately stored `grantedPermissions` ([types.ts:199](../packages/worker/src/types.ts:199)).
 - Runtime: Dynamic Worker loaded via `env.LOADER.get(...)` at [index.ts:272](../packages/worker/src/index.ts:272). Served at `/api/apps/:appId`.
-- `globalOutbound: null` — apps have **no network access of any kind**. Not even to eternalos.app itself.
-- The frontend renders apps in an iframe (window content). There is currently no `postMessage` bridge.
+- `globalOutbound: null` — apps cannot make direct browser or worker egress. Approved external calls go through `window.eternal.fetch`, which is host-proxied and domain-allowlisted.
+- The frontend renders apps in a sandboxed iframe. The host runtime uses `postMessage` for capability delivery, window controls, and permission-gated local IPC; privileged data access stays in `EternalService`.
 
-Result: an app today is a hermetic, purely presentational bundle that can run a clock, a game, or a calculator, but cannot see or modify any user data.
+Result: apps are hermetic by default and can request narrowly scoped capabilities. Every app update is versioned, rollbackable, and bounded to the latest release history.
 
 ## Runtime choice update
 
@@ -233,7 +233,7 @@ interface AppCapabilityPayload {
 
 Tokens are HMAC-signed like the existing file-tokens ([jwt.ts:86](../packages/worker/src/utils/jwt.ts:86)). The iframe never sees the user's root JWT. Parent holds the root, mints app-scoped tokens, passes them to the iframe over postMessage on a per-call basis (or caches short-lived).
 
-**Why not just check the app's manifest on each request?** Because the Worker needs to verify without a KV round-trip per call. Embedding the granted permissions in the token lets the Worker do stateless enforcement. Revocation happens at next token issue (tokens are ≤5min, so revocation latency is bounded).
+The token carries the granted subset for efficient authorization, but the service and direct bridge routes also verify that the current KV grant still covers the token. This makes revocation immediate rather than waiting for token expiry. Dynamic Worker isolates are re-keyed when grants change, so the current binding receives the current grant set.
 
 ## `window.eternal` — the bridge API
 
@@ -297,9 +297,9 @@ window.eternal = {
 
 ## Runtime
 
-Today: app runs as a Dynamic Worker at `/api/apps/:appId` and returns HTML. Iframe embeds that URL.
+Today: an app runs as a Dynamic Worker at `/api/apps/:appId` and returns HTML plus the host-owned runtime. The iframe embeds that URL.
 
-Proposed change: the Worker serves the app together with a **host-owned bridge module** that wires up `window.eternal` by listening for messages from the parent. Do not normalize arbitrary inline script injection as a platform primitive.
+The Worker serves the app together with a **host-owned bridge runtime** that wires up `window.eternal` through the Dynamic Worker bridge and listens for capability/window/IPC messages from the parent. Do not normalize arbitrary inline script injection as a platform primitive.
 
 ```html
 <!-- provided by the platform runtime -->

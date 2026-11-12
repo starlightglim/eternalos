@@ -75,11 +75,10 @@ export function GetInfo({ item, isOwner = true }: GetInfoProps) {
   );
 
   // Handle visibility toggle
-  const handlePublicToggle = useCallback(() => {
+  const handlePublicToggle = useCallback(async () => {
     if (!isOwner) return;
     const newValue = !isPublic;
-    setIsPublic(newValue);
-    updateItem(item.id, { isPublic: newValue });
+    if (await updateItem(item.id, { isPublic: newValue })) setIsPublic(newValue);
   }, [isOwner, isPublic, updateItem, item.id]);
 
   useEffect(() => {

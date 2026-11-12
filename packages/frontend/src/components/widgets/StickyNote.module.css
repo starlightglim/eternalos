@@ -24,8 +24,8 @@
   width: 20px;
   height: 20px;
   padding: 2px;
-  background: var(--white);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   border-radius: 2px;
   cursor: pointer;
   display: flex;
@@ -34,17 +34,17 @@
 }
 
 .colorButton:hover {
-  background: var(--platinum);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .colorButton:active {
-  background: var(--shadow);
+  background: var(--accent, var(--selection));
 }
 
 .colorSwatch {
   width: 12px;
   height: 12px;
-  border: 1px solid var(--black);
+  border: 1px solid var(--control-border);
   border-radius: 1px;
 }
 
@@ -55,10 +55,8 @@
   display: flex;
   gap: 4px;
   padding: 6px;
-  background: var(--white);
-  border: 2px solid var(--black);
-  border-right-color: var(--white);
-  border-bottom-color: var(--white);
+  background: var(--surface);
+  border: 2px solid var(--control-border);
   box-shadow: inset -1px -1px 0 var(--shadow), inset 1px 1px 0 var(--highlight);
   z-index: 10;
 }
@@ -66,19 +64,19 @@
 .colorOption {
   width: 20px;
   height: 20px;
-  border: 1px solid var(--shadow);
+  border: 1px solid var(--control-border);
   border-radius: 2px;
   cursor: pointer;
   padding: 0;
 }
 
 .colorOption:hover {
-  border-color: var(--black);
+  border-color: var(--accent, var(--control-border));
   transform: scale(1.1);
 }
 
 .colorOption.selected {
-  border: 2px solid var(--black);
+  border: 2px solid var(--accent, var(--control-border));
 }
 
 .textArea {
@@ -92,11 +90,11 @@
   border: none;
   outline: none;
   resize: none;
-  color: var(--black);
+  color: var(--text);
 }
 
 .textArea::placeholder {
-  color: var(--shadow);
+  color: var(--text-muted);
   font-style: italic;
 }
 
@@ -106,13 +104,13 @@
   font-family: var(--font-geneva);
   font-size: 12px;
   line-height: 1.4;
-  color: var(--black);
+  color: var(--text);
   white-space: pre-wrap;
   word-wrap: break-word;
   overflow-y: auto;
 }
 
 .placeholder {
-  color: var(--shadow);
+  color: var(--text-muted);
   font-style: italic;
 }

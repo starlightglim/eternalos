@@ -41,7 +41,7 @@
   font-family: var(--font-geneva);
   font-size: var(--eos-icon-label-size, 11px);
   line-height: 1.2;
-  color: var(--black);
+  color: var(--desktop-text-color, var(--text, var(--black)));
   text-shadow: var(--eos-icon-label-shadow, none);
   /* Pixel-perfect text */
   -webkit-font-smoothing: none;
@@ -58,7 +58,7 @@
 
 /* Selected label - navy blue background, white text */
 .labelSelected {
-  background-color: var(--selection);
+  background-color: var(--accent, var(--selection));
   color: var(--selection-text);
 }
 
@@ -76,14 +76,14 @@
 /* Hover/active state - subtle feedback (supports touch devices) */
 .desktopIcon:hover .iconLabel:not(.labelSelected),
 .desktopIcon:active .iconLabel:not(.labelSelected) {
-  background-color: rgba(0, 0, 128, 0.1);
+  background-color: color-mix(in srgb, var(--accent, var(--selection)) 12%, transparent);
 }
 
 /* Drop target state - folder receiving a drop */
 .dropTarget {
-  outline: 2px solid var(--selection);
+  outline: 2px solid var(--accent, var(--selection));
   outline-offset: 2px;
-  background-color: rgba(0, 0, 128, 0.15);
+  background-color: color-mix(in srgb, var(--accent, var(--selection)) 15%, transparent);
   border-radius: 4px;
 }
 
@@ -104,8 +104,8 @@
   position: absolute;
   bottom: -1px;
   right: -1px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(0,0,0,0.35);
+  background: color-mix(in srgb, var(--surface, var(--white)) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--control-border, var(--black)) 35%, transparent);
   border-radius: 2px;
   width: 14px;
   height: 14px;

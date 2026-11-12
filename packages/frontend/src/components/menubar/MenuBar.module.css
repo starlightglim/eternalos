@@ -5,28 +5,15 @@
    Fixed top, 20px tall, white background
    ============================================ */
 
-/*
- * Pin system chrome to light palette so menus stay readable
- * regardless of user's active appearance theme.
- */
 .menuBar {
-  --white: #FFFFFF;
-  --black: #000000;
-  --shadow: #808080;
-  --highlight: #DFDFDF;
-  --selection: #000080;
-  --selection-text: #FFFFFF;
-  --window-text-color: #000000;
-  --window-text-secondary: #666666;
-
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   height: var(--menu-bar-height, 20px);
-  background: var(--eos-menubar-bg, var(--white));
-  color: var(--eos-menubar-text, inherit);
-  border-bottom: 1px solid var(--black);
+  background: var(--eos-menubar-bg, var(--surface-chrome));
+  color: var(--eos-menubar-text, var(--text));
+  border-bottom: 1px solid var(--control-border);
   display: flex;
   align-items: center;
   z-index: 10000; /* Always on top */
@@ -53,8 +40,8 @@
 /* Hover/Active state - classic Mac inverted colors */
 .menuItem:hover,
 .menuItem.active {
-  background: var(--black);
-  color: var(--white);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
 }
 
 /* Apple logo menu (leftmost) */
@@ -78,9 +65,9 @@
   top: 100%;
   left: 0;
   min-width: 180px;
-  background: var(--white);
-  border: 1px solid var(--black);
-  box-shadow: 2px 2px 0 var(--shadow);
+  background: var(--surface);
+  border: 1px solid var(--control-border);
+  box-shadow: 2px 2px 0 color-mix(in srgb, var(--control-border) 55%, transparent);
   padding: 2px 0;
   z-index: 10001;
 }
@@ -102,8 +89,8 @@
   padding: 2px 16px;
   white-space: nowrap;
   cursor: default;
-  color: var(--window-text-color, var(--black));
-  background: var(--white);
+  color: var(--text);
+  background: var(--surface);
 }
 
 /* Hover/active state - inverted colors (supports touch devices) */
@@ -115,13 +102,13 @@
 
 /* Disabled state */
 .dropdownItem.disabled {
-  color: var(--window-text-secondary, var(--shadow));
+  color: var(--text-muted);
   cursor: default;
 }
 
 .dropdownItem.disabled:hover {
   background: transparent;
-  color: var(--window-text-secondary, var(--shadow));
+  color: var(--text-muted);
 }
 
 /* Divider line */
@@ -129,7 +116,7 @@
   height: 1px;
   margin: 4px 0;
   padding: 0;
-  background: var(--shadow);
+  background: var(--control-border);
   border: none;
 }
 
@@ -168,14 +155,14 @@
   cursor: default;
   font-family: var(--font-chicago);
   font-size: var(--font-size-ui);
-  border-left: 1px solid var(--shadow);
-  border-right: 1px solid var(--shadow);
+  border-left: 1px solid var(--control-border);
+  border-right: 1px solid var(--control-border);
   letter-spacing: 0.5px;
 }
 
 .bazaarButton:hover {
-  background: var(--black);
-  color: var(--white);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
 }
 
 /* ============================================
@@ -203,5 +190,5 @@
 }
 
 .visitorText {
-  color: var(--menu-bar-text, var(--black));
+  color: var(--menu-bar-text, var(--text));
 }

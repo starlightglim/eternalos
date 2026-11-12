@@ -4,7 +4,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  background-color: var(--platinum);
+  background-color: var(--surface-chrome);
   padding: 8px;
   gap: 8px;
   font-family: var(--font-geneva);
@@ -12,8 +12,8 @@
 
 /* Display */
 .display {
-  background-color: var(--white);
-  border: 2px solid var(--black);
+  background-color: var(--surface);
+  border: 2px solid var(--control-border);
   padding: 8px 12px;
   text-align: right;
   min-height: 32px;
@@ -29,7 +29,7 @@
 .displayText {
   font-family: var(--font-monaco);
   font-size: 24px;
-  color: var(--black);
+  color: var(--text);
   letter-spacing: 1px;
 }
 
@@ -53,7 +53,7 @@
   font-family: var(--font-geneva);
   font-size: 16px;
   font-weight: bold;
-  border: 1px solid var(--black);
+  border: 1px solid var(--control-border);
   border-radius: 3px;
   cursor: pointer;
   min-height: 36px;
@@ -68,8 +68,8 @@
 .buttonFunction,
 .buttonClear,
 .buttonEquals {
-  background-color: var(--white);
-  color: var(--black);
+  background-color: var(--control-bg);
+  color: var(--control-text);
 }
 
 .buttonDigit:hover,
@@ -77,7 +77,7 @@
 .buttonFunction:hover,
 .buttonClear:hover,
 .buttonEquals:hover {
-  background-color: var(--highlight);
+  background-color: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .buttonDigit:active,
@@ -85,8 +85,8 @@
 .buttonFunction:active,
 .buttonClear:active,
 .buttonEquals:active {
-  background-color: var(--shadow);
-  color: var(--white);
+  background-color: var(--accent);
+  color: var(--selection-text);
   box-shadow:
     inset -1px -1px 0 var(--highlight),
     inset 1px 1px 0 var(--shadow);
@@ -94,52 +94,52 @@
 
 /* Operator buttons - slightly different color */
 .buttonOperator {
-  background-color: #e8e8e8;
+  background-color: color-mix(in srgb, var(--control-bg) 86%, var(--accent));
 }
 
 .buttonOperator:hover {
-  background-color: #d0d0d0;
+  background-color: color-mix(in srgb, var(--accent) 18%, var(--control-bg));
 }
 
 /* Clear button - subtle red tint */
 .buttonClear {
-  background-color: #f0d0d0;
-  color: #800000;
+  background-color: color-mix(in srgb, var(--danger) 14%, var(--control-bg));
+  color: var(--danger);
 }
 
 .buttonClear:hover {
-  background-color: #e0c0c0;
+  background-color: color-mix(in srgb, var(--danger) 24%, var(--control-bg));
 }
 
 .buttonClear:active {
-  background-color: #800000;
-  color: var(--white);
+  background-color: var(--danger);
+  color: var(--selection-text);
 }
 
 /* Function buttons (±, %) */
 .buttonFunction {
-  background-color: #e0e0e0;
+  background-color: color-mix(in srgb, var(--control-bg) 92%, var(--accent));
 }
 
 .buttonFunction:hover {
-  background-color: #d0d0d0;
+  background-color: color-mix(in srgb, var(--accent) 18%, var(--control-bg));
 }
 
 /* Equals button - blue accent */
 .buttonEquals {
-  background-color: var(--selection);
-  color: var(--white);
+  background-color: var(--accent, var(--selection));
+  color: var(--selection-text);
 }
 
 .buttonEquals:hover {
-  background-color: #0000a0;
+  background-color: color-mix(in srgb, var(--accent) 82%, var(--control-bg));
 }
 
 .buttonEquals:active {
-  background-color: #000060;
+  background-color: var(--accent, var(--selection));
   box-shadow:
-    inset -1px -1px 0 #0000a0,
-    inset 1px 1px 0 #000040;
+    inset -1px -1px 0 var(--highlight),
+    inset 1px 1px 0 var(--control-border);
 }
 
 /* Zero button spans 2 columns */

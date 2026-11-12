@@ -106,8 +106,9 @@ export function CursorCreator() {
     if (slot.cursorId) {
       try {
         await deleteCursor(slot.cursorId);
-      } catch (err) {
-        console.warn('Failed to delete cursor:', err);
+      } catch {
+        setMessage({ type: 'error', text: 'Could not remove the saved cursor' });
+        return;
       }
     }
     setSlots(prev => ({ ...prev, [state]: emptySlot() }));

@@ -16,12 +16,14 @@
 
 /* Dialog box - classic Mac alert style */
 .dialog {
-  background: var(--white);
-  border: 2px solid var(--black);
+  width: min(400px, calc(100vw - 32px));
+  background: var(--surface);
+  color: var(--text);
+  border: 2px solid var(--control-border);
   box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.4);
   padding: 16px;
-  min-width: 280px;
-  max-width: 400px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* Content area - icon + message */
@@ -55,7 +57,7 @@
   font-family: var(--font-chicago);
   font-size: 12px;
   font-weight: bold;
-  color: var(--window-text-color, var(--black));
+  color: var(--text);
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
 }
@@ -63,7 +65,7 @@
 .message {
   font-family: var(--font-geneva);
   font-size: 12px;
-  color: var(--window-text-color, var(--black));
+  color: var(--text);
   line-height: 1.4;
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
@@ -82,9 +84,9 @@
 .button {
   font-family: var(--font-chicago);
   font-size: 12px;
-  color: var(--window-text-color, var(--black));
-  background: var(--white);
-  border: 2px solid var(--border);
+  color: var(--control-text);
+  background: var(--control-bg);
+  border: 2px solid var(--control-border);
   border-radius: 4px;
   padding: 4px 16px;
   min-width: 60px;
@@ -95,12 +97,12 @@
 }
 
 .button:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .button:active {
-  background: var(--black);
-  color: var(--white);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
 }
 
 /* Primary button - bold outline, default action */
@@ -111,5 +113,5 @@
 
 .primaryButton:focus {
   outline: none;
-  box-shadow: 0 0 0 2px var(--black);
+  box-shadow: 0 0 0 2px var(--accent, var(--selection));
 }

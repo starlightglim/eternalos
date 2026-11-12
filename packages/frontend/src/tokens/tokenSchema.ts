@@ -23,8 +23,10 @@
  * - number:   Bounded numeric. Rendered with SliderField.
  * - boolean:  Toggle. Rendered with checkbox.
  * - cssText:  Free-form CSS (e.g. customCSS). Not rendered in panel.
+ * - text:     Plain text or CSS value. Rendered with a text field.
+ * - select:   Enumerated value. Rendered with a select field.
  */
-export type TokenValueType = 'color' | 'cssColor' | 'font' | 'number' | 'boolean' | 'cssText';
+export type TokenValueType = 'color' | 'cssColor' | 'font' | 'number' | 'boolean' | 'cssText' | 'text' | 'select';
 
 export interface NumberConstraints {
   min: number;
@@ -72,6 +74,7 @@ export interface TokenDefinition {
   // Value
   valueType: TokenValueType;
   defaultValue: string | number | boolean;
+  options?: Array<{ value: string; label: string }>;
   numberConstraints?: NumberConstraints;
 
   // CSS output
@@ -144,6 +147,8 @@ export const TOKEN_REGISTRY: TokenDefinition[] = [
     derivedVars: [
       { cssVar: '--window-text-color', transform: 'contrastText' },
       { cssVar: '--window-text-secondary', transform: 'secondaryText' },
+      { cssVar: '--text-color', transform: 'contrastText' },
+      { cssVar: '--text-color-secondary', transform: 'secondaryText' },
     ],
   },
   {
@@ -285,6 +290,65 @@ export const TOKEN_REGISTRY: TokenDefinition[] = [
   },
 
   // =========================================================================
+  // CONTROLS TAB — Viewer surfaces
+  // =========================================================================
+  {
+    path: 'surface.content',
+    profileKey: null,
+    label: 'Viewer Content',
+    hint: 'Document, form, and viewer content backgrounds',
+    tab: 'controls',
+    group: 'Viewer Surfaces',
+    valueType: 'cssColor',
+    defaultValue: '',
+    cssVars: ['--eos-surface-content'],
+  },
+  {
+    path: 'surface.toolbar',
+    profileKey: null,
+    label: 'Viewer Toolbar',
+    hint: 'Toolbars, status bars, and utility chrome',
+    tab: 'controls',
+    group: 'Viewer Surfaces',
+    valueType: 'cssColor',
+    defaultValue: '',
+    cssVars: ['--eos-surface-toolbar'],
+  },
+  {
+    path: 'surface.preview',
+    profileKey: null,
+    label: 'Preview Surface',
+    hint: 'Media, game, and code preview backgrounds',
+    tab: 'controls',
+    group: 'Viewer Surfaces',
+    valueType: 'cssColor',
+    defaultValue: '',
+    cssVars: ['--eos-surface-preview'],
+  },
+  {
+    path: 'color.status.success',
+    profileKey: null,
+    label: 'Success Color',
+    hint: 'Completed states, healthy status, and positive actions',
+    tab: 'controls',
+    group: 'Status Colors',
+    valueType: 'cssColor',
+    defaultValue: '#006600',
+    cssVars: ['--success'],
+  },
+  {
+    path: 'color.status.danger',
+    profileKey: null,
+    label: 'Danger Color',
+    hint: 'Errors, destructive actions, and warning states',
+    tab: 'controls',
+    group: 'Status Colors',
+    valueType: 'cssColor',
+    defaultValue: '#990000',
+    cssVars: ['--danger'],
+  },
+
+  // =========================================================================
   // TYPOGRAPHY TAB — Fonts, smoothing
   // =========================================================================
   {
@@ -350,7 +414,7 @@ export const TOKEN_REGISTRY: TokenDefinition[] = [
     hint: 'Shadow behind title text (e.g. 1px 1px 2px rgba(0,0,0,0.5))',
     tab: 'windows',
     group: 'Title Bar',
-    valueType: 'cssColor',
+    valueType: 'text',
     defaultValue: '',
     cssRule: { selector: '.user-desktop [eos-part="title"]', property: 'text-shadow' },
   },
@@ -526,8 +590,17 @@ export const TOKEN_REGISTRY: TokenDefinition[] = [
     hint: 'solid, double, ridge, groove, inset, outset, or none',
     tab: 'windows',
     group: 'Border & Shape',
-    valueType: 'cssColor',
+    valueType: 'select',
     defaultValue: 'solid',
+    options: [
+      { value: 'solid', label: 'Solid' },
+      { value: 'double', label: 'Double' },
+      { value: 'ridge', label: 'Ridge' },
+      { value: 'groove', label: 'Groove' },
+      { value: 'inset', label: 'Inset' },
+      { value: 'outset', label: 'Outset' },
+      { value: 'none', label: 'None' },
+    ],
     cssVars: ['--eos-window-border-style'],
   },
   {
@@ -561,8 +634,13 @@ export const TOKEN_REGISTRY: TokenDefinition[] = [
     hint: 'square, circle, or rounded',
     tab: 'windows',
     group: 'Window Buttons',
-    valueType: 'cssColor',
+    valueType: 'select',
     defaultValue: 'square',
+    options: [
+      { value: 'square', label: 'Square' },
+      { value: 'circle', label: 'Circle' },
+      { value: 'rounded', label: 'Rounded' },
+    ],
     // Compiled via special handling (border-radius on close/zoom/collapse)
   },
   {
@@ -572,8 +650,14 @@ export const TOKEN_REGISTRY: TokenDefinition[] = [
     hint: 'How selected icons look: darken, highlight, outline, or none',
     tab: 'palette',
     group: 'Icons',
-    valueType: 'cssColor',
+    valueType: 'select',
     defaultValue: 'darken',
+    options: [
+      { value: 'darken', label: 'Darken' },
+      { value: 'highlight', label: 'Highlight' },
+      { value: 'outline', label: 'Outline' },
+      { value: 'none', label: 'None' },
+    ],
     // Compiled via special handling (different CSS filters)
   },
   {
@@ -583,7 +667,7 @@ export const TOKEN_REGISTRY: TokenDefinition[] = [
     hint: 'default, pointer, crosshair, or a custom CSS cursor value',
     tab: 'palette',
     group: 'Cursor',
-    valueType: 'cssColor',
+    valueType: 'text',
     defaultValue: '',
     cssVars: ['--eos-cursor'],
   },

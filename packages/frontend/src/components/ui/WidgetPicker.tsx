@@ -126,6 +126,7 @@ export function WidgetPicker({ onSelect, onClose }: WidgetPickerProps) {
           {WIDGETS.map((widget) => (
             <button
               key={widget.type}
+              type="button"
               className={`${styles.widgetCard} ${
                 selectedWidget?.type === widget.type ? styles.selected : ''
               }`}
@@ -158,10 +159,11 @@ export function WidgetPicker({ onSelect, onClose }: WidgetPickerProps) {
         {/* Footer with buttons */}
         <div className={styles.footer}>
           <div className={styles.spacer} />
-          <button className={styles.button} onClick={onClose}>
+          <button type="button" className={styles.button} onClick={onClose}>
             Cancel
           </button>
           <button
+            type="button"
             className={`${styles.button} ${styles.primaryButton}`}
             onClick={handleAdd}
             disabled={!selectedWidget || !widgetName.trim()}

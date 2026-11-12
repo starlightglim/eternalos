@@ -28,6 +28,8 @@ interface DraftRecord {
   uid: string;
   updatedAt: number;
   cartridge: Cartridge;
+  /** Set after the draft is published, so re-publishing updates the same pack. */
+  publishedPackId?: string;
 }
 
 interface PublishedGameMeta {
@@ -123,16 +125,25 @@ export async function handleGamePlay(
   ctx: ExecutionContext,
   playPath: string,
 ): Promise<Response> {
-  const gameId = playPath.split('/')[0];
+  // Clients may percent-encode the gameId (e.g. 'draft:x' → 'draft%3Ax').
+  // Resolve against the decoded id, but mount the worker on the raw segment
+  // so sub-path slicing matches incoming request paths exactly.
+  const rawGameId = playPath.split('/')[0];
+  let gameId: string;
+  try {
+    gameId = decodeURIComponent(rawGameId);
+  } catch {
+    return Response.json({ error: 'Invalid game ID' }, { status: 400 });
+  }
   if (!gameId) {
     return Response.json({ error: 'Game ID required' }, { status: 400 });
   }
 
   // Relative asset paths (./runtime.js, ./cartridge.json) only resolve when
   // the document URL ends with a trailing slash.
-  if (playPath === gameId) {
+  if (playPath === rawGameId) {
     const redirectUrl = new URL(request.url);
-    redirectUrl.pathname = `/api/games/play/${gameId}/`;
+    redirectUrl.pathname = `/api/games/play/${rawGameId}/`;
     return Response.redirect(redirectUrl.toString(), 308);
   }
 
@@ -145,6 +156,7 @@ export async function handleGamePlay(
     gameId,
     cartridge: resolved.cartridge,
     cacheSeconds: resolved.cacheSeconds,
+    mountPath: `/api/games/play/${rawGameId}`,
   });
 
   // ctx.exports is the loopback-bindings surface for WorkerEntrypoints
@@ -155,7 +167,10 @@ export async function handleGamePlay(
     };
   }).exports;
 
-  const worker = env.LOADER.get(resolved.isolateTag, async () => ({
+  // The mount path is baked into the module, so encoded and unencoded URL
+  // forms need distinct isolates.
+  const isolateTag = rawGameId === gameId ? resolved.isolateTag : `${resolved.isolateTag}~enc`;
+  const worker = env.LOADER.get(isolateTag, async () => ({
     compatibilityDate: '2026-04-15',
     mainModule: GAME_WORKER_ENTRY_FILE,
     modules,
@@ -225,7 +240,28 @@ export async function handleGetDraft(env: Env, auth: AuthContext, cartId: string
   if (!record || record.uid !== auth.uid) {
     return Response.json({ error: 'Draft not found' }, { status: 404 });
   }
-  return Response.json({ cartId, updatedAt: record.updatedAt, cartridge: record.cartridge });
+  return Response.json({
+    cartId,
+    updatedAt: record.updatedAt,
+    cartridge: record.cartridge,
+    publishedPackId: record.publishedPackId ?? null,
+  });
+}
+
+/**
+ * Stamp a draft with the bazaar pack it was published as (owner-checked).
+ * Called by the publish-game route after a successful publish.
+ */
+export async function setDraftPublishedPack(
+  env: Env,
+  uid: string,
+  cartId: string,
+  packId: string,
+): Promise<void> {
+  const record = await env.DESKTOP_KV.get<DraftRecord>(draftKey(cartId), 'json');
+  if (!record || record.uid !== uid) return;
+  record.publishedPackId = packId;
+  await env.DESKTOP_KV.put(draftKey(cartId), JSON.stringify(record));
 }
 
 export async function handlePutDraft(
@@ -272,6 +308,7 @@ export async function handlePutDraft(
     uid: auth.uid,
     updatedAt: Date.now(),
     cartridge: validation.cartridge,
+    ...(existing?.publishedPackId ? { publishedPackId: existing.publishedPackId } : {}),
   };
   await env.DESKTOP_KV.put(draftKey(cartId), JSON.stringify(record));
   if (!index.includes(cartId)) {

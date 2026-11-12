@@ -22,6 +22,7 @@ import { sanitizeEmail, sanitizeUsername } from '../utils/sanitize';
 import { sendEmail, getPasswordResetEmail, getEmailVerificationEmail, getUsernameChangeEmail } from '../utils/email';
 import { generateRecoveryCodes, hashRecoveryCodes, findMatchingRecoveryHash, burnRecoveryCode } from '../utils/recoveryCodes';
 import { verifyTurnstile } from '../utils/turnstile';
+import { markPendingDeletion, clearPendingDeletion } from '../utils/accountPurge';
 
 interface SignupBody {
   email: string;
@@ -136,31 +137,22 @@ export async function handleSignup(request: Request, env: Env): Promise<Response
   const normalizedEmail = sanitizeEmail(email);
   const normalizedUsername = sanitizeUsername(username);
 
-  // SECURITY: Acquire short-lived locks on email + username before the
+  // SECURITY: Acquire short-lived, serialized locks before the
   // check-then-write sequence. This prevents concurrent signups from both
   // passing the existence check and overwriting each other's records.
-  // The lock TTL (60s) is long enough to cover the signup flow and short
-  // enough to auto-expire if a request crashes mid-flow. Cloudflare KV
-  // requires expirationTtl >= 60 seconds.
-  const emailLockKey = `signup-lock:email:${normalizedEmail}`;
-  const usernameLockKey = `signup-lock:username:${normalizedUsername}`;
+  const emailLockResource = `signup:email:${normalizedEmail}`;
+  const usernameLockResource = `signup:username:${normalizedUsername}`;
   const lockValue = crypto.randomUUID();
   const LOCK_TTL_SECONDS = 60;
 
-  // Try to acquire email lock (put-if-absent pattern using a short TTL)
-  const existingEmailLock = await env.AUTH_KV.get(emailLockKey);
-  if (existingEmailLock) {
+  if (!await claimAuthLock(env, emailLockResource, lockValue, LOCK_TTL_SECONDS)) {
     return Response.json({ error: 'Signup in progress for this email. Please try again.' }, { status: 409 });
   }
-  await env.AUTH_KV.put(emailLockKey, lockValue, { expirationTtl: LOCK_TTL_SECONDS });
 
-  // Try to acquire username lock
-  const existingUsernameLock = await env.AUTH_KV.get(usernameLockKey);
-  if (existingUsernameLock) {
-    await env.AUTH_KV.delete(emailLockKey); // Release email lock
+  if (!await claimAuthLock(env, usernameLockResource, lockValue, LOCK_TTL_SECONDS)) {
+    await releaseAuthLock(env, emailLockResource, lockValue);
     return Response.json({ error: 'Signup in progress for this username. Please try again.' }, { status: 409 });
   }
-  await env.AUTH_KV.put(usernameLockKey, lockValue, { expirationTtl: LOCK_TTL_SECONDS });
 
   try {
     // Check if email already exists
@@ -477,8 +469,8 @@ Try saying:
   } finally {
     // Always release signup locks (they auto-expire too, but clean up eagerly)
     await Promise.all([
-      env.AUTH_KV.delete(emailLockKey).catch(() => {}),
-      env.AUTH_KV.delete(usernameLockKey).catch(() => {}),
+      releaseAuthLock(env, emailLockResource, lockValue).catch(() => {}),
+      releaseAuthLock(env, usernameLockResource, lockValue).catch(() => {}),
     ]);
   }
 }
@@ -676,6 +668,70 @@ interface RefreshTokenBody {
   refreshToken: string;
 }
 
+async function claimRefreshToken(
+  env: Env,
+  refreshToken: string,
+  familyId: string,
+  accessToken: string,
+): Promise<boolean> {
+  const coordinatorId = env.AUTH_COORDINATOR.idFromName(`refresh:${refreshToken}`);
+  const coordinator = env.AUTH_COORDINATOR.get(coordinatorId);
+  const response = await coordinator.fetch('https://auth-coordinator/claim-refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ familyId, accessToken, now: Date.now() }),
+  });
+  if (!response.ok) {
+    throw new Error(`Auth coordinator returned ${response.status}`);
+  }
+  const result = await response.json<{ claimed: boolean }>();
+  return result.claimed;
+}
+
+async function rejectRefreshReuse(
+  env: Env,
+  refreshToken: string,
+  familyId: string,
+  accessToken: string,
+): Promise<Response> {
+  await env.AUTH_KV.put(`refresh-family-revoked:${familyId}`, '1', {
+    expirationTtl: REFRESH_TOKEN_TTL_SECONDS,
+  });
+  await env.AUTH_KV.delete(`refresh:${refreshToken}`);
+  await env.AUTH_KV.delete(`session:${accessToken}`);
+  return Response.json({ error: 'Token reuse detected. All sessions revoked.' }, { status: 401 });
+}
+
+async function claimAuthLock(
+  env: Env,
+  resource: string,
+  token: string,
+  ttlSeconds: number,
+): Promise<boolean> {
+  const coordinatorId = env.AUTH_COORDINATOR.idFromName(resource);
+  const coordinator = env.AUTH_COORDINATOR.get(coordinatorId);
+  const response = await coordinator.fetch('https://auth-coordinator/claim-lock', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, now: Date.now(), ttlMs: ttlSeconds * 1000 }),
+  });
+  if (!response.ok) {
+    throw new Error(`Auth coordinator returned ${response.status}`);
+  }
+  const result = await response.json<{ claimed: boolean }>();
+  return result.claimed;
+}
+
+async function releaseAuthLock(env: Env, resource: string, token: string): Promise<void> {
+  const coordinatorId = env.AUTH_COORDINATOR.idFromName(resource);
+  const coordinator = env.AUTH_COORDINATOR.get(coordinatorId);
+  await coordinator.fetch('https://auth-coordinator/release-lock', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, now: Date.now(), ttlMs: 1 }),
+  });
+}
+
 /**
  * POST /api/auth/refresh
  * Exchange a refresh token for a new access token (token rotation)
@@ -755,15 +811,7 @@ export async function handleRefreshToken(request: Request, env: Env): Promise<Re
   // stolen — invalidate the entire family to boot the attacker.
   const familyId = refreshData.familyId || refreshToken; // backcompat: old tokens without familyId use themselves
   if (refreshData.consumed) {
-    // This refresh token was already used! Possible token theft.
-    // Invalidate the entire token family by marking a poison flag.
-    await env.AUTH_KV.put(`refresh-family-revoked:${familyId}`, '1', {
-      expirationTtl: REFRESH_TOKEN_TTL_SECONDS,
-    });
-    // Clean up old tokens
-    await env.AUTH_KV.delete(`refresh:${refreshToken}`);
-    await env.AUTH_KV.delete(`session:${refreshData.accessToken}`);
-    return Response.json({ error: 'Token reuse detected. All sessions revoked.' }, { status: 401 });
+    return rejectRefreshReuse(env, refreshToken, familyId, refreshData.accessToken);
   }
 
   // Check if this token's family has been revoked
@@ -772,6 +820,10 @@ export async function handleRefreshToken(request: Request, env: Env): Promise<Re
     await env.AUTH_KV.delete(`refresh:${refreshToken}`);
     await env.AUTH_KV.delete(`session:${refreshData.accessToken}`);
     return Response.json({ error: 'Session revoked due to suspicious activity.' }, { status: 401 });
+  }
+
+  if (!await claimRefreshToken(env, refreshToken, familyId, refreshData.accessToken)) {
+    return rejectRefreshReuse(env, refreshToken, familyId, refreshData.accessToken);
   }
 
   // Mark old refresh token as consumed (don't delete — keep for reuse detection)
@@ -1191,13 +1243,11 @@ export async function handleChangeUsername(request: Request, env: Env, auth: Aut
   }
 
   // SECURITY: Lock the new username to prevent concurrent claims
-  const usernameLockKey = `signup-lock:username:${normalizedNewUsername}`;
+  const usernameLockResource = `signup:username:${normalizedNewUsername}`;
   const lockValue = crypto.randomUUID();
-  const existingLock = await env.AUTH_KV.get(usernameLockKey);
-  if (existingLock) {
+  if (!await claimAuthLock(env, usernameLockResource, lockValue, 30)) {
     return Response.json({ error: 'Username claim in progress. Please try again.' }, { status: 409 });
   }
-  await env.AUTH_KV.put(usernameLockKey, lockValue, { expirationTtl: 30 });
 
   try {
     // Check if new username is taken
@@ -1279,7 +1329,7 @@ export async function handleChangeUsername(request: Request, env: Env, auth: Aut
     });
   } finally {
     // Always release username lock
-    await env.AUTH_KV.delete(usernameLockKey).catch(() => {});
+    await releaseAuthLock(env, usernameLockResource, lockValue).catch(() => {});
   }
 }
 
@@ -1675,6 +1725,7 @@ export async function handleGoogleCallback(request: Request, env: Env): Promise<
       delete (revived as Partial<UserRecord>).deletedAt;
       delete (revived as Partial<UserRecord>).hardDeleteAt;
       await env.AUTH_KV.put(`user:${normalizedEmail}`, JSON.stringify(revived));
+      await clearPendingDeletion(env, userRecord.uid);
       userRecord = revived;
     } else {
       return Response.json(
@@ -1737,6 +1788,19 @@ export async function handleGoogleCallback(request: Request, env: Env): Promise<
 
 const ACCOUNT_DELETION_GRACE_DAYS = 14;
 
+/**
+ * Grace period before an account is hard-deleted. Defaults to
+ * ACCOUNT_DELETION_GRACE_DAYS; integration tests override it (e.g. to 0) via
+ * the ACCOUNT_DELETION_GRACE_DAYS env var so the purge becomes due immediately
+ * without waiting 14 days. Negative/NaN values fall back to the default.
+ */
+function graceDays(env: Env): number {
+  const raw = env.ACCOUNT_DELETION_GRACE_DAYS;
+  if (raw === undefined) return ACCOUNT_DELETION_GRACE_DAYS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : ACCOUNT_DELETION_GRACE_DAYS;
+}
+
 interface DeleteAccountBody {
   /** Password confirmation. Required for password users, ignored for OAuth-only. */
   password?: string;
@@ -1797,7 +1861,8 @@ export async function handleDeleteAccount(
   }
 
   const now = Date.now();
-  const hardDeleteAt = now + ACCOUNT_DELETION_GRACE_DAYS * 24 * 60 * 60 * 1000;
+  const grace = graceDays(env);
+  const hardDeleteAt = now + grace * 24 * 60 * 60 * 1000;
 
   const updated: UserRecord = {
     ...user,
@@ -1810,6 +1875,10 @@ export async function handleDeleteAccount(
 
   await env.AUTH_KV.put(`user:${email}`, JSON.stringify(updated));
 
+  // Index this account for the scheduled hard-delete purge. Lets the cron
+  // enumerate pending deletions without scanning every user record.
+  await markPendingDeletion(env, auth.uid, email, hardDeleteAt);
+
   // Log the user out of the current session explicitly.
   const authHeader = request.headers.get('Authorization');
   if (authHeader?.startsWith('Bearer ')) {
@@ -1821,7 +1890,7 @@ export async function handleDeleteAccount(
     success: true,
     deletedAt: now,
     hardDeleteAt,
-    daysUntilHardDelete: ACCOUNT_DELETION_GRACE_DAYS,
+    daysUntilHardDelete: grace,
     message: `Account scheduled for deletion on ${new Date(hardDeleteAt).toISOString()}. Sign in before then to cancel.`,
   });
 }
@@ -1871,6 +1940,7 @@ export async function handleCancelDeletion(
   delete (restored as Partial<UserRecord>).hardDeleteAt;
 
   await env.AUTH_KV.put(`user:${normalizedEmail}`, JSON.stringify(restored));
+  await clearPendingDeletion(env, user.uid);
 
   return Response.json({
     success: true,

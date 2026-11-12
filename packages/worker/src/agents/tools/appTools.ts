@@ -8,7 +8,7 @@
  * Apps are compiled via @cloudflare/worker-bundler and run as Dynamic Workers.
  */
 
-import { generateObject, tool } from 'ai';
+import { generateObject, generateText, tool } from 'ai';
 import { z } from 'zod';
 import { createWorker } from '@cloudflare/worker-bundler';
 import { createWorkersAI } from 'workers-ai-provider';
@@ -106,6 +106,11 @@ const APP_BUNDLE_FILE = 'bundle.json';
 const APP_SOURCE_FILE = 'source.json';
 const APP_METADATA_FILE = 'metadata.json';
 const APP_PREVIEW_TTL_SECONDS = 60 * 60 * 6;
+const MAX_APP_RELEASES = 20;
+const MAX_APP_FILES = 100;
+const MAX_APP_FILE_NAME_BYTES = 180;
+const MAX_APP_FILE_BYTES = 512 * 1024;
+const MAX_APP_SOURCE_BYTES = 4 * 1024 * 1024;
 const RESERVED_APP_SOURCE_FILES = new Set([
   APP_WORKER_ENTRY_FILE,
   APP_RUNTIME_ASSET_FILE,
@@ -119,18 +124,29 @@ const APP_BUILD_STAGE_LABELS: Record<AppBuildStageKey, string> = {
 };
 
 /**
- * What the generator is asked to produce. `permissions` is how the LLM
- * declares what the app needs; we store it on the manifest and (for v1)
- * auto-grant it, so the first open just works. A future install-dialog pass
- * will sit between declaration and grant.
+ * What the generator is asked to produce. `permissions` is a declaration of
+ * requested capabilities; the user grants a subset when the app first opens.
  */
 const permissionsSchema = z.object({
   fs: z.object({
     read: z.array(z.string().min(1).max(200)).max(20).optional(),
+    write: z.array(z.string().min(1).max(200)).max(20).optional(),
+    delete: z.array(z.string().min(1).max(200)).max(20).optional(),
     mimeTypes: z.array(z.string().min(1).max(100)).max(20).optional(),
   }).optional(),
   profile: z.object({
     read: z.array(z.enum(['username', 'displayName', 'bio', 'avatar'])).max(4).optional(),
+  }).optional(),
+  network: z.object({
+    outbound: z.array(z.string().regex(/^(?:\*|(?:\*\.)?[A-Za-z0-9.-]+)$/).max(300)).max(20).optional(),
+  }).optional(),
+  ipc: z.object({
+    listen: z.array(z.string().min(1).max(120)).max(50).optional(),
+    emit: z.array(z.string().min(1).max(120)).max(50).optional(),
+  }).optional(),
+  handlers: z.object({
+    mimeTypes: z.array(z.string().min(1).max(100)).max(20).optional(),
+    extensions: z.array(z.string().min(1).max(30)).max(20).optional(),
   }).optional(),
 }).optional();
 
@@ -178,6 +194,128 @@ const APP_BUILD_TIMEOUT_MS = {
   desktopInstall: 15_000,
 } as const;
 
+async function listR2Prefix(env: Env, prefix: string): Promise<string[]> {
+  const keys: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await env.ETERNALOS_FILES.list({ prefix, cursor });
+    keys.push(...page.objects.map((object) => object.key));
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return keys;
+}
+
+async function deleteR2Prefix(env: Env, prefix: string): Promise<void> {
+  let cursor: string | undefined;
+  do {
+    const page = await env.ETERNALOS_FILES.list({ prefix, cursor });
+    await Promise.allSettled(page.objects.map((object) => env.ETERNALOS_FILES.delete(object.key)));
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+}
+
+async function getNextAppVersion(env: Env, uid: string, appId: string, currentVersion: number): Promise<number> {
+  const metadataKeys = (await listR2Prefix(env, `apps/${uid}/${appId}/`))
+    .filter((key) => key.endsWith(`/${APP_METADATA_FILE}`) || key === `apps/${uid}/${appId}/${APP_METADATA_FILE}`);
+  let highestVersion = currentVersion;
+  for (const key of metadataKeys) {
+    const object = await env.ETERNALOS_FILES.get(key);
+    if (!object) continue;
+    const metadata = await object.json<{ version?: number }>().catch(() => null);
+    if (metadata?.version && Number.isInteger(metadata.version)) {
+      highestVersion = Math.max(highestVersion, metadata.version);
+    }
+  }
+  return highestVersion + 1;
+}
+
+async function pruneAppReleases(env: Env, uid: string, appId: string, currentPrefix: string): Promise<void> {
+  const metadataKeys = (await listR2Prefix(env, `apps/${uid}/${appId}/`))
+    .filter((key) => key.endsWith(`/${APP_METADATA_FILE}`) || key === `apps/${uid}/${appId}/${APP_METADATA_FILE}`);
+  const releases: Array<{ version: number; r2Prefix: string }> = [];
+  for (const key of metadataKeys) {
+    const object = await env.ETERNALOS_FILES.get(key);
+    if (!object) continue;
+    const metadata = await object.json<{ version?: number; r2Prefix?: string }>().catch(() => null);
+    const r2Prefix = metadata?.r2Prefix || key.slice(0, -`/${APP_METADATA_FILE}`.length);
+    if (metadata?.version && Number.isInteger(metadata.version)) releases.push({ version: metadata.version, r2Prefix });
+  }
+  releases.sort((left, right) => right.version - left.version);
+  const keep = new Set([
+    currentPrefix,
+    ...releases.slice(0, Math.max(0, MAX_APP_RELEASES - 1)).map((release) => release.r2Prefix),
+  ]);
+  const stale = Array.from(new Set(releases.map((release) => release.r2Prefix))).filter((prefix) => !keep.has(prefix));
+  await Promise.all(stale.map((prefix) => deleteR2Prefix(env, prefix)));
+}
+
+async function cleanupExpiredPreviewObjects(env: Env, uid: string): Promise<void> {
+  const metadataKeys = (await listR2Prefix(env, `app-previews/${uid}/`))
+    .filter((key) => key.endsWith(`/${APP_METADATA_FILE}`));
+  await Promise.all(metadataKeys.map(async (key) => {
+    const object = await env.ETERNALOS_FILES.get(key);
+    if (!object) return;
+    const metadata = await object.json<{ expiresAt?: number }>().catch(() => null);
+    if (metadata?.expiresAt && metadata.expiresAt < Date.now()) {
+      await deleteR2Prefix(env, key.slice(0, -`/${APP_METADATA_FILE}`.length));
+    }
+  }));
+}
+
+function getAppReleasePrefix(prefix: string, version: number): string {
+  return `${prefix.replace(/\/v\d+$/, '')}/v${version}`;
+}
+
+function parseGeneratedJson(text: string): unknown {
+  const cleaned = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start < 0 || end <= start) throw new Error('AI returned invalid JSON');
+    return JSON.parse(cleaned.slice(start, end + 1));
+  }
+}
+
+async function generateStructuredObject<T>(
+  env: Env,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  system: string,
+  prompt: string,
+  step: string,
+  timeoutMs: number,
+): Promise<T> {
+  const model = getAppBuilderModel(env);
+  try {
+    const { object } = await withStepTimeout(
+      step,
+      timeoutMs,
+      generateObject({ model, schema, system, prompt }),
+    );
+    return schema.parse(object);
+  } catch (structuredError) {
+    const { text } = await withStepTimeout(
+      `${step} fallback`,
+      timeoutMs,
+      generateText({
+        model,
+        system: `${system}\nReturn only one valid JSON object. Do not use markdown fences or explanatory text.`,
+        prompt,
+        maxOutputTokens: 24_000,
+      }),
+    );
+
+    try {
+      return schema.parse(parseGeneratedJson(text));
+    } catch (fallbackError) {
+      const firstError = structuredError instanceof Error ? structuredError.message : String(structuredError);
+      const secondError = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      throw new Error(`${step} failed: ${firstError}; fallback failed: ${secondError}`);
+    }
+  }
+}
+
 async function withStepTimeout<T>(
   step: string,
   timeoutMs: number,
@@ -216,25 +354,6 @@ async function waitForCapacityRetry(attempt: number): Promise<void> {
   await sleep(baseDelayMs + jitterMs);
 }
 
-/**
- * Project the richer AppPermissions declaration down to the flat
- * AppGrantedPermissions shape used at runtime. These are nearly identical but
- * AppGrantedPermissions is what EternalService sees via ctx.props.
- */
-function grantsFromPermissions(permissions: AppPermissions | undefined): AppGrantedPermissions {
-  if (!permissions) return {};
-  const out: AppGrantedPermissions = {};
-  if (permissions.fs && (permissions.fs.read?.length || permissions.fs.mimeTypes?.length)) {
-    out.fs = {};
-    if (permissions.fs.read?.length) out.fs.read = [...permissions.fs.read];
-    if (permissions.fs.mimeTypes?.length) out.fs.mimeTypes = [...permissions.fs.mimeTypes];
-  }
-  if (permissions.profile?.read?.length) {
-    out.profile = { read: [...permissions.profile.read] };
-  }
-  return out;
-}
-
 async function getNextDesktopGridPosition(stub: DurableObjectStub): Promise<{ x: number; y: number }> {
   const snapshotRes = await stub.fetch(new Request('http://internal/items'));
   if (!snapshotRes.ok) {
@@ -248,6 +367,40 @@ async function getNextDesktopGridPosition(stub: DurableObjectStub): Promise<{ x:
     : 0;
 
   return { x: 0, y: nextY };
+}
+
+interface RegisteredDesktopApp {
+  item: DesktopItem;
+  metadata: {
+    uid: string;
+    version: number;
+    granted?: AppGrantedPermissions;
+    r2Prefix?: string;
+  };
+}
+
+async function getRegisteredDesktopApp(
+  env: Env,
+  uid: string,
+  appId: string,
+): Promise<RegisteredDesktopApp> {
+  const metadata = await env.DESKTOP_KV.get<RegisteredDesktopApp['metadata']>(`app:${appId}`, 'json');
+  if (!metadata || metadata.uid !== uid) {
+    throw new Error(`App ${appId} not found`);
+  }
+
+  const stub = env.USER_DESKTOP.get(env.USER_DESKTOP.idFromName(uid));
+  const response = await stub.fetch(new Request('http://internal/items'));
+  if (!response.ok) {
+    throw new Error(`Failed to load app ${appId}`);
+  }
+  const items = (await response.json<{ items: DesktopItem[] }>()).items;
+  const item = items.find((candidate) => candidate.type === 'app' && candidate.appManifest?.appId === appId && !candidate.isTrashed);
+  if (!item) {
+    throw new Error(`App ${appId} is not installed on the desktop`);
+  }
+
+  return { item, metadata };
 }
 
 function buildTodoTemplate(name: string, description?: string): AppBundleInput {
@@ -890,9 +1043,9 @@ render();`,
 
 function getAppBuilderModel(env: Env) {
   const workersAI = createWorkersAI({ binding: env.AI });
-  const modelId = env.AGENT_CHAT_MODEL?.startsWith('@cf/')
-    ? env.AGENT_CHAT_MODEL
-    : '@cf/meta/llama-3.1-8b-instruct';
+  const modelId = env.APP_BUILDER_MODEL?.startsWith('@cf/')
+    ? env.APP_BUILDER_MODEL
+    : '@cf/zai-org/glm-4.7-flash';
   return workersAI(modelId as Parameters<typeof workersAI>[0]);
 }
 
@@ -980,10 +1133,34 @@ function selectDefaultJsEntry(files: Record<string, string>): string | undefined
 }
 
 export function createAppWorkspace(files: Record<string, string>): AppWorkspace {
-  const normalizedEntries = Object.entries(files)
-    .filter(([name]) => typeof name === 'string' && name.trim().length > 0)
-    .map(([name, content]) => [name.replace(/^\/+/, '').trim(), String(content)] as const);
-  const normalizedFiles = Object.fromEntries(normalizedEntries);
+  const entries = Object.entries(files);
+  if (entries.length === 0 || entries.length > MAX_APP_FILES) {
+    throw new Error(`App source must contain between 1 and ${MAX_APP_FILES} files`);
+  }
+
+  const normalizedFiles: Record<string, string> = {};
+  let totalBytes = 0;
+  for (const [rawName, rawContent] of entries) {
+    const name = rawName.replace(/^\/+/, '').trim();
+    const content = String(rawContent);
+    const segments = name.split('/');
+    if (!name || name.length > MAX_APP_FILE_NAME_BYTES || segments.some((segment) => !segment || segment === '.' || segment === '..' || segment.includes('\\'))) {
+      throw new Error(`Invalid app source filename "${rawName}"`);
+    }
+    if (name in normalizedFiles) {
+      throw new Error(`Duplicate app source filename "${name}"`);
+    }
+
+    const fileBytes = new TextEncoder().encode(content).byteLength;
+    if (fileBytes > MAX_APP_FILE_BYTES) {
+      throw new Error(`App source file "${name}" exceeds the ${MAX_APP_FILE_BYTES / 1024}KB limit`);
+    }
+    totalBytes += fileBytes;
+    if (totalBytes > MAX_APP_SOURCE_BYTES) {
+      throw new Error(`App source exceeds the ${MAX_APP_SOURCE_BYTES / 1024 / 1024}MB limit`);
+    }
+    normalizedFiles[name] = content;
+  }
 
   for (const reserved of RESERVED_APP_SOURCE_FILES) {
     if (reserved in normalizedFiles) {
@@ -1051,7 +1228,7 @@ function normalizeAppFromSpec(spec: AppSpec, files: Record<string, string>): App
   };
 }
 
-function validateGeneratedApp(app: AppBundleInput): void {
+export function validateGeneratedApp(app: AppBundleInput): void {
   const files = app.files;
   const htmlFiles = Object.entries(files).filter(([name]) => name.endsWith('.html') || name === 'html');
   if (htmlFiles.length === 0) {
@@ -1072,14 +1249,34 @@ function validateGeneratedApp(app: AppBundleInput): void {
     }
   }
 
-  const usesFs = /\b(?:window\.)?eternal\.fs\./.test(fullSource);
+  const usesFsRead = /\b(?:window\.)?eternal\.fs\.(?:list|read|readText|readJson|urlFor)\s*\(/.test(fullSource);
+  const usesFsWrite = /\b(?:window\.)?eternal\.fs\.(?:write|patch)\s*\(/.test(fullSource);
+  const usesFsDelete = /\b(?:window\.)?eternal\.fs\.delete\s*\(/.test(fullSource);
   const usesProfile = /\b(?:window\.)?eternal\.profile\./.test(fullSource);
+  const usesNetwork = /\b(?:window\.)?eternal\.fetch\s*\(/.test(fullSource);
+  const usesIpcEmit = /\b(?:window\.)?eternal\.ipc\.emit\s*\(/.test(fullSource);
+  const usesIpcListen = /\b(?:window\.)?eternal\.ipc\.on\s*\(/.test(fullSource);
 
-  if (usesFs && !(app.permissions?.fs?.read?.length || app.permissions?.fs?.mimeTypes?.length)) {
-    throw new Error('App uses window.eternal.fs but did not declare fs permissions');
+  if (usesFsRead && !(app.permissions?.fs?.read?.length || app.permissions?.fs?.mimeTypes?.length)) {
+    throw new Error('App reads through window.eternal.fs but did not declare fs read permissions');
+  }
+  if (usesFsWrite && !app.permissions?.fs?.write?.length) {
+    throw new Error('App writes through window.eternal.fs but did not declare fs write permissions');
+  }
+  if (usesFsDelete && !app.permissions?.fs?.delete?.length) {
+    throw new Error('App deletes through window.eternal.fs but did not declare fs delete permissions');
   }
   if (usesProfile && !app.permissions?.profile?.read?.length) {
     throw new Error('App uses window.eternal.profile but did not declare profile permissions');
+  }
+  if (usesNetwork && !app.permissions?.network?.outbound?.length) {
+    throw new Error('App uses window.eternal.fetch but did not declare network permissions');
+  }
+  if (usesIpcEmit && !app.permissions?.ipc?.emit?.length) {
+    throw new Error('App emits IPC messages but did not declare ipc emit permissions');
+  }
+  if (usesIpcListen && !app.permissions?.ipc?.listen?.length) {
+    throw new Error('App listens for IPC messages but did not declare ipc listen permissions');
   }
 
   const knownAssets = new Set([...Object.keys(files), APP_RUNTIME_ASSET_FILE]);
@@ -1214,13 +1411,10 @@ async function generateAppSpec(
 ${JSON.stringify(desktopSummary, null, 2)}`
     : 'Desktop summary not available.';
 
-  const { object } = await withStepTimeout(
-    'Generating app specification',
-    APP_BUILD_TIMEOUT_MS.specGeneration,
-    generateObject({
-      model: getAppBuilderModel(env),
-      schema: appSpecSchema,
-      system: `You design app specifications for EternalOS before code generation.
+  return generateStructuredObject(
+    env,
+    appSpecSchema,
+    `You design app specifications for EternalOS before code generation.
 
 Your job:
 - translate a natural-language app request into a compact product spec
@@ -1230,15 +1424,14 @@ Your job:
 - if broad permissions are required, include a short rationale
 - produce a realistic default window size
 - write concrete acceptance bullets that can be validated later`,
-      prompt: `Create an app specification for this request:
+    `Create an app specification for this request:
 
 ${prompt}
 
 ${contextBlock}`,
-    }),
+    'Generating app specification',
+    APP_BUILD_TIMEOUT_MS.specGeneration,
   );
-
-  return object;
 }
 
 async function generateAppFromPrompt(
@@ -1257,18 +1450,16 @@ async function generateAppFromPrompt(
 ${JSON.stringify(desktopSummary, null, 2)}`
     : 'Desktop summary not available; design the app as a general-purpose starter.';
 
-  const { object } = await withStepTimeout(
-    'Generating app files',
-    APP_BUILD_TIMEOUT_MS.fileGeneration,
-    generateObject({
-      model: getAppBuilderModel(env),
-      schema: generatedAppFilesSchema,
-      system: `You generate complete desktop web apps as structured source files for EternalOS.
+  const object = await generateStructuredObject(
+    env,
+    generatedAppFilesSchema,
+    `You generate complete desktop web apps as structured source files for EternalOS.
 
-Apps run in a sandboxed iframe with NO network access. The platform injects a
-window.eternal bridge that gives apps access to the user's desktop if (and only
-if) they declare the right permissions. Always prefer window.eternal APIs over
-asking the user to paste data.
+Apps run in a sandboxed iframe. Direct browser network access is blocked by CSP;
+the platform injects a window.eternal bridge that gives apps access to the
+user's desktop or an allowlisted network proxy if (and only if) they declare
+the right permissions. Always prefer window.eternal APIs over asking the user
+to paste data.
 
 Available in window.eternal (platform-injected — do not re-implement):
   eternal.fs.list({ path?, mimeType?, limit? })   -> Item[]
@@ -1276,15 +1467,21 @@ Available in window.eternal (platform-injected — do not re-implement):
   eternal.fs.readText(id)   -> string
   eternal.fs.readJson(id)   -> object
   eternal.fs.urlFor(id)     -> same-origin URL safe for <img src>, <audio src>
+  eternal.fs.write(options), fs.patch(id, updates), fs.delete(id)
   eternal.profile.get()     -> { username?, displayName?, bio?, avatar? }
+  eternal.fetch(url, init?) -> allowlisted proxy response
+  eternal.ipc.emit(topic, payload), ipc.on(topic, callback)
   eternal.window.setTitle(s), eternal.window.close(), eternal.window.requestFocus()
 
 Item shape: { id, name, type, path, mimeType?, fileSize?, updatedAt, isPublic, caption?, tags?, dominantColors?, url? }
 
 Permissions — declare what you use, nothing more:
   fs.read: path globs — ['**'], ['/Photos/**'], ['/Notes/*.md']
+  fs.write / fs.delete: path globs for mutations
   fs.mimeTypes: ['image/*'], ['audio/*'], ['video/*'], ['text/*'], ['application/pdf']
   profile.read: subset of ['username', 'displayName', 'bio', 'avatar']
+  network.outbound: host patterns such as ['api.example.com', '*.example.com']
+  ipc.listen / ipc.emit: topic names or topic prefixes such as ['music.now_playing']
 
 If the app doesn't need desktop data, omit permissions entirely and it runs hermetic.
 
@@ -1298,7 +1495,7 @@ Rules for files:
 - Handle the empty case gracefully: eternal.fs.list() returns [] until the user grants permission
 - Wrap fetches in try/catch so a permission denial or empty desktop doesn't crash the UI
 - Match the supplied app specification exactly for metadata and permissions`,
-      prompt: `Build a desktop web app for this request:
+    `Build a desktop web app for this request:
 
 ${prompt}
 
@@ -1308,7 +1505,8 @@ ${JSON.stringify(spec, null, 2)}
 ${contextBlock}
 
 ${repairContext}`,
-    }),
+    'Generating app files',
+    APP_BUILD_TIMEOUT_MS.fileGeneration,
   );
 
   const app = normalizeAppFromSpec(spec, object.files);
@@ -1413,7 +1611,7 @@ async function writeAppArtifact(
     height: input.height,
     permissions: input.permissions,
     rationale: input.rationale,
-    granted: grantsFromPermissions(input.permissions),
+    granted: {},
     version: 1,
     r2Prefix,
     createdAt: now,
@@ -1455,8 +1653,10 @@ async function createAndRegisterApp(
   const appId = crypto.randomUUID();
   const r2Prefix = `apps/${uid}/${appId}`;
   const tracker = createBuildTracker();
+  let desktopItemId: string | null = null;
 
   try {
+    validateGeneratedApp(input);
     const artifact = await writeAppArtifact(ctx, input, appId, r2Prefix, '/api/apps', tracker);
 
     const now = Date.now();
@@ -1474,7 +1674,7 @@ async function createAndRegisterApp(
         JSON.stringify({
           uid,
           version: 1,
-          granted: artifact.metadata.granted,
+          granted: {},
           r2Prefix,
         }),
       ),
@@ -1511,8 +1711,7 @@ async function createAndRegisterApp(
           position,
           isPublic: false,
           appManifest: manifest,
-          grantedPermissions: artifact.metadata.granted,
-          permissionGrantedAt: now,
+          grantedPermissions: {},
         }),
       })),
     );
@@ -1523,6 +1722,7 @@ async function createAndRegisterApp(
     }
 
     const item = await createRes.json<DesktopItem>();
+    desktopItemId = item.id;
     sql.exec('UPDATE apps SET desktop_item_id = ? WHERE id = ?', item.id, appId);
     tracker.markCompleted('install-desktop');
 
@@ -1542,6 +1742,20 @@ async function createAndRegisterApp(
       },
     };
   } catch (error) {
+    await deleteR2Prefix(env, r2Prefix).catch(() => {});
+    await env.DESKTOP_KV.delete(`app:${appId}`).catch(() => {});
+    sql.exec('DELETE FROM apps WHERE id = ?', appId);
+    if (desktopItemId) {
+      const doId = env.USER_DESKTOP.idFromName(uid);
+      const stub = env.USER_DESKTOP.get(doId);
+      await stub.fetch(new Request('http://internal/items', {
+        method: 'PATCH',
+        body: JSON.stringify([{
+          id: desktopItemId,
+          updates: { isTrashed: true, trashedAt: Date.now() },
+        }]),
+      })).catch(() => {});
+    }
     throw wrapBuildError(error, tracker);
   }
 }
@@ -1565,6 +1779,7 @@ async function createAppPreview(
   const expiresAt = Date.now() + APP_PREVIEW_TTL_SECONDS * 1000;
 
   try {
+    await cleanupExpiredPreviewObjects(env, uid).catch(() => {});
     const artifact = await writeAppArtifact(
       ctx,
       input,
@@ -1600,6 +1815,8 @@ async function createAppPreview(
       build: artifact.build,
     };
   } catch (error) {
+    await deleteR2Prefix(env, r2Prefix).catch(() => {});
+    await env.DESKTOP_KV.delete(`app-preview:${previewId}`).catch(() => {});
     throw wrapBuildError(error, tracker);
   }
 }
@@ -1675,7 +1892,7 @@ async function installAppPreview(
   }
   const sourceFiles = await sourceObj.json<Record<string, string>>();
 
-  return createAndRegisterApp(ctx, {
+  const result = await createAndRegisterApp(ctx, {
     name: previewMeta.name,
     description: previewMeta.description,
     files: sourceFiles,
@@ -1683,10 +1900,11 @@ async function installAppPreview(
     height: previewMeta.height,
     permissions: previewMeta.permissions,
     rationale: previewMeta.rationale,
-  }).then((result) => {
-    sql.exec('UPDATE apps SET updated_at = ? WHERE id = ?', Date.now(), result.appId);
-    return { ...result, previewId };
   });
+  await deleteR2Prefix(env, previewMeta.r2Prefix).catch(() => {});
+  await env.DESKTOP_KV.delete(`app-preview:${previewId}`).catch(() => {});
+  sql.exec('UPDATE apps SET updated_at = ? WHERE id = ?', Date.now(), result.appId);
+  return { ...result, previewId };
 }
 
 /**
@@ -1716,6 +1934,31 @@ export function initAppRegistry(sql: SqlStorage) {
  * Worker at load time via ctx.props.
  */
 const ETERNAL_RUNTIME_JS = `(() => {
+  const requiresCapability = __REQUIRE_CAPABILITY__;
+  let capability = null;
+  let capabilityResolver;
+  const capabilityReady = new Promise((resolve) => {
+    capabilityResolver = resolve;
+    setTimeout(() => {
+      if (capabilityResolver) {
+        capabilityResolver(null);
+        capabilityResolver = null;
+      }
+    }, 5000);
+  });
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent) return;
+    const data = event.data;
+    if (!data || data.type !== 'eternal:capability' || typeof data.token !== 'string') return;
+    if (data.token.length < 16 || data.token.length > 4096) return;
+    capability = data.token;
+    if (capabilityResolver) {
+      capabilityResolver(capability);
+      capabilityResolver = null;
+    }
+  });
+
   // The iframe's document URL ends with "/api/apps/:appId/". Resolve bridge
   // calls relative to it so we hit the Dynamic Worker's mount path rather
   // than the origin root (which would bypass our routing).
@@ -1724,7 +1967,15 @@ const ETERNAL_RUNTIME_JS = `(() => {
   }
 
   async function request(path, init) {
-    const res = await fetch(apiUrl(path), init);
+    let requestInit = init || {};
+    if (requiresCapability) {
+      const token = capability || await capabilityReady;
+      if (!token) throw new Error('EternalOS capability unavailable');
+      const headers = new Headers(requestInit.headers || {});
+      headers.set('Authorization', 'Bearer ' + token);
+      requestInit = { ...requestInit, headers };
+    }
+    const res = await fetch(apiUrl(path), requestInit);
     if (!res.ok) {
       let detail = '';
       try { detail = await res.text(); } catch (_) {}
@@ -1968,7 +2219,7 @@ ${jsPath ? `<script type="module" src="./${jsPath}"></script>` : ''}
   const assets: Record<string, string> = {
     ...normalizedFiles,
     [htmlPath]: fullHtml,
-    [APP_RUNTIME_ASSET_FILE]: ETERNAL_RUNTIME_JS,
+    [APP_RUNTIME_ASSET_FILE]: ETERNAL_RUNTIME_JS.replace('__REQUIRE_CAPABILITY__', String(mountBasePath === '/api/apps')),
   };
   const mountPath = `${mountBasePath}/__APP_ID__`;
 
@@ -2011,8 +2262,15 @@ function clampInt(value, min, max, fallback) {
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET, POST, PATCH, DELETE, OPTIONS',
-  'access-control-allow-headers': 'content-type',
+  'access-control-allow-headers': 'content-type, authorization',
   'access-control-max-age': '300',
+};
+
+const SECURITY_HEADERS = {
+  'content-security-policy': "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'",
+  'referrer-policy': 'no-referrer',
+  'x-content-type-options': 'nosniff',
+  'permissions-policy': 'camera=(), microphone=(), geolocation=(), payment=()',
 };
 
 function withCors(response) {
@@ -2030,6 +2288,13 @@ async function handleEternal(request, env, bridgePath) {
       status: 503,
       headers: { 'content-type': 'application/json' },
     }));
+  }
+  const authorization = request.headers.get('Authorization');
+  const capability = authorization?.startsWith('Bearer ')
+    ? authorization.slice('Bearer '.length)
+    : null;
+  if (!(await env.ETERNAL.authorizeApp(capability))) {
+    return withCors(Response.json({ error: 'Invalid or missing capability token' }, { status: 401 }));
   }
   const url = new URL(request.url);
 
@@ -2180,6 +2445,7 @@ export default {
       headers: {
         'content-type': getContentType(normalizedPath),
         'cache-control': 'no-cache',
+        ...SECURITY_HEADERS,
       },
     });
   },
@@ -2248,8 +2514,10 @@ export function createAppTools(ctx: AppToolsContext) {
         name: z.string().min(1).max(80).describe('App name'),
         description: z.string().max(500).optional().describe('Short description'),
         files: z.record(z.string()).describe('App source files: { "index.html": "...", "styles.css": "...", "app.js": "..." }'),
-        width: z.number().optional().default(600).describe('Default window width'),
-        height: z.number().optional().default(500).describe('Default window height'),
+        width: z.number().int().min(360).max(1600).optional().default(600).describe('Default window width'),
+        height: z.number().int().min(320).max(1200).optional().default(500).describe('Default window height'),
+        permissions: permissionsSchema,
+        rationale: z.string().max(500).optional().describe('Why the app needs its requested permissions'),
       }),
       needsApproval: true,
       execute: async (input, { toolCallId }) => createAndRegisterApp({ ...ctx, toolCallId }, {
@@ -2258,6 +2526,8 @@ export function createAppTools(ctx: AppToolsContext) {
         files: input.files,
         width: input.width,
         height: input.height,
+        permissions: input.permissions,
+        rationale: input.rationale,
       }),
     }),
 
@@ -2268,28 +2538,53 @@ export function createAppTools(ctx: AppToolsContext) {
         files: z.record(z.string()).describe('Updated source files'),
         name: z.string().optional().describe('Updated name'),
         description: z.string().max(500).optional().describe('Updated description'),
-        width: z.number().optional().describe('Updated default window width'),
-        height: z.number().optional().describe('Updated default window height'),
+        width: z.number().int().min(360).max(1600).optional().describe('Updated default window width'),
+        height: z.number().int().min(320).max(1200).optional().describe('Updated default window height'),
       }),
       needsApproval: true,
       execute: async (input, { toolCallId }) => {
         const tctx = { ...ctx, toolCallId };
-        // Look up the app in the registry
-        const rows = [...sql.exec<{ version: number; r2_prefix: string; desktop_item_id: string | null; name: string; description: string; width: number; height: number }>(
-          'SELECT version, r2_prefix, desktop_item_id, name, description, width, height FROM apps WHERE id = ?', input.appId,
-        )];
-        if (rows.length === 0) throw new Error(`App ${input.appId} not found`);
-        const app = rows[0];
+        const registered = await getRegisteredDesktopApp(env, uid, input.appId);
+        const app = {
+          version: registered.metadata.version,
+          r2_prefix: registered.metadata.r2Prefix || `apps/${uid}/${input.appId}`,
+          desktop_item_id: registered.item.id,
+          name: registered.item.appManifest?.name || registered.item.name,
+          description: registered.item.appManifest?.description || '',
+          width: registered.item.appManifest?.windowConfig.defaultWidth || 600,
+          height: registered.item.appManifest?.windowConfig.defaultHeight || 500,
+          permissions: registered.item.appManifest?.permissions,
+          rationale: registered.item.appManifest?.rationale,
+        };
 
         const tracker = createBuildTracker();
+        const newVersion = await getNextAppVersion(env, uid, input.appId, app.version);
+        const nextName = input.name ?? app.name;
+        const nextDescription = input.description ?? app.description;
+        const nextWidth = input.width ?? app.width;
+        const nextHeight = input.height ?? app.height;
+        const nextR2Prefix = getAppReleasePrefix(app.r2_prefix, newVersion);
+        let previousMeta: {
+          uid: string;
+          version: number;
+          granted?: AppGrantedPermissions;
+          r2Prefix?: string;
+        } | null = null;
+        let appMetadataWriteStarted = false;
 
         try {
-          const newVersion = app.version + 1;
-          const nextName = input.name ?? app.name;
-          const nextDescription = input.description ?? app.description;
-          const nextWidth = input.width ?? app.width;
-          const nextHeight = input.height ?? app.height;
+          previousMeta = registered.metadata;
 
+          const updatedInput: AppBundleInput = {
+            name: nextName,
+            description: nextDescription,
+            files: input.files,
+            width: nextWidth,
+            height: nextHeight,
+            permissions: app.permissions,
+            rationale: app.rationale,
+          };
+          validateGeneratedApp(updatedInput);
           const workspace = createAppWorkspace(input.files);
           tracker.markCompleted('prepare-workspace');
 
@@ -2313,85 +2608,95 @@ export function createAppTools(ctx: AppToolsContext) {
           await withStepTimeout(
             'Writing app bundle',
             APP_BUILD_TIMEOUT_MS.storageWrite,
-            env.ETERNALOS_FILES.put(`${app.r2_prefix}/bundle.json`, bundle),
+            env.ETERNALOS_FILES.put(`${nextR2Prefix}/bundle.json`, bundle),
           );
           await withStepTimeout(
             'Writing app source',
             APP_BUILD_TIMEOUT_MS.storageWrite,
-            env.ETERNALOS_FILES.put(`${app.r2_prefix}/source.json`, JSON.stringify(workspace.files)),
+            env.ETERNALOS_FILES.put(`${nextR2Prefix}/source.json`, JSON.stringify(workspace.files)),
           );
           await withStepTimeout(
             'Writing workspace manifest',
             APP_BUILD_TIMEOUT_MS.storageWrite,
-            env.ETERNALOS_FILES.put(`${app.r2_prefix}/${APP_WORKSPACE_MANIFEST_FILE}`, JSON.stringify(workspace.manifest)),
+            env.ETERNALOS_FILES.put(`${nextR2Prefix}/${APP_WORKSPACE_MANIFEST_FILE}`, JSON.stringify(workspace.manifest)),
+          );
+          await withStepTimeout(
+            'Writing release metadata',
+            APP_BUILD_TIMEOUT_MS.storageWrite,
+            env.ETERNALOS_FILES.put(`${nextR2Prefix}/${APP_METADATA_FILE}`, JSON.stringify({
+              id: input.appId,
+              uid,
+              name: nextName,
+              description: nextDescription,
+              version: newVersion,
+              r2Prefix: nextR2Prefix,
+              createdAt: Date.now(),
+              permissions: app.permissions,
+              rationale: app.rationale,
+            })),
           );
           tracker.markCompleted('write-storage');
 
-          const now = Date.now();
-          sql.exec(
-            'UPDATE apps SET version = ?, name = ?, description = ?, width = ?, height = ?, updated_at = ? WHERE id = ?',
-            newVersion,
-            nextName,
-            nextDescription,
-            nextWidth,
-            nextHeight,
-            now,
-            input.appId,
-          );
-
-          const prevMeta = await env.DESKTOP_KV.get<{
-            uid: string;
-            version: number;
-            granted?: AppGrantedPermissions;
-          }>(`app:${input.appId}`, 'json');
-          const preservedGrants = prevMeta?.granted ?? {};
+          const preservedGrants = previousMeta?.granted ?? {};
+          appMetadataWriteStarted = true;
           await withStepTimeout(
             'Saving app registry metadata',
             APP_BUILD_TIMEOUT_MS.storageWrite,
             env.DESKTOP_KV.put(
               `app:${input.appId}`,
-              JSON.stringify({ uid, version: newVersion, granted: preservedGrants }),
+              JSON.stringify({ uid, version: newVersion, granted: preservedGrants, r2Prefix: nextR2Prefix }),
             ),
           );
 
-          if (app.desktop_item_id) {
-            emitStage(tctx, 'install');
-            const doId = env.USER_DESKTOP.idFromName(uid);
-            const stub = env.USER_DESKTOP.get(doId);
-            const manifest: AppManifest = {
-              name: nextName,
-              description: nextDescription,
-              version: String(newVersion),
-              windowConfig: {
-                defaultWidth: nextWidth,
-                defaultHeight: nextHeight,
-                resizable: true,
-              },
-              appId: input.appId,
-            };
-            const updateRes = await withStepTimeout(
-              'Installing updated app on desktop',
-              APP_BUILD_TIMEOUT_MS.desktopInstall,
-              stub.fetch(new Request('http://internal/items', {
-                method: 'PATCH',
-                body: JSON.stringify([{
-                  id: app.desktop_item_id,
-                  updates: {
-                    name: nextName,
-                    appManifest: manifest,
-                  },
-                }]),
-              })),
-            );
-            if (!updateRes.ok) {
-              const detail = await updateRes.text().catch(() => '');
-              throw new Error(`Failed to update desktop item (${updateRes.status})${detail ? `: ${detail}` : ''}`);
-            }
+          emitStage(tctx, 'install');
+          const doId = env.USER_DESKTOP.idFromName(uid);
+          const stub = env.USER_DESKTOP.get(doId);
+          const manifest: AppManifest = {
+            name: nextName,
+            description: nextDescription,
+            version: String(newVersion),
+            windowConfig: {
+              defaultWidth: nextWidth,
+              defaultHeight: nextHeight,
+              resizable: true,
+            },
+            appId: input.appId,
+            permissions: app.permissions,
+            rationale: app.rationale,
+          };
+          const updateRes = await withStepTimeout(
+            'Installing updated app on desktop',
+            APP_BUILD_TIMEOUT_MS.desktopInstall,
+            stub.fetch(new Request('http://internal/items', {
+              method: 'PATCH',
+              body: JSON.stringify([{
+                id: app.desktop_item_id,
+                updates: {
+                  name: nextName,
+                  appManifest: manifest,
+                },
+              }]),
+            })),
+          );
+          if (!updateRes.ok) {
+            const detail = await updateRes.text().catch(() => '');
+            throw new Error(`Failed to update desktop item (${updateRes.status})${detail ? `: ${detail}` : ''}`);
           }
 
           tracker.markCompleted('install-desktop');
+          await pruneAppReleases(env, uid, input.appId, nextR2Prefix).catch((error) => {
+            console.error('App release cleanup failed:', error);
+          });
           return { appId: input.appId, version: newVersion, status: 'updated', build: tracker.success() };
         } catch (error) {
+          await deleteR2Prefix(env, getAppReleasePrefix(app.r2_prefix, app.version + 1)).catch(() => {});
+          if (appMetadataWriteStarted) {
+            if (previousMeta) {
+              await env.DESKTOP_KV.put(`app:${input.appId}`, JSON.stringify(previousMeta)).catch(() => {});
+            } else {
+              await env.DESKTOP_KV.delete(`app:${input.appId}`).catch(() => {});
+            }
+          }
           throw wrapBuildError(error, tracker);
         }
       },
@@ -2401,10 +2706,24 @@ export function createAppTools(ctx: AppToolsContext) {
       description: 'List all apps created by the user.',
       inputSchema: z.object({}),
       execute: async () => {
-        const rows = [...sql.exec<{ id: string; name: string; description: string; version: number; created_at: number }>(
-          'SELECT id, name, description, version, created_at FROM apps ORDER BY created_at DESC',
-        )];
-        return { apps: rows };
+        const response = await env.USER_DESKTOP.get(env.USER_DESKTOP.idFromName(uid)).fetch(new Request('http://internal/items'));
+        if (!response.ok) throw new Error('Failed to load desktop apps');
+        const items = (await response.json<{ items: DesktopItem[] }>()).items;
+        const apps = await Promise.all(items
+          .filter((item) => item.type === 'app' && item.appManifest?.appId && !item.isTrashed)
+          .map(async (item) => {
+            const appId = item.appManifest!.appId;
+            const metadata = await env.DESKTOP_KV.get<{ version?: number }>(`app:${appId}`, 'json');
+            return {
+              id: appId,
+              name: item.appManifest?.name || item.name,
+              description: item.appManifest?.description || '',
+              version: metadata?.version ?? (Number(item.appManifest?.version) || 1),
+              created_at: item.createdAt,
+            };
+          }));
+        apps.sort((left, right) => right.created_at - left.created_at);
+        return { apps };
       },
     }),
 
@@ -2414,20 +2733,23 @@ export function createAppTools(ctx: AppToolsContext) {
         appId: z.string().describe('The app ID to read source from'),
       }),
       execute: async (input) => {
-        const rows = [...sql.exec<{ r2_prefix: string; name: string }>(
-          'SELECT r2_prefix, name FROM apps WHERE id = ?', input.appId,
-        )];
-        if (rows.length === 0) throw new Error(`App ${input.appId} not found`);
+        const registered = await getRegisteredDesktopApp(env, uid, input.appId);
+        const r2Prefix = registered.metadata.r2Prefix || `apps/${uid}/${input.appId}`;
 
-        const obj = await env.ETERNALOS_FILES.get(`${rows[0].r2_prefix}/source.json`);
+        const obj = await env.ETERNALOS_FILES.get(`${r2Prefix}/source.json`);
         if (!obj) throw new Error('Source files not found');
 
         const files = await obj.json<Record<string, string>>();
-        const workspaceObj = await env.ETERNALOS_FILES.get(`${rows[0].r2_prefix}/${APP_WORKSPACE_MANIFEST_FILE}`);
+        const workspaceObj = await env.ETERNALOS_FILES.get(`${r2Prefix}/${APP_WORKSPACE_MANIFEST_FILE}`);
         const workspaceManifest = workspaceObj
           ? await workspaceObj.json<AppWorkspaceManifest>().catch(() => null)
           : null;
-        return { appId: input.appId, name: rows[0].name, files, workspaceManifest };
+        return {
+          appId: input.appId,
+          name: registered.item.appManifest?.name || registered.item.name,
+          files,
+          workspaceManifest,
+        };
       },
     }),
 
@@ -2438,34 +2760,24 @@ export function createAppTools(ctx: AppToolsContext) {
       }),
       needsApproval: true,
       execute: async (input) => {
-        const rows = [...sql.exec<{ r2_prefix: string; desktop_item_id: string | null }>(
-          'SELECT r2_prefix, desktop_item_id FROM apps WHERE id = ?', input.appId,
-        )];
-        if (rows.length === 0) throw new Error(`App ${input.appId} not found`);
-        const app = rows[0];
+        const registered = await getRegisteredDesktopApp(env, uid, input.appId);
 
-        // Delete from R2
-        await env.ETERNALOS_FILES.delete(`${app.r2_prefix}/bundle.json`);
-        await env.ETERNALOS_FILES.delete(`${app.r2_prefix}/source.json`);
-        await env.ETERNALOS_FILES.delete(`${app.r2_prefix}/${APP_WORKSPACE_MANIFEST_FILE}`);
+        await deleteR2Prefix(env, `apps/${uid}/${input.appId}/`);
 
-        // Delete from KV
         await env.DESKTOP_KV.delete(`app:${input.appId}`);
 
-        // Delete from registry
         sql.exec('DELETE FROM apps WHERE id = ?', input.appId);
 
-        // Trash the desktop item if it exists
-        if (app.desktop_item_id) {
-          const doId = env.USER_DESKTOP.idFromName(uid);
-          const stub = env.USER_DESKTOP.get(doId);
-          await stub.fetch(new Request('http://internal/items', {
-            method: 'PATCH',
-            body: JSON.stringify([{
-              id: app.desktop_item_id,
-              updates: { isTrashed: true, trashedAt: Date.now() },
-            }]),
-          }));
+        const stub = env.USER_DESKTOP.get(env.USER_DESKTOP.idFromName(uid));
+        const trashResponse = await stub.fetch(new Request('http://internal/items', {
+          method: 'PATCH',
+          body: JSON.stringify([{
+            id: registered.item.id,
+            updates: { isTrashed: true, trashedAt: Date.now() },
+          }]),
+        }));
+        if (!trashResponse.ok) {
+          throw new Error('Failed to remove app from desktop');
         }
 
         return { appId: input.appId, status: 'deleted' };

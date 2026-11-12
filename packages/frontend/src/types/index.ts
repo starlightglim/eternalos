@@ -3,7 +3,7 @@
 /**
  * Desktop item types
  */
-export type DesktopItemType = 'folder' | 'image' | 'text' | 'link' | 'audio' | 'video' | 'pdf' | 'widget' | 'sticker' | 'app';
+export type DesktopItemType = 'folder' | 'image' | 'text' | 'link' | 'audio' | 'video' | 'pdf' | 'widget' | 'sticker' | 'app' | 'cartridge';
 
 /**
  * Widget types for Layer 3 customization
@@ -119,6 +119,17 @@ export interface DesktopItem {
   imageAnalysis?: ImageAnalysisMetadata;
   // User-created app (type='app')
   appManifest?: AppManifest;
+  grantedPermissions?: {
+    fs?: { read?: string[]; write?: string[]; delete?: string[]; mimeTypes?: string[] };
+    profile?: { read?: Array<'username' | 'displayName' | 'bio' | 'avatar'> };
+    network?: { outbound?: string[] };
+    handlers?: { mimeTypes?: string[]; extensions?: string[] };
+    ipc?: { listen?: string[]; emit?: string[] };
+  };
+  permissionGrantedAt?: number;
+  // Installed console game (type='cartridge') — references a bazaar pack or
+  // the owner's own draft; the cartridge itself lives server-side.
+  cartridgeRef?: { packId?: string; draftId?: string; coverUrl?: string };
 }
 
 export interface AppPermissions {
@@ -133,6 +144,10 @@ export interface AppPermissions {
   };
   network?: {
     outbound?: string[];
+  };
+  ipc?: {
+    listen?: string[];
+    emit?: string[];
   };
   handlers?: {
     mimeTypes?: string[];
@@ -157,6 +172,7 @@ export interface AppManifest {
   };
   appId: string;
   permissions?: AppPermissions;
+  rationale?: string;
 }
 
 /**
@@ -268,16 +284,6 @@ export interface AuthUser {
   username: string;
   email: string;
   emailVerified?: boolean;
-}
-
-export type HyperEvmChainId = 998 | 999;
-
-export interface LinkedWallet {
-  provider: 'hyperevm';
-  chainId: HyperEvmChainId;
-  address: string;
-  linkedAt: number;
-  lastVerifiedAt: number;
 }
 
 /**

@@ -2,8 +2,8 @@
 
 .window {
   position: absolute;
-  background: var(--white);
-  border: var(--eos-window-border-width, 1px) var(--eos-window-border-style, solid) var(--black);
+  background: var(--window-bg, var(--white));
+  border: var(--eos-window-border-width, 1px) var(--eos-window-border-style, solid) var(--border, var(--black));
   user-select: none;
   will-change: transform;
   min-width: 200px;

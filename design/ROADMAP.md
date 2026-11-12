@@ -1,7 +1,11 @@
-# EternalOS — Improvement Roadmap
+# EternalOS — Improvement Roadmap (ARCHIVED)
 
-> Authored 2026-04-18 by Claude (Opus 4.7, 1M context) during a research + design session.
-> Refreshed 2026-04-22 to incorporate current repo state, Cloudflare platform releases through 2026-04-20, and the new source-first app workspace architecture.
+> **⚠️ ARCHIVED / SUPERSEDED — not a current release checklist.**
+> Retired 2026-11-11. This document was a 2026-04 research + design pass. Its "current state," "P0 blockers," and "what is wrong or brittle" sections describe the codebase as it was in April 2026 and are now out of date — several items it lists as broken are fixed (see the inline ✅ notes below). **For authoritative release status, read [RELEASE-READINESS.md](RELEASE-READINESS.md).**
+> This file is kept only as (a) a **deferred-ideas / platform-vision backlog** (the P2/P3 tiers and research findings remain useful), and (b) the link target that the numbered companion design docs (01–13) reference as their "parent." Do not treat its priorities, estimates, or status claims as current. Update RELEASE-READINESS.md instead; do not revive this as a live plan.
+
+> Originally authored 2026-04-18 by Claude (Opus 4.7, 1M context) during a research + design session.
+> Refreshed 2026-04-22 to incorporate then-current repo state, Cloudflare platform releases through 2026-04-20, and the source-first app workspace architecture.
 > Companion design docs: [01-apps-interop.md](01-apps-interop.md), [12-orchestrator-v2.md](12-orchestrator-v2.md), [13-source-first-app-workspaces.md](13-source-first-app-workspaces.md), [02-social-v1.md](02-social-v1.md), [03-mobile.md](03-mobile.md), [04-skin-format.md](04-skin-format.md).
 
 ---
@@ -35,18 +39,17 @@ Everything else ladders off those seven.
 - `OrchestratorAgent` defaults are materially fresher than the original draft assumed.
 - Turnstile and Cloudflare Email fallbacks are already wired in the codebase.
 
-**What is wrong or brittle:**
+**What is wrong or brittle** (April 2026 snapshot — ✅ = resolved as of 2026-11-11):
 
-- Public/private defaults were fixed in code, but the surrounding docs and rollout notes still talk as if the old behavior is live. That mismatch is now a documentation risk.
-- `ALLOWED_ORIGINS` includes `eternalos.app`, but the roadmap still describes that as unresolved.
-- Public asset endpoints (`/api/files`, `/api/wallpaper`, `/api/css-assets`, `/api/sounds`, `/api/cursors`, `/api/bazaar/assets`) skip rate limiting — R2 egress DoS vector.
-- WebSocket visitor endpoint has no rate limit or auth.
-- Bazaar indexes are JSON blobs in KV (`bazaar:type:{type}`, `bazaar:author:{uid}`); non-atomic, linear reads, breaks at ~5k packs.
-- Frontend has zero tests; no CI. Worker has minimal `node --test` files.
-- `temp-app/` junk Vite starter committed at repo root.
-- Mobile experience strips out all customization — half the product's personality is gone on phones.
-- `.ralph/fix_plan.md` claims "production-ready, no issues" as of Feb 21 2026, but cross-user image leak was fixed April 14. Doc is misleading; delete or mark obsolete.
-- The design docs still assume the older AI Search / AutoRAG-on-R2 model and older Agents SDK transport patterns. Those are now behind Cloudflare's current platform.
+- ✅ Public asset endpoints now rate-limit via the `isPublicAssetRoute` block in `index.ts` (`:686`–`:698`) backed by a `RateLimiter` DO.
+- ✅ The visitor/chat WebSocket endpoint now authenticates (`authenticateAgentChatWebSocket`) and rate-limits (`wsRateLimit`, `index.ts:660`).
+- ✅ CI exists (`.github/workflows/ci.yml` runs `npm run check:release`), the frontend has a vitest + `node --test` suite, and the worker integration suite passes 19/19.
+- ✅ `temp-app/` junk starter has been removed from the repo root.
+- Bazaar indexes are still JSON blobs in KV (`bazaar:type:{type}`, `bazaar:author:{uid}`); non-atomic, linear reads, breaks at ~5k packs. D1 migration still deferred (see [09-d1-migration.md](09-d1-migration.md)).
+- Mobile still strips most customization — tracked in [03-mobile.md](03-mobile.md).
+- ✅ `.ralph/fix_plan.md` (the misleading "production-ready, no issues" Feb 2026 audit) has been deleted (2026-11-11).
+- Some design docs still assume the older AI Search / AutoRAG-on-R2 model and older Agents SDK transport patterns; re-check against the current platform before building.
+- `ALLOWED_ORIGINS` includes `eternalos.app` (was previously flagged unresolved — now intentional).
 
 ## Integrated research findings
 
@@ -111,16 +114,18 @@ Recommended split for EternalOS:
 
 ## Priority tiers
 
-### P0 — Ship blockers for beta
+### P0 — Ship blockers for beta (April 2026 — mostly closed; see status)
 
 Things that either break the product, leak data, or cost money. Each is small and concrete.
 
-1. **Add Workers Rate Limiting** to `/api/files`, `/api/wallpaper`, `/api/css-assets`, `/api/sounds`, `/api/cursors`, `/api/bazaar/assets` (currently all skip limits at [index.ts:315](../packages/worker/src/index.ts:315)). R2 egress DoS vector otherwise.
-2. **Auth + rate limit `/api/ws/:username`** WebSocket handler. Anonymous unlimited connections today.
-3. **Delete `temp-app/`** at repo root (Vite starter junk).
-4. **Delete or mark obsolete `.ralph/fix_plan.md`** (misleading).
-5. **Invalidate `public:{uid}` KV cache when a user toggles an item's `isPublic`** — otherwise stale-public items persist up to 5 min after going private. ([visit.ts:146](../packages/worker/src/routes/visit.ts:146))
-6. **Refresh the docs to match code reality** — the design set currently misstates security posture and platform version in a few critical places.
+1. ✅ **Done** — Rate limiting added to public asset routes (`index.ts` `isPublicAssetRoute` block) backed by a `RateLimiter` DO.
+2. ✅ **Done** — The WebSocket handler now authenticates and rate-limits (`authenticateAgentChatWebSocket` + `wsRateLimit`).
+3. ✅ **Done** — `temp-app/` removed.
+4. ✅ **Done** — `.ralph/fix_plan.md` deleted (2026-11-11).
+5. ✅ **Done** — Toggling `isPublic` now evicts the visitor snapshot cache immediately (covered by the R1 regression test "removes newly-private items from the visitor snapshot cache immediately").
+6. 🟡 **In progress** — Docs refresh: RELEASE-READINESS.md is now the authoritative status doc and this ROADMAP has been archived (2026-11-11).
+
+Remaining open beta blockers now live in **[RELEASE-READINESS.md](RELEASE-READINESS.md)** (R2 account purge, R3/R4 tails, R6 dependency triage), not here.
 
 ### P1 — High-value next
 

@@ -14,16 +14,12 @@ import {
   signup as apiSignup,
   login as apiLogin,
   googleLogin as apiGoogleLogin,
-  createHyperEvmWalletChallenge,
-  loginWithHyperEvmWallet as apiHyperEvmLogin,
   logout as apiLogout,
   updateProfile as apiUpdateProfile,
   changePassword as apiChangePassword,
   changeUsername as apiChangeUsername,
   sendVerificationEmail as apiSendVerification,
 } from '../services/api';
-import { DEFAULT_HYPEREVM_CHAIN_ID, requestHyperEvmWallet, signHyperEvmMessage } from '../utils/hyperEvmWallet';
-import type { HyperEvmChainId } from '../types';
 import { useWindowStore } from './windowStore';
 import { useDesktopStore } from './desktopStore';
 
@@ -41,7 +37,6 @@ interface AuthActions {
   signup: (email: string, password: string, username: string, turnstileToken?: string | null) => Promise<string[] | undefined>;
   login: (email: string, password: string, turnstileToken?: string | null) => Promise<void>;
   googleLogin: (code: string, redirectUri: string) => Promise<{ isNewUser: boolean }>;
-  loginWithHyperEvmWallet: (chainId?: HyperEvmChainId) => Promise<void>;
   logout: () => Promise<void>;
   clearError: () => void;
   initialize: () => () => void;
@@ -251,57 +246,6 @@ export const useAuthStore = create<AuthStore>()(
           return { isNewUser: response.isNewUser };
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : 'Google sign-in failed';
-          set({ loading: false, error: message });
-          throw error;
-        }
-      },
-
-      loginWithHyperEvmWallet: async (requestedChainId?: HyperEvmChainId) => {
-        if (!isApiConfigured) {
-          set({ loading: false, error: 'API not configured' });
-          return;
-        }
-
-        set({ loading: true, error: null });
-
-        try {
-          const { address, chainId } = await requestHyperEvmWallet(requestedChainId ?? DEFAULT_HYPEREVM_CHAIN_ID);
-          const challenge = await createHyperEvmWalletChallenge(address, chainId, 'login');
-          const signature = await signHyperEvmMessage(challenge.message, address);
-          const response = await apiHyperEvmLogin({
-            address,
-            chainId,
-            nonce: challenge.nonce,
-            signature,
-          });
-
-          setAuthToken(response.token);
-          setRefreshToken(response.refreshToken);
-
-          const user: AuthUser = {
-            uid: response.user.uid,
-            username: response.user.username,
-            email: response.user.email,
-            emailVerified: response.user.emailVerified || false,
-          };
-
-          const profile: UserProfile = {
-            uid: response.user.uid,
-            username: response.user.username,
-            displayName: response.user.username,
-            createdAt: Date.now(),
-          };
-
-          set({
-            user,
-            profile,
-            token: response.token,
-            refreshToken: response.refreshToken,
-            loading: false,
-            initialized: true,
-          });
-        } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : 'HyperEVM wallet sign-in failed';
           set({ loading: false, error: message });
           throw error;
         }
@@ -548,7 +492,33 @@ export const useAuthStore = create<AuthStore>()(
           });
         }
 
-        return () => {};
+        const onStorage = (event: StorageEvent) => {
+          if (event.key !== 'eternalos-auth' && event.key !== null) return;
+          let next: Partial<AuthState> | null;
+          try {
+            next = event.newValue ? JSON.parse(event.newValue)?.state : null;
+          } catch { return; }
+
+          if (!next?.token || !next.refreshToken || next.user?.uid !== get().user?.uid) {
+            // Do not persist an empty session over another tab's new account.
+            // Reload rehydrates the new identity and discards all old requests.
+            setAuthToken(null);
+            setRefreshToken(null);
+            clearFileToken();
+            useWindowStore.getState().resetOnLogout();
+            useDesktopStore.getState().reset();
+            window.location.reload();
+            return;
+          }
+          if (next.token !== get().token || next.refreshToken !== get().refreshToken) {
+            setAuthToken(next.token);
+            setRefreshToken(next.refreshToken);
+            clearFileToken();
+            set({ token: next.token, refreshToken: next.refreshToken });
+          }
+        };
+        window.addEventListener('storage', onStorage);
+        return () => window.removeEventListener('storage', onStorage);
       },
     }),
     {

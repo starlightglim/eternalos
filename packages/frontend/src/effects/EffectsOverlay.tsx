@@ -12,7 +12,7 @@
 
 import { useRef, useEffect, useCallback } from 'react';
 import { useAppearanceStore } from '../stores/appearanceStore';
-import { renderSparkleTrail, renderRainbowTrail, renderGhostTrail } from './cursorTrails';
+import { renderSparkleTrail, renderRainbowTrail, renderGhostTrail, type TrailParticle } from './cursorTrails';
 
 // ---------------------------------------------------------------------------
 // Token helpers
@@ -197,7 +197,7 @@ function CanvasLayer({ tokens }: { tokens: Tokens }) {
     stars: [] as Particle[],
     fireflies: [] as Particle[],
     dust: [] as Particle[],
-    sparkle: [] as Parameters<typeof renderSparkleTrail>[1],
+    sparkle: [] as TrailParticle[],
     rainbow: [] as { x: number; y: number; age: number }[],
     ghost: [] as { x: number; y: number; age: number }[],
     snowTime: { v: 0 },

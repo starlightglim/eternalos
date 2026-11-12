@@ -109,7 +109,7 @@
 }
 
 .statusDotReady {
-  background: #3a9e5c;
+  background: var(--success);
 }
 
 .toolbarStatus {
@@ -481,7 +481,7 @@
 }
 
 .buildStageIconDone {
-  color: #3a9e5c;
+  color: var(--success);
   font-weight: 700;
 }
 
@@ -530,7 +530,7 @@
   width: 13px;
   text-align: center;
   flex-shrink: 0;
-  color: #3a9e5c;
+  color: var(--success);
   font-weight: 700;
   font-size: 10px;
 }
@@ -549,10 +549,10 @@
   display: inline-flex;
   align-items: center;
   padding: 2px 8px;
-  border: 1px solid color-mix(in srgb, #3a9e5c 40%, transparent);
+  border: 1px solid color-mix(in srgb, var(--success) 40%, transparent);
   border-radius: 999px;
-  background: color-mix(in srgb, #3a9e5c 10%, transparent);
-  color: #2d7a4a;
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+  color: var(--success);
   font-size: 10px;
   font-weight: 600;
 }
@@ -649,7 +649,7 @@
 
 .composerError {
   margin-bottom: 8px;
-  color: #b03030;
+  color: var(--danger);
 }
 
 .composer {
@@ -707,11 +707,11 @@
 .sendButton {
   min-width: 70px;
   padding: 6px 16px;
-  border: 1px solid color-mix(in srgb, var(--chat-accent) 70%, #000000 30%);
+  border: 1px solid color-mix(in srgb, var(--chat-accent) 70%, var(--control-border) 30%);
   border-radius: 8px;
   background: linear-gradient(
     to bottom,
-    color-mix(in srgb, var(--chat-accent) 82%, #ffffff 18%),
+    color-mix(in srgb, var(--chat-accent) 82%, var(--surface-raised) 18%),
     var(--chat-accent)
   );
   color: var(--chat-accent-text);
@@ -768,6 +768,75 @@
   background: var(--chat-hover);
 }
 
+.primaryButton {
+  padding: 5px 12px;
+  border: 1px solid var(--control-border, var(--selection));
+  border-radius: 6px;
+  background: var(--accent, var(--selection));
+  color: var(--selection-text, #fff);
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.primaryButton:hover {
+  filter: brightness(1.08);
+}
+
+.threadDialogOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--black, #000) 42%, transparent);
+}
+
+.threadDialog {
+  width: min(360px, 100%);
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 2px solid var(--control-border, var(--border));
+  background: var(--surface, var(--window-bg));
+  color: var(--text, var(--window-text-color));
+  box-shadow: 4px 4px 0 color-mix(in srgb, var(--black, #000) 35%, transparent);
+}
+
+.threadDialogTitle {
+  margin: 0;
+  font-family: var(--font-chicago);
+  font-size: 13px;
+}
+
+.threadDialogLabel {
+  color: var(--text-muted, var(--window-text-secondary));
+  font-size: 10px;
+}
+
+.threadDialogInput {
+  min-height: 30px;
+  padding: 6px 8px;
+  border: 1px solid var(--control-border, var(--border));
+  background: var(--control-bg, var(--window-bg));
+  color: var(--control-text, var(--text));
+  font: inherit;
+}
+
+.threadDialogInput:focus {
+  outline: 2px solid var(--accent, var(--selection));
+  outline-offset: 1px;
+}
+
+.threadDialogActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 .promptGrid {
   display: grid;
   gap: 6px;
@@ -807,7 +876,7 @@
 /* ── Misc ──────────────────────────────────────────────── */
 
 .errorText {
-  color: #b03030;
+  color: var(--danger);
 }
 
 @keyframes build-pulse {

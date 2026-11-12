@@ -3,7 +3,7 @@
 .folderView {
   height: 100%;
   overflow: auto;
-  background: var(--white);
+  background: var(--surface);
   padding: 8px;
 }
 
@@ -43,7 +43,7 @@
   padding: 1px 3px;
   font-family: var(--font-geneva);
   font-size: 10px;
-  color: var(--black);
+  color: var(--text);
   cursor: pointer;
   text-decoration: underline;
   -webkit-font-smoothing: none;
@@ -58,7 +58,7 @@
 .breadcrumbCurrent {
   padding: 1px 3px;
   font-weight: bold;
-  color: var(--black);
+  color: var(--text);
 }
 
 .breadcrumbSep {
@@ -152,7 +152,7 @@
 .itemName {
   font-family: var(--font-geneva);
   font-size: 9px;
-  color: var(--black);
+  color: var(--text);
   text-align: center;
   max-width: 100%;
   overflow: hidden;

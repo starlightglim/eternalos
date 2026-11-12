@@ -19,10 +19,10 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+  },
+  {
+    files: ['src/components/window/Window.tsx'],
     rules: {
-      // React Compiler rules currently reject existing async-loading and
-      // variant-slot patterns that are intentional in this app.
-      'react-hooks/set-state-in-effect': 'off',
       'react-hooks/static-components': 'off',
     },
   },

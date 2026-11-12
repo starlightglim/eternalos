@@ -6,21 +6,40 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { bazaarBrowse, bazaarInstall, bazaarPublish, bazaarMyPacks, bazaarDelete, type BazaarPack, getApiUrl } from '../../services/api';
-import { useAppearanceStore, type CustomAppearance } from '../../stores/appearanceStore';
+import { bazaarBrowse, bazaarInstall, bazaarPublish, bazaarMyPacks, bazaarDelete, createItem, type BazaarPack, getApiUrl } from '../../services/api';
+import { useAppearanceStore } from '../../stores/appearanceStore';
+import type { CustomAppearance } from '../../stores/appearanceStore';
 import { useAuthStore } from '../../stores/authStore';
+import { useDesktopStore } from '../../stores/desktopStore';
+import { useWindowStore } from '../../stores/windowStore';
+import styles from './BazaarWindow.module.css';
 
-type PackType = 'cursor' | 'icon' | 'sound' | 'effect' | 'skin';
+type PackType = 'cursor' | 'icon' | 'sound' | 'effect' | 'skin' | 'game';
 type View = 'browse' | 'publish' | 'my-packs';
 
 const TABS: { id: PackType | 'all'; label: string }[] = [
   { id: 'all', label: 'All' },
+  { id: 'game', label: 'Games' },
   { id: 'cursor', label: 'Cursors' },
   { id: 'icon', label: 'Icons' },
   { id: 'sound', label: 'Sounds' },
   { id: 'effect', label: 'Effects' },
   { id: 'skin', label: 'Skins' },
 ];
+
+/** Open a console-player window for a published game. */
+function openGameWindow(pack: BazaarPack) {
+  useWindowStore.getState().openWindow({
+    id: `console-player-${pack.packId}`,
+    title: pack.name,
+    position: { x: 140 + Math.random() * 60, y: 60 + Math.random() * 40 },
+    size: { width: 420, height: 460 },
+    minimized: false,
+    maximized: false,
+    contentType: 'console-player',
+    contentId: pack.packId,
+  });
+}
 
 export function BazaarWindow() {
   const [view, setView] = useState<View>('browse');
@@ -51,7 +70,10 @@ export function BazaarWindow() {
     setLoading(false);
   }, [activeType, searchQuery, page]);
 
-  useEffect(() => { loadPacks(); }, [loadPacks]);
+  useEffect(() => {
+    const request = window.setTimeout(() => { void loadPacks(); }, 0);
+    return () => window.clearTimeout(request);
+  }, [loadPacks]);
 
   const handleInstall = useCallback(async (packId: string) => {
     if (!user) {
@@ -61,30 +83,41 @@ export function BazaarWindow() {
     setInstalling(packId);
     try {
       const result = await bazaarInstall(packId);
-      if (result.success) {
+      if (result.success && result.pack?.type === 'game') {
+        // Games install as a cartridge item on the desktop, not as theme config.
+        const item = await createItem({
+          type: 'cartridge',
+          name: result.pack.name,
+          parentId: null,
+          position: { x: 80 + Math.random() * 240, y: 80 + Math.random() * 160 },
+          cartridgeRef: { packId: result.pack.packId, coverUrl: result.pack.previewUrl },
+        });
+        useDesktopStore.getState().addItem(item);
+        setMessage({ type: 'success', text: `"${result.pack.name}" added to your desktop!` });
+        loadPacks();
+      } else if (result.success && result.config) {
         // Merge config into appearance
         const store = useAppearanceStore.getState();
         const currentTokens = store.appearance.designTokens || {};
         const newTokens = { ...currentTokens };
         const profileUpdates: Partial<CustomAppearance> = {};
-        const profileUpdatesByKey = profileUpdates as Record<string, string | number | boolean>;
 
-        const legacyFields = new Set([
+        const legacyFields = new Set<keyof CustomAppearance>([
           'accentColor', 'desktopColor', 'windowBgColor', 'titleBarBgColor',
           'titleBarTextColor', 'windowBorderColor', 'buttonBgColor', 'buttonTextColor',
           'buttonBorderColor', 'labelColor', 'systemFont', 'bodyFont', 'monoFont',
           'windowBorderRadius', 'controlBorderRadius', 'windowShadow', 'windowOpacity',
         ]);
         for (const [key, value] of Object.entries(result.config)) {
-          if (legacyFields.has(key)) {
-            profileUpdatesByKey[key] = value;
+          if (legacyFields.has(key as keyof CustomAppearance)) {
+            profileUpdates[key as keyof CustomAppearance] = value as never;
           } else {
             newTokens[key] = value as string | number | boolean;
           }
         }
 
         store.updateAppearance({ ...profileUpdates, designTokens: newTokens });
-        store.saveAppearance();
+        await store.saveAppearance();
         setMessage({ type: 'success', text: `Installed "${result.pack?.name || 'pack'}"!` });
         // Refresh pack list to show updated install count
         loadPacks();
@@ -106,37 +139,34 @@ export function BazaarWindow() {
   }, [message]);
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div className={styles.shell}>
       {/* Header */}
-      <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--dark-gray, #555)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <button onClick={() => setView('browse')} style={view === 'browse' ? activeBtn : btn}>Browse</button>
-        {user && <button onClick={() => setView('my-packs')} style={view === 'my-packs' ? activeBtn : btn}>My Packs</button>}
-        {user && <button onClick={() => setView('publish')} style={view === 'publish' ? activeBtn : btn}>+ Publish</button>}
-        <div style={{ flex: 1 }} />
+      <div className={styles.header}>
+        <div className={styles.nav}>
+          <button className={`${styles.navButton} ${view === 'browse' ? styles.navButtonActive : ''}`} onClick={() => setView('browse')}>Browse</button>
+          {user && <button className={`${styles.navButton} ${view === 'my-packs' ? styles.navButtonActive : ''}`} onClick={() => setView('my-packs')}>My Packs</button>}
+          {user && <button className={`${styles.navButton} ${view === 'publish' ? styles.navButtonActive : ''}`} onClick={() => setView('publish')}>+ Publish</button>}
+        </div>
         {view === 'browse' && (
           <input
+            className={styles.search}
             type="text"
             placeholder="Search..."
             value={searchQuery}
             onChange={e => { setSearchQuery(e.target.value); setPage(1); }}
-            style={{ padding: '2px 6px', fontSize: 11, width: 140, border: '1px solid var(--dark-gray, #555)' }}
           />
         )}
       </div>
 
       {/* Message banner */}
       {message && (
-        <div style={{
-          padding: '4px 12px', fontSize: 11,
-          background: message.type === 'success' ? '#c8f7c5' : '#f7c5c5',
-          borderBottom: '1px solid var(--dark-gray, #555)',
-        }}>
+        <div className={`${styles.message} ${message.type === 'success' ? styles.successMessage : styles.errorMessage}`}>
           {message.text}
         </div>
       )}
 
       {/* Content */}
-      <div style={{ flex: 1, overflow: 'auto', padding: 8 }}>
+      <div className={styles.content}>
         {view === 'browse' && <BrowseView
           packs={packs} loading={loading} activeType={activeType}
           setActiveType={t => { setActiveType(t); setPage(1); }}
@@ -166,12 +196,12 @@ function BrowseView({ packs, loading, activeType, setActiveType, onInstall, inst
   return (
     <>
       {/* Type tabs */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
+      <div className={styles.filterBar}>
         {TABS.map(tab => (
           <button
             key={tab.id}
             onClick={() => setActiveType(tab.id)}
-            style={activeType === tab.id ? activeBtn : btn}
+            className={`${styles.filterButton} ${activeType === tab.id ? styles.filterButtonActive : ''}`}
           >
             {tab.label}
           </button>
@@ -180,13 +210,15 @@ function BrowseView({ packs, loading, activeType, setActiveType, onInstall, inst
 
       {/* Grid */}
       {loading ? (
-        <div style={{ textAlign: 'center', padding: 20, fontSize: 11, color: '#666' }}>Loading...</div>
+        <div className={styles.loading}>Loading packs...</div>
       ) : packs.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: 20, fontSize: 11, color: '#666' }}>
-          No packs found. Be the first to publish!
+        <div className={styles.emptyState}>
+          <div className={styles.emptyIcon}>✦</div>
+          <strong>No packs found</strong>
+          <span>Be the first to share a customizable pack with the community.</span>
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 8 }}>
+        <div className={styles.packGrid}>
           {packs.map(pack => (
             <PackCard key={pack.packId} pack={pack} onInstall={onInstall} installing={installing === pack.packId} />
           ))}
@@ -195,10 +227,10 @@ function BrowseView({ packs, loading, activeType, setActiveType, onInstall, inst
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 8, fontSize: 11 }}>
-          <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page === 1} style={btn}>Prev</button>
-          <span style={{ padding: '2px 8px' }}>Page {page} of {totalPages}</span>
-          <button onClick={() => setPage(Math.min(totalPages, page + 1))} disabled={page === totalPages} style={btn}>Next</button>
+        <div className={styles.pagination}>
+          <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page === 1} className={styles.navButton}>Prev</button>
+          <span className={styles.paginationLabel}>Page {page} of {totalPages}</span>
+          <button onClick={() => setPage(Math.min(totalPages, page + 1))} disabled={page === totalPages} className={styles.navButton}>Next</button>
         </div>
       )}
     </>
@@ -211,34 +243,44 @@ function BrowseView({ packs, loading, activeType, setActiveType, onInstall, inst
 
 function PackCard({ pack, onInstall, installing }: { pack: BazaarPack; onInstall: (id: string) => void; installing: boolean }) {
   const previewSrc = pack.previewUrl?.startsWith('/') ? getApiUrl(pack.previewUrl) : pack.previewUrl;
+  const isGame = pack.type === 'game';
   return (
-    <div style={{
-      border: '1px solid var(--dark-gray, #888)',
-      background: 'var(--white, #fff)',
-      padding: 6,
-      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
-      fontSize: 11,
-    }}>
+    <article className={styles.packCard}>
       <img
         src={previewSrc}
         alt={pack.name}
-        style={{ width: '100%', height: 80, objectFit: 'contain', background: '#f0f0f0', imageRendering: 'pixelated' }}
+        className={`${styles.packPreview} ${isGame ? styles.gamePreview : ''}`}
         loading="lazy"
       />
-      <div style={{ fontWeight: 'bold', textAlign: 'center', wordBreak: 'break-word' }}>{pack.name}</div>
-      <div style={{ color: '#666', fontSize: 10 }}>@{pack.authorUsername}</div>
-      {pack.verification?.provider === 'hyperevm' && pack.verification.status === 'verified' && (
-        <div style={{ color: '#006600', fontSize: 10, fontWeight: 'bold' }}>HyperEVM verified</div>
+      <div className={styles.packName}>{pack.name}</div>
+      <div className={styles.packAuthor}>@{pack.authorUsername}</div>
+      <div className={styles.packMeta}>{pack.installs} installs</div>
+      {isGame ? (
+        <div className={styles.packActions}>
+          <button
+            onClick={() => openGameWindow(pack)}
+            className={`${styles.actionButton} ${styles.primaryAction}`}
+          >
+            ▶ Play
+          </button>
+          <button
+            onClick={() => onInstall(pack.packId)}
+            disabled={installing}
+            className={styles.actionButton}
+          >
+            {installing ? '...' : 'Install'}
+          </button>
+        </div>
+      ) : (
+        <button
+          onClick={() => onInstall(pack.packId)}
+          disabled={installing}
+          className={`${styles.actionButton} ${styles.primaryAction}`}
+        >
+          {installing ? 'Installing...' : 'Use'}
+        </button>
       )}
-      <div style={{ color: '#888', fontSize: 10 }}>{pack.installs} installs</div>
-      <button
-        onClick={() => onInstall(pack.packId)}
-        disabled={installing}
-        style={{ ...btn, width: '100%', fontWeight: 'bold' }}
-      >
-        {installing ? 'Installing...' : 'Use'}
-      </button>
-    </div>
+    </article>
   );
 }
 
@@ -297,11 +339,11 @@ function PublishView({ onPublished }: { onPublished: () => void }) {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 11 }}>
-      <div style={{ fontWeight: 'bold', fontSize: 12 }}>Publish to Bazaar</div>
+    <div className={styles.publishForm}>
+      <div className={styles.formTitle}>Publish to Bazaar</div>
 
-      <label>Type:
-        <select value={type} onChange={e => setType(e.target.value as PackType)} style={{ marginLeft: 4 }}>
+      <label className={styles.formLabel}>Type
+        <select className={styles.formControl} value={type} onChange={e => setType(e.target.value as PackType)}>
           <option value="cursor">Cursor Pack</option>
           <option value="icon">Icon Pack</option>
           <option value="sound">Sound Pack</option>
@@ -310,36 +352,36 @@ function PublishView({ onPublished }: { onPublished: () => void }) {
         </select>
       </label>
 
-      <label>Name: <input value={name} onChange={e => setName(e.target.value)} maxLength={80} style={{ width: '100%', marginTop: 2 }} /></label>
-      <label>Description: <textarea value={description} onChange={e => setDescription(e.target.value)} maxLength={500} rows={2} style={{ width: '100%', marginTop: 2, resize: 'vertical' }} /></label>
-      <label>Tags (comma-separated): <input value={tags} onChange={e => setTags(e.target.value)} placeholder="retro, pixel, dark" style={{ width: '100%', marginTop: 2 }} /></label>
+      <label className={styles.formLabel}>Name <input className={styles.formControl} value={name} onChange={e => setName(e.target.value)} maxLength={80} /></label>
+      <label className={styles.formLabel}>Description <textarea className={styles.formControl} value={description} onChange={e => setDescription(e.target.value)} maxLength={500} rows={2} /></label>
+      <label className={styles.formLabel}>Tags (comma-separated) <input className={styles.formControl} value={tags} onChange={e => setTags(e.target.value)} placeholder="retro, pixel, dark" /></label>
 
-      <label>Preview image:
-        <input type="file" accept="image/*" onChange={e => setPreview(e.target.files?.[0] || null)} style={{ marginTop: 2 }} />
+      <label className={styles.formLabel}>Preview image
+        <input className={styles.fileInput} type="file" accept="image/*" onChange={e => setPreview(e.target.files?.[0] || null)} />
       </label>
 
       <div>
-        <label>Assets:</label>
-        <input type="file" accept="image/*,audio/*" multiple onChange={handleAddAsset} style={{ marginTop: 2 }} />
+        <label className={styles.formLabel}>Assets</label>
+        <input className={styles.fileInput} type="file" accept="image/*,audio/*" multiple onChange={handleAddAsset} />
         {Object.keys(assets).length > 0 && (
-          <div style={{ marginTop: 4, fontSize: 10, color: '#666' }}>
+          <div className={styles.fileList}>
             {Object.entries(assets).map(([key, file]) => (
-              <div key={key}>
+              <div className={styles.fileItem} key={key}>
                 {key}: {file.name} ({Math.round(file.size / 1024)}KB)
-                <button onClick={() => { const a = { ...assets }; delete a[key]; setAssets(a); }} style={{ marginLeft: 4, fontSize: 9, cursor: 'pointer' }}>Remove</button>
+                <button className={styles.removeButton} onClick={() => { const a = { ...assets }; delete a[key]; setAssets(a); }}>Remove</button>
               </div>
             ))}
           </div>
         )}
       </div>
 
-      <label>Config (JSON — token overrides applied on install):
-        <textarea value={config} onChange={e => setConfig(e.target.value)} rows={4} style={{ width: '100%', marginTop: 2, fontFamily: 'monospace', fontSize: 10, resize: 'vertical' }} />
+      <label className={styles.formLabel}>Config (JSON — token overrides applied on install)
+        <textarea className={`${styles.formControl} ${styles.codeControl}`} value={config} onChange={e => setConfig(e.target.value)} rows={4} />
       </label>
 
-      {error && <div style={{ color: 'red', fontSize: 10 }}>{error}</div>}
+      {error && <div className={styles.formError}>{error}</div>}
 
-      <button onClick={handlePublish} disabled={publishing} style={{ ...btn, fontWeight: 'bold', alignSelf: 'flex-start', padding: '4px 16px' }}>
+      <button onClick={handlePublish} disabled={publishing} className={`${styles.actionButton} ${styles.primaryAction} ${styles.publishButton}`}>
         {publishing ? 'Publishing...' : 'Publish to Bazaar'}
       </button>
     </div>
@@ -370,19 +412,19 @@ function MyPacksView({ onDeleted }: { onDeleted: () => void }) {
     onDeleted();
   };
 
-  if (loading) return <div style={{ textAlign: 'center', padding: 20, fontSize: 11 }}>Loading...</div>;
-  if (packs.length === 0) return <div style={{ textAlign: 'center', padding: 20, fontSize: 11, color: '#666' }}>You haven't published any packs yet.</div>;
+  if (loading) return <div className={styles.loading}>Loading your packs...</div>;
+  if (packs.length === 0) return <div className={styles.emptyState}><div className={styles.emptyIcon}>✦</div><strong>No published packs yet</strong><span>Your shared customizations will appear here.</span></div>;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <div className={styles.myPacks}>
       {packs.map(pack => (
-        <div key={pack.packId} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 6, border: '1px solid var(--dark-gray, #888)', fontSize: 11 }}>
-          <img src={pack.previewUrl?.startsWith('/') ? getApiUrl(pack.previewUrl) : pack.previewUrl} alt={pack.name} style={{ width: 40, height: 40, objectFit: 'contain' }} />
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 'bold' }}>{pack.name}</div>
-            <div style={{ fontSize: 10, color: '#666' }}>{pack.type} &middot; {pack.installs} installs</div>
+        <div className={styles.myPack} key={pack.packId}>
+          <img className={styles.myPackPreview} src={pack.previewUrl?.startsWith('/') ? getApiUrl(pack.previewUrl) : pack.previewUrl} alt={pack.name} />
+          <div className={styles.myPackInfo}>
+            <div className={styles.packName}>{pack.name}</div>
+            <div className={styles.packMeta}>{pack.type} &middot; {pack.installs} installs</div>
           </div>
-          <button onClick={() => handleDelete(pack.packId)} disabled={deleting === pack.packId} style={{ ...btn, color: 'red', fontSize: 10 }}>
+          <button onClick={() => handleDelete(pack.packId)} disabled={deleting === pack.packId} className={`${styles.actionButton} ${styles.deleteButton}`}>
             {deleting === pack.packId ? '...' : 'Delete'}
           </button>
         </div>
@@ -390,21 +432,3 @@ function MyPacksView({ onDeleted }: { onDeleted: () => void }) {
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Shared button styles
-// ---------------------------------------------------------------------------
-
-const btn: React.CSSProperties = {
-  padding: '2px 8px', fontSize: 11, cursor: 'pointer',
-  border: '1px solid var(--dark-gray, #888)',
-  background: 'var(--white, #fff)',
-  fontFamily: 'inherit',
-};
-
-const activeBtn: React.CSSProperties = {
-  ...btn,
-  background: 'var(--selection, #000)',
-  color: 'var(--white, #fff)',
-  borderColor: 'var(--selection, #000)',
-};

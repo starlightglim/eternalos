@@ -17,13 +17,13 @@
   font-family: var(--font-geneva);
   font-size: 10px;
   font-weight: normal;
-  color: #444;
+  color: var(--text);
 }
 
 .activeLabel {
   font-family: var(--font-geneva);
   font-size: 9px;
-  color: #888;
+  color: var(--text-muted);
   letter-spacing: 0.02em;
 }
 
@@ -38,8 +38,9 @@
   align-items: center;
   gap: 2px;
   padding: 3px 2px;
-  border: 1px solid #C0C0C0;
-  background: #FAFAFA;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--control-text);
   cursor: pointer;
   font-family: var(--font-geneva), Geneva, sans-serif;
   flex: 1 1 0;
@@ -47,17 +48,17 @@
 }
 
 .variantCard:hover {
-  border-color: #888;
-  background: #F0F0F4;
+  border-color: var(--accent, var(--control-border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .variantCardActive {
-  border-color: #3366CC;
-  background: #EDF2FC;
+  border-color: var(--accent, var(--control-border));
+  background: color-mix(in srgb, var(--accent) 18%, var(--control-bg));
 }
 
 .variantCardActive:hover {
-  background: #EDF2FC;
+  background: color-mix(in srgb, var(--accent) 24%, var(--control-bg));
 }
 
 /* Mini preview */
@@ -78,7 +79,7 @@
   font-size: 9px;
   text-align: center;
   line-height: 1;
-  color: #333;
+  color: var(--control-text);
 }
 
 .variantDescription {

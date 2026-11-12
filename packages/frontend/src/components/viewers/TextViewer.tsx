@@ -36,6 +36,12 @@ export function TextViewer({
   const [isEditingName, setIsEditingName] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
+  const contentRef = useRef(content);
+  const isDirtyRef = useRef(isDirty);
+  const savingRef = useRef(false);
+  contentRef.current = content;
+  isDirtyRef.current = isDirty;
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -44,6 +50,7 @@ export function TextViewer({
 
   // Update content when prop changes
   useEffect(() => {
+    if (isDirtyRef.current) return;
     setContent(initialContent);
     setIsDirty(false);
   }, [initialContent]);
@@ -94,27 +101,33 @@ export function TextViewer({
 
   // Save handler
   const saveContent = useCallback(async () => {
-    if (!isDirty || !isOwner) return;
+    if (!isDirty || !isOwner || savingRef.current) return;
 
+    savingRef.current = true;
     setIsSaving(true);
+    setSaveFailed(false);
     try {
       // Update the desktop item with new content
-      updateItem(itemId, { textContent: content });
-      setIsDirty(false);
-      // Remove unsaved indicator from window title
-      updateWindowTitle(windowId, fileName);
+      const saved = await updateItem(itemId, { textContent: content });
+      if (!saved) {
+        setSaveFailed(true);
+        return;
+      }
+      // A completed save must not mark newer typing as saved.
+      if (contentRef.current === content) {
+        isDirtyRef.current = false;
+        setIsDirty(false);
+        updateWindowTitle(windowId, fileName);
+      }
     } catch (error) {
       console.error('Failed to save:', error);
     } finally {
+      savingRef.current = false;
       setIsSaving(false);
     }
   }, [content, isDirty, isOwner, itemId, updateItem, windowId, fileName, updateWindowTitle]);
 
   // Auto-save on unmount (e.g., when window is closed) if there are unsaved changes
-  const contentRef = useRef(content);
-  const isDirtyRef = useRef(isDirty);
-  contentRef.current = content;
-  isDirtyRef.current = isDirty;
   useEffect(() => {
     return () => {
       if (isDirtyRef.current && isOwner) {
@@ -147,6 +160,9 @@ export function TextViewer({
     // Enforce size limit to prevent browser/storage performance issues
     if (newValue.length > MAX_TEXT_LENGTH) return;
     setContent(newValue);
+    contentRef.current = newValue;
+    isDirtyRef.current = true;
+    setSaveFailed(false);
     if (!isDirty) {
       // First edit — show unsaved indicator in window title bar
       updateWindowTitle(windowId, `• ${fileName}`);
@@ -221,6 +237,7 @@ export function TextViewer({
         )}
         {isDirty && <span className={styles.unsaved}>•</span>}
         {isSaving && <span className={styles.saving}>Saving...</span>}
+        {saveFailed && <button onClick={saveContent}>Save failed — Retry</button>}
         {!isOwner && <span className={styles.readOnly}>Read Only</span>}
       </div>
 

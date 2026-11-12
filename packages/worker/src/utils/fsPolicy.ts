@@ -80,7 +80,7 @@ export function mimeMatches(mimeType: string | undefined, patterns: string[] | u
  * Does the granted permission set permit reading a given desktop item?
  *
  * An item is readable if either its *path* matches a granted `fs.read` glob,
- * OR its *mime type* matches a granted `fs.mimeTypes` pattern. These are
+ * OR its *mime type* matches a granted `fs.mimeTypes` or `fs.readMimeTypes` pattern. These are
  * OR'd so an app can say "any image anywhere" without having to enumerate
  * folders.
  */
@@ -90,7 +90,7 @@ export function canReadItem(
   mimeType: string | undefined,
 ): boolean {
   if (anyGlobMatches(itemPath, granted.fs?.read)) return true;
-  if (mimeMatches(mimeType, granted.fs?.mimeTypes)) return true;
+  if (mimeMatches(mimeType, [...(granted.fs?.mimeTypes ?? []), ...(granted.fs?.readMimeTypes ?? [])])) return true;
   return false;
 }
 
@@ -100,7 +100,7 @@ export function canWriteItem(
   mimeType: string | undefined,
 ): boolean {
   if (anyGlobMatches(itemPath, granted.fs?.write)) return true;
-  if (mimeMatches(mimeType, granted.fs?.mimeTypes)) return true;
+  if (mimeMatches(mimeType, granted.fs?.writeMimeTypes)) return true;
   return false;
 }
 
@@ -110,7 +110,6 @@ export function canDeleteItem(
   mimeType: string | undefined,
 ): boolean {
   if (anyGlobMatches(itemPath, granted.fs?.delete)) return true;
-  if (mimeMatches(mimeType, granted.fs?.mimeTypes)) return true;
+  if (mimeMatches(mimeType, granted.fs?.deleteMimeTypes)) return true;
   return false;
 }
-

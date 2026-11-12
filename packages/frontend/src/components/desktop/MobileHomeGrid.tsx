@@ -291,7 +291,7 @@ const itemButtonStyle: React.CSSProperties = {
   alignItems: 'center',
   gap: 4,
   minHeight: 88,
-  color: 'var(--label-color, #ffffff)',
+  color: 'var(--appearance-label-color, var(--label-color, #ffffff))',
   fontFamily: 'inherit',
   WebkitTapHighlightColor: 'transparent',
 };
@@ -331,6 +331,6 @@ const dotStyle: React.CSSProperties = {
   width: 6,
   height: 6,
   borderRadius: '50%',
-  background: 'var(--label-color, #ffffff)',
+  background: 'var(--appearance-label-color, var(--label-color, #ffffff))',
   transition: 'opacity 160ms ease',
 };

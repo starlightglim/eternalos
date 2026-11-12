@@ -2,8 +2,7 @@
 
 .desktop {
   position: fixed;
-  /* Account for menu bar height (20px) */
-  top: 20px;
+  top: var(--menu-bar-height, 20px);
   left: 0;
   right: 0;
   bottom: 0;
@@ -19,23 +18,23 @@
 
 /* Drag-over state for file drops */
 .dragOver {
-  background-color: #b0b0b0;
-  outline: 3px dashed var(--black);
+  background-color: color-mix(in srgb, var(--accent, var(--selection)) 18%, var(--custom-desktop-color, var(--platinum)));
+  outline: 3px dashed var(--accent, var(--selection));
   outline-offset: -6px;
 }
 
 /* Drop target state when dragging item from folder to desktop */
 .desktopDropTarget {
-  outline: 2px dashed var(--black);
+  outline: 2px dashed var(--accent, var(--selection));
   outline-offset: -4px;
-  background-color: rgba(0, 0, 0, 0.05);
+  background-color: color-mix(in srgb, var(--accent, var(--selection)) 6%, transparent);
 }
 
 /* Selection rectangle (marquee select) */
 .selectionRect {
   position: absolute;
-  border: 1px solid var(--black);
-  background-color: rgba(0, 0, 128, 0.15);
+  border: 1px solid var(--accent, var(--selection));
+  background-color: color-mix(in srgb, var(--accent, var(--selection)) 15%, transparent);
   pointer-events: none;
   z-index: 9999;
 }

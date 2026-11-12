@@ -5,7 +5,7 @@
   flex-direction: column;
   align-items: center;
   height: 100%;
-  background-color: var(--platinum);
+  background-color: var(--surface-chrome, var(--platinum));
   padding: 12px;
   gap: 12px;
   font-family: var(--font-geneva);
@@ -22,8 +22,8 @@
   width: 100px;
   height: 100px;
   border-radius: 50%;
-  background-color: var(--white);
-  border: 2px solid var(--black);
+  background-color: var(--surface, var(--white));
+  border: 2px solid var(--control-border, var(--black));
   position: relative;
   /* Classic Mac inset shadow */
   box-shadow:
@@ -37,7 +37,7 @@
   position: absolute;
   width: 2px;
   height: 6px;
-  background-color: var(--black);
+  background-color: var(--text, var(--black));
   left: 50%;
   top: 50%;
   transform-origin: center center;
@@ -58,21 +58,21 @@
 .hourHand {
   width: 4px;
   height: 24px;
-  background-color: var(--black);
+  background-color: var(--text, var(--black));
   margin-left: -2px;
 }
 
 .minuteHand {
   width: 3px;
   height: 34px;
-  background-color: var(--black);
+  background-color: var(--text, var(--black));
   margin-left: -1.5px;
 }
 
 .secondHand {
   width: 1px;
   height: 38px;
-  background-color: #c00;
+  background-color: var(--danger, #c00);
   margin-left: -0.5px;
 }
 
@@ -81,7 +81,7 @@
   position: absolute;
   width: 8px;
   height: 8px;
-  background-color: var(--black);
+  background-color: var(--text, var(--black));
   border-radius: 50%;
   left: 50%;
   top: 50%;
@@ -94,8 +94,8 @@
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  background-color: var(--white);
-  border: 2px solid var(--black);
+  background-color: var(--surface, var(--white));
+  border: 2px solid var(--control-border, var(--black));
   padding: 8px 16px;
   /* Inset bevel */
   box-shadow:
@@ -106,12 +106,12 @@
 .digitalTime {
   font-family: var(--font-monaco);
   font-size: 20px;
-  color: var(--black);
+  color: var(--text, var(--black));
   letter-spacing: 1px;
 }
 
 .digitalDate {
   font-family: var(--font-geneva);
   font-size: 11px;
-  color: var(--black);
+  color: var(--text, var(--black));
 }

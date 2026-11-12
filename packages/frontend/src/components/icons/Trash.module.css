@@ -33,7 +33,7 @@
   font-family: var(--font-geneva);
   font-size: 9px;
   line-height: 1.2;
-  color: var(--black);
+  color: var(--desktop-text-color, var(--text, var(--black)));
   -webkit-font-smoothing: none;
   -moz-osx-font-smoothing: unset;
   padding: 1px 2px;
@@ -41,18 +41,18 @@
 
 /* Selected label - navy blue background, white text */
 .labelSelected {
-  background-color: var(--selection);
+  background-color: var(--accent, var(--selection));
   color: var(--selection-text);
 }
 
 /* Drop target highlight when dragging item over */
 .dropTarget {
-  outline: 2px dashed var(--selection);
+  outline: 2px dashed var(--accent, var(--selection));
   outline-offset: 4px;
-  background-color: rgba(0, 0, 128, 0.1);
+  background-color: color-mix(in srgb, var(--accent, var(--selection)) 10%, transparent);
 }
 
 /* Hover state */
 .trash:hover .iconLabel:not(.labelSelected) {
-  background-color: rgba(0, 0, 128, 0.1);
+  background-color: color-mix(in srgb, var(--accent, var(--selection)) 10%, transparent);
 }

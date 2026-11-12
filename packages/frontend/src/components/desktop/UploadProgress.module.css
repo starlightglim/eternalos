@@ -12,8 +12,8 @@
 
 .uploadWindow {
   width: 280px;
-  background: var(--white);
-  border: 2px solid var(--black);
+  background: var(--surface, var(--white));
+  border: 2px solid var(--control-border, var(--black));
   box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.3);
   font-family: var(--font-chicago);
   font-size: 12px;
@@ -22,7 +22,7 @@
 }
 
 .uploadWindow.error {
-  border-color: #800000;
+  border-color: var(--danger, #800000);
 }
 
 /* Title bar */
@@ -32,21 +32,22 @@
   justify-content: space-between;
   height: 20px;
   padding: 0 4px 0 8px;
-  background: var(--platinum);
-  border-bottom: 1px solid var(--black);
+  background: var(--surface-chrome, var(--platinum));
+  border-bottom: 1px solid var(--control-border, var(--black));
 }
 
 .title {
   font-weight: normal;
-  color: var(--black);
+  color: var(--text, var(--black));
 }
 
 .closeButton {
   width: 14px;
   height: 14px;
   padding: 0;
-  border: 1px solid var(--black);
-  background: var(--white);
+  border: 1px solid var(--control-border, var(--black));
+  background: var(--control-bg, var(--white));
+  color: var(--control-text, var(--black));
   font-size: 14px;
   line-height: 12px;
   cursor: pointer;
@@ -56,8 +57,8 @@
 }
 
 .closeButton:hover {
-  background: var(--black);
-  color: var(--white);
+  background: var(--accent, var(--black));
+  color: var(--selection-text, var(--white));
 }
 
 /* Content */
@@ -81,7 +82,7 @@
 }
 
 .filename {
-  color: var(--black);
+  color: var(--text, var(--black));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -97,8 +98,8 @@
 .progressTrack {
   flex: 1;
   height: 12px;
-  background: var(--white);
-  border: 1px solid var(--black);
+  background: var(--control-bg, var(--white));
+  border: 1px solid var(--control-border, var(--black));
   /* Inner inset bevel */
   box-shadow: inset 1px 1px 0 var(--shadow);
 }
@@ -107,10 +108,10 @@
   height: 100%;
   background: repeating-linear-gradient(
     90deg,
-    var(--black) 0px,
-    var(--black) 4px,
-    var(--white) 4px,
-    var(--white) 8px
+    var(--accent, var(--black)) 0px,
+    var(--accent, var(--black)) 4px,
+    var(--selection-text, var(--white)) 4px,
+    var(--selection-text, var(--white)) 8px
   );
   /* Classic Mac striped progress pattern */
   animation: stripes 0.5s linear infinite;
@@ -129,14 +130,14 @@
   flex-shrink: 0;
   width: 32px;
   text-align: right;
-  color: var(--black);
+  color: var(--text, var(--black));
 }
 
 /* Status messages */
 .statusComplete {
-  color: #006600;
+  color: var(--success, #006600);
 }
 
 .statusError {
-  color: #800000;
+  color: var(--danger, #800000);
 }

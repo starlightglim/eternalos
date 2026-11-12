@@ -16,6 +16,18 @@ class_name = "UserDesktop"
 name = "OrchestratorAgent"
 class_name = "OrchestratorAgent"
 
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiter"
+
+[[durable_objects.bindings]]
+name = "AUTH_COORDINATOR"
+class_name = "AuthCoordinator"
+
+[[durable_objects.bindings]]
+name = "BAZAAR_COORDINATOR"
+class_name = "BazaarCoordinator"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["UserDesktop"]
@@ -32,6 +44,18 @@ new_sqlite_classes = ["AppBuilderAgent"]
 tag = "v4"
 new_sqlite_classes = ["OrchestratorAgent"]
 deleted_classes = ["DesktopChatAgent", "AppBuilderAgent"]
+
+[[migrations]]
+tag = "v5"
+new_sqlite_classes = ["RateLimiter"]
+
+[[migrations]]
+tag = "v6"
+new_sqlite_classes = ["AuthCoordinator"]
+
+[[migrations]]
+tag = "v7"
+new_sqlite_classes = ["BazaarCoordinator"]
 
 # Dynamic Workers (sandboxed app runtime)
 [[worker_loaders]]
@@ -59,12 +83,14 @@ remote = true
 
 # Optional local overrides in .dev.vars:
 # IMAGE_ANALYSIS_MODEL=@cf/meta/llama-3.2-11b-vision-instruct
+# APP_BUILDER_MODEL=@cf/zai-org/glm-4.7-flash
 # ANTHROPIC_API_KEY=sk-ant-...
 
 # Environment
 [vars]
 ENVIRONMENT = "production"
 ALLOWED_ORIGINS = "https://eternalos.app,https://www.eternalos.app,https://eternalos.me,https://www.eternalos.me"
+APP_BUILDER_MODEL = "@cf/zai-org/glm-4.7-flash"
 
 # JWT_SECRET is set via: wrangler secret put JWT_SECRET
 # ANTHROPIC_API_KEY is set via: wrangler secret put ANTHROPIC_API_KEY

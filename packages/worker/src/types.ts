@@ -151,7 +151,7 @@ export type WidgetConfig = StickyNoteConfig | GuestbookConfig | MusicPlayerConfi
 
 export interface DesktopItem {
   id: string;
-  type: 'folder' | 'image' | 'text' | 'link' | 'audio' | 'video' | 'pdf' | 'widget' | 'sticker' | 'app';
+  type: 'folder' | 'image' | 'text' | 'link' | 'audio' | 'video' | 'pdf' | 'widget' | 'sticker' | 'app' | 'cartridge';
   name: string;
   parentId: string | null; // null = root desktop
   position: { x: number; y: number };
@@ -181,6 +181,9 @@ export interface DesktopItem {
   imageAnalysis?: ImageAnalysisMetadata;
   // User-created app (type='app')
   appManifest?: AppManifest;
+  // Installed console game (type='cartridge') — references a bazaar pack or
+  // the owner's own draft; the cartridge itself stays in R2/KV.
+  cartridgeRef?: { packId?: string; draftId?: string; coverUrl?: string };
   // For type='app': the subset of declared permissions the user approved.
   // Shape is AppGrantedPermissions from utils/jwt.ts (serialized JSON-safe).
   // Absent = no permissions granted = hermetic app (default).
@@ -215,10 +218,23 @@ export interface AppWindowConfig {
 export interface AppPermissions {
   fs?: {
     read?: string[];          // path globs: ['**'], ['/Photos/**']
+    write?: string[];
+    delete?: string[];
     mimeTypes?: string[];     // ['image/*', 'audio/*', 'text/*']
   };
   profile?: {
     read?: Array<'username' | 'displayName' | 'bio' | 'avatar'>;
+  };
+  network?: {
+    outbound?: string[];
+  };
+  ipc?: {
+    listen?: string[];
+    emit?: string[];
+  };
+  handlers?: {
+    mimeTypes?: string[];
+    extensions?: string[];
   };
 }
 
@@ -296,17 +312,6 @@ export interface OAuthProvider {
   email?: string;      // OAuth provider email (for display)
 }
 
-export type LinkedWalletProvider = 'hyperevm';
-export type HyperEvmChainId = 998 | 999;
-
-export interface LinkedWallet {
-  provider: LinkedWalletProvider;
-  chainId: HyperEvmChainId;
-  address: string;
-  linkedAt: number;
-  lastVerifiedAt: number;
-}
-
 export interface UserRecord {
   uid: string;
   email: string;
@@ -321,10 +326,6 @@ export interface UserRecord {
   emailVerifiedAt?: number;
   // OAuth providers linked to this account
   oauthProviders?: OAuthProvider[];
-  // Optional wallet credentials linked after normal account creation.
-  // Wallets do not replace email/OAuth identity; they enable HyperEVM
-  // provenance, ownership checks, and wallet login for already-linked accounts.
-  linkedWallets?: LinkedWallet[];
   // Soft delete — set when user initiates account deletion.
   // While set, login is blocked and tokens are rejected. After a grace period
   // (14 days), a scheduled cleanup hard-deletes user data.
@@ -374,21 +375,7 @@ export interface EmailVerificationRecord {
 // Bazaar — Community asset marketplace
 // ---------------------------------------------------------------------------
 
-export type PackType = 'cursor' | 'icon' | 'sound' | 'effect' | 'skin';
-
-export interface HyperEvmAssetVerification {
-  provider: 'hyperevm';
-  chainId: HyperEvmChainId;
-  contractAddress: string;
-  tokenId: string;
-  standard: 'ERC721' | 'ERC1155';
-  manifestHash: string;
-  tokenUri?: string;
-  txHash?: string;
-  verifiedOwner?: string;
-  verifiedAt?: number;
-  status: 'pending' | 'verified' | 'mismatch' | 'revoked';
-}
+export type PackType = 'cursor' | 'icon' | 'sound' | 'effect' | 'skin' | 'game';
 
 export interface BazaarPack {
   packId: string;
@@ -407,6 +394,4 @@ export interface BazaarPack {
   assets: Record<string, string>;
   /** Token paths → values to apply on install */
   config: Record<string, string | number | boolean>;
-  /** Optional on-chain provenance record. Assets still live in R2/Bazaar. */
-  verification?: HyperEvmAssetVerification;
 }

@@ -10,7 +10,7 @@ export function VerifyEmailPage() {
   const token = searchParams.get('token') || ''
   const setEmailVerified = useAuthStore((s) => s.setEmailVerified)
 
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => Boolean(token && isApiConfigured))
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
 
@@ -21,7 +21,6 @@ export function VerifyEmailPage() {
 
   useEffect(() => {
     if (!token || !isApiConfigured) {
-      setLoading(false)
       return
     }
 

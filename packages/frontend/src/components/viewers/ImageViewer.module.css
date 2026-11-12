@@ -141,9 +141,9 @@
   font-family: var(--font-chicago);
   font-size: 18px;
   font-weight: bold;
-  color: var(--black);
-  background: var(--white);
-  border: 1px solid var(--black);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--control-border);
   border-radius: 50%;
   margin-bottom: 4px;
 }
@@ -202,7 +202,7 @@
   border-top: 1px solid var(--shadow);
   font-family: var(--font-geneva);
   font-size: 9px;
-  color: var(--black);
+  color: var(--text);
   flex-shrink: 0;
   min-height: 16px;
 }
@@ -227,8 +227,8 @@
 .fileNameInput {
   font-family: var(--font-geneva);
   font-size: 10px;
-  color: var(--black);
-  background: var(--white);
+  color: var(--text);
+  background: var(--surface);
   border: 1px solid var(--shadow);
   padding: 1px 4px;
   min-width: 80px;

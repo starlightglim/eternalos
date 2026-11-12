@@ -309,11 +309,138 @@ interface TokenFieldProps {
   updateAppearance: (updates: Partial<CustomAppearance>) => void;
 }
 
+function TokenColorField({
+  token,
+  value,
+  handleChange,
+}: {
+  token: TokenDefinition;
+  value: string | undefined;
+  handleChange: (newValue: string | number | boolean | undefined) => void;
+}) {
+  const strValue = value ?? '';
+  const [draftValue, setDraftValue] = useState(strValue);
+
+  useEffect(() => {
+    setDraftValue(strValue);
+  }, [strValue]);
+
+  return (
+    <div className={styles.controlCard}>
+      <div className={styles.controlHeader}>
+        <div>
+          <div className={styles.controlLabel}>{token.label}</div>
+          <div className={styles.controlHint}>{token.hint}</div>
+        </div>
+        <button
+          className={styles.clearButton}
+          onClick={() => handleChange(undefined)}
+          type="button"
+        >
+          Reset
+        </button>
+      </div>
+      <div className={styles.colorFieldRow}>
+        <label className={styles.colorSwatchLabel}>
+          <input
+            className={styles.nativeColorInput}
+            type="color"
+            value={strValue || '#000000'}
+            onChange={(e) => handleChange(e.target.value)}
+          />
+          <span className={styles.colorSwatch} style={{ backgroundColor: strValue || 'transparent' }} />
+        </label>
+        <input
+          className={styles.hexInput}
+          type="text"
+          value={draftValue}
+          placeholder={String(token.defaultValue) || 'inherit'}
+          onChange={(e) => setDraftValue(e.target.value)}
+          onBlur={(e) => {
+            const nextValue = e.target.value.trim();
+            if (!nextValue) {
+              handleChange(undefined);
+            } else if (/^#[0-9A-Fa-f]{6}$/.test(nextValue)) {
+              handleChange(nextValue);
+            } else {
+              setDraftValue(strValue);
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          }}
+          spellCheck={false}
+          maxLength={7}
+        />
+      </div>
+    </div>
+  );
+}
+
 function TokenField({ token, appearance, updateAppearance }: TokenFieldProps) {
   const value = getTokenValue(token.path, appearance);
   const handleChange = (newValue: string | number | boolean | undefined) => {
     updateAppearance(buildTokenUpdate(token.path, newValue, appearance));
   };
+
+  if (token.valueType === 'select' && token.options) {
+    const selectedValue = String(value ?? token.defaultValue);
+    return (
+      <div className={styles.controlCard}>
+        <div className={styles.controlHeader}>
+          <div>
+            <div className={styles.controlLabel}>{token.label}</div>
+            <div className={styles.controlHint}>{token.hint}</div>
+          </div>
+          <button
+            className={styles.clearButton}
+            onClick={() => handleChange(undefined)}
+            type="button"
+          >
+            Reset
+          </button>
+        </div>
+        <select
+          className={styles.selectInput}
+          value={selectedValue}
+          onChange={(e) => handleChange(e.target.value)}
+        >
+          {token.options.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+      </div>
+    );
+  }
+
+  if (token.valueType === 'text') {
+    const textValue = String(value ?? '');
+    return (
+      <div className={styles.controlCard}>
+        <div className={styles.controlHeader}>
+          <div>
+            <div className={styles.controlLabel}>{token.label}</div>
+            <div className={styles.controlHint}>{token.hint}</div>
+          </div>
+          <button
+            className={styles.clearButton}
+            onClick={() => handleChange(undefined)}
+            type="button"
+          >
+            Reset
+          </button>
+        </div>
+        <input
+          className={styles.textInput}
+          type="text"
+          value={textValue}
+          placeholder={String(token.defaultValue)}
+          onChange={(e) => handleChange(e.target.value || undefined)}
+          spellCheck={false}
+        />
+      </div>
+    );
+  }
 
   if (token.valueType === 'number' && token.numberConstraints) {
     const numValue = (value as number | undefined) ?? (token.defaultValue as number);
@@ -341,52 +468,7 @@ function TokenField({ token, appearance, updateAppearance }: TokenFieldProps) {
   }
 
   if (token.valueType === 'color') {
-    const strValue = (value as string | undefined) ?? '';
-    return (
-      <div className={styles.controlCard}>
-        <div className={styles.controlHeader}>
-          <div>
-            <div className={styles.controlLabel}>{token.label}</div>
-            <div className={styles.controlHint}>{token.hint}</div>
-          </div>
-          <button
-            className={styles.clearButton}
-            onClick={() => handleChange(undefined)}
-            type="button"
-          >
-            Reset
-          </button>
-        </div>
-        <div className={styles.colorFieldRow}>
-          <label className={styles.colorSwatchLabel}>
-            <input
-              className={styles.nativeColorInput}
-              type="color"
-              value={strValue || '#000000'}
-              onChange={(e) => handleChange(e.target.value)}
-            />
-            <span className={styles.colorSwatch} style={{ backgroundColor: strValue || 'transparent' }} />
-          </label>
-          <input
-            className={styles.hexInput}
-            type="text"
-            value={strValue}
-            placeholder={String(token.defaultValue) || 'inherit'}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (/^#[0-9A-Fa-f]{6}$/.test(v)) handleChange(v);
-            }}
-            onBlur={(e) => {
-              const v = e.target.value;
-              if (!v) handleChange(undefined);
-              else if (/^#[0-9A-Fa-f]{6}$/.test(v)) handleChange(v);
-            }}
-            spellCheck={false}
-            maxLength={7}
-          />
-        </div>
-      </div>
-    );
+    return <TokenColorField token={token} value={value as string | undefined} handleChange={handleChange} />;
   }
 
   if (token.valueType === 'cssColor') {
@@ -554,6 +636,13 @@ function parseThemeFile(text: string): CustomAppearance | null {
   }
 }
 
+function appearanceMatchesPreset(appearance: CustomAppearance, preset: CustomAppearance): boolean {
+  return Object.entries(preset).every(([key, value]) => {
+    const currentValue = appearance[key as keyof CustomAppearance];
+    return JSON.stringify(currentValue) === JSON.stringify(value);
+  });
+}
+
 export function AppearancePanel() {
   const {
     appearance,
@@ -566,6 +655,7 @@ export function AppearancePanel() {
   } = useAppearanceStore();
 
   const [activeTab, setActiveTab] = useState<TabId>('themes');
+  const selectedThemeId = THEME_PRESETS.find((preset) => appearanceMatchesPreset(appearance, preset.appearance))?.id ?? null;
   const importInputRef = useRef<HTMLInputElement>(null);
   const wallpaperInputRef = useRef<HTMLInputElement>(null);
 
@@ -575,6 +665,18 @@ export function AppearancePanel() {
   const isCustomWallpaper = currentWallpaper.startsWith('custom:');
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
+
+  const applyThemePreset = useCallback((presetAppearance: CustomAppearance) => {
+    const clearedAppearance: Partial<CustomAppearance> = {
+      designTokens: undefined,
+      variants: undefined,
+    };
+    for (const key of APPEARANCE_PROFILE_KEYS) {
+      clearedAppearance[key] = undefined;
+    }
+    updateAppearance({ ...clearedAppearance, ...presetAppearance });
+  }, [updateAppearance]);
 
   // Cursor assets state
   const [cursorAssets, setCursorAssets] = useState<CursorAsset[]>([]);
@@ -637,12 +739,25 @@ export function AppearancePanel() {
       const parsed = parseThemeFile(reader.result as string);
       if (parsed) {
         updateAppearance(parsed);
+        setFeedback('Theme imported. Review the preview, then save it.');
+      } else {
+        setFeedback('That file is not a valid EternalOS theme.');
       }
     };
     reader.readAsText(file);
     // Reset so the same file can be re-imported
     e.target.value = '';
   }, [updateAppearance]);
+
+  const handleSave = useCallback(async () => {
+    setFeedback(null);
+    try {
+      await saveAppearance();
+      setFeedback('Appearance saved.');
+    } catch {
+      setFeedback('Could not save appearance. Your preview is still active.');
+    }
+  }, [saveAppearance]);
 
   // previewStyles removed — preview tab was deleted
 
@@ -653,28 +768,28 @@ export function AppearancePanel() {
           <div className={styles.eyebrow}>Custom Appearance</div>
           <h2 className={styles.title}>Build your own chrome</h2>
           <p className={styles.subtitle}>
-            Direct controls for color, radius, and contrast. No themes, no overlap.
+            Start with a theme, then fine-tune color, shape, typography, and controls.
           </p>
         </div>
         <div className={styles.headerMeta}>
-          <span className={styles.statusPill}>{hasUnsavedChanges ? 'Unsaved' : 'Saved'}</span>
+          <span className={styles.statusPill} aria-live="polite">{hasUnsavedChanges ? 'Unsaved' : 'Saved'}</span>
         </div>
       </div>
 
-      <div className={styles.tabBar}>
-        <button className={`${styles.tab} ${activeTab === 'themes' ? styles.activeTab : ''}`} onClick={() => setActiveTab('themes')} type="button">
+      <div className={styles.tabBar} role="tablist" aria-label="Appearance sections">
+        <button className={`${styles.tab} ${activeTab === 'themes' ? styles.activeTab : ''}`} aria-selected={activeTab === 'themes'} onClick={() => setActiveTab('themes')} role="tab" type="button">
           Themes
         </button>
-        <button className={`${styles.tab} ${activeTab === 'palette' ? styles.activeTab : ''}`} onClick={() => setActiveTab('palette')} type="button">
-          Palette
+        <button className={`${styles.tab} ${activeTab === 'palette' ? styles.activeTab : ''}`} aria-selected={activeTab === 'palette'} onClick={() => setActiveTab('palette')} role="tab" type="button">
+          Colors
         </button>
-        <button className={`${styles.tab} ${activeTab === 'windows' ? styles.activeTab : ''}`} onClick={() => setActiveTab('windows')} type="button">
+        <button className={`${styles.tab} ${activeTab === 'windows' ? styles.activeTab : ''}`} aria-selected={activeTab === 'windows'} onClick={() => setActiveTab('windows')} role="tab" type="button">
           Windows
         </button>
-        <button className={`${styles.tab} ${activeTab === 'controls' ? styles.activeTab : ''}`} onClick={() => setActiveTab('controls')} type="button">
+        <button className={`${styles.tab} ${activeTab === 'controls' ? styles.activeTab : ''}`} aria-selected={activeTab === 'controls'} onClick={() => setActiveTab('controls')} role="tab" type="button">
           Controls
         </button>
-        <button className={`${styles.tab} ${activeTab === 'typography' ? styles.activeTab : ''}`} onClick={() => setActiveTab('typography')} type="button">
+        <button className={`${styles.tab} ${activeTab === 'typography' ? styles.activeTab : ''}`} aria-selected={activeTab === 'typography'} onClick={() => setActiveTab('typography')} role="tab" type="button">
           Typography
         </button>
 {/* Preview tab removed — the real desktop IS the preview */}
@@ -692,8 +807,9 @@ export function AppearancePanel() {
                 <button
                   key={preset.id}
                   type="button"
-                  className={styles.themeCard}
-                  onClick={() => updateAppearance(preset.appearance)}
+                  className={`${styles.themeCard} ${selectedThemeId === preset.id ? styles.themeCardActive : ''}`}
+                  aria-pressed={selectedThemeId === preset.id}
+                  onClick={() => applyThemePreset(preset.appearance)}
                 >
                   <div className={styles.themePreview}>
                     <div className={styles.themePreviewDesktop} style={{ backgroundColor: preset.preview.desktop }}>
@@ -711,6 +827,7 @@ export function AppearancePanel() {
                   <div className={styles.themeInfo}>
                     <div className={styles.themeName}>{preset.name}</div>
                     <div className={styles.themeDesc}>{preset.description}</div>
+                    {selectedThemeId === preset.id && <div className={styles.themeSelected}>Applied to preview</div>}
                   </div>
                 </button>
               ))}
@@ -971,8 +1088,10 @@ export function AppearancePanel() {
           style={{ display: 'none' }}
           onChange={handleImport}
         />
-        <div className={styles.footerCopy} />
-        <button className={styles.primaryButton} disabled={isLoading || !hasUnsavedChanges} onClick={() => void saveAppearance()} type="button">
+        <div className={styles.footerCopy}>
+          {feedback || (hasUnsavedChanges ? 'Changes preview instantly. Save when you are happy.' : 'Your appearance is up to date.')}
+        </div>
+        <button className={styles.primaryButton} disabled={isLoading || !hasUnsavedChanges} onClick={() => void handleSave()} type="button">
           {isLoading ? 'Saving...' : 'Apply & Save'}
         </button>
       </div>

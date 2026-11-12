@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import {
   Routes,
   Route,
@@ -6,22 +6,23 @@ import {
   useSearchParams,
   useLocation,
 } from "react-router-dom";
-import { Desktop } from "./components/desktop/Desktop";
-import { MobileBrowser } from "./components/desktop/MobileBrowser";
-import { LandingPage } from "./pages/LandingPage";
-import { LoginPage } from "./pages/LoginPage";
-import { SignupPage } from "./pages/SignupPage";
-import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
-import { ResetPasswordPage } from "./pages/ResetPasswordPage";
-import { VerifyEmailPage } from "./pages/VerifyEmailPage";
-import { GoogleAuthCallback } from "./pages/GoogleAuthCallback";
-import { VisitorPage } from "./pages/VisitorPage";
-import { NotFoundPage } from "./pages/NotFoundPage";
 import { LoadingOverlay, AlertDialog, ErrorBoundary } from "./components/ui";
 import { useAuthStore } from "./stores/authStore";
 import { useAlertStore } from "./stores/alertStore";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { isApiConfigured } from "./services/api";
+
+const Desktop = lazy(() => import("./components/desktop/Desktop").then(({ Desktop: component }) => ({ default: component })));
+const MobileBrowser = lazy(() => import("./components/desktop/MobileBrowser").then(({ MobileBrowser: component }) => ({ default: component })));
+const LandingPage = lazy(() => import("./pages/LandingPage").then(({ LandingPage: component }) => ({ default: component })));
+const LoginPage = lazy(() => import("./pages/LoginPage").then(({ LoginPage: component }) => ({ default: component })));
+const SignupPage = lazy(() => import("./pages/SignupPage").then(({ SignupPage: component }) => ({ default: component })));
+const ForgotPasswordPage = lazy(() => import("./pages/ForgotPasswordPage").then(({ ForgotPasswordPage: component }) => ({ default: component })));
+const ResetPasswordPage = lazy(() => import("./pages/ResetPasswordPage").then(({ ResetPasswordPage: component }) => ({ default: component })));
+const VerifyEmailPage = lazy(() => import("./pages/VerifyEmailPage").then(({ VerifyEmailPage: component }) => ({ default: component })));
+const GoogleAuthCallback = lazy(() => import("./pages/GoogleAuthCallback").then(({ GoogleAuthCallback: component }) => ({ default: component })));
+const VisitorPage = lazy(() => import("./pages/VisitorPage").then(({ VisitorPage: component }) => ({ default: component })));
+const NotFoundPage = lazy(() => import("./pages/NotFoundPage").then(({ NotFoundPage: component }) => ({ default: component })));
 
 /**
  * Global Alert Manager
@@ -152,29 +153,31 @@ function App() {
       {/* Global Alert Dialog */}
       <GlobalAlert />
 
-      <Routes>
-        {/* Public routes */}
-        <Route path="/" element={<LandingPage />} />
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/signup" element={<SignupPage />} />
-        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-        <Route path="/reset-password" element={<ResetPasswordPage />} />
-        <Route path="/verify-email" element={<VerifyEmailPage />} />
-        <Route path="/auth/callback" element={<GoogleAuthCallback />} />
+      <Suspense fallback={<LoadingOverlay message="Loading EternalOS…" />}>
+        <Routes>
+          {/* Public routes */}
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/signup" element={<SignupPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
+          <Route path="/verify-email" element={<VerifyEmailPage />} />
+          <Route path="/auth/callback" element={<GoogleAuthCallback />} />
 
-        {/* Protected routes */}
-        <Route
-          path="/desktop"
-          element={
-            <ProtectedRoute>
-              <ResponsiveDesktop />
-            </ProtectedRoute>
-          }
-        />
+          {/* Protected routes */}
+          <Route
+            path="/desktop"
+            element={
+              <ProtectedRoute>
+                <ResponsiveDesktop />
+              </ProtectedRoute>
+            }
+          />
 
-        {/* Catch-all: handles /@username visitor routes + redirects unknown paths */}
-        <Route path="*" element={<CatchAllRoute />} />
-      </Routes>
+          {/* Catch-all: handles /@username visitor routes + redirects unknown paths */}
+          <Route path="*" element={<CatchAllRoute />} />
+        </Routes>
+      </Suspense>
     </ErrorBoundary>
   );
 }

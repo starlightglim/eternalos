@@ -6,15 +6,17 @@
  */
 
 import { UserDesktop } from './durable-objects/UserDesktop';
+import { RateLimiter } from './durable-objects/RateLimiter';
+import { AuthCoordinator } from './durable-objects/AuthCoordinator';
+import { BazaarCoordinator } from './durable-objects/BazaarCoordinator';
 import { OrchestratorAgent } from './agents/OrchestratorAgent';
 import { EternalService } from './services/EternalService';
 import { handleSignup, handleLogin, handleLogout, handleForgotPassword, handleResetPassword, handleRefreshToken, handleChangePassword, handleChangeUsername, handleSendVerification, handleVerifyEmail, handleGoogleCallback, handleDeleteAccount, handleCancelDeletion, handleExportData, handleUseRecoveryCode, handleRegenerateRecoveryCodes } from './routes/auth';
-import { handleHyperEvmWalletLink, handleHyperEvmWalletList, handleHyperEvmWalletLogin, handleHyperEvmWalletNonce, handleHyperEvmWalletUnlink } from './routes/hyperEvmWallet';
 import { handleUpload, handleServeFile, handleWallpaperUpload, handleServeWallpaper, handleIconUpload, handleServeIcon, handleCSSAssetUpload, handleServeCSSAsset, handleListCSSAssets, handleDeleteCSSAsset, handleAnalyzeImageItem } from './routes/upload';
 import { handleSoundUpload, handleServeSound, handleListSounds, handleDeleteSound } from './routes/sounds';
 import { handleCursorUpload, handleServeCursor, handleListCursors, handleDeleteCursor } from './routes/cursors';
-import { handleBazaarPublish, handleBazaarBrowse, handleBazaarGetPack, handleBazaarInstall, handleBazaarDelete, handleBazaarServeAsset, handleBazaarMyPacks, handleBazaarPublishEstheme } from './routes/bazaar';
-import { handleAppCapability, handleAppFsList, handleAppFsRead, handleAppDevDeploy, handleGetAppSourceRoute } from './routes/apps';
+import { handleBazaarPublish, handleBazaarBrowse, handleBazaarGetPack, handleBazaarInstall, handleBazaarDelete, handleBazaarServeAsset, handleBazaarMyPacks, handleBazaarPublishEstheme, handleBazaarPublishGame } from './routes/bazaar';
+import { handleAppCapability, handleAppFsList, handleAppFsRead, handleAppDevDeploy, handleAppPermissions, handleAppVersions, handleAppRollback, handleAppDelete, handleGetAppSourceRoute } from './routes/apps';
 import { handleGamePlay, handleGameCapability, handleListDrafts, handleGetDraft, handlePutDraft, handleDeleteDraft } from './routes/games';
 
 import { handleVisit } from './routes/visit';
@@ -23,6 +25,7 @@ import { trackVisitAnalytics, handleGetAnalytics } from './routes/analytics';
 import { requireAuth, authenticateAgentChatWebSocket, authenticateFileRequest, issueFileToken } from './middleware/auth';
 import { getAgentByName } from 'agents';
 import { signChatWebSocketToken } from './utils/jwt';
+import { listDuePendingDeletions, purgeAccount } from './utils/accountPurge';
 import { buildThreadAgentName, createThread, deleteThread, listThreads, normalizeThreadId, renameThread } from './agents/threadRegistry';
 import {
   checkRateLimit,
@@ -45,6 +48,9 @@ export interface Env {
 
   // Durable Objects
   USER_DESKTOP: DurableObjectNamespace;
+  RATE_LIMITER: DurableObjectNamespace;
+  AUTH_COORDINATOR: DurableObjectNamespace;
+  BAZAAR_COORDINATOR: DurableObjectNamespace;
   OrchestratorAgent: DurableObjectNamespace<OrchestratorAgent>;
 
   // Dynamic Workers (sandboxed app runtime)
@@ -61,6 +67,7 @@ export interface Env {
   RESEND_API_KEY?: string; // Fallback email provider when SEND_EMAIL binding isn't configured
   IMAGE_ANALYSIS_MODEL?: string; // Optional Workers AI model override for image metadata enrichment
   AGENT_CHAT_MODEL?: string; // Optional Workers AI model override for chat agent
+  APP_BUILDER_MODEL?: string; // Optional Workers AI model override for structured app generation
 
   // Cloudflare Email Service binding (preferred over Resend when configured).
   // Set up via wrangler.toml: send_email = [{ name = "SEND_EMAIL" }]
@@ -79,12 +86,15 @@ export interface Env {
 
   // Environment settings
   ENVIRONMENT?: 'development' | 'production';
+  // Account hard-deletion grace period in days (default 14). Integration tests
+  // set this to "0" so a soft-deleted account is immediately due for purge.
+  ACCOUNT_DELETION_GRACE_DAYS?: string;
   ALLOWED_ORIGINS?: string; // Comma-separated list of allowed origins for production
   FROM_EMAIL?: string; // Sender email address (e.g., "EternalOS <noreply@eternalos.app>")
   APP_URL?: string; // Base URL for the app (e.g., "https://eternalos.app")
 }
 
-export { UserDesktop, OrchestratorAgent, EternalService };
+export { UserDesktop, RateLimiter, AuthCoordinator, BazaarCoordinator, OrchestratorAgent, EternalService };
 
 // Standard security headers applied to every response
 const SECURITY_HEADERS: Record<string, string> = {
@@ -131,9 +141,7 @@ function withCors(response: Response, corsHeaders: Record<string, string>): Resp
     newHeaders.set(key, value);
   }
   const websocket = (response as Response & { webSocket?: WebSocket }).webSocket;
-  const mustRemainBodyless = response.status === 101 || response.status === 204 || response.status === 205 || response.status === 304;
-  const body = response.body ?? (mustRemainBodyless ? null : '');
-  return new Response(body, {
+  return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
     headers: newHeaders,
@@ -255,6 +263,31 @@ export default {
     }
 
     console.log(`Scheduled cleanup complete: ${totalDeleted} items deleted, ${totalR2Deleted} R2 files cleaned up`);
+
+    // --- Account hard-deletion purge ---
+    // Enumerate the small `pending-deletion:` index (not every user) for
+    // accounts past their 14-day grace deadline and purge each. The purge is
+    // idempotent and resumable: a failure mid-run leaves the account still
+    // indexed, and the next invocation re-purges it cleanly.
+    try {
+      const due = await listDuePendingDeletions(env, Date.now());
+      if (due.length > 0) {
+        console.log(`Purging ${due.length} account(s) past the deletion deadline`);
+        for (const pending of due) {
+          try {
+            const result = await purgeAccount(env, pending);
+            console.log(
+              `Purged account ${pending.uid}: ${result.r2Deleted} R2 objects, ${result.kvDeleted} KV keys, ${result.packsDeleted} packs`,
+            );
+          } catch (error) {
+            // Leave the pending-deletion marker in place so the next run retries.
+            console.error(`Account purge failed for ${pending.uid}; will retry next run:`, error);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Account purge enumeration failed:', error);
+    }
   },
 
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -398,6 +431,40 @@ export default {
       return withCors(response, corsHeaders);
     }
 
+    const appManagementMatch = path.match(/^\/api\/apps\/([^/]+)\/(versions|rollback)$/);
+    if (appManagementMatch) {
+      const authResult = await requireAuth(request, env);
+      if (authResult instanceof Response) {
+        return withCors(authResult, corsHeaders);
+      }
+      const appId = decodeURIComponent(appManagementMatch[1]);
+      const action = appManagementMatch[2];
+      if (action === 'versions' && request.method === 'GET') {
+        return withCors(await handleAppVersions(env, authResult, appId), corsHeaders);
+      }
+      if (action === 'rollback' && request.method === 'POST') {
+        return withCors(await handleAppRollback(request, env, authResult, appId), corsHeaders);
+      }
+    }
+
+    const appDeleteMatch = path.match(/^\/api\/apps\/([^/]+)$/);
+    if (appDeleteMatch && request.method === 'DELETE') {
+      const authResult = await requireAuth(request, env);
+      if (authResult instanceof Response) {
+        return withCors(authResult, corsHeaders);
+      }
+      return withCors(await handleAppDelete(env, authResult, decodeURIComponent(appDeleteMatch[1])), corsHeaders);
+    }
+
+    const appPermissionsMatch = path.match(/^\/api\/apps\/([^/]+)\/permissions$/);
+    if (appPermissionsMatch) {
+      const authResult = await requireAuth(request, env);
+      if (authResult instanceof Response) {
+        return withCors(authResult, corsHeaders);
+      }
+      return withCors(await handleAppPermissions(request, env, authResult, decodeURIComponent(appPermissionsMatch[1])), corsHeaders);
+    }
+
     // Get App Source: GET /api/apps/:appId/source
     const appSourceMatch = path.match(/^\/api\/apps\/([^/]+)\/source$/);
     if (appSourceMatch && request.method === 'GET') {
@@ -480,7 +547,7 @@ export default {
       const grantsHash = await hashGrants(granted);
       const loopback = (ctx as unknown as {
         exports: {
-          EternalService: (init: { props: { uid: string; appId: string; granted: typeof granted } }) => unknown;
+          EternalService: (init: { props: { uid: string; appId: string; granted: typeof granted; requiresCapability?: boolean } }) => unknown;
         };
       }).exports;
       const worker = env.LOADER.get(`app-preview-${previewId}@v${previewMeta.version}-${grantsHash}`, async () => ({
@@ -587,7 +654,7 @@ export default {
       // load). Cast narrowly here rather than flipping the whole types path.
       const loopback = (ctx as unknown as {
         exports: {
-          EternalService: (init: { props: { uid: string; appId: string; granted: typeof granted } }) => unknown;
+          EternalService: (init: { props: { uid: string; appId: string; granted: typeof granted; requiresCapability?: boolean } }) => unknown;
         };
       }).exports;
       const worker = env.LOADER.get(`app-${appId}@v${appMeta.version}-${grantsHash}`, async () => ({
@@ -598,7 +665,7 @@ export default {
         globalOutbound: null,
         env: {
           ETERNAL: loopback.EternalService({
-            props: { uid: appMeta.uid, appId, granted },
+            props: { uid: appMeta.uid, appId, granted, requiresCapability: true },
           }),
         },
       }));
@@ -689,64 +756,6 @@ export default {
 
       if (path === '/api/auth/google' && request.method === 'POST') {
         response = await handleGoogleCallback(request, env);
-        if (rateLimitResult) {
-          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
-        }
-        return withCors(response, corsHeaders);
-      }
-
-      if (path === '/api/auth/hyperevm/nonce' && request.method === 'POST') {
-        response = await handleHyperEvmWalletNonce(request, env);
-        if (rateLimitResult) {
-          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
-        }
-        return withCors(response, corsHeaders);
-      }
-
-      if (path === '/api/auth/hyperevm/login' && request.method === 'POST') {
-        response = await handleHyperEvmWalletLogin(request, env);
-        if (rateLimitResult) {
-          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
-        }
-        return withCors(response, corsHeaders);
-      }
-
-      if (path === '/api/auth/hyperevm/link' && request.method === 'POST') {
-        const authResult = await requireAuth(request, env);
-        if (authResult instanceof Response) {
-          return withCors(authResult, corsHeaders);
-        }
-        response = await handleHyperEvmWalletLink(request, env, authResult);
-        if (rateLimitResult) {
-          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
-        }
-        return withCors(response, corsHeaders);
-      }
-
-      if (path === '/api/auth/hyperevm/wallets' && request.method === 'GET') {
-        const authResult = await requireAuth(request, env);
-        if (authResult instanceof Response) {
-          return withCors(authResult, corsHeaders);
-        }
-        response = await handleHyperEvmWalletList(env, authResult);
-        if (rateLimitResult) {
-          response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
-        }
-        return withCors(response, corsHeaders);
-      }
-
-      const hyperEvmWalletDeleteMatch = path.match(/^\/api\/auth\/hyperevm\/wallets\/([^/]+)\/([^/]+)$/);
-      if (hyperEvmWalletDeleteMatch && request.method === 'DELETE') {
-        const authResult = await requireAuth(request, env);
-        if (authResult instanceof Response) {
-          return withCors(authResult, corsHeaders);
-        }
-        response = await handleHyperEvmWalletUnlink(
-          env,
-          authResult,
-          hyperEvmWalletDeleteMatch[1],
-          hyperEvmWalletDeleteMatch[2],
-        );
         if (rateLimitResult) {
           response = addRateLimitHeaders(response, rateLimitResult, rateLimitConfig);
         }
@@ -1226,6 +1235,14 @@ export default {
         const authResult = await requireAuth(request, env);
         if (authResult instanceof Response) return withCors(authResult, corsHeaders);
         response = await handleBazaarPublishEstheme(request, env, authResult);
+        return withCors(response, corsHeaders);
+      }
+
+      // Bazaar publish game cartridge (auth required)
+      if (path === '/api/bazaar/publish-game' && request.method === 'POST') {
+        const authResult = await requireAuth(request, env);
+        if (authResult instanceof Response) return withCors(authResult, corsHeaders);
+        response = await handleBazaarPublishGame(request, env, authResult);
         return withCors(response, corsHeaders);
       }
 

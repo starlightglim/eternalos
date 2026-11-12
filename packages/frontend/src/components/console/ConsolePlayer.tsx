@@ -29,7 +29,7 @@ const localSaveKey = (gameId: string) => `eternalos-gamesave:${gameId}`;
 
 export function ConsolePlayer({ gameId, windowId, reloadKey = 0 }: ConsolePlayerProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [errorState, setErrorState] = useState<{ src: string; message: string } | null>(null);
   const [pressed, setPressed] = useState<Record<number, boolean>>({});
   const initializedRef = useRef(false);
 
@@ -37,6 +37,7 @@ export function ConsolePlayer({ gameId, windowId, reloadKey = 0 }: ConsolePlayer
     const base = import.meta.env.VITE_API_URL || window.location.origin;
     return `${base}/api/games/play/${encodeURIComponent(gameId)}/${reloadKey ? `?v=${reloadKey}` : ''}`;
   }, [gameId, reloadKey]);
+  const error = errorState?.src === src ? errorState.message : null;
 
   const showGamepad = useMemo(
     () => typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches,
@@ -50,7 +51,6 @@ export function ConsolePlayer({ gameId, windowId, reloadKey = 0 }: ConsolePlayer
   // Reset per-load state when the iframe navigates to a new cartridge.
   useEffect(() => {
     initializedRef.current = false;
-    setError(null);
   }, [src]);
 
   // Handle messages from the console runtime.
@@ -98,7 +98,10 @@ export function ConsolePlayer({ gameId, windowId, reloadKey = 0 }: ConsolePlayer
           break;
 
         case 'console:error':
-          setError(`${msg.phase ? `[${msg.phase}] ` : ''}${msg.message || 'Unknown error'}`);
+          setErrorState({
+            src,
+            message: `${msg.phase ? `[${msg.phase}] ` : ''}${msg.message || 'Unknown error'}`,
+          });
           break;
 
         case 'net:connect':
@@ -113,7 +116,7 @@ export function ConsolePlayer({ gameId, windowId, reloadKey = 0 }: ConsolePlayer
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [gameId, windowId, postToGame]);
+  }, [gameId, src, windowId, postToGame]);
 
   // Keep the short-lived capability fresh while the game is open.
   useEffect(() => {

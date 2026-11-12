@@ -1,8 +1,9 @@
 /**
  * Rate Limiting Middleware
  *
- * Uses Cloudflare KV to track request counts per IP.
- * Implements a sliding window rate limiting algorithm.
+ * Uses a per-key Durable Object to track request counts per IP.
+ * The Durable Object transaction makes each bucket update atomic under
+ * concurrent requests.
  *
  * Rate limits:
  * - Auth endpoints: 60 requests/minute
@@ -89,64 +90,21 @@ export async function checkRateLimit(
   const key = `${config.keyPrefix}:${clientId}`;
 
   try {
-    // Get current rate limit data from KV
-    const data = await env.AUTH_KV.get<RateLimitData>(key, 'json');
-
-    if (!data) {
-      // First request - create new bucket
-      const newData: RateLimitData = {
-        requests: [now],
-        windowStart: now,
-      };
-
-      // Store with TTL equal to window duration (in seconds)
-      await env.AUTH_KV.put(key, JSON.stringify(newData), {
-        expirationTtl: Math.ceil(config.windowMs / 1000) + 60, // Add 60s buffer
-      });
-
-      return {
-        allowed: true,
-        remaining: config.maxRequests - 1,
-        resetAt: now + config.windowMs,
-      };
-    }
-
-    // Filter out requests outside the current window
-    const validRequests = data.requests.filter(ts => ts > windowStart);
-
-    // Check if rate limit exceeded
-    if (validRequests.length >= config.maxRequests) {
-      // Find when the oldest request in window will expire
-      const oldestInWindow = Math.min(...validRequests);
-      const resetAt = oldestInWindow + config.windowMs;
-      const retryAfter = Math.ceil((resetAt - now) / 1000);
-
-      return {
-        allowed: false,
-        remaining: 0,
-        resetAt,
-        retryAfter: Math.max(1, retryAfter),
-      };
-    }
-
-    // Add current request to the window
-    validRequests.push(now);
-
-    const updatedData: RateLimitData = {
-      requests: validRequests,
-      windowStart: data.windowStart,
-    };
-
-    await env.AUTH_KV.put(key, JSON.stringify(updatedData), {
-      expirationTtl: Math.ceil(config.windowMs / 1000) + 60,
+    const limiterId = env.RATE_LIMITER.idFromName(key);
+    const limiter = env.RATE_LIMITER.get(limiterId);
+    const response = await limiter.fetch('https://rate-limit/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        maxRequests: config.maxRequests,
+        windowMs: config.windowMs,
+        now,
+      }),
     });
-
-    return {
-      allowed: true,
-      remaining: config.maxRequests - validRequests.length,
-      resetAt: Math.min(...validRequests) + config.windowMs,
-    };
-
+    if (!response.ok) {
+      throw new Error(`Rate limiter returned ${response.status}`);
+    }
+    return await response.json<RateLimitResult>();
   } catch (error) {
     // SECURITY: Fail closed on KV outage for ALL endpoints.
     // Previously only auth endpoints failed closed; API endpoints failed open,
@@ -160,11 +118,6 @@ export async function checkRateLimit(
       retryAfter: Math.ceil(config.windowMs / 1000),
     };
   }
-}
-
-interface RateLimitData {
-  requests: number[];  // Timestamps of requests in current window
-  windowStart: number; // When the window started
 }
 
 /**
@@ -206,9 +159,7 @@ export function addRateLimitHeaders(
   newHeaders.set('X-RateLimit-Remaining', String(result.remaining));
   newHeaders.set('X-RateLimit-Reset', String(Math.ceil(result.resetAt / 1000)));
 
-  const mustRemainBodyless = response.status === 101 || response.status === 204 || response.status === 205 || response.status === 304;
-  const body = response.body ?? (mustRemainBodyless ? null : '');
-  return new Response(body, {
+  return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
     headers: newHeaders,

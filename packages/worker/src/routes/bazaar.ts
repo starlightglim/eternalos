@@ -24,6 +24,8 @@ import type { Env } from '../index';
 import type { AuthContext } from '../middleware/auth';
 import type { BazaarPack, PackType } from '../types';
 import { sanitizeFilename } from '../utils/sanitize';
+import { validateCartridge } from '../utils/cartridge';
+import { setDraftPublishedPack } from './games';
 import { validateManifestAgainstFiles, validateManifest, formatValidationErrors } from '../utils/estheme';
 import type { EsthemeManifest } from '../utils/estheme';
 
@@ -43,7 +45,11 @@ const MAX_PACKS_PER_USER = 50;
 const MAX_NAME_LENGTH = 80;
 const MAX_DESCRIPTION_LENGTH = 500;
 const MAX_TAGS = 10;
+// Types accepted by the legacy flat-config publish route. Games publish via
+// the dedicated /api/bazaar/publish-game route (cartridge validation).
 const VALID_PACK_TYPES: PackType[] = ['cursor', 'icon', 'sound', 'effect', 'skin'];
+// Types visible to browse/search.
+const BROWSE_PACK_TYPES: PackType[] = [...VALID_PACK_TYPES, 'game'];
 
 const ALLOWED_ASSET_TYPES: Record<string, boolean> = {
   'image/png': true, 'image/gif': true, 'image/webp': true,
@@ -53,6 +59,31 @@ const ALLOWED_ASSET_TYPES: Record<string, boolean> = {
   'application/x-navi-animation': true, // .ani cursor files
 };
 
+async function deleteR2Keys(env: Env, keys: string[]): Promise<void> {
+  await Promise.allSettled(keys.map((key) => env.ETERNALOS_FILES.delete(key)));
+}
+
+async function removePackFromIndex(env: Env, key: string, packId: string): Promise<void> {
+  const indexStr = await env.DESKTOP_KV.get(key);
+  if (!indexStr) return;
+  const index = JSON.parse(indexStr) as string[];
+  await env.DESKTOP_KV.put(key, JSON.stringify(index.filter((id) => id !== packId)));
+}
+
+async function cleanupPublishedPack(
+  env: Env,
+  packId: string,
+  type: PackType,
+  authorUid: string,
+): Promise<void> {
+  await Promise.allSettled([
+    env.DESKTOP_KV.delete(`bazaar:pack:${packId}`),
+    type === 'game' ? env.DESKTOP_KV.delete(`game:${packId}`) : Promise.resolve(),
+    removePackFromIndex(env, `bazaar:type:${type}`, packId),
+    removePackFromIndex(env, `bazaar:author:${authorUid}`, packId),
+  ]);
+}
+
 // ---------------------------------------------------------------------------
 // Publish
 // ---------------------------------------------------------------------------
@@ -60,6 +91,9 @@ const ALLOWED_ASSET_TYPES: Record<string, boolean> = {
 export async function handleBazaarPublish(
   request: Request, env: Env, auth: AuthContext
 ): Promise<Response> {
+  const uploadedR2Keys: string[] = [];
+  let publishedPackId: string | undefined;
+  let publishedType: PackType | undefined;
   try {
     const formData = await request.formData();
     const manifestStr = formData.get('manifest');
@@ -86,6 +120,7 @@ export async function handleBazaarPublish(
     if (!VALID_PACK_TYPES.includes(manifest.type)) {
       return Response.json({ error: `Invalid type. Must be: ${VALID_PACK_TYPES.join(', ')}` }, { status: 400 });
     }
+    publishedType = manifest.type;
     if (!manifest.name || manifest.name.length > MAX_NAME_LENGTH) {
       return Response.json({ error: `Name required, max ${MAX_NAME_LENGTH} chars` }, { status: 400 });
     }
@@ -131,6 +166,7 @@ export async function handleBazaarPublish(
 
     // Generate pack ID
     const packId = crypto.randomUUID();
+    publishedPackId = packId;
 
     // Upload preview to R2
     const previewName = sanitizeFilename(previewBlob.name || 'preview.png');
@@ -139,6 +175,7 @@ export async function handleBazaarPublish(
       httpMetadata: { contentType: previewBlob.type },
       customMetadata: { type: 'bazaar-preview', packId },
     });
+    uploadedR2Keys.push(previewR2Key);
     const previewUrl = `/api/bazaar/assets/${packId}/${previewName}`;
 
     // Upload assets to R2
@@ -150,6 +187,7 @@ export async function handleBazaarPublish(
         httpMetadata: { contentType: entry.file.type },
         customMetadata: { type: 'bazaar-asset', packId, assetKey: entry.key },
       });
+      uploadedR2Keys.push(r2Key);
       assets[entry.key] = `/api/bazaar/assets/${packId}/${filename}`;
     }
 
@@ -235,7 +273,204 @@ export async function handleBazaarPublish(
     return Response.json({ success: true, pack });
   } catch (error) {
     console.error('Bazaar publish error:', error);
+    if (publishedPackId) {
+      await deleteR2Keys(env, uploadedR2Keys);
+      await cleanupPublishedPack(env, publishedPackId, publishedType ?? 'skin', auth.uid);
+    }
     return Response.json({ error: 'Failed to publish pack' }, { status: 500 });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Publish game cartridge
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/bazaar/publish-game
+ *
+ * Multipart form:
+ *   cartridge: JSON string (validated Cartridge format)
+ *   preview:   cover image file (required on first publish)
+ *   packId:    optional — republish/update an existing game you own
+ *
+ * Stores cartridge JSON at bazaar/{packId}/cartridge.json and writes the
+ * play-route pointer KV `game:{packId}` → { uid, version, r2Key }. The
+ * version is a monotonic integer that re-keys the Dynamic Worker isolate
+ * cache so updates go live on the next play.
+ */
+export async function handleBazaarPublishGame(
+  request: Request, env: Env, auth: AuthContext
+): Promise<Response> {
+  const uploadedR2Keys: string[] = [];
+  let publishedPackId: string | undefined;
+  let republishPackJson: string | undefined;
+  let republishGameMeta: { uid: string; version: number; r2Key: string } | null | undefined;
+  try {
+    const formData = await request.formData();
+    const cartridgeStr = formData.get('cartridge');
+    const preview = formData.get('preview');
+    const existingPackId = formData.get('packId');
+    const draftId = formData.get('draftId');
+
+    if (!cartridgeStr || typeof cartridgeStr !== 'string') {
+      return Response.json({ error: 'Missing cartridge' }, { status: 400 });
+    }
+
+    let rawCartridge: unknown;
+    try {
+      rawCartridge = JSON.parse(cartridgeStr);
+    } catch {
+      return Response.json({ error: 'Invalid cartridge JSON' }, { status: 400 });
+    }
+
+    const validation = validateCartridge(rawCartridge);
+    if (!validation.ok || !validation.cartridge) {
+      return Response.json(
+        { error: `Invalid cartridge: ${validation.errors[0] ?? 'unknown'}`, details: validation.errors },
+        { status: 400 },
+      );
+    }
+    const cartridge = validation.cartridge;
+    // Authorship is server-asserted, never client-supplied.
+    cartridge.meta.author = auth.username;
+
+    const tags = ['game'];
+
+    // ----- republish path -----
+    if (existingPackId && typeof existingPackId === 'string') {
+      publishedPackId = existingPackId;
+      const packStr = await env.DESKTOP_KV.get(`bazaar:pack:${existingPackId}`);
+      if (!packStr) return Response.json({ error: 'Pack not found' }, { status: 404 });
+      const pack = JSON.parse(packStr) as BazaarPack;
+      if (pack.authorUid !== auth.uid || pack.type !== 'game') {
+        return Response.json({ error: 'Not authorized' }, { status: 403 });
+      }
+
+      const gameMeta = await env.DESKTOP_KV.get<{ uid: string; version: number; r2Key: string }>(
+        `game:${existingPackId}`, 'json'
+      );
+      republishPackJson = packStr;
+      republishGameMeta = gameMeta;
+      const nextVersion = (gameMeta?.version ?? 0) + 1;
+      const r2Key = `bazaar/${existingPackId}/cartridge.v${nextVersion}.json`;
+
+      await env.ETERNALOS_FILES.put(r2Key, JSON.stringify(cartridge), {
+        httpMetadata: { contentType: 'application/json' },
+        customMetadata: { type: 'bazaar-game-cartridge', packId: existingPackId },
+      });
+      uploadedR2Keys.push(r2Key);
+
+      if (preview && typeof preview !== 'string') {
+        const previewBlob = preview as File;
+        if (previewBlob.size > MAX_PREVIEW_SIZE) {
+          return Response.json({ error: 'Preview too large (max 1MB)' }, { status: 400 });
+        }
+        const previewName = `${crypto.randomUUID()}-${sanitizeFilename(previewBlob.name || 'cover.png')}`;
+        const previewR2Key = `bazaar/${existingPackId}/${previewName}`;
+        await env.ETERNALOS_FILES.put(previewR2Key, await previewBlob.arrayBuffer(), {
+          httpMetadata: { contentType: previewBlob.type },
+          customMetadata: { type: 'bazaar-preview', packId: existingPackId },
+        });
+        uploadedR2Keys.push(previewR2Key);
+        pack.previewUrl = `/api/bazaar/assets/${existingPackId}/${previewName}`;
+      }
+
+      pack.name = cartridge.meta.name;
+      pack.description = cartridge.meta.description ?? '';
+      pack.version = cartridge.meta.version;
+      pack.updatedAt = Date.now();
+
+      await env.DESKTOP_KV.put(`bazaar:pack:${existingPackId}`, JSON.stringify(pack));
+      await env.DESKTOP_KV.put(`game:${existingPackId}`, JSON.stringify({
+        uid: auth.uid, version: nextVersion, r2Key,
+      }));
+
+      if (draftId && typeof draftId === 'string') {
+        await setDraftPublishedPack(env, auth.uid, draftId, existingPackId);
+      }
+
+      return Response.json({ success: true, pack });
+    }
+
+    // ----- first publish -----
+    if (!preview || typeof preview === 'string') {
+      return Response.json({ error: 'Missing cover image' }, { status: 400 });
+    }
+    const previewBlob = preview as File;
+    if (previewBlob.size > MAX_PREVIEW_SIZE) {
+      return Response.json({ error: 'Preview too large (max 1MB)' }, { status: 400 });
+    }
+
+    const authorPacksStr = await env.DESKTOP_KV.get(`bazaar:author:${auth.uid}`);
+    const authorPacks: string[] = authorPacksStr ? JSON.parse(authorPacksStr) : [];
+    if (authorPacks.length >= MAX_PACKS_PER_USER) {
+      return Response.json({ error: `Max ${MAX_PACKS_PER_USER} packs per user` }, { status: 400 });
+    }
+
+    const packId = crypto.randomUUID();
+    publishedPackId = packId;
+    const r2Key = `bazaar/${packId}/cartridge.json`;
+
+    await env.ETERNALOS_FILES.put(r2Key, JSON.stringify(cartridge), {
+      httpMetadata: { contentType: 'application/json' },
+      customMetadata: { type: 'bazaar-game-cartridge', packId },
+    });
+    uploadedR2Keys.push(r2Key);
+
+    const previewName = sanitizeFilename(previewBlob.name || 'cover.png');
+    await env.ETERNALOS_FILES.put(`bazaar/${packId}/${previewName}`, await previewBlob.arrayBuffer(), {
+      httpMetadata: { contentType: previewBlob.type },
+      customMetadata: { type: 'bazaar-preview', packId },
+    });
+    uploadedR2Keys.push(`bazaar/${packId}/${previewName}`);
+
+    const pack: BazaarPack = {
+      packId,
+      type: 'game',
+      name: cartridge.meta.name,
+      description: cartridge.meta.description ?? '',
+      authorUid: auth.uid,
+      authorUsername: auth.username,
+      version: cartridge.meta.version,
+      previewUrl: `/api/bazaar/assets/${packId}/${previewName}`,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      installs: 0,
+      tags,
+      assets: { cartridge: `/api/games/play/${packId}/cartridge.json` },
+      config: {},
+    };
+
+    await env.DESKTOP_KV.put(`bazaar:pack:${packId}`, JSON.stringify(pack));
+    await env.DESKTOP_KV.put(`game:${packId}`, JSON.stringify({ uid: auth.uid, version: 1, r2Key }));
+
+    const typeIndexStr = await env.DESKTOP_KV.get('bazaar:type:game');
+    const typeIndex: string[] = typeIndexStr ? JSON.parse(typeIndexStr) : [];
+    typeIndex.unshift(packId);
+    await env.DESKTOP_KV.put('bazaar:type:game', JSON.stringify(typeIndex));
+
+    authorPacks.unshift(packId);
+    await env.DESKTOP_KV.put(`bazaar:author:${auth.uid}`, JSON.stringify(authorPacks));
+
+    if (draftId && typeof draftId === 'string') {
+      await setDraftPublishedPack(env, auth.uid, draftId, packId);
+    }
+
+    return Response.json({ success: true, pack });
+  } catch (error) {
+    console.error('Bazaar publish-game error:', error);
+    await deleteR2Keys(env, uploadedR2Keys);
+    if (publishedPackId && republishPackJson) {
+      await env.DESKTOP_KV.put(`bazaar:pack:${publishedPackId}`, republishPackJson).catch(() => {});
+      if (republishGameMeta) {
+        await env.DESKTOP_KV.put(`game:${publishedPackId}`, JSON.stringify(republishGameMeta)).catch(() => {});
+      } else {
+        await env.DESKTOP_KV.delete(`game:${publishedPackId}`).catch(() => {});
+      }
+    } else if (publishedPackId) {
+      await cleanupPublishedPack(env, publishedPackId, 'game', auth.uid);
+    }
+    return Response.json({ error: 'Failed to publish game' }, { status: 500 });
   }
 }
 
@@ -255,12 +490,12 @@ export async function handleBazaarBrowse(
 
     let packIds: string[] = [];
 
-    if (type && VALID_PACK_TYPES.includes(type)) {
+    if (type && BROWSE_PACK_TYPES.includes(type)) {
       const indexStr = await env.DESKTOP_KV.get(`bazaar:type:${type}`);
       packIds = indexStr ? JSON.parse(indexStr) : [];
     } else {
       // All types — merge all type indexes
-      for (const t of VALID_PACK_TYPES) {
+      for (const t of BROWSE_PACK_TYPES) {
         const indexStr = await env.DESKTOP_KV.get(`bazaar:type:${t}`);
         if (indexStr) packIds.push(...JSON.parse(indexStr));
       }
@@ -341,17 +576,18 @@ export async function handleBazaarGetPack(
 export async function handleBazaarInstall(
   request: Request, env: Env, auth: AuthContext, packId: string
 ): Promise<Response> {
-  const packStr = await env.DESKTOP_KV.get(`bazaar:pack:${packId}`);
-  if (!packStr) return Response.json({ error: 'Pack not found' }, { status: 404 });
+  const coordinatorId = env.BAZAAR_COORDINATOR.idFromName(`pack:${packId}`);
+  const coordinator = env.BAZAAR_COORDINATOR.get(coordinatorId);
+  const response = await coordinator.fetch('https://bazaar-coordinator/increment-install', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ packId }),
+  });
 
-  const pack: BazaarPack = JSON.parse(packStr);
+  if (!response.ok) return response;
 
-  // Increment install counter
-  pack.installs++;
-  pack.updatedAt = Date.now();
-  await env.DESKTOP_KV.put(`bazaar:pack:${packId}`, JSON.stringify(pack));
-
-  return Response.json({ success: true, config: pack.config, pack });
+  const result = await response.json() as { pack: BazaarPack };
+  return Response.json({ success: true, config: result.pack.config, pack: result.pack });
 }
 
 // ---------------------------------------------------------------------------
@@ -392,6 +628,11 @@ export async function handleBazaarDelete(
     const authorIndex: string[] = JSON.parse(authorIndexStr);
     const updated = authorIndex.filter(id => id !== packId);
     await env.DESKTOP_KV.put(`bazaar:author:${auth.uid}`, JSON.stringify(updated));
+  }
+
+  // Game packs also have a play-route pointer
+  if (pack.type === 'game') {
+    await env.DESKTOP_KV.delete(`game:${packId}`);
   }
 
   return Response.json({ success: true });
@@ -483,6 +724,8 @@ export async function handleBazaarMyPacks(
 export async function handleBazaarPublishEstheme(
   request: Request, env: Env, auth: AuthContext
 ): Promise<Response> {
+  const uploadedR2Keys: string[] = [];
+  let publishedPackId: string | undefined;
   try {
     const formData = await request.formData();
 
@@ -598,6 +841,7 @@ export async function handleBazaarPublishEstheme(
 
     // 7. Upload everything to R2
     const packId = crypto.randomUUID();
+    publishedPackId = packId;
     const r2Prefix = `bazaar/${packId}`;
 
     const previewFilename = sanitizeFilename(preview.name || 'preview.png');
@@ -606,6 +850,7 @@ export async function handleBazaarPublishEstheme(
       httpMetadata: { contentType: preview.type },
       customMetadata: { type: 'estheme-preview', packId },
     });
+    uploadedR2Keys.push(previewR2Key);
 
     // Store each asset at its declared path within the pack prefix FIRST, so
     // that if any collision slips past path validation, the server-validated
@@ -616,6 +861,7 @@ export async function handleBazaarPublishEstheme(
         httpMetadata: { contentType: entry.file.type || 'application/octet-stream' },
         customMetadata: { type: 'estheme-asset', packId, assetPath: entry.path },
       });
+      uploadedR2Keys.push(r2Key);
     }
 
     // Store the validated manifest AFTER assets so its R2 key (manifest.json)
@@ -626,6 +872,7 @@ export async function handleBazaarPublishEstheme(
       httpMetadata: { contentType: 'application/json' },
       customMetadata: { type: 'estheme-manifest', packId },
     });
+    uploadedR2Keys.push(manifestR2Key);
 
     // 8. Build pack record
     const previewUrl = `/api/bazaar/assets/${packId}/${previewFilename}`;
@@ -664,6 +911,10 @@ export async function handleBazaarPublishEstheme(
     return Response.json({ success: true, pack, manifest });
   } catch (error) {
     console.error('Bazaar estheme publish error:', error);
+    if (publishedPackId) {
+      await deleteR2Keys(env, uploadedR2Keys);
+      await cleanupPublishedPack(env, publishedPackId, 'skin', auth.uid);
+    }
     return Response.json({ error: 'Failed to publish theme' }, { status: 500 });
   }
 }

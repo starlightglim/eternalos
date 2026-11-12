@@ -35,12 +35,12 @@ I did not find a direct unauthenticated account takeover or obvious cross-tenant
 Severity: High
 
 Affected code:
-- [packages/worker/src/routes/upload.ts](/Users/yassin/Desktop/eternalos/eternalos/packages/worker/src/routes/upload.ts:1074)
-- [packages/worker/src/routes/upload.ts](/Users/yassin/Desktop/eternalos/eternalos/packages/worker/src/routes/upload.ts:1096)
-- [packages/frontend/public/sw.js](/Users/yassin/Desktop/eternalos/eternalos/packages/frontend/public/sw.js:28)
-- [packages/frontend/public/sw.js](/Users/yassin/Desktop/eternalos/eternalos/packages/frontend/public/sw.js:81)
-- [packages/frontend/public/sw.js](/Users/yassin/Desktop/eternalos/eternalos/packages/frontend/public/sw.js:120)
-- [packages/frontend/src/services/api.ts](/Users/yassin/Desktop/eternalos/eternalos/packages/frontend/src/services/api.ts:664)
+- [packages/worker/src/routes/upload.ts](../packages/worker/src/routes/upload.ts#L1074)
+- [packages/worker/src/routes/upload.ts](../packages/worker/src/routes/upload.ts#L1096)
+- [packages/frontend/public/sw.js](../packages/frontend/public/sw.js#L28)
+- [packages/frontend/public/sw.js](../packages/frontend/public/sw.js#L81)
+- [packages/frontend/public/sw.js](../packages/frontend/public/sw.js#L120)
+- [packages/frontend/src/services/api.ts](../packages/frontend/src/services/api.ts#L664)
 
 What is happening:
 - The private file-serving path returns `Cache-Control: public, max-age=31536000, immutable` for ranged and non-ranged responses.
@@ -67,9 +67,9 @@ Recommended fix:
 Severity: High
 
 Affected code:
-- [packages/frontend/src/stores/authStore.ts](/Users/yassin/Desktop/eternalos/eternalos/packages/frontend/src/stores/authStore.ts:499)
-- [packages/frontend/public/_headers](/Users/yassin/Desktop/eternalos/eternalos/packages/frontend/public/_headers:5)
-- [packages/frontend/index.html](/Users/yassin/Desktop/eternalos/eternalos/packages/frontend/index.html:39)
+- [packages/frontend/src/stores/authStore.ts](../packages/frontend/src/stores/authStore.ts#L499)
+- [packages/frontend/public/_headers](../packages/frontend/public/_headers#L5)
+- [packages/frontend/index.html](../packages/frontend/index.html#L39)
 
 What is happening:
 - The auth store persists both `token` and `refreshToken` using Zustand `persist`, which defaults to `localStorage`.
@@ -102,9 +102,9 @@ Recommended fix:
 Severity: Medium
 
 Affected code:
-- [packages/worker/src/utils/jwt.ts](/Users/yassin/Desktop/eternalos/eternalos/packages/worker/src/utils/jwt.ts:92)
-- [packages/worker/src/middleware/auth.ts](/Users/yassin/Desktop/eternalos/eternalos/packages/worker/src/middleware/auth.ts:133)
-- [packages/worker/src/index.ts](/Users/yassin/Desktop/eternalos/eternalos/packages/worker/src/index.ts:628)
+- [packages/worker/src/utils/jwt.ts](../packages/worker/src/utils/jwt.ts#L92)
+- [packages/worker/src/middleware/auth.ts](../packages/worker/src/middleware/auth.ts#L133)
+- [packages/worker/src/index.ts](../packages/worker/src/index.ts#L628)
 
 What is happening:
 - `signFileToken()` already supports an optional `scope` and its comment explicitly says scoping prevents reuse across other files.
@@ -128,8 +128,8 @@ Recommended fix:
 Severity: Medium
 
 Affected code:
-- [packages/worker/src/routes/auth.ts](/Users/yassin/Desktop/eternalos/eternalos/packages/worker/src/routes/auth.ts:848)
-- [packages/frontend/src/pages/ForgotPasswordPage.tsx](/Users/yassin/Desktop/eternalos/eternalos/packages/frontend/src/pages/ForgotPasswordPage.tsx:118)
+- [packages/worker/src/routes/auth.ts](../packages/worker/src/routes/auth.ts#L848)
+- [packages/frontend/src/pages/ForgotPasswordPage.tsx](../packages/frontend/src/pages/ForgotPasswordPage.tsx#L118)
 
 What is happening:
 - Signup and login both use Turnstile, but forgot-password accepts only an email and relies on per-IP and per-address rate limiting.
@@ -153,8 +153,8 @@ Live `npm audit --json` reported 11 advisories total:
 - 0 critical
 
 Notable direct dependencies:
-- [packages/frontend/package.json](/Users/yassin/Desktop/eternalos/eternalos/packages/frontend/package.json:18) pins `dompurify` to `^3.3.3`, which `npm audit` currently flags as moderate.
-- [packages/frontend/package.json](/Users/yassin/Desktop/eternalos/eternalos/packages/frontend/package.json:40) pins `vite` to `^7.3.1`, which `npm audit` currently flags with multiple high-severity dev-server issues.
+- [packages/frontend/package.json](../packages/frontend/package.json#L18) pins `dompurify` to `^3.3.3`, which `npm audit` currently flags as moderate.
+- [packages/frontend/package.json](../packages/frontend/package.json#L40) pins `vite` to `^7.3.1`, which `npm audit` currently flags with multiple high-severity dev-server issues.
 
 Important nuance:
 - The `vite` advisories are mainly dev-server exposure issues. They still matter for local development, preview environments, and anyone exposing a dev server beyond localhost, but they are not equivalent to a production runtime RCE in the built frontend.

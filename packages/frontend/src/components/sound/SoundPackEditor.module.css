@@ -24,8 +24,9 @@
   font-family: var(--font-geneva);
   font-size: 11px;
   padding: 2px 4px;
-  border: 1px solid var(--black);
-  background: var(--white);
+  border: 1px solid var(--control-border, var(--black));
+  background: var(--control-bg, var(--white));
+  color: var(--control-text, var(--black));
 }
 
 .sectionLabel {
@@ -33,7 +34,7 @@
   font-size: 11px;
   margin-top: 4px;
   padding-bottom: 2px;
-  border-bottom: 1px solid var(--shadow);
+  border-bottom: 1px solid var(--control-border, var(--shadow));
 }
 
 .soundGrid {
@@ -52,8 +53,8 @@
 }
 
 .soundRow:hover {
-  background: var(--highlight);
-  border-color: var(--shadow);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--surface, var(--white)));
+  border-color: var(--accent, var(--shadow));
 }
 
 .soundLabel {
@@ -66,7 +67,7 @@
 .soundStatus {
   font-family: var(--font-geneva);
   font-size: 10px;
-  color: var(--shadow);
+  color: var(--text-muted, var(--shadow));
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -74,7 +75,7 @@
 }
 
 .soundStatus.custom {
-  color: var(--selection);
+  color: var(--accent, var(--selection));
   font-weight: bold;
 }
 
@@ -88,14 +89,15 @@
   font-family: var(--font-chicago);
   font-size: 10px;
   padding: 2px 6px;
-  border: 1px outset var(--highlight);
-  background: var(--platinum);
+  border: 1px outset var(--control-border, var(--highlight));
+  background: var(--control-bg, var(--platinum));
+  color: var(--control-text, var(--black));
   cursor: pointer;
   white-space: nowrap;
 }
 
 .btn:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--control-bg, var(--platinum)));
 }
 
 .btn:active {
@@ -111,7 +113,7 @@
 
 .btnRemove {
   composes: btn;
-  color: #900;
+  color: var(--danger, #900);
 }
 
 .hiddenInput {
@@ -121,6 +123,6 @@
 .error {
   font-family: var(--font-geneva);
   font-size: 10px;
-  color: #c00;
+  color: var(--danger, #c00);
   padding: 2px 4px;
 }

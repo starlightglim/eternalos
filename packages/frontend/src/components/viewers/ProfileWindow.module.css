@@ -4,7 +4,7 @@
   padding: 16px;
   font-family: var(--font-family, 'Geneva', 'Verdana', sans-serif);
   font-size: 12px;
-  color: var(--black, #000);
+  color: var(--text);
   height: 100%;
   overflow-y: auto;
   display: flex;
@@ -14,15 +14,15 @@
 
 /* Section styling */
 .section {
-  border: 1px solid var(--gray, #808080);
+  border: 1px solid var(--shadow);
   padding: 10px;
-  background: var(--window-bg, #fff);
+  background: var(--surface);
 }
 
 .sectionLabel {
   font-weight: bold;
   font-size: 11px;
-  color: var(--gray, #808080);
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 8px;
@@ -37,7 +37,7 @@
 
 .username {
   font-size: 11px;
-  color: var(--gray, #808080);
+  color: var(--text-muted);
 }
 
 /* Bio textarea */
@@ -47,15 +47,15 @@
   resize: vertical;
   font-family: inherit;
   font-size: 12px;
-  border: 1px solid var(--gray, #808080);
+  border: 1px solid var(--shadow);
   padding: 6px;
-  background: var(--white, #fff);
+  background: var(--surface);
   box-sizing: border-box;
 }
 
 .bioArea:focus {
   outline: none;
-  border-color: var(--selection, #3875D7);
+  border-color: var(--accent, var(--selection, #3875d7));
 }
 
 .bioText {
@@ -64,13 +64,13 @@
 }
 
 .bioEmpty {
-  color: var(--gray, #808080);
+  color: var(--text-muted);
   font-style: italic;
 }
 
 .charCount {
   font-size: 10px;
-  color: var(--gray, #808080);
+  color: var(--text-muted);
   text-align: right;
   margin-top: 2px;
 }
@@ -94,7 +94,7 @@
 }
 
 .linkUrl {
-  color: var(--selection, #3875D7);
+  color: var(--accent, var(--selection, #3875d7));
   text-decoration: underline;
   cursor: pointer;
   overflow: hidden;
@@ -104,20 +104,20 @@
 }
 
 .linkUrl:hover {
-  color: #1a4da0;
+  color: var(--accent, var(--selection));
 }
 
 .linkRemoveBtn {
   background: none;
-  border: 1px solid var(--gray, #808080);
+  border: 1px solid var(--shadow);
   font-size: 10px;
   cursor: pointer;
   padding: 1px 4px;
-  color: var(--black, #000);
+  color: var(--text);
 }
 
 .linkRemoveBtn:hover {
-  background: var(--gray-light, #e0e0e0);
+  background: var(--control-bg);
 }
 
 /* Add link form */
@@ -131,32 +131,32 @@
   flex: 1;
   font-family: inherit;
   font-size: 11px;
-  border: 1px solid var(--gray, #808080);
+  border: 1px solid var(--shadow);
   padding: 3px 6px;
 }
 
 .addLinkInput:focus {
   outline: none;
-  border-color: var(--selection, #3875D7);
+  border-color: var(--accent, var(--selection, #3875d7));
 }
 
 .addLinkBtn {
   font-family: inherit;
   font-size: 11px;
-  border: 1px solid var(--gray, #808080);
-  background: var(--gray-light, #e0e0e0);
+  border: 1px solid var(--shadow);
+  background: var(--control-bg);
   padding: 3px 8px;
   cursor: pointer;
 }
 
 .addLinkBtn:hover {
-  background: var(--gray, #c0c0c0);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--control-bg));
 }
 
 /* Stats line */
 .stats {
   font-size: 11px;
-  color: var(--gray, #808080);
+  color: var(--text-muted);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -173,8 +173,8 @@
 .saveBtn {
   font-family: inherit;
   font-size: 12px;
-  border: 2px outset var(--gray, #c0c0c0);
-  background: var(--gray-light, #e0e0e0);
+  border: 2px outset var(--shadow);
+  background: var(--control-bg);
   padding: 4px 16px;
   cursor: pointer;
   font-weight: bold;
@@ -186,12 +186,12 @@
 
 .savedMessage {
   font-size: 11px;
-  color: #2d8a2d;
+  color: var(--success);
   align-self: center;
 }
 
 .noLinks {
-  color: var(--gray, #808080);
+  color: var(--text-muted);
   font-style: italic;
   font-size: 11px;
 }

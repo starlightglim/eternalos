@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -b --force",
+    "test": "node --test test/*.test.mjs && vitest run",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -15,7 +16,7 @@
     "@cloudflare/ai-chat": "^0.1.8",
     "@types/dompurify": "^3.0.5",
     "agents": "^0.7.5",
-    "dompurify": "^3.3.3",
+    "dompurify": "^3.4.17",
     "jszip": "^3.10.1",
     "marked": "^17.0.5",
     "prism-react-renderer": "^2.4.1",
@@ -37,6 +38,7 @@
     "globals": "^16.5.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.48.0",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "5.0.0"
   }
 }

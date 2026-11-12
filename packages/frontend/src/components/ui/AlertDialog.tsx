@@ -6,7 +6,7 @@
  * Features the classic beveled button style.
  */
 
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import styles from './AlertDialog.module.css';
 
 export type AlertType = 'error' | 'warning' | 'info' | 'confirm';
@@ -39,6 +39,18 @@ export function AlertDialog({
   buttons,
   onClose,
 }: AlertDialogProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const messageId = useId();
+
+  // Remember what had focus before the dialog opened so we can restore it on
+  // close (captured in a lazy initializer, before the primary button's
+  // autoFocus runs, so it points at the real opener).
+  const [opener] = useState<HTMLElement | null>(() =>
+    typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null
+  );
+  useEffect(() => () => { opener?.focus?.(); }, [opener]);
+
   // Default buttons based on type
   const defaultButtons = useMemo<AlertButton[]>(
     () =>
@@ -51,18 +63,43 @@ export function AlertDialog({
     [buttons, type, onClose]
   );
 
-  // Handle Escape key
+  // Escape closes; Tab is trapped inside the dialog.
+  //
+  // Enter is deliberately NOT handled here. A global Enter handler used to
+  // click the primary button regardless of what was focused — so pressing
+  // Enter while Cancel (or any other control) was focused still fired the
+  // primary, often-destructive action. Native <button> activation runs the
+  // FOCUSED button on Enter/Space instead, and the primary button's autoFocus
+  // preserves "Enter confirms" when nothing else has been tabbed to.
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         onClose?.();
-      } else if (e.key === 'Enter') {
-        // Click primary button on Enter
-        const primaryBtn = defaultButtons.find((b) => b.primary);
-        primaryBtn?.onClick();
+        return;
+      }
+      if (e.key === 'Tab') {
+        const root = dialogRef.current;
+        if (!root) return;
+        const focusables = Array.from(
+          root.querySelectorAll<HTMLElement>(
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+          )
+        ).filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement as HTMLElement | null;
+        const inside = root.contains(active);
+        if (e.shiftKey && (active === first || !inside)) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && (active === last || !inside)) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     },
-    [onClose, defaultButtons]
+    [onClose]
   );
 
   useEffect(() => {
@@ -82,7 +119,14 @@ export function AlertDialog({
 
   return (
     <div className={styles.overlay} onClick={handleOverlayClick}>
-      <div className={styles.dialog} role="alertdialog" aria-modal="true">
+      <div
+        className={styles.dialog}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={title ? titleId : messageId}
+        aria-describedby={messageId}
+        ref={dialogRef}
+      >
         <div className={styles.content}>
           {/* Icon */}
           <div className={styles.iconContainer}>
@@ -91,8 +135,8 @@ export function AlertDialog({
 
           {/* Message area */}
           <div className={styles.messageArea}>
-            {title && <div className={styles.title}>{title}</div>}
-            <div className={styles.message}>{message}</div>
+            {title && <div className={styles.title} id={titleId}>{title}</div>}
+            <div className={styles.message} id={messageId}>{message}</div>
           </div>
         </div>
 
@@ -138,12 +182,12 @@ function StopIcon() {
       {/* Octagon outline */}
       <polygon
         points="10,2 22,2 30,10 30,22 22,30 10,30 2,22 2,10"
-        fill="white"
-        stroke="black"
+        fill="var(--control-bg, #fff)"
+        stroke="var(--control-border, #000)"
         strokeWidth="2"
       />
       {/* Hand symbol */}
-      <rect x="8" y="14" width="16" height="4" fill="black" />
+      <rect x="8" y="14" width="16" height="4" fill="var(--danger, var(--text, #000))" />
     </svg>
   );
 }
@@ -155,13 +199,13 @@ function CautionIcon() {
       {/* Triangle */}
       <polygon
         points="16,2 30,28 2,28"
-        fill="white"
-        stroke="black"
+        fill="var(--control-bg, #fff)"
+        stroke="var(--control-border, #000)"
         strokeWidth="2"
       />
       {/* Exclamation mark */}
-      <rect x="14" y="10" width="4" height="10" fill="black" />
-      <rect x="14" y="22" width="4" height="4" fill="black" />
+      <rect x="14" y="10" width="4" height="10" fill="var(--danger, var(--text, #000))" />
+      <rect x="14" y="22" width="4" height="4" fill="var(--danger, var(--text, #000))" />
     </svg>
   );
 }
@@ -173,15 +217,15 @@ function NoteIcon() {
       {/* Document body */}
       <path
         d="M4,2 L20,2 L28,10 L28,30 L4,30 Z"
-        fill="white"
-        stroke="black"
+        fill="var(--control-bg, #fff)"
+        stroke="var(--control-border, #000)"
         strokeWidth="2"
       />
       {/* Folded corner */}
-      <path d="M20,2 L20,10 L28,10" fill="none" stroke="black" strokeWidth="2" />
+      <path d="M20,2 L20,10 L28,10" fill="none" stroke="var(--text, #000)" strokeWidth="2" />
       {/* Lines of text */}
-      <line x1="8" y1="16" x2="24" y2="16" stroke="black" strokeWidth="2" />
-      <line x1="8" y1="22" x2="20" y2="22" stroke="black" strokeWidth="2" />
+      <line x1="8" y1="16" x2="24" y2="16" stroke="var(--text, #000)" strokeWidth="2" />
+      <line x1="8" y1="22" x2="20" y2="22" stroke="var(--text, #000)" strokeWidth="2" />
     </svg>
   );
 }
@@ -191,16 +235,16 @@ function QuestionIcon() {
   return (
     <svg width="32" height="32" viewBox="0 0 32 32" className={styles.icon}>
       {/* Circle */}
-      <circle cx="16" cy="16" r="14" fill="white" stroke="black" strokeWidth="2" />
+      <circle cx="16" cy="16" r="14" fill="var(--control-bg, #fff)" stroke="var(--control-border, #000)" strokeWidth="2" />
       {/* Question mark */}
       <path
         d="M12,10 Q12,6 16,6 Q20,6 20,10 Q20,14 16,16 L16,18"
         fill="none"
-        stroke="black"
+        stroke="var(--text, #000)"
         strokeWidth="2"
         strokeLinecap="round"
       />
-      <rect x="14" y="22" width="4" height="4" fill="black" />
+      <rect x="14" y="22" width="4" height="4" fill="var(--text, #000)" />
     </svg>
   );
 }

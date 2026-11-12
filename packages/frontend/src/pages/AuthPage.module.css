@@ -3,19 +3,29 @@
 .authContainer {
   width: 100%;
   height: 100%;
+  min-height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #1a1a4e 0%, #0d3b6e 40%, #1a5276 70%, #117a65 100%);
+  padding: 16px;
+  overflow: auto;
+  background:
+    radial-gradient(circle at 20% 10%, color-mix(in srgb, var(--highlight) 72%, transparent), transparent 38%),
+    linear-gradient(135deg, var(--platinum) 0%, var(--highlight) 52%, var(--platinum) 100%);
+  color: var(--text, var(--text-color, var(--black)));
 }
 
 .authWindow {
-  width: 360px;
-  background: var(--white);
-  border: 2px solid var(--black);
+  width: min(100%, 380px);
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  background: var(--surface, var(--window-bg, var(--white)));
+  border: 2px solid var(--control-border, var(--border, var(--black)));
+  border-radius: 8px;
   box-shadow:
     inset 1px 1px 0 var(--highlight),
-    inset -1px -1px 0 var(--shadow);
+    inset -1px -1px 0 var(--shadow),
+    0 12px 28px color-mix(in srgb, var(--black) 20%, transparent);
 }
 
 .titleBar {
@@ -23,12 +33,12 @@
   background:
     repeating-linear-gradient(
       0deg,
-      var(--white) 0px,
-      var(--white) 1px,
-      var(--black) 1px,
-      var(--black) 3px
+      var(--surface, var(--window-bg, var(--white))) 0px,
+      var(--surface, var(--window-bg, var(--white))) 1px,
+      var(--control-border, var(--border, var(--black))) 1px,
+      var(--control-border, var(--border, var(--black))) 3px
     );
-  border-bottom: 1px solid var(--black);
+  border-bottom: 1px solid var(--control-border, var(--border, var(--black)));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -36,7 +46,7 @@
 }
 
 .titleText {
-  background: var(--white);
+  background: var(--surface, var(--window-bg, var(--white)));
   padding: 0 8px;
   font-family: var(--font-chicago);
   font-size: 13px;
@@ -44,7 +54,7 @@
 }
 
 .content {
-  padding: 20px;
+  padding: clamp(16px, 5vw, 24px);
 }
 
 .logo {
@@ -73,34 +83,35 @@
 .label {
   font-family: var(--font-chicago);
   font-size: 13px;
-  color: var(--black);
+  color: var(--text, var(--text-color, var(--black)));
 }
 
 .input {
   font-family: var(--font-geneva);
   font-size: 13px;
   padding: 6px 8px;
-  border: 2px solid var(--black);
+  border: 2px solid var(--control-border, var(--black));
   border-top-color: var(--shadow);
   border-left-color: var(--shadow);
   border-bottom-color: var(--highlight);
   border-right-color: var(--highlight);
-  background: var(--white);
+  background: var(--control-bg, var(--window-bg, var(--white)));
+  color: var(--control-text, var(--text-color, var(--black)));
   outline: none;
 }
 
 .input:focus {
-  outline: 2px solid var(--selection);
+  outline: 2px solid var(--accent, var(--selection));
   outline-offset: -2px;
 }
 
 .error {
   font-family: var(--font-chicago);
   font-size: 12px;
-  color: #990000;
-  background: #FFCCCC;
+  color: var(--danger, var(--error-text, #990000));
+  background: color-mix(in srgb, var(--danger, #990000) 16%, var(--surface, #fff));
   padding: 8px;
-  border: 1px solid #990000;
+  border: 1px solid var(--danger, var(--error-text, #990000));
   text-align: center;
 }
 
@@ -109,8 +120,8 @@
   font-size: 13px;
   padding: 8px 16px;
   margin-top: 8px;
-  background: var(--white);
-  border: 2px solid var(--black);
+  background: var(--control-bg, var(--white));
+  border: 2px solid var(--control-border, var(--black));
   border-radius: 6px;
   cursor: pointer;
   box-shadow:
@@ -119,20 +130,20 @@
 }
 
 .submitButton:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--control-bg, var(--white)));
 }
 
 .submitButton:active {
-  background: var(--black);
-  color: var(--white);
+  background: var(--accent, var(--black));
+  color: var(--selection-text, var(--white));
   box-shadow:
     inset 1px 1px 0 var(--shadow),
     inset -1px -1px 0 var(--highlight);
 }
 
 .submitButton:disabled {
-  background: var(--platinum);
-  color: var(--shadow);
+  background: var(--surface-chrome, var(--platinum));
+  color: var(--text-muted, var(--shadow));
   cursor: not-allowed;
 }
 
@@ -144,14 +155,14 @@
 }
 
 .link {
-  color: var(--selection);
+  color: var(--accent, var(--selection));
   text-decoration: underline;
   cursor: pointer;
 }
 
 .link:hover {
-  background: var(--selection);
-  color: var(--white);
+  background: var(--accent, var(--selection));
+  color: var(--selection-text, var(--white));
 }
 
 .divider {
@@ -188,7 +199,7 @@
 .instructions {
   font-family: var(--font-geneva);
   font-size: 12px;
-  color: var(--black);
+  color: var(--text, var(--black));
   text-align: center;
   margin-bottom: 16px;
   line-height: 1.4;
@@ -197,10 +208,10 @@
 .successMessage {
   font-family: var(--font-chicago);
   font-size: 12px;
-  color: #006600;
-  background: #CCFFCC;
+  color: var(--success, var(--success-text, #006600));
+  background: color-mix(in srgb, var(--success, #006600) 16%, var(--surface, #fff));
   padding: 12px;
-  border: 1px solid #006600;
+  border: 1px solid var(--success, var(--success-text, #006600));
   text-align: center;
   margin-bottom: 16px;
   line-height: 1.4;
@@ -216,8 +227,8 @@
   font-family: var(--font-chicago);
   font-size: 13px;
   padding: 8px 16px;
-  background: var(--white);
-  border: 2px solid var(--black);
+  background: var(--control-bg, var(--white));
+  border: 2px solid var(--control-border, var(--black));
   border-radius: 6px;
   cursor: pointer;
   box-shadow:
@@ -226,12 +237,12 @@
 }
 
 .googleButton:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent, var(--selection)) 12%, var(--control-bg, var(--white)));
 }
 
 .googleButton:active {
-  background: var(--black);
-  color: var(--white);
+  background: var(--accent, var(--black));
+  color: var(--selection-text, var(--white));
 }
 
 .googleIcon {
@@ -242,11 +253,26 @@
 .devNotice {
   font-family: var(--font-geneva);
   font-size: 11px;
-  color: #666600;
-  background: #FFFFCC;
+  color: var(--text, var(--warning-text, #666600));
+  background: color-mix(in srgb, var(--accent, #666600) 12%, var(--surface, #fff));
   padding: 8px;
-  border: 1px solid #666600;
+  border: 1px solid var(--accent, #666600);
   text-align: center;
   margin-bottom: 16px;
   line-height: 1.4;
+}
+
+@media (max-width: 480px) {
+  .authContainer {
+    align-items: flex-start;
+    padding: 10px;
+  }
+
+  .authWindow {
+    max-height: calc(100vh - 20px);
+  }
+
+  .content {
+    padding: 16px;
+  }
 }

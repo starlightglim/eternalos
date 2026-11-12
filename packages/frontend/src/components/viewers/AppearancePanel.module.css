@@ -1,23 +1,16 @@
 /*
- * AppearancePanel — compact settings panel pinned to a light palette
+ * AppearancePanel — compact settings panel that follows the active theme
  */
 .panel {
-  --platinum: #C0C0C0;
-  --white: #FFFFFF;
-  --black: #000000;
-  --shadow: #808080;
-  --highlight: #DFDFDF;
-  --selection: #000080;
-  --selection-text: #FFFFFF;
-  --text-color: #000000;
-  --text-color-secondary: #666666;
-  --border: #000000;
+  --panel-accent: var(--accent, var(--selection));
 
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  min-height: 0;
   height: 100%;
-  background: var(--platinum);
-  color: var(--text-color);
+  background: var(--surface-chrome);
+  color: var(--text);
 }
 
 /* ---- Header ---- */
@@ -27,9 +20,9 @@
   justify-content: space-between;
   align-items: flex-start;
   gap: 8px;
-  padding: 8px 10px 6px;
-  border-bottom: 1px solid var(--shadow);
-  background: var(--platinum);
+  padding: 10px 12px 9px;
+  border-bottom: 1px solid var(--control-border);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-chrome) 82%, var(--accent)), var(--surface-chrome));
 }
 
 .eyebrow {
@@ -37,20 +30,21 @@
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
 }
 
 .title {
   margin: 2px 0 1px;
   font-family: var(--font-chicago);
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .subtitle {
   margin: 0;
-  font-size: 10px;
-  line-height: 1.3;
-  color: var(--text-color-secondary);
+  max-width: 440px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-muted);
 }
 
 .headerMeta {
@@ -60,11 +54,13 @@
 }
 
 .statusPill {
-  padding: 2px 6px;
-  border: 1px solid var(--shadow);
-  background: var(--white);
-  font-size: 9px;
+  padding: 3px 7px;
+  border: 1px solid var(--panel-accent);
+  background: color-mix(in srgb, var(--control-bg) 78%, var(--panel-accent));
+  color: var(--panel-accent);
+  font-size: 10px;
   font-family: var(--font-geneva);
+  white-space: nowrap;
 }
 
 /* ---- Tabs ---- */
@@ -72,20 +68,26 @@
 .tabBar {
   display: flex;
   gap: 1px;
-  padding: 4px 6px 0;
-  border-bottom: 1px solid var(--shadow);
+  padding: 5px 8px 0;
+  border-bottom: 1px solid var(--control-border);
+  background: var(--surface-chrome);
   overflow-x: auto;
   flex-shrink: 0;
+  scrollbar-width: none;
+}
+
+.tabBar::-webkit-scrollbar {
+  display: none;
 }
 
 .tab {
-  padding: 4px 10px;
-  border: 1px solid var(--shadow);
+  padding: 5px 13px;
+  border: 1px solid var(--control-border);
   border-bottom: none;
   border-radius: 3px 3px 0 0;
-  background: var(--platinum);
+  background: var(--control-bg);
   font-family: var(--font-chicago);
-  font-size: 10px;
+  font-size: 11px;
   cursor: pointer;
   position: relative;
   top: 1px;
@@ -95,26 +97,29 @@
 }
 
 .activeTab {
-  background: var(--white);
-  border-bottom: 1px solid var(--white);
+  background: var(--surface);
+  border-bottom: 1px solid var(--surface);
+  color: var(--panel-accent);
 }
 
 /* ---- Content Area ---- */
 
 .content {
   flex: 1;
+  min-height: 0;
   margin: 0 6px 6px;
-  padding: 8px;
+  padding: 12px;
   overflow: auto;
-  border: 1px solid var(--shadow);
+  scrollbar-gutter: stable;
+  border: 1px solid var(--control-border);
   border-top: none;
-  background: var(--white);
+  background: var(--surface);
 }
 
 .sectionStack {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .sectionIntro {
@@ -125,18 +130,19 @@
 
 .sectionTitle {
   font-family: var(--font-chicago);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .sectionHint {
-  font-size: 10px;
-  color: var(--text-color-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-muted);
 }
 
 .sectionDivider {
   height: 0;
   border: none;
-  border-top: 1px solid #D8D8D8;
+  border-top: 1px solid var(--control-border);
   margin: 2px 0;
 }
 
@@ -144,17 +150,17 @@
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
 }
 
 .controlCard {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px;
-  border: 1px solid var(--shadow);
-  background: var(--platinum);
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--control-border);
+  background: var(--surface-raised);
   box-shadow:
     inset 1px 1px 0 var(--highlight),
     inset -1px -1px 0 rgba(0, 0, 0, 0.14);
@@ -169,24 +175,25 @@
 
 .controlLabel {
   font-family: var(--font-chicago);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .controlHint {
   margin-top: 1px;
-  font-size: 9px;
-  line-height: 1.25;
-  color: var(--text-color-secondary);
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--text-muted);
 }
 
 .clearButton,
 .secondaryButton,
 .primaryButton {
-  border: 1px solid var(--shadow);
-  background: var(--platinum);
-  padding: 3px 8px;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--control-text);
+  padding: 4px 9px;
   font-family: var(--font-geneva);
-  font-size: 9px;
+  font-size: 10px;
   cursor: pointer;
   box-shadow:
     inset 1px 1px 0 var(--highlight),
@@ -194,8 +201,10 @@
 }
 
 .primaryButton {
-  min-width: 90px;
-  background: var(--white);
+  min-width: 112px;
+  background: var(--control-bg);
+  color: var(--panel-accent);
+  border-color: var(--panel-accent);
 }
 
 .primaryButton:disabled {
@@ -230,29 +239,49 @@
   display: block;
   width: 100%;
   height: 100%;
-  border: 1px solid var(--black);
+  border: 1px solid var(--control-border);
   box-shadow: inset 1px 1px 0 rgba(255, 255, 255, 0.28);
 }
 
 .hexInput {
   flex: 1;
   min-width: 0;
-  padding: 4px 6px;
-  border: 1px solid var(--black);
-  background: var(--white);
+  padding: 5px 7px;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--control-text);
   font-family: var(--font-monaco);
-  font-size: 10px;
+  font-size: 11px;
+}
+
+.textInput,
+.selectInput {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--control-text);
+  font-family: var(--font-monaco);
+  font-size: 11px;
+}
+
+.textInput:focus,
+.selectInput:focus,
+.hexInput:focus {
+  outline: 2px solid var(--accent, var(--selection));
+  outline-offset: -2px;
 }
 
 .sliderValue {
   font-family: var(--font-monaco);
   font-size: 10px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
 }
 
 .slider {
   width: 100%;
-  accent-color: var(--selection);
+  accent-color: var(--accent, var(--selection));
 }
 
 .toggleRow {
@@ -267,16 +296,16 @@
 .paletteRow {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 6px;
 }
 
 .paletteChip {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 6px 3px 3px;
-  border: 1px solid var(--shadow);
-  background: var(--white);
+  padding: 4px 8px 4px 4px;
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
   cursor: pointer;
   box-shadow:
     inset 1px 1px 0 var(--highlight),
@@ -284,7 +313,7 @@
 }
 
 .paletteChip:hover {
-  border-color: var(--black);
+  border-color: var(--accent, var(--control-border));
 }
 
 .paletteSwatches {
@@ -300,22 +329,22 @@
 
 .paletteName {
   font-family: var(--font-geneva);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 /* ---- Theme Presets Grid ---- */
 
 .themeGrid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
+  grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+  gap: 8px;
 }
 
 .themeCard {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--shadow);
-  background: var(--platinum);
+  border: 1px solid var(--control-border);
+  background: var(--surface-chrome);
   cursor: pointer;
   overflow: hidden;
   text-align: left;
@@ -326,17 +355,26 @@
 }
 
 .themeCard:hover {
-  border-color: var(--selection);
+  border-color: var(--panel-accent);
+  transform: translateY(-1px);
+}
+
+.themeCardActive {
+  border-color: var(--panel-accent);
+  box-shadow:
+    inset 1px 1px 0 var(--highlight),
+    inset -1px -1px 0 rgba(0, 0, 0, 0.14),
+    0 0 0 2px color-mix(in srgb, var(--panel-accent) 24%, transparent);
 }
 
 .themePreview {
-  padding: 6px;
-  background: var(--white);
+  padding: 8px;
+  background: var(--surface);
 }
 
 .themePreviewDesktop {
   position: relative;
-  height: 44px;
+  height: 58px;
   border: 1px solid rgba(0, 0, 0, 0.15);
   overflow: hidden;
 }
@@ -378,19 +416,26 @@
 }
 
 .themeInfo {
-  padding: 4px 6px 5px;
+  padding: 7px 8px 8px;
 }
 
 .themeName {
   font-family: var(--font-chicago);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .themeDesc {
-  margin-top: 1px;
-  font-size: 8px;
-  line-height: 1.25;
-  color: var(--text-color-secondary);
+  margin-top: 3px;
+  font-size: 9px;
+  line-height: 1.3;
+  color: var(--text-muted);
+}
+
+.themeSelected {
+  margin-top: 5px;
+  color: var(--panel-accent);
+  font-family: var(--font-geneva);
+  font-size: 9px;
 }
 
 /* ---- Desktop Pattern Grid ---- */
@@ -407,8 +452,8 @@
   align-items: center;
   gap: 2px;
   padding: 4px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   cursor: pointer;
   box-shadow:
     inset 1px 1px 0 var(--highlight),
@@ -416,19 +461,19 @@
 }
 
 .patternButton:hover {
-  background: var(--highlight);
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
 }
 
 .patternButtonActive {
   background: var(--selection);
   color: var(--selection-text);
-  border-color: var(--black);
+  border-color: var(--accent, var(--control-border));
 }
 
 .patternPreview {
   width: 36px;
   height: 26px;
-  border: 1px solid var(--black);
+  border: 1px solid var(--control-border);
   image-rendering: pixelated;
   image-rendering: crisp-edges;
 }
@@ -450,15 +495,15 @@
   display: flex;
   justify-content: center;
   padding: 6px;
-  background: var(--platinum);
-  border: 1px solid var(--shadow);
+  background: var(--surface-chrome);
+  border: 1px solid var(--control-border);
 }
 
 .wallpaperImage {
   width: 80px;
   height: 60px;
   object-fit: cover;
-  border: 1px solid var(--selection);
+  border: 1px solid var(--accent, var(--selection));
 }
 
 .uploadRow {
@@ -470,9 +515,9 @@
 .uploadError {
   padding: 4px 8px;
   font-size: 9px;
-  color: #990000;
-  background: #FFCCCC;
-  border: 1px solid #990000;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  border: 1px solid var(--danger);
 }
 
 /* ---- Font Picker ---- */
@@ -497,13 +542,14 @@
   font-size: 8px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
 }
 
 .fontOption {
   padding: 3px 8px;
-  border: 1px solid var(--shadow);
-  background: var(--white);
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--control-text);
   font-size: 11px;
   cursor: pointer;
   transition: border-color 0.1s;
@@ -511,22 +557,22 @@
 }
 
 .fontOption:hover {
-  border-color: var(--black);
+  border-color: var(--accent, var(--control-border));
 }
 
 .fontOptionActive {
-  border-color: var(--selection);
+  border-color: var(--accent, var(--selection));
   background: var(--selection);
   color: var(--selection-text);
 }
 
 .fontPreview {
   padding: 6px 8px;
-  border: 1px solid var(--shadow);
-  background: var(--white);
+  border: 1px solid var(--control-border);
+  background: var(--surface);
   font-size: 11px;
   line-height: 1.4;
-  color: var(--text-color);
+  color: var(--text);
   -webkit-font-smoothing: auto;
 }
 
@@ -540,17 +586,17 @@
 
 .previewCanvas {
   padding: 12px;
-  border: 1px solid var(--shadow);
+  border: 1px solid var(--control-border);
   min-height: 200px;
-  background: var(--platinum);
+  background: var(--surface-chrome);
 }
 
 .previewMenuBar {
   display: flex;
   gap: 14px;
   padding: 6px 10px;
-  border: 1px solid var(--preview-border);
-  background: var(--white);
+  border: 1px solid var(--control-border);
+  background: var(--surface-chrome);
   font-family: var(--font-chicago);
   font-size: 10px;
 }
@@ -558,9 +604,9 @@
 .previewWindow {
   width: min(360px, 100%);
   margin-top: 16px;
-  border: 1px solid var(--preview-border);
-  background: var(--preview-window-bg);
-  box-shadow: var(--preview-shadow);
+  border: 1px solid var(--control-border);
+  background: var(--surface);
+  box-shadow: 2px 2px 0 color-mix(in srgb, var(--control-border) 35%, transparent);
   overflow: hidden;
 }
 
@@ -569,8 +615,8 @@
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  background: var(--preview-title-bg);
-  color: var(--preview-title-text);
+  background: var(--surface-chrome);
+  color: var(--text);
 }
 
 .previewControls {
@@ -581,9 +627,9 @@
 .previewControls span {
   width: 12px;
   height: 12px;
-  border: 1px solid var(--preview-button-border);
-  border-radius: var(--preview-control-radius);
-  background: var(--preview-button-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--control-radius, 3px);
+  background: var(--control-bg);
 }
 
 .previewWindowTitle {
@@ -605,7 +651,7 @@
 }
 
 .previewLabel {
-  color: var(--preview-label);
+  color: var(--text-muted);
   font-family: var(--font-geneva);
   font-size: 10px;
 }
@@ -618,8 +664,8 @@
 
 .previewCard {
   padding: 8px;
-  border: 1px solid rgba(0, 0, 0, 0.18);
-  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid var(--control-border);
+  background: color-mix(in srgb, var(--surface-raised) 78%, transparent);
 }
 
 .previewCardTitle {
@@ -635,10 +681,10 @@
 
 .previewButtonRow button,
 .previewCard input {
-  border: 1px solid var(--preview-button-border);
-  border-radius: var(--preview-control-radius);
-  background: var(--preview-button-bg);
-  color: var(--preview-button-text);
+  border: 1px solid var(--control-border);
+  border-radius: var(--control-radius, 3px);
+  background: var(--control-bg);
+  color: var(--control-text);
   padding: 5px 8px;
   font-family: var(--font-geneva);
   font-size: 10px;
@@ -659,14 +705,14 @@
   flex-direction: column;
   gap: 3px;
   padding: 6px 8px;
-  border: 1px solid var(--shadow);
+  border: 1px solid var(--control-border);
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.78);
+  background: color-mix(in srgb, var(--surface-raised) 78%, transparent);
 }
 
 .metricLabel {
   font-size: 9px;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
 }
 
 .metricValue {
@@ -680,15 +726,17 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 44px;
   padding: 8px 10px 10px;
-  border-top: 1px solid var(--shadow);
+  border-top: 1px solid var(--control-border);
+  background: var(--surface-chrome);
 }
 
 .footerCopy {
   flex: 1;
   font-size: 9px;
   line-height: 1.3;
-  color: var(--text-color-secondary);
+  color: var(--text-muted);
 }
 
 @media (max-width: 720px) {
@@ -703,5 +751,9 @@
   .previewBody,
   .themeGrid {
     grid-template-columns: 1fr;
+  }
+
+  .footerCopy {
+    display: none;
   }
 }

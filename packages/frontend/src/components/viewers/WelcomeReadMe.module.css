@@ -6,11 +6,11 @@
 .container {
   height: 100%;
   overflow-y: auto;
-  background-color: white;
+  background-color: var(--surface);
   font-family: var(--font-geneva);
   font-size: 11px;
   line-height: 1.5;
-  color: black;
+  color: var(--text);
 }
 
 .header {
@@ -18,8 +18,8 @@
   align-items: center;
   gap: 12px;
   padding: 16px 16px 12px;
-  border-bottom: 1px solid var(--shadow);
-  background: linear-gradient(to bottom, #ffffff, #f0f0f0);
+  border-bottom: 1px solid var(--control-border);
+  background: linear-gradient(to bottom, var(--surface-chrome), var(--surface));
 }
 
 .icon {
@@ -40,7 +40,7 @@
 .intro {
   font-size: 12px;
   margin-bottom: 16px;
-  color: var(--shadow);
+  color: var(--text-muted);
 }
 
 .section {
@@ -53,7 +53,7 @@
   font-weight: normal;
   margin: 0 0 8px 0;
   padding-bottom: 4px;
-  border-bottom: 1px solid #ccc;
+  border-bottom: 1px solid var(--control-border);
 }
 
 .section ul {
@@ -72,21 +72,22 @@
 .section code {
   font-family: var(--font-monaco);
   font-size: 10px;
-  background: #f0f0f0;
+  background: var(--control-bg);
+  color: var(--control-text);
   padding: 1px 4px;
-  border: 1px solid #ccc;
+  border: 1px solid var(--control-border);
 }
 
 .footer {
   margin-top: 24px;
   padding-top: 12px;
-  border-top: 1px solid #ccc;
+  border-top: 1px solid var(--control-border);
   text-align: center;
 }
 
 .footer p {
   margin: 4px 0;
-  color: var(--shadow);
+  color: var(--text-muted);
 }
 
 .tagline {
