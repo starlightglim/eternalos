@@ -104,20 +104,25 @@ const wallpaperLayerSchema = z
   })
   .strict();
 
+// NOTE: use `partialRecord`, not `record`. This mirror is on zod 4, where
+// `z.record(z.enum(...), v)` is EXHAUSTIVE — it requires every enum key — so a
+// theme supplying only some cursor/sound/icon slots would be wrongly rejected.
+// Themes declare only the slots they override, so these layers must be partial.
+// (The worker mirror is on zod 3, where plain `record` is already partial.)
 const cursorsLayerSchema = z
-  .record(z.enum(CURSOR_STATES), bundlePath)
+  .partialRecord(z.enum(CURSOR_STATES), bundlePath)
   .refine((value) => Object.keys(value).length > 0, {
     message: 'cursors layer declared but empty',
   });
 
 const soundsLayerSchema = z
-  .record(z.enum(SOUND_EVENTS), bundlePath)
+  .partialRecord(z.enum(SOUND_EVENTS), bundlePath)
   .refine((value) => Object.keys(value).length > 0, {
     message: 'sounds layer declared but empty',
   });
 
 const iconsLayerSchema = z
-  .record(z.enum(ICON_SLOTS), bundlePath)
+  .partialRecord(z.enum(ICON_SLOTS), bundlePath)
   .refine((value) => Object.keys(value).length > 0, {
     message: 'icons layer declared but empty',
   });

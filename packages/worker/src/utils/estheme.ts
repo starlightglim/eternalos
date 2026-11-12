@@ -109,6 +109,11 @@ const wallpaperLayerSchema = z
   })
   .strict();
 
+// NOTE: this worker mirror is on zod 3, where `z.record(z.enum(...), v)` is
+// already PARTIAL (missing keys allowed) and `partialRecord` does not exist.
+// The frontend mirror is on zod 4, where record(enum) is exhaustive, so it must
+// use `partialRecord` to get this same partial behavior. Keep the two in sync
+// in intent (partial slot maps), not necessarily in spelling.
 const cursorsLayerSchema = z
   .record(z.enum(CURSOR_STATES), bundlePath)
   .refine((value) => Object.keys(value).length > 0, {
