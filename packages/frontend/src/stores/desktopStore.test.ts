@@ -188,3 +188,20 @@ test('a failed restore returns the item to the trash', async () => {
   await vi.advanceTimersByTimeAsync(0);
   expect(useDesktopStore.getState().getItem('note')?.isTrashed).toBe(true); // rolled back
 });
+
+test('a successful cut-paste moves items into the target folder', async () => {
+  api.updateItems.mockResolvedValue([]);
+  await useDesktopStore.getState().pasteItems(['note'], true, 'folder-1');
+  await vi.advanceTimersByTimeAsync(0);
+  expect(useDesktopStore.getState().getItem('note')?.parentId).toBe('folder-1');
+});
+
+test('a failed cut-paste returns items to their original location', async () => {
+  api.updateItems.mockRejectedValue(new Error('Offline'));
+  await useDesktopStore.getState().pasteItems(['note'], true, 'folder-1');
+  await vi.advanceTimersByTimeAsync(0);
+  // Rolled back after the failure — nothing looks moved when the server never recorded it.
+  const item = useDesktopStore.getState().getItem('note');
+  expect(item?.parentId).toBe(null);
+  expect(item?.position).toEqual({ x: 0, y: 0 });
+});

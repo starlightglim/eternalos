@@ -869,6 +869,13 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
     const { items, duplicateItems } = get();
 
     if (isCut) {
+      // Snapshot the pre-move state of the pasted items so a failed move can be
+      // rolled back instead of leaving them looking moved when the server never
+      // recorded it.
+      const originals = new Map(
+        items.filter((item) => itemIds.includes(item.id)).map((item) => [item.id, { ...item }])
+      );
+
       // Move items to target folder
       const updates: { id: string; updates: Partial<DesktopItem> }[] = [];
       const itemsInTarget = items.filter((item) => item.parentId === targetParentId);
@@ -897,9 +904,25 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
 
       // Sync to API
       if (isApiConfigured && updates.length > 0) {
+        const version = desktopSessionVersion;
         cacheItems(movedItems);
         apiUpdateItems(updates).catch((error) => {
           console.error('Failed to move items:', error);
+          // Roll back items still sitting in the move target (not re-touched)
+          // within the same session, so nothing looks moved when it wasn't.
+          if (version === desktopSessionVersion) {
+            set((state) => ({
+              items: state.items.map((item) => {
+                if (!originals.has(item.id) || item.parentId !== targetParentId) return item;
+                return { ...originals.get(item.id)! };
+              }),
+            }));
+            cacheItems(get().items);
+          }
+          showError(
+            'Failed to move items. They have been returned to their original location.',
+            'Move Failed'
+          );
         });
       }
     } else {
