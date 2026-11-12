@@ -264,9 +264,14 @@ interface AppearanceStore {
 export const useAppearanceStore = create<AppearanceStore>((set, get) => {
   const initialAppearance = loadSavedAppearance();
 
-  queueMicrotask(() => {
-    applyAppearance(initialAppearance);
-  });
+  // Apply saved appearance once the store is created. Guard on `document` so
+  // importing the store without a DOM (SSR, unit tests) can't throw an
+  // unhandled rejection from the microtask — there is nothing to paint anyway.
+  if (typeof document !== 'undefined') {
+    queueMicrotask(() => {
+      applyAppearance(initialAppearance);
+    });
+  }
 
   return {
     appearance: initialAppearance,
