@@ -94,6 +94,33 @@ test('discards corrupt localStorage window state without throwing', () => {
   expect(WINDOW_STATE_KEY in ls).toBe(false); // corrupt state is cleared
 });
 
+test('enforces a minimum window size on resize', () => {
+  useWindowStore.setState({ windows: [makeWindow({ id: 'w1' })], nextZIndex: 2 });
+  useWindowStore.getState().resizeWindow('w1', { width: 50, height: 50 });
+  expect(useWindowStore.getState().windows[0].size).toEqual({ width: 200, height: 150 });
+});
+
+test('a resize persists to localStorage and survives reload', async () => {
+  vi.useFakeTimers();
+  try {
+    useWindowStore.setState({
+      windows: [makeWindow({ id: 'w1', size: { width: 300, height: 200 } })],
+      nextZIndex: 2,
+    });
+    useWindowStore.getState().resizeWindow('w1', { width: 520, height: 420 });
+    // Immediate in-memory update.
+    expect(useWindowStore.getState().windows[0].size).toEqual({ width: 520, height: 420 });
+    // Debounced localStorage write (300ms).
+    await vi.advanceTimersByTimeAsync(300);
+    // Simulate reload: drop in-memory state and restore from localStorage.
+    useWindowStore.setState({ windows: [], nextZIndex: 1 });
+    useWindowStore.getState().loadWindowState(new Set(['note']));
+    expect(useWindowStore.getState().windows[0]?.size).toEqual({ width: 520, height: 420 });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test('clamps an off-screen window back into the viewport', () => {
   ls[WINDOW_STATE_KEY] = JSON.stringify({
     windows: [makeWindow({ position: { x: 5000, y: 5000 }, size: { width: 300, height: 200 } })],
