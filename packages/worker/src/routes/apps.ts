@@ -904,7 +904,12 @@ export async function handleAppDevDeploy(
     }
     console.error('Developer deployment error:', error);
     const message = error instanceof Error ? error.message : 'Deployment failed';
-    const status = /^(App source|App bundle|Invalid app|Duplicate app source|External |Missing local asset|App (reads|writes|deletes|uses))/.test(message) ? 400 : 500;
+    // Map validateGeneratedApp's own rejection messages to 400 (client-supplied
+    // bad bundle), not 500 (server fault). Keep this in sync with every message
+    // that function throws — notably external dynamic/static imports and IPC
+    // declaration errors, which previously fell through to 500 and surfaced in
+    // Developer Studio as a server error (and could trip 5xx alarms).
+    const status = /^(App source|App bundle|Invalid app|Duplicate app source|External |Dynamic imports |Imports from |Missing local asset|App (reads|writes|deletes|uses|emits|listens))/.test(message) ? 400 : 500;
     return Response.json({ error: message }, { status });
   }
 }

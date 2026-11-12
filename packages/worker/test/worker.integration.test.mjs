@@ -578,6 +578,106 @@ describe('worker integration', () => {
     assert.match(protoRelative.body.error, /External script URLs are not allowed/);
   });
 
+  it('enforces app-source safety and permission-declaration rules', async () => {
+    // One signup, many sequential checks — keeps us off the shared auth
+    // rate-limit bucket while exercising each validateGeneratedApp branch.
+    const user = await signupUser();
+    const deploy = (files, permissions, name = 'Validator App') =>
+      fetchJson('/api/apps/dev-deploy', {
+        method: 'POST',
+        headers: authHeaders(user.token, JSON_HEADERS),
+        body: JSON.stringify({
+          manifest: {
+            name,
+            version: '1.0.0',
+            windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+            ...(permissions ? { permissions } : {}),
+          },
+          files,
+        }),
+      });
+
+    // External stylesheet link.
+    const extCss = await deploy({
+      'index.html': '<!doctype html><link rel="stylesheet" href="https://evil.example/s.css"><body>x</body>',
+    });
+    assert.equal(extCss.response.status, 400);
+    assert.match(extCss.body.error, /External stylesheet URLs are not allowed/);
+
+    // Dynamic import() from an external URL (checked across all files, not just HTML).
+    const dynImport = await deploy({
+      'index.html': '<!doctype html><body><script src="app.js"></script></body>',
+      'app.js': "const m = await import('https://evil.example/m.js'); void m;",
+    });
+    assert.equal(dynImport.response.status, 400);
+    assert.match(dynImport.body.error, /Dynamic imports from external URLs are not allowed/);
+
+    // Static `from` import from an external URL.
+    const staticImport = await deploy({
+      'index.html': '<!doctype html><body><script type="module" src="app.js"></script></body>',
+      'app.js': "import thing from 'https://evil.example/m.js'; void thing;",
+    });
+    assert.equal(staticImport.response.status, 400);
+    assert.match(staticImport.body.error, /Imports from external URLs are not allowed/);
+
+    // Uses window.eternal.fs.read* but declares no fs read permission.
+    const undeclaredRead = await deploy({
+      'index.html': '<!doctype html><body><script src="app.js"></script></body>',
+      'app.js': "const files = await window.eternal.fs.readText('/notes.txt'); void files;",
+    });
+    assert.equal(undeclaredRead.response.status, 400);
+    assert.match(undeclaredRead.body.error, /did not declare fs read permissions/);
+
+    // Uses window.eternal.profile but declares no profile permission.
+    const undeclaredProfile = await deploy({
+      'index.html': '<!doctype html><body><script src="app.js"></script></body>',
+      'app.js': 'const p = window.eternal.profile.get(); void p;',
+    });
+    assert.equal(undeclaredProfile.response.status, 400);
+    assert.match(undeclaredProfile.body.error, /did not declare profile permissions/);
+
+    // Uses window.eternal.fetch but declares no network permission.
+    const undeclaredNet = await deploy({
+      'index.html': '<!doctype html><body><script src="app.js"></script></body>',
+      'app.js': "window.eternal.fetch('https://api.example.com/x');",
+    });
+    assert.equal(undeclaredNet.response.status, 400);
+    assert.match(undeclaredNet.body.error, /did not declare network permissions/);
+
+    // Emits IPC without declaring ipc emit permission. (Regression: this
+    // message prefix previously fell through the status map to 500.)
+    const undeclaredIpc = await deploy({
+      'index.html': '<!doctype html><body><script src="app.js"></script></body>',
+      'app.js': "window.eternal.ipc.emit('channel', { hi: true });",
+    });
+    assert.equal(undeclaredIpc.response.status, 400);
+    assert.match(undeclaredIpc.body.error, /did not declare ipc emit permissions/);
+
+    // References a local asset that doesn't exist in the bundle.
+    const missingAsset = await deploy({
+      'index.html': '<!doctype html><body><script src="does-not-exist.js"></script></body>',
+    });
+    assert.equal(missingAsset.response.status, 400);
+    assert.match(missingAsset.body.error, /Missing local asset/);
+
+    // No HTML entrypoint at all.
+    const noHtml = await deploy({ 'app.js': 'console.log("hi");' });
+    assert.equal(noHtml.response.status, 400);
+    assert.match(noHtml.body.error, /must include at least one HTML file/);
+
+    // Positive control: fs read that IS declared deploys successfully.
+    const allowed = await deploy(
+      {
+        'index.html': '<!doctype html><body><script src="app.js"></script></body>',
+        'app.js': "window.eternal.fs.readText('/notes.txt').then(() => {});",
+      },
+      { fs: { read: ['/**'] } },
+      'Declared Reader App',
+    );
+    assert.equal(allowed.response.status, 200);
+    assert.ok(allowed.body.appId, 'declared-permission app should register');
+  });
+
   it('normalizes malformed custom permission declarations safely', async () => {
     const user = await signupUser();
     const app = await expectOk('/api/apps/dev-deploy', {
