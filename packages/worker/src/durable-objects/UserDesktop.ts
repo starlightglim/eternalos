@@ -935,8 +935,12 @@ export class UserDesktop {
       }
 
       // Validate url() references — only allow first-party asset paths
-      // Normalize (decode) paths before validation to prevent encoded bypasses
-      const allowedUrlPrefixes = ['/api/css-assets/', '/api/wallpaper/', '/api/icon/', '/api/sounds/', '/api/cursors/'];
+      // Normalize (decode) paths before validation to prevent encoded bypasses.
+      // NOTE: must match the designTokens `tokenAllowedUrlPrefixes` above and
+      // the client sanitizer's ALLOWED_CSS_URL_PREFIXES — `/api/bazaar/assets/`
+      // was previously missing here, so customCSS that referenced an installed
+      // bazaar theme's assets passed the client but was rejected on save.
+      const allowedUrlPrefixes = ['/api/css-assets/', '/api/wallpaper/', '/api/icon/', '/api/sounds/', '/api/cursors/', '/api/bazaar/assets/'];
       const urlPattern = /url\s*\(\s*(['"]?)([^'")\s]+)\1\s*\)/gi;
       let urlMatch: RegExpExecArray | null;
       while ((urlMatch = urlPattern.exec(css)) !== null) {

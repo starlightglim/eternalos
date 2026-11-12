@@ -923,6 +923,41 @@ describe('worker integration', () => {
     assert.equal(reverted.versions[0].css, firstCSS);
   });
 
+  it('allows customCSS url() to first-party bazaar assets but rejects cross-origin', async () => {
+    // Dedicated client IP so this test's signup uses its own rate-limit bucket
+    // and doesn't drain the shared default-IP signup budget other tests rely on.
+    const identity = createTestIdentity();
+    const signup = await expectOk('/api/auth/signup', {
+      method: 'POST',
+      headers: { ...JSON_HEADERS, 'CF-Connecting-IP': `css-test-${Date.now()}-${Math.random().toString(36).slice(2)}` },
+      body: JSON.stringify(identity),
+    });
+    const user = { ...identity, ...signup };
+
+    // Regression: the customCSS url() allowlist was missing /api/bazaar/assets/
+    // (present in the designTokens allowlist and the client sanitizer), so CSS
+    // referencing an installed bazaar theme's assets passed the client but was
+    // rejected on save. It must now be accepted.
+    const bazaarCSS = '.user-desktop { background: url(/api/bazaar/assets/pack123/sky.png); }';
+    await patchProfile(user.token, { customCSS: bazaarCSS }); // expectOk → 200
+
+    // A cross-origin url() is still rejected (the save fails; the value is not
+    // stored). The profile route currently surfaces validation throws as 5xx
+    // rather than 400, so assert on "rejected", not the exact code.
+    const { response } = await fetchJson('/api/profile', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        customCSS: '.x { background: url(https://evil.example/beacon.png); }',
+      }),
+    });
+    assert.ok(response.status >= 400, `cross-origin url() should be rejected, got ${response.status}`);
+
+    // And the hostile CSS was not persisted anywhere on the profile.
+    const profile = await expectOk('/api/profile', { headers: authHeaders(user.token) });
+    assert.ok(!JSON.stringify(profile).includes('evil.example'), 'hostile url must not be stored');
+  });
+
   it('hard-deletes an account once past the deletion grace deadline', async () => {
     const user = await signupUser();
 
