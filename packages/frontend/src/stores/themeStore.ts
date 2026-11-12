@@ -268,10 +268,14 @@ export const useThemeStore = create<ThemeStore>((set, get) => {
   // Apply initial theme on store creation
   const initialTheme = loadSavedTheme();
 
-  // Apply theme after a microtask to ensure DOM is ready
-  queueMicrotask(() => {
-    applyTheme(THEMES[initialTheme]);
-  });
+  // Apply theme after a microtask to ensure DOM is ready. Guard on `document`
+  // so importing the store without a DOM (SSR, unit tests) can't throw an
+  // unhandled rejection from the microtask — there is nothing to paint anyway.
+  if (typeof document !== 'undefined') {
+    queueMicrotask(() => {
+      applyTheme(THEMES[initialTheme]);
+    });
+  }
 
   return {
     currentTheme: initialTheme,
