@@ -678,6 +678,78 @@ describe('worker integration', () => {
     assert.ok(allowed.body.appId, 'declared-permission app should register');
   });
 
+  it('scopes app fs reads to the granted path glob', async () => {
+    // The authoritative boundary (fsPolicy.canReadItem): an app granted only
+    // /Gallery/** must see items under /Gallery and must NOT see or read
+    // anything outside it. Exercised through the capability-token fs endpoints,
+    // which read the live user DO directly.
+    const user = await signupUser();
+
+    const gallery = await createDesktopItem(user.token, {
+      type: 'folder', name: 'Gallery', parentId: null, position: { x: 0, y: 0 }, isPublic: false,
+    });
+    const inScope = await createDesktopItem(user.token, {
+      type: 'text', name: 'pic.txt', parentId: gallery.id, position: { x: 0, y: 1 },
+      isPublic: false, textContent: 'inside gallery',
+    });
+    const outOfScope = await createDesktopItem(user.token, {
+      type: 'text', name: 'private.txt', parentId: null, position: { x: 1, y: 0 },
+      isPublic: false, textContent: 'top secret',
+    });
+
+    const app = await expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name: 'Scoped Reader',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+          permissions: { fs: { read: ['/Gallery/**'] } },
+        },
+        files: { 'index.html': '<!doctype html><html><body>scoped</body></html>' },
+      }),
+    });
+
+    await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { fs: { read: ['/Gallery/**'] } } }),
+    });
+    const capability = await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/capability`, {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({}),
+    });
+    const bearer = { Authorization: `Bearer ${capability.token}` };
+
+    // List: the in-scope file (and its Gallery folder) appear; the root-level
+    // private file does not.
+    const listResponse = await worker.fetch(
+      `${BASE_URL}/api/apps/${encodeURIComponent(app.appId)}/fs/list`,
+      { headers: bearer },
+    );
+    assert.equal(listResponse.status, 200);
+    const listedNames = (await readJson(listResponse)).items.map((i) => i.name);
+    assert.ok(listedNames.includes('pic.txt'), 'in-scope file should be listed');
+    assert.ok(!listedNames.includes('private.txt'), 'out-of-scope file must NOT be listed');
+
+    // Direct read of the out-of-scope item is forbidden even by id.
+    const forbiddenRead = await worker.fetch(
+      `${BASE_URL}/api/apps/${encodeURIComponent(app.appId)}/fs/read/${encodeURIComponent(outOfScope.id)}`,
+      { headers: bearer },
+    );
+    assert.equal(forbiddenRead.status, 403);
+
+    // Direct read of the in-scope item succeeds and returns its content.
+    const allowedRead = await worker.fetch(
+      `${BASE_URL}/api/apps/${encodeURIComponent(app.appId)}/fs/read/${encodeURIComponent(inScope.id)}`,
+      { headers: bearer },
+    );
+    assert.equal(allowedRead.status, 200);
+    assert.match(await allowedRead.text(), /inside gallery/);
+  });
+
   it('normalizes malformed custom permission declarations safely', async () => {
     const user = await signupUser();
     const app = await expectOk('/api/apps/dev-deploy', {
