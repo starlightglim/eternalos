@@ -11,6 +11,7 @@
 
 import { create } from 'zustand';
 import { updateProfile, isApiConfigured } from '../services/api';
+import { sanitizeCustomCSS } from '../utils/cssSanitizer';
 import { normalizeCSSSelectorAliases } from '../utils/cssSelectorAliases';
 import {
   compileTokensToCSS,
@@ -194,129 +195,21 @@ export function getTokenValue(
 }
 
 // ---------------------------------------------------------------------------
-// Custom CSS injection (security scoping + sanitization)
+// Custom CSS injection
 // ---------------------------------------------------------------------------
-
-const ALLOWED_CSS_URL_PREFIXES = [
-  '/api/css-assets/',
-  '/api/wallpaper/',
-  '/api/icon/',
-  '/api/sounds/',
-  '/api/cursors/',
-  '/api/bazaar/assets/',
-];
-
-function isAllowedCSSUrl(urlValue: string): boolean {
-  const normalized = urlValue.trim().replace(/^['"]|['"]$/g, '');
-  const lowerUrl = normalized.toLowerCase();
-  if (
-    lowerUrl.startsWith('javascript:') ||
-    lowerUrl.startsWith('data:') ||
-    lowerUrl.startsWith('vbscript:') ||
-    lowerUrl.startsWith('file:')
-  ) {
-    return false;
-  }
-  if (normalized.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(normalized)) {
-    return false;
-  }
-  return ALLOWED_CSS_URL_PREFIXES.some((prefix) => normalized.startsWith(prefix));
-}
-
-function sanitizeCSSUrls(css: string): string {
-  return css.replace(
-    /url\s*\(\s*(['"]?)([^)]*?)\1\s*\)/gi,
-    (_match, _quote, urlValue) => {
-      const cleanedUrl = urlValue.replace(/[\r\n\t]/g, '').trim();
-      if (isAllowedCSSUrl(cleanedUrl)) {
-        return `url('${cleanedUrl}')`;
-      }
-      return 'url(about:blank)';
-    }
-  );
-}
+// The security-critical scoping + sanitization transform lives in
+// `utils/cssSanitizer.ts` (pure, unit-tested). This is only the DOM wrapper.
 
 export function applyCustomCSS(css: string | undefined) {
   document.getElementById('eternalos-custom-css')?.remove();
-  if (!css || !css.trim()) return;
 
-  const normalizedCSS = normalizeCSSSelectorAliases(css);
-  const sanitizedCSS = sanitizeCSSUrls(normalizedCSS);
-  const scopedCSS = scopeCSSToUserDesktop(sanitizedCSS);
+  const scopedCSS = sanitizeCustomCSS(css);
+  if (!scopedCSS) return;
 
   const style = document.createElement('style');
   style.id = 'eternalos-custom-css';
   style.textContent = scopedCSS;
   document.head.appendChild(style);
-}
-
-function parseTopLevelRules(css: string): Array<{ selector: string; body: string }> {
-  const rules: Array<{ selector: string; body: string }> = [];
-  let depth = 0;
-  let current = '';
-  let selectorEnd = -1;
-  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
-
-  for (let i = 0; i < stripped.length; i++) {
-    const ch = stripped[i];
-    if (ch === '{') {
-      if (depth === 0) selectorEnd = current.length;
-      depth++;
-      current += ch;
-    } else if (ch === '}') {
-      if (depth <= 0) {
-        depth = 0;
-        current = '';
-        selectorEnd = -1;
-        continue;
-      }
-      depth--;
-      current += ch;
-      if (depth === 0) {
-        const selector = current.slice(0, selectorEnd).trim();
-        const body = current.slice(selectorEnd + 1, current.length - 1).trim();
-        if (selector) rules.push({ selector, body });
-        current = '';
-        selectorEnd = -1;
-      }
-    } else {
-      current += ch;
-    }
-  }
-  return rules;
-}
-
-function scopeCSSToUserDesktop(css: string): string {
-  if (!css.trim()) return '';
-  const rules = parseTopLevelRules(css);
-  const scopedRules: string[] = [];
-
-  for (const { selector, body } of rules) {
-    if (selector.startsWith('@keyframes') || selector.startsWith('@-webkit-keyframes')) {
-      scopedRules.push(`${selector} { ${body} }`);
-      continue;
-    }
-    if (selector.startsWith('@media') || selector.startsWith('@supports')) {
-      scopedRules.push(`${selector} { ${scopeCSSToUserDesktop(body)} }`);
-      continue;
-    }
-    if (selector.startsWith('@font-face')) continue;
-
-    const scopedSelectors = selector
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((s) => {
-        if (s.startsWith('.user-desktop')) return s;
-        if (s === ':root' || s === 'body' || s === 'html') return '.user-desktop';
-        return `.user-desktop ${s}`;
-      })
-      .join(', ');
-
-    scopedRules.push(`${scopedSelectors} { ${body} }`);
-  }
-
-  return scopedRules.join('\n');
 }
 
 // ---------------------------------------------------------------------------
