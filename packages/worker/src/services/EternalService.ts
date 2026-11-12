@@ -585,21 +585,20 @@ export class EternalService extends WorkerEntrypoint<Env> {
     return this.env.DESKTOP_KV.get(`gamesave:${payload.gameId}:${payload.uid}`);
   }
 
+  // Save calls arrive via service binding, bypassing the router's rate limiter,
+  // so cap writes here. The runtime debounces to ~1 write/5s (≈12/min), so the
+  // cap must sit comfortably above that cadence.
+  private static readonly GAME_SAVE_WINDOW_MS = 60_000;
+  private static readonly GAME_SAVE_MAX_PER_WINDOW = 20;
+
   /** Write the calling player's save blob for this game (≤ 32KB JSON). */
   async gameSavePut(capToken: string, data: string): Promise<void> {
     const payload = await this.verifyGameCapability(capToken);
     if (typeof data !== 'string') {
       throw new Error('Save data must be a string');
     }
-    // Save calls arrive via service binding, bypassing the router's rate
-    // limiter — cap writes here. The runtime debounces to ~1 write/5s, so an
-    // honest client never hits this.
-    const rateKey = `gamesave-rate:${payload.gameId}:${payload.uid}`;
-    const count = parseInt((await this.env.DESKTOP_KV.get(rateKey)) ?? '0', 10);
-    if (count >= 12) {
-      throw new Error('Save rate limit exceeded — try again in a minute');
-    }
-    await this.env.DESKTOP_KV.put(rateKey, String(count + 1), { expirationTtl: 60 });
+    // Validate BEFORE touching the rate-limit counter so a malformed save
+    // never consumes the honest player's quota.
     if (new TextEncoder().encode(data).length > EternalService.MAX_GAME_SAVE_BYTES) {
       throw new Error('Save data too large (max 32KB)');
     }
@@ -609,6 +608,37 @@ export class EternalService extends WorkerEntrypoint<Env> {
     } catch {
       throw new Error('Save data must be valid JSON');
     }
+
+    // Fixed-window limiter. Storing the window start in the VALUE (rather than
+    // leaning on the KV TTL) means the window actually rolls over: previously
+    // every write re-set `expirationTtl`, so a key under continuous play never
+    // expired and the count climbed monotonically until an actively-saving
+    // player was locked out mid-session.
+    const rateKey = `gamesave-rate:${payload.gameId}:${payload.uid}`;
+    const now = Date.now();
+    let windowStart = now;
+    let count = 0;
+    const rawWindow = await this.env.DESKTOP_KV.get(rateKey);
+    if (rawWindow) {
+      try {
+        const parsed = JSON.parse(rawWindow) as { windowStart: number; count: number };
+        if (typeof parsed.windowStart === 'number' && now - parsed.windowStart < EternalService.GAME_SAVE_WINDOW_MS) {
+          windowStart = parsed.windowStart;
+          count = typeof parsed.count === 'number' ? parsed.count : 0;
+        }
+      } catch {
+        // Corrupt/legacy value — start a fresh window.
+      }
+    }
+    if (count >= EternalService.GAME_SAVE_MAX_PER_WINDOW) {
+      throw new Error('Save rate limit exceeded — try again in a minute');
+    }
+    await this.env.DESKTOP_KV.put(
+      rateKey,
+      JSON.stringify({ windowStart, count: count + 1 }),
+      { expirationTtl: Math.ceil(EternalService.GAME_SAVE_WINDOW_MS / 1000) * 2 },
+    );
+
     await this.env.DESKTOP_KV.put(`gamesave:${payload.gameId}:${payload.uid}`, data);
   }
 
