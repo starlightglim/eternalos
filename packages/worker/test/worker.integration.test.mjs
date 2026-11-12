@@ -830,6 +830,59 @@ describe('worker integration', () => {
     assert.match(ulaLiteral.body.error, /Network URL is not allowed/);
   });
 
+  it('restricts app fs.patch to benign fields (no publishing or escalation)', async () => {
+    const user = await signupUser();
+    const app = await expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name: 'Patcher',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+          permissions: { fs: { read: ['/**'], write: ['/**'] } },
+        },
+        files: { 'index.html': '<!doctype html><html><body>patch</body></html>' },
+      }),
+    });
+    await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { fs: { read: ['/**'], write: ['/**'] } } }),
+    });
+    const capability = await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/capability`, {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({}),
+    });
+    const bearer = authHeaders(capability.token, JSON_HEADERS);
+    const bridge = (p, body) => fetchJson(`/api/apps/${encodeURIComponent(app.appId)}/_eternal${p}`, {
+      method: 'POST', headers: bearer, body: JSON.stringify(body),
+    });
+
+    // The app creates a private note it is allowed to write.
+    const created = await bridge('/fs/write', { path: '/note.txt', content: 'hello' });
+    assert.equal(created.response.status, 200);
+    assert.equal(created.body.isPublic, false);
+    const noteId = created.body.id;
+
+    // A patch mixing a benign field with privileged ones applies only the
+    // benign field: the note is renamed but NOT published.
+    const mixed = await bridge(`/fs/patch/${encodeURIComponent(noteId)}`, {
+      name: 'renamed.txt', isPublic: true,
+    });
+    assert.equal(mixed.response.status, 200);
+    assert.equal(mixed.body.name, 'renamed.txt', 'benign field should apply');
+    assert.equal(mixed.body.isPublic, false, 'app must not be able to publish the item');
+
+    // A patch of ONLY privileged fields changes nothing and is rejected.
+    const privileged = await bridge(`/fs/patch/${encodeURIComponent(noteId)}`, {
+      isPublic: true, grantedPermissions: { fs: { read: ['/**'] } },
+    });
+    assert.equal(privileged.response.status, 500);
+    assert.match(privileged.body.error, /No permitted fields to update/);
+  });
+
   it('normalizes malformed custom permission declarations safely', async () => {
     const user = await signupUser();
     const app = await expectOk('/api/apps/dev-deploy', {

@@ -300,12 +300,29 @@ export class EternalService extends WorkerEntrypoint<Env> {
     const mimeType = options.mimeType || 'text/plain';
     const type = options.type || 'text';
 
-    if (!canWriteItem(granted, path, mimeType)) {
-      throw new Error(`Not permitted: write access to ${path} denied`);
-    }
-
     let parentId = options.parentId || null;
     let name = path.split('/').pop() || 'Untitled';
+
+    // Authorize the path the item will ACTUALLY live at, not the caller-supplied
+    // `path`. When an explicit parentId is given, IT decides placement — so
+    // checking `path` alone would let an app pair an in-scope `path` with an
+    // out-of-scope parentId and write into any folder whose id it knows (e.g.
+    // one it can merely read), escaping its fs.write grant.
+    let effectivePath = path;
+    if (options.parentId) {
+      const snapshot = await this.loadSnapshot();
+      const itemsMap = new Map(snapshot.items.map((item) => [item.id, item]));
+      const parent = itemsMap.get(options.parentId);
+      if (!parent || parent.type !== 'folder') {
+        throw new Error('Parent folder not found');
+      }
+      const parentPath = buildItemPath(parent.id, itemsMap);
+      effectivePath = (parentPath === '/' ? '' : parentPath) + '/' + name;
+    }
+
+    if (!canWriteItem(granted, effectivePath, mimeType)) {
+      throw new Error(`Not permitted: write access to ${effectivePath} denied`);
+    }
 
     if (path.startsWith('/') && !options.parentId) {
       const segments = path.split('/').filter(Boolean);
@@ -376,7 +393,7 @@ export class EternalService extends WorkerEntrypoint<Env> {
     }
 
     const newItem = await response.json<DesktopItem>();
-    return toEternalItem(newItem, path);
+    return toEternalItem(newItem, effectivePath);
   }
 
   /**
@@ -400,10 +417,29 @@ export class EternalService extends WorkerEntrypoint<Env> {
       throw new Error(`Not permitted: write access to ${itemPath} denied`);
     }
 
+    // An app may only change benign content fields. The owner-facing DO PATCH
+    // allowlist also permits privileged fields that an app must never set, even
+    // on an item within its write scope: isPublic (would publish the user's
+    // private item), parentId (would move it out of the app's write scope),
+    // grantedPermissions / appManifest / permissionGrantedAt (permission
+    // self-escalation on an app item), and isTrashed/trashedAt. Filter to the
+    // safe subset here so the app never reaches those.
+    const APP_PATCHABLE_FIELDS: (keyof DesktopItem)[] = [
+      'name', 'position', 'textContent', 'url',
+      'customIcon', 'widgetType', 'widgetConfig', 'stickerConfig', 'userTags',
+    ];
+    const safeUpdates: Record<string, unknown> = {};
+    for (const field of APP_PATCHABLE_FIELDS) {
+      if (updates[field] !== undefined) safeUpdates[field] = updates[field];
+    }
+    if (Object.keys(safeUpdates).length === 0) {
+      throw new Error('No permitted fields to update');
+    }
+
     const response = await this.getDesktopStub().fetch(
       new Request('http://internal/items', {
         method: 'PATCH',
-        body: JSON.stringify([{ id: itemId, updates }]),
+        body: JSON.stringify([{ id: itemId, updates: safeUpdates }]),
       })
     );
 
