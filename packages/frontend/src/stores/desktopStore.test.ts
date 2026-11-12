@@ -205,3 +205,33 @@ test('a failed cut-paste returns items to their original location', async () => 
   expect(item?.parentId).toBe(null);
   expect(item?.position).toEqual({ x: 0, y: 0 });
 });
+
+test('a successful upload adds the item and completes its progress entry', async () => {
+  const uploaded = { ...original, id: 'uploaded', name: 'photo.png', type: 'image' as const };
+  api.uploadFile.mockResolvedValue({ item: uploaded });
+  const result = await useDesktopStore.getState().uploadFile({ name: 'photo.png' } as File, null, { x: 0, y: 0 });
+  expect(result?.id).toBe('uploaded');
+  expect(useDesktopStore.getState().getItem('uploaded')).toBeDefined();
+  expect(useDesktopStore.getState().uploads.find((u) => u.filename === 'photo.png')?.status).toBe('complete');
+});
+
+test('a failed upload leaves no phantom item and marks the upload errored', async () => {
+  api.uploadFile.mockRejectedValue(new Error('Network error'));
+  const result = await useDesktopStore.getState().uploadFile({ name: 'bad.png' } as File, null, { x: 0, y: 0 });
+  expect(result).toBe(null);
+  // The item is only added on success, so a failure leaves nothing behind.
+  expect(useDesktopStore.getState().items.some((i) => i.name === 'bad.png')).toBe(false);
+  expect(useDesktopStore.getState().uploads.find((u) => u.filename === 'bad.png')?.status).toBe('error');
+});
+
+test('an upload that resolves after a session switch does not populate the next account', async () => {
+  let resolve!: (value: unknown) => void;
+  api.uploadFile.mockImplementation(() => new Promise((r) => { resolve = r; }));
+  const pending = useDesktopStore.getState().uploadFile({ name: 'late.png' } as File, null, { x: 0, y: 0 });
+  // Switch account mid-upload.
+  useDesktopStore.getState().reset();
+  useDesktopStore.getState().setUid('bob');
+  resolve({ item: { ...original, id: 'late', name: 'late.png' } });
+  expect(await pending).toBe(null);
+  expect(useDesktopStore.getState().items).toEqual([]);
+});
