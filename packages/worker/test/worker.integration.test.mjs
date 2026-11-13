@@ -1234,6 +1234,33 @@ describe('worker integration', () => {
     assert.ok(newLogin.token);
   });
 
+  it('rejects dangerous link-item URLs (stored-XSS guard)', async () => {
+    const user = await signupUser();
+
+    // A javascript: URL on a link item would render as an href / open in the
+    // website viewer — stored XSS against any visitor who clicks it. Rejected.
+    const badCreate = await fetchJson('/api/desktop/items', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ type: 'link', name: 'Evil', url: 'javascript:alert(document.cookie)', position: { x: 0, y: 0 } }),
+    });
+    assert.ok(badCreate.response.status >= 400, `expected rejection, got ${badCreate.response.status}`);
+
+    // http(s) links are fine.
+    const good = await createDesktopItem(user.token, {
+      type: 'link', name: 'Good', url: 'https://example.com/', position: { x: 1, y: 0 }, isPublic: false,
+    });
+    assert.ok(good.id);
+
+    // Editing a safe item's URL to javascript: is rejected on PATCH too.
+    const badPatch = await fetchJson('/api/desktop/items', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify([{ id: good.id, updates: { url: 'javascript:alert(1)' } }]),
+    });
+    assert.ok(badPatch.response.status >= 400, `expected rejection, got ${badPatch.response.status}`);
+  });
+
   it('exports account data without leaking password-equivalent secrets', async () => {
     const user = await signupUser();
     const exportRes = await worker.fetch(`${BASE_URL}/api/auth/export-data`, {

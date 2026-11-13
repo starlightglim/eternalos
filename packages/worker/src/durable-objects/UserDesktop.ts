@@ -420,6 +420,28 @@ export class UserDesktop {
    * Internal item creation used by upload handlers that need to set r2Key/fileSize/mimeType.
    * NOT exposed to client input directly.
    */
+  /**
+   * SECURITY: Link items render their `url` as an <a href> / are opened via the
+   * website viewer. An unvalidated `javascript:` (or other non-web) scheme on a
+   * PUBLIC item is stored XSS against any visitor who clicks it. Restrict item
+   * URLs to http(s), the same rule profileLinks already enforce.
+   */
+  private assertSafeItemUrl(url: unknown): void {
+    if (url === undefined || url === null || url === '') return;
+    if (typeof url !== 'string' || url.length > 2048) {
+      throw new Error('Invalid item URL');
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error('Invalid item URL');
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('Item URL must use http(s)');
+    }
+  }
+
   private async createItemInternal(partial: Partial<DesktopItem>): Promise<DesktopItem> {
     const now = Date.now();
     const id = partial.id || crypto.randomUUID();
@@ -428,6 +450,8 @@ export class UserDesktop {
     if (this.items.has(id)) {
       throw new Error('Item with this ID already exists');
     }
+
+    this.assertSafeItemUrl(partial.url);
 
     const item: DesktopItem = {
       id,
@@ -511,6 +535,9 @@ export class UserDesktop {
             }
           }
         }
+
+        // SECURITY: reject dangerous link URLs on edit too (see createItemInternal).
+        this.assertSafeItemUrl(filteredUpdates.url);
 
         // Prevent circular folder references: if parentId is being changed,
         // walk up the target parent's ancestor chain and ensure this item
