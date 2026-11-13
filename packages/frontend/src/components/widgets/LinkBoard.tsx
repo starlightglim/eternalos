@@ -110,6 +110,18 @@ export function LinkBoard({ itemId, config, isOwner, onConfigUpdate }: LinkBoard
       e.preventDefault();
       return;
     }
+    // SECURITY: only open http(s) URLs. The editor prepends https://, but
+    // widgetConfig is stored without server-side scheme validation, so a link
+    // set directly via the API could carry a `javascript:` URL — opening that
+    // (esp. on a public board a visitor clicks) is an XSS risk.
+    let safe = false;
+    try {
+      const protocol = new URL(url).protocol;
+      safe = protocol === 'http:' || protocol === 'https:';
+    } catch {
+      safe = false;
+    }
+    if (!safe) return;
     // Open in new tab
     window.open(url, '_blank', 'noopener,noreferrer');
   };
