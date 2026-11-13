@@ -1,4 +1,4 @@
-import { expect, test, describe, vi } from 'vitest';
+import { beforeEach, expect, test, describe, vi } from 'vitest';
 import type { CustomAppearance } from './appearanceStore';
 
 // appearanceStore reads localStorage at import time (loadSavedAppearance) and
@@ -20,6 +20,7 @@ import {
   buildTokenUpdate,
   getTokenValue,
   APPEARANCE_PROFILE_KEYS,
+  useAppearanceStore,
 } from './appearanceStore';
 import { TOKEN_REGISTRY } from '../tokens/tokenSchema';
 
@@ -137,5 +138,63 @@ describe('getTokenValue', () => {
 
   test('an unknown token path reads undefined', () => {
     expect(getTokenValue('not.a.real.token', {})).toBeUndefined();
+  });
+});
+
+describe('appearanceStore CSS + reset actions', () => {
+  // DOM side-effects (applyCustomCSS / token apply) are guarded to no-op when
+  // `document` is undefined, so these actions run in the node test env and we
+  // assert the pure state transitions.
+  beforeEach(() => {
+    useAppearanceStore.setState({
+      appearance: {},
+      originalAppearance: {},
+      customCSSPreview: undefined,
+      customCSSPreviewSummary: undefined,
+      hasUnsavedChanges: false,
+      isLoading: false,
+    });
+  });
+
+  test('setCustomCSS stores the CSS, clears any live preview, and marks unsaved', () => {
+    useAppearanceStore.setState({ customCSSPreview: 'old', customCSSPreviewSummary: 'prev' });
+    useAppearanceStore.getState().setCustomCSS('.window { color: red; }');
+    const s = useAppearanceStore.getState();
+    expect(s.appearance.customCSS).toContain('.window');
+    expect(s.appearance.customCSS).toContain('color: red');
+    expect(s.customCSSPreview).toBeUndefined();
+    expect(s.customCSSPreviewSummary).toBeUndefined();
+    expect(s.hasUnsavedChanges).toBe(true);
+  });
+
+  test('setCustomCSSPreview sets a preview without touching the saved appearance', () => {
+    useAppearanceStore.getState().setCustomCSSPreview('.window { color: blue; }', 'make it blue');
+    const s = useAppearanceStore.getState();
+    expect(s.customCSSPreview).toContain('color: blue');
+    expect(s.customCSSPreviewSummary).toBe('make it blue');
+    // The saved appearance is untouched and nothing is marked unsaved by a preview.
+    expect(s.appearance.customCSS).toBeUndefined();
+    expect(s.hasUnsavedChanges).toBe(false);
+  });
+
+  test('clearCustomCSSPreview drops the preview and its summary', () => {
+    useAppearanceStore.getState().setCustomCSSPreview('.x { color: green; }', 'sum');
+    useAppearanceStore.getState().clearCustomCSSPreview();
+    const s = useAppearanceStore.getState();
+    expect(s.customCSSPreview).toBeUndefined();
+    expect(s.customCSSPreviewSummary).toBeUndefined();
+  });
+
+  test('resetAppearance clears every appearance field and marks unsaved', () => {
+    useAppearanceStore.setState({
+      appearance: { accentColor: '#ff0000', customCSS: '.a { color: red; }' },
+      customCSSPreview: 'live',
+      hasUnsavedChanges: false,
+    });
+    useAppearanceStore.getState().resetAppearance();
+    const s = useAppearanceStore.getState();
+    expect(s.appearance).toEqual({});
+    expect(s.customCSSPreview).toBeUndefined();
+    expect(s.hasUnsavedChanges).toBe(true);
   });
 });

@@ -429,6 +429,9 @@ const STYLE_ID = 'eternalos-appearance-overrides';
 
 /** Apply compiled CSS to the DOM */
 export function applyCompiledTokens(compiled: CompiledCSS): void {
+  // No-op outside a DOM (SSR / tests / worker contexts). The compile step above
+  // is pure; only this apply touches the document.
+  if (typeof document === 'undefined') return;
   const root = document.documentElement;
 
   for (const cssVar of getAllCSSVars()) {
@@ -457,6 +460,7 @@ export function applyCompiledTokens(compiled: CompiledCSS): void {
 
 /** Clear all CSS set by the token system */
 export function clearCompiledTokens(): void {
+  if (typeof document === 'undefined') return;
   const root = document.documentElement;
 
   // Clear all tracked CSS variables

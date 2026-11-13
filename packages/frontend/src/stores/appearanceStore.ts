@@ -201,6 +201,7 @@ export function getTokenValue(
 // `utils/cssSanitizer.ts` (pure, unit-tested). This is only the DOM wrapper.
 
 export function applyCustomCSS(css: string | undefined) {
+  if (typeof document === 'undefined') return;
   document.getElementById('eternalos-custom-css')?.remove();
 
   const scopedCSS = sanitizeCustomCSS(css);
