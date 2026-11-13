@@ -16,9 +16,16 @@ Status legend: ✅ Done · 🟡 Partial · ❌ Not started · 🔎 Needs a relia
 > - **Visitor appearance lost from cache:** `handleVisit`'s cache path returned the nested `{items,profile,windows}` snapshot while the client reads flat appearance fields, so a cached visit (populated on every mutation) dropped ALL custom appearance. Both paths now flatten through one builder.
 > - **Username normalization:** signup/change-username validated the raw input but stored the normalized one (`"___"` → empty handle, `"_bob"` → `bob`). Now re-validates the normalized value.
 > - **OAuth CSRF fail-open:** `verifyOAuthState` returned `null === null` → true with no stored state; now fails closed (it is the sole CSRF guard — the server callback never sees the state).
-> - **Defense in depth:** `nosniff` on served uploads; DOM-apply guards so the appearance store is testable; de-flaked the worker suite against transient non-JSON runtime errors.
+> - **Link-item stored XSS:** item `url` was stored unvalidated and rendered as an `<a href>` / opened in the website viewer, so a public `javascript:` link item was stored XSS against any visitor who clicked it. Now restricted to http(s) on write (matching profileLinks), with an inert-text render guard in GetInfo as defense in depth.
+> - **Secret in GDPR export:** the data export stripped `passwordHash` but left `recoveryCodesHashed` (password-equivalent). Now stripped too.
+> - **Agent thread titles:** user-supplied create/rename titles were uncapped (auto titles cap at 60); bounded to 100 to keep the per-user thread-list KV value under its size limit.
+> - **Defense in depth:** `nosniff` on all upload serve paths; DOM-apply guards so the appearance store is testable; de-flaked the worker suite against transient non-JSON runtime errors.
 >
-> Audited and found clean (no bug): bazaar publish/install + estheme, the designTokens/customCSS validators, app storage (KV) sandboxing, profile field filtering, game cross-isolation, `fsPolicy` glob matching, `getPublicItemsFiltered` (fails closed), the cartridge validator, og:image escaping, and the refresh-token rotation + reuse detection.
+> New integration coverage: the full auth lifecycle (recovery-code login + regeneration, change-password session invalidation, change-username normalization/uniqueness, cancel-deletion, GDPR export secret-stripping), agent thread CRUD + per-user isolation, fs-scope + patch-field + SSRF boundaries, profile variants round-trip, and the link-URL XSS guard. Frontend: appearance store actions, the visitor transform, and the OAuth state check. Worker suite 20 → 34, frontend 44 → ~310.
+>
+> Audited and found clean (no bug): bazaar publish/install + estheme, the designTokens/customCSS validators, app storage (KV) sandboxing, profile field filtering, game cross-isolation + sandbox grant, `fsPolicy` glob matching, `getPublicItemsFiltered` (fails closed), the cartridge validator, og:image escaping, the refresh-token rotation + reuse detection, recovery-code entropy, agent chat capability tokens (purpose-bound), analytics dedup, and the sound/cursor serve routes.
+>
+> **Known env note:** the `hard-deletes an account…` integration test is timing-sensitive and gets slow/flaky when `packages/worker/.wrangler/state` grows large from many local test runs (the purge scans the KV). It is unrelated to any code change here (verified by stashing). Clear/trim that local state to restore fast, reliable runs.
 
 ## How to read this
 
