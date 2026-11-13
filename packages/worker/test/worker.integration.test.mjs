@@ -321,6 +321,34 @@ describe('worker integration', () => {
     assert.equal(rejectedSignups.length, 1);
   });
 
+  it('rejects usernames that collapse to empty/short under normalization', async () => {
+    const signupWith = (username) => fetchJson('/api/auth/signup', {
+      method: 'POST',
+      headers: freshAuthIp('signup'),
+      body: JSON.stringify({
+        email: `norm-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`,
+        username,
+        password: PASSWORD,
+      }),
+    });
+
+    // sanitizeUsername lowercases and strips leading "-"/"_", so these pass the
+    // raw charset check but would be stored as an empty ("___") or too-short
+    // ("_ab" -> "ab") handle. Both must be rejected, not silently normalized.
+    const allUnderscore = await signupWith('___');
+    assert.equal(allUnderscore.response.status, 400);
+    const shortAfterStrip = await signupWith('_ab');
+    assert.equal(shortAfterStrip.response.status, 400);
+
+    // A leading underscore that still leaves a valid handle is accepted and the
+    // stored username is the normalized form (no leading underscore). Use a
+    // unique handle so the local .wrangler KV state doesn't collide run-to-run.
+    const suffix = `h${Math.random().toString(36).slice(2, 8)}`;
+    const ok = await signupWith(`_${suffix}`);
+    assert.equal(ok.response.status, 200);
+    assert.equal(ok.body.user.username, suffix.toLowerCase());
+  });
+
   it('publishes and republishes a playable Bazaar game', async () => {
     const user = await signupUser();
     const publish = async (cartridge, packId) => {

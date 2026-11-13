@@ -137,6 +137,17 @@ export async function handleSignup(request: Request, env: Env): Promise<Response
   const normalizedEmail = sanitizeEmail(email);
   const normalizedUsername = sanitizeUsername(username);
 
+  // The NORMALIZED username is what we store, index, and display, but the
+  // checks above ran on the raw input. sanitizeUsername lowercases and strips
+  // leading "-"/"_", so a value that passes validateUsername can still collapse
+  // under normalization: "___" -> "" (empty handle + `username:` index key) and
+  // "_bob" -> "bob" (silently collides with "bob"). Re-validate the normalized
+  // value so what we validated is what we persist.
+  const normalizedUsernameError = validateUsername(normalizedUsername);
+  if (normalizedUsernameError) {
+    return Response.json({ error: normalizedUsernameError }, { status: 400 });
+  }
+
   // SECURITY: Acquire short-lived, serialized locks before the
   // check-then-write sequence. This prevents concurrent signups from both
   // passing the existence check and overwriting each other's records.
@@ -1208,6 +1219,13 @@ export async function handleChangeUsername(request: Request, env: Env, auth: Aut
   }
 
   const normalizedNewUsername = sanitizeUsername(newUsername);
+
+  // Re-validate the normalized value — the raw check above can pass a username
+  // that collapses under normalization (e.g. "___" -> "", "_bob" -> "bob").
+  const normalizedUsernameError = validateUsername(normalizedNewUsername);
+  if (normalizedUsernameError) {
+    return Response.json({ error: normalizedUsernameError }, { status: 400 });
+  }
 
   // Look up user by UID
   const uidIndexJson = await env.AUTH_KV.get(`uid:${auth.uid}`);
