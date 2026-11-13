@@ -10,6 +10,7 @@
 
 import { useState, useCallback, useMemo } from 'react';
 import type { LinkBoardConfig, LinkBoardLink } from '../../types';
+import { openExternalUrl } from '../../utils/safeUrl';
 import { useDesktopStore } from '../../stores/desktopStore';
 import styles from './LinkBoard.module.css';
 
@@ -114,16 +115,7 @@ export function LinkBoard({ itemId, config, isOwner, onConfigUpdate }: LinkBoard
     // widgetConfig is stored without server-side scheme validation, so a link
     // set directly via the API could carry a `javascript:` URL — opening that
     // (esp. on a public board a visitor clicks) is an XSS risk.
-    let safe = false;
-    try {
-      const protocol = new URL(url).protocol;
-      safe = protocol === 'http:' || protocol === 'https:';
-    } catch {
-      safe = false;
-    }
-    if (!safe) return;
-    // Open in new tab
-    window.open(url, '_blank', 'noopener,noreferrer');
+    openExternalUrl(url);
   };
 
   return (

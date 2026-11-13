@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
+import { isHttpUrl, openExternalUrl } from '../../utils/safeUrl';
 import { useDesktopStore } from '../../stores/desktopStore';
 import styles from './WebsiteViewer.module.css';
 
@@ -42,7 +43,10 @@ export function WebsiteViewer({ itemId, url: propUrl, name: propName }: WebsiteV
 
   // Refresh the iframe
   const handleRefresh = useCallback(() => {
-    if (iframeRef.current && url) {
+    // SECURITY: never load a non-http(s) URL into the iframe — a javascript:
+    // src would execute in the frame. The server rejects such item URLs on
+    // write; this guards historical/slipped-through data too.
+    if (iframeRef.current && isHttpUrl(url)) {
       setIsLoading(true);
       setError(null);
       // Force reload by setting src to empty and back
@@ -58,7 +62,7 @@ export function WebsiteViewer({ itemId, url: propUrl, name: propName }: WebsiteV
   // Open in new browser tab
   const handleOpenExternal = useCallback(() => {
     if (url) {
-      window.open(url, '_blank', 'noopener,noreferrer');
+      openExternalUrl(url);
     }
   }, [url]);
 

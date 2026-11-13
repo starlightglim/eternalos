@@ -10,6 +10,7 @@
  */
 
 import { useState, useCallback, useEffect, useMemo } from 'react';
+import { openExternalUrl } from '../utils/safeUrl';
 import { Link } from 'react-router-dom';
 import { useDocumentMeta } from '../hooks/useDocumentMeta';
 import { useWindowStore } from '../stores/windowStore';
@@ -189,7 +190,7 @@ export function LandingPage() {
         contentId: item.id,
       });
     } else if (item.type === 'link' && item.url) {
-      window.open(item.url, '_blank', 'noopener,noreferrer');
+      openExternalUrl(item.url);
     } else if (item.type === 'widget' && item.widgetType) {
       const widgetSizes: Record<string, { width: number; height: number }> = {
         'sticky-note': { width: 200, height: 200 },

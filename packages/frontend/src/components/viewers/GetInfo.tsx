@@ -10,6 +10,7 @@ import {
 import { renderCustomIcon, CUSTOM_ICON_LIBRARY, type CustomIconId } from '../icons/customIconUtils';
 import { getCustomIconUrl } from '../../services/api';
 import type { DesktopItem } from '../../types';
+import { safeHref } from '../../utils/safeUrl';
 import styles from './GetInfo.module.css';
 
 interface GetInfoProps {
@@ -620,19 +621,4 @@ function formatFileSize(bytes: number): string {
 function truncateUrl(url: string, maxLength = 40): string {
   if (url.length <= maxLength) return url;
   return url.substring(0, maxLength - 3) + '...';
-}
-
-/**
- * Only return a URL that is safe to use as a link href. The server now rejects
- * non-http(s) item URLs on write, but guard the render too: a historical (or
- * otherwise slipped-through) `javascript:` URL must never become a live href,
- * especially in visitor mode where it would run in the visitor's origin.
- */
-function safeHref(url: string): string | undefined {
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? url : undefined;
-  } catch {
-    return undefined;
-  }
 }

@@ -1,6 +1,7 @@
 // Visitor Page - Read-only view of a user's desktop
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
+import { openExternalUrl } from '../utils/safeUrl';
 import { WindowManager } from '../components/window';
 import { DesktopIcon } from '../components/icons';
 import { Sticker } from '../components/desktop/Sticker';
@@ -332,7 +333,7 @@ export function VisitorPage() {
         contentId: item.id,
       });
     } else if (item.type === 'link' && item.url) {
-      window.open(item.url, '_blank', 'noopener,noreferrer');
+      openExternalUrl(item.url);
     } else if (item.type === 'widget' && item.widgetType) {
       // Get default size based on widget type
       const widgetSizes: Record<string, { width: number; height: number }> = {

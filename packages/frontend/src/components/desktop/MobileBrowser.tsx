@@ -6,6 +6,7 @@
  */
 
 import { useState, useCallback } from 'react';
+import { openExternalUrl } from '../../utils/safeUrl';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { useWindowStore } from '../../stores/windowStore';
 import { useAuthStore } from '../../stores/authStore';
@@ -129,7 +130,7 @@ export function MobileBrowser({ isVisitorMode = false, visitorItems, username, o
           contentId: item.id,
         });
       } else if (item.type === 'link' && item.url) {
-        window.open(item.url, '_blank', 'noopener,noreferrer');
+        openExternalUrl(item.url);
       } else if (item.type === 'widget' && item.widgetType) {
         // Get default size based on widget type
         const widgetSizes: Record<string, { width: number; height: number }> = {
