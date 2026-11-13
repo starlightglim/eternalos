@@ -912,6 +912,7 @@ export async function fetchVisitorDesktop(username: string): Promise<VisitorResp
       customCSS: data.customCSS,
       hideWatermark: data.hideWatermark,
       designTokens: data.designTokens,
+      variants: data.variants,
       soundPack: data.soundPack,
       bio: data.bio,
       profileLinks: data.profileLinks,

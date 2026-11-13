@@ -177,3 +177,30 @@ test('refresh cannot adopt another account from storage while waiting for its lo
   expect(fetcher).toHaveBeenCalledTimes(1);
   expect(api.getAuthToken()).toBe(alice);
 });
+
+test('fetchVisitorDesktop maps the flat appearance fields (incl. variants) onto the profile', async () => {
+  const api = await import('./api');
+  const flat = {
+    username: 'bob',
+    displayName: 'Bob',
+    accentColor: '#00ffcc',
+    customCSS: '.window { color: red; }',
+    designTokens: { 'window.titleBar.background': '#111' },
+    variants: { windowChrome: 'aqua', menuStyle: 'platinum' },
+    items: [{ id: '1', name: 'Note', type: 'text' }],
+    windows: [],
+  };
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(flat), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })));
+
+  const result = await api.fetchVisitorDesktop('bob');
+
+  // Variants used to be dropped by this transform even once the server sent them.
+  expect(result.profile.variants).toEqual({ windowChrome: 'aqua', menuStyle: 'platinum' });
+  expect(result.profile.accentColor).toBe('#00ffcc');
+  expect(result.profile.designTokens).toEqual({ 'window.titleBar.background': '#111' });
+  expect(result.profile.customCSS).toContain('color: red');
+  expect(result.items).toHaveLength(1);
+});

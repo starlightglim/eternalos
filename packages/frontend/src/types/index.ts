@@ -260,6 +260,8 @@ export interface UserProfile {
   windowShadow?: number;    // Shadow intensity (0-32)
   // Extended design tokens (JSON blob for new properties beyond legacy flat fields)
   designTokens?: Record<string, string | number | boolean>;
+  // Variant selections (e.g. window-chrome style)
+  variants?: Record<string, string>;
   // Custom CSS (Layer 4 customization)
   customCSS?: string;       // User-defined CSS, max 50KB, scoped to .user-desktop
   // Wallpaper display mode
