@@ -1160,6 +1160,47 @@ describe('worker integration', () => {
     assert.ok(badValue.response.status >= 400, `expected rejection, got ${badValue.response.status}`);
   });
 
+  it('recovers access with a one-time recovery code', async () => {
+    const user = await signupUser();
+    assert.ok(Array.isArray(user.recoveryCodes) && user.recoveryCodes.length >= 2,
+      'signup should return recovery codes');
+    const [code, secondCode] = user.recoveryCodes;
+
+    // Using a code mints a fresh session and burns that code.
+    const used = await expectOk('/api/auth/use-recovery-code', {
+      method: 'POST',
+      headers: freshAuthIp('recovery'),
+      body: JSON.stringify({ email: user.email, code }),
+    });
+    assert.ok(used.token, 'recovery should mint a session token');
+    assert.ok(used.refreshToken);
+    assert.equal(used.codesRemaining, user.recoveryCodes.length - 1);
+
+    // The code is one-time — reusing it is rejected.
+    const reuse = await fetchJson('/api/auth/use-recovery-code', {
+      method: 'POST',
+      headers: freshAuthIp('recovery'),
+      body: JSON.stringify({ email: user.email, code }),
+    });
+    assert.equal(reuse.response.status, 401);
+
+    // A different, unburned code still works.
+    const used2 = await expectOk('/api/auth/use-recovery-code', {
+      method: 'POST',
+      headers: freshAuthIp('recovery'),
+      body: JSON.stringify({ email: user.email, code: secondCode }),
+    });
+    assert.ok(used2.token);
+
+    // An unknown email yields the same generic 401 (no enumeration).
+    const unknown = await fetchJson('/api/auth/use-recovery-code', {
+      method: 'POST',
+      headers: freshAuthIp('recovery'),
+      body: JSON.stringify({ email: `nobody-${Date.now()}@example.com`, code }),
+    });
+    assert.equal(unknown.response.status, 401);
+  });
+
   it('manages agent threads per-user and caps oversized titles', async () => {
     const user = await signupUser();
 
