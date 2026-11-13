@@ -1234,6 +1234,25 @@ describe('worker integration', () => {
     assert.ok(newLogin.token);
   });
 
+  it('exports account data without leaking password-equivalent secrets', async () => {
+    const user = await signupUser();
+    const exportRes = await worker.fetch(`${BASE_URL}/api/auth/export-data`, {
+      headers: authHeaders(user.token),
+    });
+    assert.equal(exportRes.status, 200);
+    assert.match(exportRes.headers.get('content-disposition') ?? '', /attachment/);
+    const payload = await exportRes.json();
+
+    // Own data is present...
+    assert.equal(payload.user.email, user.email);
+    assert.equal(payload.user.username, user.user.username);
+    // ...but password-equivalent secrets are stripped.
+    assert.equal(payload.user.passwordHash, undefined);
+    assert.equal(payload.user.recoveryCodesHashed, undefined);
+    // And the raw export text must not contain the hash field names at all.
+    assert.doesNotMatch(JSON.stringify(payload), /passwordHash|recoveryCodesHashed/);
+  });
+
   it('cancels a pending account deletion during the grace period', async () => {
     const user = await signupUser();
 

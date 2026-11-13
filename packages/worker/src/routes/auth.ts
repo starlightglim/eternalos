@@ -1992,7 +1992,11 @@ export async function handleExportData(
   }
   const user = JSON.parse(userJson) as UserRecord;
   const sanitizedUser = { ...user };
+  // Strip password-equivalent secrets. Recovery-code hashes are as sensitive as
+  // the password hash — exporting them (even to the account owner) would let an
+  // attacker brute-force codes offline if the export file leaked.
   delete sanitizedUser.passwordHash;
+  delete sanitizedUser.recoveryCodesHashed;
 
   const doId = env.USER_DESKTOP.idFromName(auth.uid);
   const stub = env.USER_DESKTOP.get(doId);
