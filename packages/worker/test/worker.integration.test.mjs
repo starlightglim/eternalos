@@ -1160,6 +1160,36 @@ describe('worker integration', () => {
     assert.ok(badValue.response.status >= 400, `expected rejection, got ${badValue.response.status}`);
   });
 
+  it('changes username with password confirmation, normalization, and uniqueness', async () => {
+    const user = await signupUser();
+    const uniq = () => `u${Math.random().toString(36).slice(2, 9)}`;
+    const change = (body) => fetchJson('/api/auth/change-username', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify(body),
+    });
+
+    // Wrong password is rejected.
+    assert.equal((await change({ newUsername: uniq(), password: 'WrongPassword123' })).response.status, 401);
+    // Reserved name is rejected.
+    assert.equal((await change({ newUsername: 'admin', password: user.password })).response.status, 400);
+    // All-underscore collapses to empty under normalization → rejected.
+    assert.equal((await change({ newUsername: '___', password: user.password })).response.status, 400);
+
+    // A name already taken by another account → 409.
+    const other = await signupUser();
+    assert.equal((await change({ newUsername: other.username, password: user.password })).response.status, 409);
+
+    // A valid change succeeds and returns the normalized username.
+    const target = uniq();
+    const ok = await expectOk('/api/auth/change-username', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ newUsername: target, password: user.password }),
+    });
+    assert.equal(ok.username, target.toLowerCase());
+  });
+
   it('changes password, invalidates old sessions, and requires the current password', async () => {
     const user = await signupUser();
     const newPassword = 'NewSecret123';
