@@ -289,6 +289,9 @@ export interface UserProfile {
   windowOpacity?: number;   // Window content opacity (30-100 percent)
   // Extended design tokens (JSON blob for new properties beyond legacy flat fields)
   designTokens?: Record<string, string | number | boolean>;
+  // Variant selections (e.g. window-chrome style). Keys/values select which
+  // conditional tokens apply; compiled client-side. Stored as-is, bounded.
+  variants?: Record<string, string>;
   // Custom CSS (Layer 4 customization)
   customCSS?: string;       // User-defined CSS, max 50KB, scoped to .user-desktop
   // Wallpaper display mode

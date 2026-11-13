@@ -686,6 +686,7 @@ export class UserDesktop {
       'windowShadow',
       'windowOpacity',
       'designTokens',
+      'variants',
       'customCSS',
       'isNewUser',
       'hideWatermark',
@@ -905,6 +906,29 @@ export class UserDesktop {
               throw new Error(`designToken url() contains path traversal for ${key}`);
             }
           }
+        }
+      }
+    }
+
+    // Server-side validation for the variants blob. Variant selections pick
+    // which conditional tokens apply (compiled client-side); the server only
+    // stores and echoes them, so bound the shape to prevent an oversized or
+    // malformed blob from being persisted and served to visitors.
+    if (filteredUpdates.variants !== undefined) {
+      const v = filteredUpdates.variants;
+      if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+        throw new Error('Invalid variants format');
+      }
+      const entries = Object.entries(v);
+      if (entries.length > 50) {
+        throw new Error('Too many variant selections (max 50)');
+      }
+      for (const [key, value] of entries) {
+        if (!/^[a-zA-Z][a-zA-Z0-9.\-_]*$/.test(key) || key.length > 64) {
+          throw new Error(`Invalid variant key: ${key}`);
+        }
+        if (typeof value !== 'string' || value.length > 128) {
+          throw new Error(`Invalid variant value for ${key}`);
         }
       }
     }

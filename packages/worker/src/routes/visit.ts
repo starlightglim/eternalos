@@ -59,6 +59,47 @@ interface VisitorResponse {
  * 3. Fall back to Durable Object getPublicSnapshot()
  * 4. Cache result in KV for next visitor
  */
+/** The raw public snapshot shape written to KV by UserDesktop.syncPublicSnapshot. */
+interface PublicSnapshot {
+  items: DesktopItem[];
+  profile?: UserProfile | null;
+  windows?: SavedWindowState[];
+}
+
+/**
+ * Flatten the stored `{ items, profile, windows }` snapshot into the flat
+ * VisitorResponse the client consumes (appearance fields hoisted to the top
+ * level). Both the KV-cache path and the DO fallback go through this, so the
+ * two can never disagree — previously the cache held the nested shape while the
+ * fallback built the flat shape, so a cached visit (populated on every profile
+ * mutation) lost all custom appearance.
+ */
+function buildVisitorResponse(
+  normalizedUsername: string,
+  data: PublicSnapshot
+): VisitorResponse {
+  return {
+    username: normalizedUsername,
+    displayName: data.profile?.displayName || normalizedUsername,
+    wallpaper: data.profile?.wallpaper,
+    wallpaperMode: data.profile?.wallpaperMode,
+    accentColor: data.profile?.accentColor,
+    desktopColor: data.profile?.desktopColor,
+    windowBgColor: data.profile?.windowBgColor,
+    fontSmoothing: data.profile?.fontSmoothing,
+    customCSS: data.profile?.customCSS,
+    hideWatermark: data.profile?.hideWatermark,
+    designTokens: data.profile?.designTokens,
+    variants: data.profile?.variants,
+    soundPack: data.profile?.soundPack,
+    bio: data.profile?.bio,
+    profileLinks: data.profile?.profileLinks,
+    shareDescription: data.profile?.shareDescription,
+    items: data.items ?? [],
+    windows: data.windows,
+  };
+}
+
 export async function handleVisit(
   request: Request,
   env: Env,
@@ -83,21 +124,24 @@ export async function handleVisit(
 
     const { uid } = usernameData;
 
-    // Try KV cache first for fast visitor reads
-    const cachedSnapshot = await env.DESKTOP_KV.get<VisitorResponse>(
+    // Try KV cache first for fast visitor reads. The cache holds the raw
+    // snapshot shape (written by UserDesktop.syncPublicSnapshot); flatten it the
+    // same way as the fallback below.
+    const cachedSnapshot = await env.DESKTOP_KV.get<PublicSnapshot>(
       `public:${uid}`,
       'json'
     );
 
     if (cachedSnapshot) {
-      return Response.json(cachedSnapshot, {
+      return Response.json(buildVisitorResponse(normalizedUsername, cachedSnapshot), {
         headers: {
           'Cache-Control': 'public, max-age=60', // Cache for 1 minute
         },
       });
     }
 
-    // Fall back to Durable Object
+    // Fall back to Durable Object. getPublicSnapshot() populates the KV cache
+    // (raw shape) as a side effect, so we don't re-write it here.
     const doId = env.USER_DESKTOP.idFromName(uid);
     const stub = env.USER_DESKTOP.get(doId);
 
@@ -116,41 +160,9 @@ export async function handleVisit(
       return Response.json(emptyResponse);
     }
 
-    const data = await doResponse.json() as {
-      items: DesktopItem[];
-      profile?: UserProfile;
-      windows?: SavedWindowState[];
-    };
+    const data = await doResponse.json() as PublicSnapshot;
 
-    // Build visitor response with appearance settings
-    const visitorResponse: VisitorResponse = {
-      username: normalizedUsername,
-      displayName: data.profile?.displayName || normalizedUsername,
-      wallpaper: data.profile?.wallpaper,
-      wallpaperMode: data.profile?.wallpaperMode,
-      accentColor: data.profile?.accentColor,
-      desktopColor: data.profile?.desktopColor,
-      windowBgColor: data.profile?.windowBgColor,
-      fontSmoothing: data.profile?.fontSmoothing,
-      customCSS: data.profile?.customCSS,
-      hideWatermark: data.profile?.hideWatermark,
-      designTokens: data.profile?.designTokens,
-      soundPack: data.profile?.soundPack,
-      bio: data.profile?.bio,
-      profileLinks: data.profile?.profileLinks,
-      shareDescription: data.profile?.shareDescription,
-      items: data.items,
-      windows: data.windows,
-    };
-
-    // Cache in KV for future visitors (5 minute TTL)
-    await env.DESKTOP_KV.put(
-      `public:${uid}`,
-      JSON.stringify(visitorResponse),
-      { expirationTtl: 300 }
-    );
-
-    return Response.json(visitorResponse, {
+    return Response.json(buildVisitorResponse(normalizedUsername, data), {
       headers: {
         'Cache-Control': 'public, max-age=60',
       },

@@ -1134,6 +1134,32 @@ describe('worker integration', () => {
     assert.equal(await owner.text(), 'private content');
   });
 
+  it('persists profile variant selections and serves them to visitors', async () => {
+    const user = await signupUser();
+
+    // Variants used to be silently dropped by the profile allowlist, so they
+    // never survived a reload on a new device and never reached visitors.
+    await patchProfile(user.token, { variants: { windowChrome: 'aqua', menuStyle: 'platinum' } });
+
+    const visit = await expectOk(`/api/visit/${user.user.username}`);
+    assert.deepEqual(visit.variants, { windowChrome: 'aqua', menuStyle: 'platinum' });
+
+    // Malformed variants are rejected (bad key / non-string value).
+    const badKey = await fetchJson('/api/profile', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ variants: { '1 bad!': 'x' } }),
+    });
+    assert.ok(badKey.response.status >= 400, `expected rejection, got ${badKey.response.status}`);
+
+    const badValue = await fetchJson('/api/profile', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ variants: { ok: 123 } }),
+    });
+    assert.ok(badValue.response.status >= 400, `expected rejection, got ${badValue.response.status}`);
+  });
+
   it('tracks opted-in analytics with per-IP deduplication', async () => {
     const user = await signupUser();
 
