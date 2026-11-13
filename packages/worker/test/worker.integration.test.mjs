@@ -1234,6 +1234,48 @@ describe('worker integration', () => {
     assert.ok(newLogin.token);
   });
 
+  it('cancels a pending account deletion during the grace period', async () => {
+    const user = await signupUser();
+
+    // Soft-delete (test env pins the grace period to 0, but the purge cron must
+    // still run to hard-delete, so the account stays cancellable here).
+    await expectOk('/api/auth/delete-account', {
+      method: 'POST',
+      headers: authHeaders(user.token, freshAuthIp('cancel')),
+      body: JSON.stringify({ password: user.password }),
+    });
+
+    // Login is blocked with the pending-deletion signal.
+    const blocked = await fetchJson('/api/auth/login', {
+      method: 'POST',
+      headers: freshAuthIp('login'),
+      body: JSON.stringify({ email: user.email, password: user.password }),
+    });
+    assert.equal(blocked.response.status, 403);
+    assert.equal(blocked.body.accountDeletionPending, true);
+
+    // A wrong password cannot cancel.
+    const wrongCancel = await fetchJson('/api/auth/cancel-deletion', {
+      method: 'POST',
+      headers: freshAuthIp('cancel'),
+      body: JSON.stringify({ email: user.email, password: 'WrongPassword123' }),
+    });
+    assert.equal(wrongCancel.response.status, 401);
+
+    // The correct password cancels, and normal login works again.
+    await expectOk('/api/auth/cancel-deletion', {
+      method: 'POST',
+      headers: freshAuthIp('cancel'),
+      body: JSON.stringify({ email: user.email, password: user.password }),
+    });
+    const relogin = await expectOk('/api/auth/login', {
+      method: 'POST',
+      headers: freshAuthIp('login'),
+      body: JSON.stringify({ email: user.email, password: user.password }),
+    });
+    assert.ok(relogin.token);
+  });
+
   it('regenerates recovery codes, invalidating the old set', async () => {
     const user = await signupUser();
     const oldCode = user.recoveryCodes[0];
