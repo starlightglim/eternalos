@@ -1234,6 +1234,43 @@ describe('worker integration', () => {
     assert.ok(newLogin.token);
   });
 
+  it('regenerates recovery codes, invalidating the old set', async () => {
+    const user = await signupUser();
+    const oldCode = user.recoveryCodes[0];
+
+    // Password confirmation is required.
+    const wrong = await fetchJson('/api/auth/regenerate-recovery-codes', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ password: 'WrongPassword123' }),
+    });
+    assert.equal(wrong.response.status, 401);
+
+    // Correct password returns a fresh set that differs from the old one.
+    const regen = await expectOk('/api/auth/regenerate-recovery-codes', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ password: user.password }),
+    });
+    assert.ok(Array.isArray(regen.recoveryCodes) && regen.recoveryCodes.length === 10);
+    assert.ok(!regen.recoveryCodes.includes(oldCode), 'regenerated codes must differ from the old set');
+
+    // An old code no longer works; a new one does.
+    const oldUse = await fetchJson('/api/auth/use-recovery-code', {
+      method: 'POST',
+      headers: freshAuthIp('recovery'),
+      body: JSON.stringify({ email: user.email, code: oldCode }),
+    });
+    assert.equal(oldUse.response.status, 401);
+
+    const newUse = await expectOk('/api/auth/use-recovery-code', {
+      method: 'POST',
+      headers: freshAuthIp('recovery'),
+      body: JSON.stringify({ email: user.email, code: regen.recoveryCodes[0] }),
+    });
+    assert.ok(newUse.token);
+  });
+
   it('recovers access with a one-time recovery code', async () => {
     const user = await signupUser();
     assert.ok(Array.isArray(user.recoveryCodes) && user.recoveryCodes.length >= 2,
