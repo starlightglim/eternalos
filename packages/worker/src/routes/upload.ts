@@ -1400,6 +1400,7 @@ export async function handleServeWallpaper(
     headers.set('ETag', object.httpEtag);
     headers.set('Content-Disposition', 'inline');
     headers.set('Content-Security-Policy', "default-src 'none'");
+    headers.set('X-Content-Type-Options', 'nosniff');
 
     // Handle conditional requests
     const ifNoneMatch = request.headers.get('If-None-Match');
@@ -1592,6 +1593,7 @@ export async function handleServeIcon(
     headers.set('ETag', object.httpEtag);
     headers.set('Content-Disposition', 'inline');
     headers.set('Content-Security-Policy', "default-src 'none'");
+    headers.set('X-Content-Type-Options', 'nosniff');
 
     // Handle conditional requests
     const ifNoneMatch = request.headers.get('If-None-Match');
