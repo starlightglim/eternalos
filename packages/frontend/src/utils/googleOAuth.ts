@@ -54,6 +54,12 @@ export function redirectToGoogle(): void {
 export function verifyOAuthState(state: string): boolean {
   const stored = sessionStorage.getItem(OAUTH_STATE_KEY);
   sessionStorage.removeItem(OAUTH_STATE_KEY); // One-time use
+  // Reject when EITHER side is missing. Without this, a callback with no stored
+  // state (stored === null) and no incoming state (state === null) would pass
+  // via `null === null`. The current caller guards against an empty `state`,
+  // but this is the sole CSRF defense for the OAuth flow (the server receives
+  // only the code, not the state), so fail closed here too.
+  if (!stored || !state) return false;
   return stored === state;
 }
 
