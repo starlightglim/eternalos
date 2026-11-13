@@ -6,6 +6,20 @@
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started · 🔎 Needs a reliability pass (works, under-tested or rough).
 
+> **Security + reliability hardening pass (2026-11-12 → 13, branch `cursor/w2-css-sanitizer`).** A sweep of the auth, app-bridge, bazaar, upload, visitor, and customization surfaces. Real bugs found and fixed, each with a regression test where the harness can drive it (the Worker-Loader app/game bridge reads a separate DO namespace under `unstable_dev`, so a few bridge-only fixes are covered by reasoning + adjacent tests):
+> - **App fs scope escape (write):** `EternalService.write` authorized the claimed `path` while an out-of-scope `parentId` decided placement → an app could write into any folder whose id it knew. Now authorizes the real target path.
+> - **App privilege passthrough (patch):** `EternalService.patch` forwarded `updates` to the owner-facing DO allowlist → an app could set `isPublic` / `parentId` / `grantedPermissions` on items it can write. Now filtered to benign content fields.
+> - **SSRF false-positive:** the app-fetch guard treated any DNS host starting with `fc`/`fd` (fcc.gov, fdic.gov) as a private IPv6 address and blocked granted fetches. Gated the IPv6 ULA check on the host being an IPv6 literal.
+> - **dev-deploy status codes:** external-import and IPC declaration errors mapped to 500 instead of 400.
+> - **Game-save lockout:** the rate limiter re-set its TTL every write, locking out an actively-saving player mid-session; switched to a fixed window.
+> - **Variants never persisted:** the profile allowlist dropped `variants`, so window-chrome selections were lost on reload/new device and never reached visitors. Added + validated the field.
+> - **Visitor appearance lost from cache:** `handleVisit`'s cache path returned the nested `{items,profile,windows}` snapshot while the client reads flat appearance fields, so a cached visit (populated on every mutation) dropped ALL custom appearance. Both paths now flatten through one builder.
+> - **Username normalization:** signup/change-username validated the raw input but stored the normalized one (`"___"` → empty handle, `"_bob"` → `bob`). Now re-validates the normalized value.
+> - **OAuth CSRF fail-open:** `verifyOAuthState` returned `null === null` → true with no stored state; now fails closed (it is the sole CSRF guard — the server callback never sees the state).
+> - **Defense in depth:** `nosniff` on served uploads; DOM-apply guards so the appearance store is testable; de-flaked the worker suite against transient non-JSON runtime errors.
+>
+> Audited and found clean (no bug): bazaar publish/install + estheme, the designTokens/customCSS validators, app storage (KV) sandboxing, profile field filtering, game cross-isolation, `fsPolicy` glob matching, `getPublicItemsFiltered` (fails closed), the cartridge validator, og:image escaping, and the refresh-token rotation + reuse detection.
+
 ## How to read this
 
 Four core workstreams, each with: where it stands, what to do (ordered), and what "good" looks like. Underneath them sits **Foundations** — cross-cutting reliability that every workstream depends on. A surface is not "done" until its acceptance bullets have recorded evidence (a test or a logged manual run), not just a passing build.
