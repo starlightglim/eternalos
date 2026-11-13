@@ -10,9 +10,21 @@ export interface AgentThreadSummary {
 const THREADS_KV_PREFIX = 'agent_threads:';
 const DEFAULT_THREAD_TITLE = 'New Thread';
 const MAX_THREADS = 100;
+const MAX_TITLE_LENGTH = 100;
 
 function threadsKey(uid: string): string {
   return `${THREADS_KV_PREFIX}${uid}`;
+}
+
+/**
+ * Trim, fall back to the default, and bound a user-supplied thread title.
+ * Create/rename accept arbitrary titles; without a cap a single oversized
+ * title (times up to MAX_THREADS) could push the per-user thread-list KV value
+ * past its size limit and break the user's own thread list.
+ */
+function sanitizeThreadTitle(title: string | undefined, fallback: string = DEFAULT_THREAD_TITLE): string {
+  const trimmed = (title ?? '').trim();
+  return (trimmed || fallback).slice(0, MAX_TITLE_LENGTH);
 }
 
 export function normalizeThreadId(input: string | null | undefined): string {
@@ -57,7 +69,7 @@ export async function createThread(
   const now = Date.now();
   const thread: AgentThreadSummary = {
     id: crypto.randomUUID(),
-    title: title?.trim() || DEFAULT_THREAD_TITLE,
+    title: sanitizeThreadTitle(title),
     createdAt: now,
     updatedAt: now,
   };
@@ -79,12 +91,12 @@ export async function upsertThread(
   const next: AgentThreadSummary = existing
     ? {
       ...existing,
-      title: updates.title?.trim() || existing.title,
+      title: sanitizeThreadTitle(updates.title, existing.title),
       updatedAt: now,
     }
     : {
       id: normalizedId,
-      title: updates.title?.trim() || DEFAULT_THREAD_TITLE,
+      title: sanitizeThreadTitle(updates.title),
       createdAt: now,
       updatedAt: now,
     };
@@ -106,7 +118,7 @@ export async function renameThread(
 
   const updated: AgentThreadSummary = {
     ...existing,
-    title: title.trim() || existing.title,
+    title: sanitizeThreadTitle(title, existing.title),
     updatedAt: Date.now(),
   };
   await saveThreads(env, uid, [updated, ...threads.filter((thread) => thread.id !== normalizedId)]);

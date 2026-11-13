@@ -1160,6 +1160,47 @@ describe('worker integration', () => {
     assert.ok(badValue.response.status >= 400, `expected rejection, got ${badValue.response.status}`);
   });
 
+  it('manages agent threads per-user and caps oversized titles', async () => {
+    const user = await signupUser();
+
+    // Create with an oversized title — stored title is capped (user-supplied
+    // titles were previously unbounded, unlike the 60-char auto titles).
+    const created = await expectOk('/api/agent/threads', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ title: 'x'.repeat(500) }),
+    }, 201);
+    assert.equal(created.thread.title.length, 100);
+    const threadId = created.thread.id;
+
+    const list = await expectOk('/api/agent/threads', { headers: authHeaders(user.token) });
+    assert.ok(list.threads.some((t) => t.id === threadId), 'thread should be listed for its owner');
+
+    const renamed = await expectOk(`/api/agent/threads/${threadId}`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ title: 'y'.repeat(300) }),
+    });
+    assert.equal(renamed.thread.title.length, 100);
+
+    // Threads are keyed per-user: another account can't see or delete it.
+    const other = await signupUser();
+    const otherList = await expectOk('/api/agent/threads', { headers: authHeaders(other.token) });
+    assert.ok(!otherList.threads.some((t) => t.id === threadId), 'thread must not leak across users');
+    const foreignDelete = await fetchJson(`/api/agent/threads/${threadId}`, {
+      method: 'DELETE',
+      headers: authHeaders(other.token),
+    });
+    assert.equal(foreignDelete.response.status, 404);
+
+    // Owner deletes it.
+    const del = await expectOk(`/api/agent/threads/${threadId}`, {
+      method: 'DELETE',
+      headers: authHeaders(user.token),
+    });
+    assert.equal(del.deleted, true);
+  });
+
   it('tracks opted-in analytics with per-IP deduplication', async () => {
     const user = await signupUser();
 
