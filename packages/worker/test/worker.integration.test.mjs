@@ -1160,6 +1160,50 @@ describe('worker integration', () => {
     assert.ok(badValue.response.status >= 400, `expected rejection, got ${badValue.response.status}`);
   });
 
+  it('changes password, invalidates old sessions, and requires the current password', async () => {
+    const user = await signupUser();
+    const newPassword = 'NewSecret123';
+
+    // Wrong current password is rejected.
+    const wrong = await fetchJson('/api/auth/change-password', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ currentPassword: 'WrongPassword123', newPassword }),
+    });
+    assert.equal(wrong.response.status, 401);
+
+    // Correct current password succeeds and mints a fresh session.
+    const changed = await expectOk('/api/auth/change-password', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ currentPassword: user.password, newPassword }),
+    });
+    assert.ok(changed.token && changed.refreshToken);
+
+    // The pre-change refresh token is invalidated (passwordChangedAt > its issuedAt).
+    const staleRefresh = await fetchJson('/api/auth/refresh', {
+      method: 'POST',
+      headers: freshAuthIp('refresh'),
+      body: JSON.stringify({ refreshToken: user.refreshToken }),
+    });
+    assert.equal(staleRefresh.response.status, 401);
+
+    // Old password no longer logs in; the new one does.
+    const oldLogin = await fetchJson('/api/auth/login', {
+      method: 'POST',
+      headers: freshAuthIp('login'),
+      body: JSON.stringify({ email: user.email, password: user.password }),
+    });
+    assert.equal(oldLogin.response.status, 401);
+
+    const newLogin = await expectOk('/api/auth/login', {
+      method: 'POST',
+      headers: freshAuthIp('login'),
+      body: JSON.stringify({ email: user.email, password: newPassword }),
+    });
+    assert.ok(newLogin.token);
+  });
+
   it('recovers access with a one-time recovery code', async () => {
     const user = await signupUser();
     assert.ok(Array.isArray(user.recoveryCodes) && user.recoveryCodes.length >= 2,
