@@ -1106,6 +1106,10 @@ describe('worker integration', () => {
     const publicResponse = await worker.fetch(filePath);
     assert.equal(publicResponse.status, 200);
     assert.equal(publicResponse.headers.get('cache-control'), 'private, no-store');
+    // A text/plain upload must not be MIME-sniffed into a scriptable type and
+    // must download rather than render inline.
+    assert.equal(publicResponse.headers.get('x-content-type-options'), 'nosniff');
+    assert.match(publicResponse.headers.get('content-disposition') ?? '', /^attachment/);
     const etag = publicResponse.headers.get('etag');
     assert.equal(await publicResponse.text(), 'private content');
 

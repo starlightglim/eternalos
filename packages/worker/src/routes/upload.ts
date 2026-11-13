@@ -1099,6 +1099,9 @@ export async function handleServeFile(
     const isInlineSafe = /^(image|video|audio)\//.test(contentType);
     const disposition = isInlineSafe ? 'inline' : `attachment; filename="${encodeURIComponent(filename)}"`;
     headers.set('Content-Disposition', disposition);
+    // Defense in depth: never let the browser MIME-sniff a stored blob into a
+    // scriptable type (matches the bazaar asset serve route).
+    headers.set('X-Content-Type-Options', 'nosniff');
     // Always indicate we accept ranges for video/audio
     headers.set('Accept-Ranges', 'bytes');
 
