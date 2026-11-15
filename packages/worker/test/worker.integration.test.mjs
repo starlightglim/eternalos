@@ -702,6 +702,36 @@ describe('worker integration', () => {
     assert.equal(deletedAppResponse.status, 404);
   });
 
+  it('rejects a capability token used against a different app or malformed', async () => {
+    const user = await signupUser();
+    const deployApp = (name) => expectOk('/api/apps/dev-deploy', {
+      method: 'POST', headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: { name, version: '1.0.0', windowConfig: { defaultWidth: 600, defaultHeight: 500 }, permissions: { fs: { read: ['/**'] } } },
+        files: { 'index.html': '<!doctype html><body>x</body>' },
+      }),
+    });
+    const appA = await deployApp('Cap App A');
+    const appB = await deployApp('Cap App B');
+
+    await expectOk(`/api/apps/${encodeURIComponent(appA.appId)}/permissions`, {
+      method: 'PATCH', headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { fs: { read: ['/**'] } } }),
+    });
+    const capA = await expectOk(`/api/apps/${encodeURIComponent(appA.appId)}/capability`, {
+      method: 'POST', headers: authHeaders(user.token, JSON_HEADERS), body: '{}',
+    });
+    const fsList = (appId, token) => worker.fetch(
+      `${BASE_URL}/api/apps/${encodeURIComponent(appId)}/fs/list`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+
+    // A's token works on A, is rejected on B (appId-bound), and a garbage token is rejected.
+    assert.equal((await fsList(appA.appId, capA.token)).status, 200);
+    assert.equal((await fsList(appB.appId, capA.token)).status, 401);
+    assert.equal((await fsList(appA.appId, 'not.a.valid.jwt')).status, 401);
+  });
+
   it('rejects unsafe custom app source before registration', async () => {
     const user = await signupUser();
     const rejected = await fetchJson('/api/apps/dev-deploy', {
