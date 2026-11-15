@@ -367,6 +367,55 @@ describe('worker integration', () => {
     assert.equal(ok.body.user.username, suffix.toLowerCase());
   });
 
+  it('publishes, browses, installs, and deletes a legacy bazaar pack', async () => {
+    const user = await signupUser();
+    const form = new UndiciFormData();
+    form.set('manifest', JSON.stringify({
+      type: 'cursor',
+      name: 'Retro Cursors',
+      description: 'A test cursor pack',
+      tags: ['retro', 'pixel'],
+      config: { 'cursor.image.default': '{asset:arrow}' },
+    }));
+    form.set('preview', createPngFile('preview.png'));
+    form.set('asset_arrow', createPngFile('arrow.png'));
+
+    const published = await expectOk('/api/bazaar/publish', {
+      method: 'POST', headers: authHeaders(user.token), body: form,
+    });
+    const packId = published.pack.packId;
+    assert.ok(packId);
+    // The {asset:arrow} placeholder is rewritten to a first-party asset URL.
+    assert.match(published.pack.config['cursor.image.default'], /^\/api\/bazaar\/assets\//);
+
+    // It appears in type-filtered browse and in the author's my-packs.
+    const browse = await expectOk('/api/bazaar/browse?type=cursor');
+    assert.ok(browse.packs.some((p) => p.packId === packId), 'pack should be browsable');
+    const mine = await expectOk('/api/bazaar/my-packs', { headers: authHeaders(user.token) });
+    assert.ok(mine.packs.some((p) => p.packId === packId), 'pack should be in my-packs');
+
+    // Install returns the (rewritten) config.
+    const install = await expectOk(`/api/bazaar/install/${encodeURIComponent(packId)}`, {
+      method: 'POST', headers: authHeaders(user.token),
+    });
+    assert.ok(install.config['cursor.image.default']);
+
+    // A non-owner cannot delete it; the owner can.
+    const other = await signupUser();
+    const foreignDelete = await fetchJson(`/api/bazaar/pack/${encodeURIComponent(packId)}`, {
+      method: 'DELETE', headers: authHeaders(other.token),
+    });
+    assert.equal(foreignDelete.response.status, 403);
+
+    await expectOk(`/api/bazaar/pack/${encodeURIComponent(packId)}`, {
+      method: 'DELETE', headers: authHeaders(user.token),
+    });
+
+    // Gone after deletion.
+    const afterDelete = await fetchJson(`/api/bazaar/pack/${encodeURIComponent(packId)}`);
+    assert.equal(afterDelete.response.status, 404);
+  });
+
   it('publishes and republishes a playable Bazaar game', async () => {
     const user = await signupUser();
     const publish = async (cartridge, packId) => {
