@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -241,10 +243,19 @@ function createTestCartridge(version = '1.0.0') {
   };
 }
 
+// Each test run gets a fresh, ephemeral persistence directory instead of the
+// default shared `.wrangler/state`. This keeps the suite hermetic (no state
+// leaks between runs), stops test churn (hundreds of disposable signups) from
+// bloating — and slowing down — the dev state, and avoids polluting the
+// developer's real local accounts. Cleaned up in `after`.
+let testStateDir;
+
 before(async () => {
+  testStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eternalos-test-state-'));
   const options = {
     config: process.env.WRANGLER_CONFIG ?? 'wrangler.toml',
     envFiles: ['test/worker.env'],
+    persistTo: testStateDir,
     logLevel: 'error',
     experimental: {
       disableExperimentalWarning: true,
@@ -281,6 +292,13 @@ after(async () => {
   } finally {
     if (worker) {
       await worker.stop();
+    }
+    if (testStateDir) {
+      try {
+        fs.rmSync(testStateDir, { recursive: true, force: true });
+      } catch {
+        // Best-effort cleanup; OS temp is reclaimed anyway.
+      }
     }
   }
 });
