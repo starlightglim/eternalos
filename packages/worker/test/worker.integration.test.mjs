@@ -1549,6 +1549,47 @@ describe('worker integration', () => {
     assert.equal(del.deleted, true);
   });
 
+  it('manages game cartridge drafts per-user and mints play capabilities', async () => {
+    const user = await signupUser();
+    const cartId = `draft-${Math.random().toString(36).slice(2, 10)}`;
+
+    // PUT a valid draft.
+    const put = await expectOk(`/api/games/drafts/${cartId}`, {
+      method: 'PUT', headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ cartridge: createTestCartridge() }),
+    });
+    assert.equal(put.cartId, cartId);
+
+    // An invalid cartridge is rejected.
+    const badPut = await fetchJson(`/api/games/drafts/${cartId}x`, {
+      method: 'PUT', headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ cartridge: { formatVersion: 99 } }),
+    });
+    assert.equal(badPut.response.status, 400);
+
+    // GET + list for the owner.
+    const got = await expectOk(`/api/games/drafts/${cartId}`, { headers: authHeaders(user.token) });
+    assert.ok(got.cartridge);
+    const list = await expectOk('/api/games/drafts', { headers: authHeaders(user.token) });
+    assert.ok(list.drafts.some((d) => d.cartId === cartId), 'draft should be listed');
+
+    // Another user cannot read it.
+    const other = await signupUser();
+    const foreignGet = await fetchJson(`/api/games/drafts/${cartId}`, { headers: authHeaders(other.token) });
+    assert.equal(foreignGet.response.status, 404);
+
+    // A play capability can be minted for the draft.
+    const cap = await expectOk(`/api/games/${encodeURIComponent(`draft:${cartId}`)}/capability`, {
+      method: 'POST', headers: authHeaders(user.token, JSON_HEADERS), body: '{}',
+    });
+    assert.ok(cap.capability, 'should mint a game capability');
+
+    // Delete removes it.
+    await expectOk(`/api/games/drafts/${cartId}`, { method: 'DELETE', headers: authHeaders(user.token) });
+    const afterGet = await fetchJson(`/api/games/drafts/${cartId}`, { headers: authHeaders(user.token) });
+    assert.equal(afterGet.response.status, 404);
+  });
+
   it('uploads, serves, lists, and deletes a custom sound', async () => {
     const user = await signupUser();
 
