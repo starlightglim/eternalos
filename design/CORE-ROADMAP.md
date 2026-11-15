@@ -25,7 +25,7 @@ Status legend: ✅ Done · 🟡 Partial · ❌ Not started · 🔎 Needs a relia
 >
 > Audited and found clean (no bug): bazaar publish/install + estheme, the designTokens/customCSS validators, app storage (KV) sandboxing, profile field filtering, game cross-isolation + sandbox grant, `fsPolicy` glob matching, `getPublicItemsFiltered` (fails closed), the cartridge validator, og:image escaping, the refresh-token rotation + reuse detection, recovery-code entropy, agent chat capability tokens (purpose-bound), analytics dedup, and the sound/cursor serve routes.
 >
-> **Known env note:** the `hard-deletes an account…` integration test is timing-sensitive and gets slow/flaky when `packages/worker/.wrangler/state` grows large from many local test runs (the purge scans the KV). It is unrelated to any code change here (verified by stashing). Clear/trim that local state to restore fast, reliable runs.
+> **Test harness:** the worker integration suite now runs against a fresh ephemeral `persistTo` temp dir per run (not the shared `.wrangler/state`), so it is hermetic — no state leaks between runs, no dev-account pollution, and the previously flaky/slow `hard-deletes an account…` test (which scanned a KV bloated by accumulated test signups) now runs in ~0.25s and is stable. Note: a large `.wrangler/state` from earlier runs can be cleared; it is no longer written to by tests.
 
 ## How to read this
 
