@@ -416,6 +416,47 @@ describe('worker integration', () => {
     assert.equal(afterDelete.response.status, 404);
   });
 
+  it('publishes an .estheme theme bundle and re-validates it on read', async () => {
+    const user = await signupUser();
+    const author = `@${user.user.username}`;
+    const manifest = {
+      formatVersion: 1,
+      id: 'retro-theme',
+      name: 'Retro Theme',
+      version: '1.0.0',
+      author,
+      layers: { tokens: 'tokens.json' },
+    };
+    const tokensFile = () => new File([JSON.stringify({ accentColor: '#00ffcc' })], 'tokens.json', { type: 'application/json' });
+
+    const form = new UndiciFormData();
+    form.set('manifest', JSON.stringify(manifest));
+    form.set('preview', createPngFile('preview.png'));
+    form.set('file_tokens.json', tokensFile());
+
+    const published = await expectOk('/api/bazaar/publish-estheme', {
+      method: 'POST', headers: authHeaders(user.token), body: form,
+    });
+    assert.ok(published.pack.packId);
+    assert.equal(published.pack.manifestVersion, 1);
+    assert.equal(published.manifest.id, 'retro-theme');
+
+    // Reading the pack re-validates the stored manifest and returns it.
+    const fetched = await expectOk(`/api/bazaar/pack/${encodeURIComponent(published.pack.packId)}`);
+    assert.ok(fetched.manifest, 'estheme pack should return its manifest');
+    assert.equal(fetched.manifest.layers.tokens, 'tokens.json');
+
+    // The manifest author must match the authenticated user.
+    const badForm = new UndiciFormData();
+    badForm.set('manifest', JSON.stringify({ ...manifest, author: '@someoneelse' }));
+    badForm.set('preview', createPngFile('p.png'));
+    badForm.set('file_tokens.json', tokensFile());
+    const badAuthor = await fetchJson('/api/bazaar/publish-estheme', {
+      method: 'POST', headers: authHeaders(user.token), body: badForm,
+    });
+    assert.equal(badAuthor.response.status, 403);
+  });
+
   it('publishes and republishes a playable Bazaar game', async () => {
     const user = await signupUser();
     const publish = async (cartridge, packId) => {
