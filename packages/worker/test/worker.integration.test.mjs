@@ -1549,6 +1549,82 @@ describe('worker integration', () => {
     assert.equal(del.deleted, true);
   });
 
+  it('uploads, serves, lists, and deletes a custom sound', async () => {
+    const user = await signupUser();
+
+    const uploadForm = new UndiciFormData();
+    uploadForm.set('file', new File([new Uint8Array([1, 2, 3, 4, 5, 6])], 'beep.wav', { type: 'audio/wav' }));
+    const uploaded = await expectOk('/api/sounds', {
+      method: 'POST', headers: authHeaders(user.token), body: uploadForm,
+    });
+    assert.ok(uploaded.asset?.soundId, 'upload should return a soundId');
+    assert.match(uploaded.asset.url, /^\/api\/sounds\//);
+    const soundId = uploaded.asset.soundId;
+
+    // A non-audio MIME type is rejected.
+    const badForm = new UndiciFormData();
+    badForm.set('file', new File(['not audio'], 'x.txt', { type: 'text/plain' }));
+    const badUpload = await fetchJson('/api/sounds', {
+      method: 'POST', headers: authHeaders(user.token), body: badForm,
+    });
+    assert.equal(badUpload.response.status, 400);
+
+    // The sound serves publicly with nosniff.
+    const serveRes = await worker.fetch(`${BASE_URL}${uploaded.asset.url}`);
+    assert.equal(serveRes.status, 200);
+    assert.equal(serveRes.headers.get('x-content-type-options'), 'nosniff');
+    await serveRes.arrayBuffer();
+
+    // It appears in the owner's sound list, then is gone after delete.
+    const listed = await expectOk('/api/sounds', { headers: authHeaders(user.token) });
+    const names = (listed.sounds ?? listed.assets ?? []);
+    assert.ok(names.some((s) => s.soundId === soundId), 'sound should be listed');
+
+    await expectOk(`/api/sounds/${encodeURIComponent(soundId)}`, {
+      method: 'DELETE', headers: authHeaders(user.token),
+    });
+    const after = await expectOk('/api/sounds', { headers: authHeaders(user.token) });
+    const afterNames = (after.sounds ?? after.assets ?? []);
+    assert.ok(!afterNames.some((s) => s.soundId === soundId), 'sound should be gone after delete');
+  });
+
+  it('uploads, serves, lists, and deletes a custom cursor', async () => {
+    const user = await signupUser();
+
+    const form = new UndiciFormData();
+    form.set('file', createPngFile('arrow.png'));
+    form.set('cursorState', 'default');
+    const uploaded = await expectOk('/api/cursors', {
+      method: 'POST', headers: authHeaders(user.token), body: form,
+    });
+    assert.ok(uploaded.asset?.cursorId, 'upload should return a cursorId');
+    assert.match(uploaded.asset.url, /^\/api\/cursors\//);
+    const cursorId = uploaded.asset.cursorId;
+
+    // A non-image MIME type is rejected.
+    const badForm = new UndiciFormData();
+    badForm.set('file', new File(['x'], 'x.txt', { type: 'text/plain' }));
+    const bad = await fetchJson('/api/cursors', {
+      method: 'POST', headers: authHeaders(user.token), body: badForm,
+    });
+    assert.equal(bad.response.status, 400);
+
+    // Serves publicly with nosniff.
+    const serve = await worker.fetch(`${BASE_URL}${uploaded.asset.url}`);
+    assert.equal(serve.status, 200);
+    assert.equal(serve.headers.get('x-content-type-options'), 'nosniff');
+    await serve.arrayBuffer();
+
+    // Listed, then gone after delete.
+    const list = await expectOk('/api/cursors', { headers: authHeaders(user.token) });
+    assert.ok(list.assets.some((a) => a.cursorId === cursorId), 'cursor should be listed');
+    await expectOk(`/api/cursors/${encodeURIComponent(cursorId)}`, {
+      method: 'DELETE', headers: authHeaders(user.token),
+    });
+    const after = await expectOk('/api/cursors', { headers: authHeaders(user.token) });
+    assert.ok(!after.assets.some((a) => a.cursorId === cursorId), 'cursor should be gone after delete');
+  });
+
   it('tracks opted-in analytics with per-IP deduplication', async () => {
     const user = await signupUser();
 
