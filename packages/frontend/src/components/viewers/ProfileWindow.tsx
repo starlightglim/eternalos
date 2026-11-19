@@ -43,6 +43,7 @@ export function ProfileWindow({ isOwner = true, visitorProfile }: ProfileWindowP
   const [newLinkTitle, setNewLinkTitle] = useState('');
   const [newLinkUrl, setNewLinkUrl] = useState('');
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const saveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bio = bioDraft ?? baseBio;
   const links = linksDraft ?? baseLinks;
@@ -53,16 +54,36 @@ export function ProfileWindow({ isOwner = true, visitorProfile }: ProfileWindowP
     };
   }, []);
 
-  const handleSave = useCallback(() => {
+  // The store has already rolled the profile back to the last
+  // server-acknowledged values; keep the user's edits in the editor (as
+  // drafts) and say so, instead of showing a "Saved!" that never happened.
+  const handleSaveFailed = useCallback((bioValue: string, linksValue: ProfileLink[]) => {
+    setBioLocal(bioValue);
+    setLinksLocal(linksValue);
+    setSaveError('Could not save. Your edits are kept above — try again.');
+  }, []);
+
+  const handleSave = useCallback(async () => {
     if (!isOwner) return;
-    setBio(bio);
-    setProfileLinks(links);
+    setSaveError(null);
+
+    const bioSaved = await setBio(bio);
+    if (!bioSaved) {
+      handleSaveFailed(bio, links);
+      return;
+    }
+    const linksSaved = await setProfileLinks(links);
+    if (!linksSaved) {
+      handleSaveFailed(bio, links);
+      return;
+    }
+
     setBioLocal(null);
     setLinksLocal(null);
     setSaved(true);
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
     saveTimeout.current = setTimeout(() => setSaved(false), 2000);
-  }, [isOwner, bio, links, setBio, setProfileLinks]);
+  }, [isOwner, bio, links, setBio, setProfileLinks, handleSaveFailed]);
 
   const handleAddLink = useCallback(() => {
     if (!newLinkTitle.trim() || !newLinkUrl.trim()) return;
@@ -185,8 +206,9 @@ export function ProfileWindow({ isOwner = true, visitorProfile }: ProfileWindowP
       {/* Save Button (owner only) */}
       {isOwner && (
         <div className={styles.saveRow}>
-          {saved && <span className={styles.savedMessage}>Saved!</span>}
-          <button className={styles.saveBtn} onClick={handleSave}>
+          {saveError && <span className={styles.saveError} role="alert">{saveError}</span>}
+          {saved && !saveError && <span className={styles.savedMessage}>Saved!</span>}
+          <button className={styles.saveBtn} onClick={() => void handleSave()}>
             Save
           </button>
         </div>

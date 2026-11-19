@@ -37,6 +37,7 @@ export function PreferencesWindow() {
   const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [analyticsError, setAnalyticsError] = useState<string | null>(null);
+  const [analyticsSaveError, setAnalyticsSaveError] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const [nameSaveError, setNameSaveError] = useState<string | null>(null);
   const [soundLoading, setSoundLoading] = useState(false);
@@ -199,6 +200,20 @@ export function PreferencesWindow() {
       setWatermarkSaving(false);
     }
   }, []);
+
+  // Toggle the visitor-analytics privacy setting. setAnalyticsEnabled rolls
+  // the profile back when the server refuses the change, which flips the
+  // checkbox back; surface why (same error pattern as the watermark toggle).
+  const handleAnalyticsToggle = useCallback(async (enabled: boolean) => {
+    setAnalyticsSaveError(null);
+    const saved = await setAnalyticsEnabled(enabled);
+    if (!saved) {
+      setAnalyticsSaveError('Analytics setting could not be saved.');
+      return;
+    }
+    // Reset data so it refetches
+    if (enabled) setAnalyticsData(null);
+  }, [setAnalyticsEnabled]);
 
   const handleCopyUrl = useCallback(async () => {
     try {
@@ -444,14 +459,13 @@ export function PreferencesWindow() {
                     type="checkbox"
                     checked={profile?.analyticsEnabled || false}
                     onChange={(e) => {
-                      setAnalyticsEnabled(e.target.checked);
-                      // Reset data so it refetches
-                      if (e.target.checked) setAnalyticsData(null);
+                      void handleAnalyticsToggle(e.target.checked);
                     }}
                     className={styles.checkbox}
                   />
                   <span>Track desktop visitor count</span>
                 </label>
+                {analyticsSaveError && <div className={styles.accountError} role="alert">{analyticsSaveError}</div>}
                 {profile?.analyticsEnabled && (
                   <div className={styles.analyticsInfo}>
                     {analyticsLoading ? (

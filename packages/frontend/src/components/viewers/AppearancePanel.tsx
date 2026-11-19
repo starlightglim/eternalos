@@ -693,9 +693,14 @@ export function AppearancePanel() {
   }, [activeTab, loadCursorAssets]);
 
   const handleSelectWallpaper = useCallback(
-    (id: WallpaperId) => {
-      setWallpaper(id);
+    async (id: WallpaperId) => {
       setUploadError(null);
+      // setWallpaper rolls the profile back (and with it the highlighted
+      // pattern) when the server refuses the change; say why.
+      const saved = await setWallpaper(id);
+      if (!saved) {
+        setUploadError('Wallpaper could not be saved. Your previous wallpaper is still active.');
+      }
     },
     [setWallpaper]
   );
@@ -718,8 +723,14 @@ export function AppearancePanel() {
         const response = await uploadWallpaper(file, (progress) => {
           setUploadProgress(progress);
         });
-        setWallpaper(response.wallpaper);
         setUploadProgress(null);
+        // The image is uploaded; applying it is a separate profile PATCH that
+        // can still be refused — setWallpaper rolls back if so.
+        const applied = await setWallpaper(response.wallpaper);
+        if (!applied) {
+          setUploadError('Image uploaded, but it could not be set as your wallpaper.');
+          return;
+        }
       } catch (err) {
         setUploadError(err instanceof Error ? err.message : 'Upload failed');
         setUploadProgress(null);
@@ -888,7 +899,7 @@ export function AppearancePanel() {
                   key={option.id}
                   type="button"
                   className={`${styles.patternButton} ${currentWallpaper === option.id ? styles.patternButtonActive : ''}`}
-                  onClick={() => handleSelectWallpaper(option.id)}
+                  onClick={() => void handleSelectWallpaper(option.id)}
                   title={option.name}
                 >
                   <div className={`${styles.patternPreview} wallpaper-${option.id}`} />

@@ -25,6 +25,7 @@ export function ShareDialog({ isOwner = true }: ShareDialogProps) {
   const [description, setDescription] = useState(profile?.shareDescription || '');
   const [descSaving, setDescSaving] = useState(false);
   const [descSaved, setDescSaved] = useState(false);
+  const [descError, setDescError] = useState<string | null>(null);
   const descTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const username = profile?.username;
@@ -53,38 +54,47 @@ export function ShareDialog({ isOwner = true }: ShareDialogProps) {
     }
   }, [descSaved]);
 
-  const handleSaveDescription = useCallback(async () => {
-    const trimmed = description.trim();
+  /**
+   * Save the share description through the auth store. `setShareDescription`
+   * resolves false when the server refused the change (offline / 401 / 429 /
+   * 500) and has already rolled the profile back — in that case say so
+   * instead of showing "Saved". The user's text stays in the editor as an
+   * unsaved draft.
+   */
+  const saveDescription = useCallback(async (value: string) => {
+    const trimmed = value.trim();
     if (trimmed === (profile?.shareDescription || '')) return;
 
     setDescSaving(true);
+    setDescError(null);
     try {
-      await setShareDescription(trimmed);
+      const saved = await setShareDescription(trimmed);
+      if (!saved) {
+        setDescError('Could not save. Your edit is kept — try again.');
+        return;
+      }
       setDescSaved(true);
-    } catch (error) {
-      console.error('Failed to save share description:', error);
     } finally {
       setDescSaving(false);
     }
-  }, [description, profile?.shareDescription, setShareDescription]);
+  }, [profile?.shareDescription, setShareDescription]);
+
+  const handleSaveDescription = useCallback(() => {
+    void saveDescription(description);
+  }, [description, saveDescription]);
 
   // Auto-save description on blur or after typing stops (debounce)
   const handleDescriptionChange = useCallback((value: string) => {
     if (value.length > 200) return;
     setDescription(value);
+    setDescError(null);
     // Clear existing timer
     if (descTimerRef.current) clearTimeout(descTimerRef.current);
     // Auto-save after 1.5s of no typing
     descTimerRef.current = setTimeout(() => {
-      const trimmed = value.trim();
-      if (trimmed !== (profile?.shareDescription || '')) {
-        setDescSaving(true);
-        setShareDescription(trimmed);
-        setDescSaved(true);
-        setDescSaving(false);
-      }
+      void saveDescription(value);
     }, 1500);
-  }, [profile?.shareDescription, setShareDescription]);
+  }, [saveDescription]);
 
   const handleCopyLink = useCallback(async () => {
     if (!shareUrl) return;
@@ -167,7 +177,8 @@ export function ShareDialog({ isOwner = true }: ShareDialogProps) {
         <div className={styles.sectionLabel}>
           Share Description
           {descSaving && <span className={styles.savingIndicator}> Saving...</span>}
-          {descSaved && !descSaving && <span className={styles.savedIndicator}> Saved</span>}
+          {descSaved && !descSaving && !descError && <span className={styles.savedIndicator}> Saved</span>}
+          {descError && !descSaving && <span className={styles.saveErrorIndicator} role="alert"> {descError}</span>}
         </div>
         <textarea
           className={styles.descriptionInput}
