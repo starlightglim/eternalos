@@ -2990,6 +2990,53 @@ describe('worker integration', () => {
       'the permissions route still writes grants');
   });
 
+  it('answers malformed item-write bodies with 400s, never 500s', async () => {
+    const user = await signupUser();
+
+    // A non-JSON body is a client error on create and patch alike — the DO's
+    // /items endpoints parse bodies verbatim (request.json()) and used to
+    // turn these into 500s.
+    for (const body of ['not json at all', '']) {
+      for (const method of ['POST', 'PATCH']) {
+        const res = await fetchJson('/api/desktop/items', {
+          method,
+          headers: authHeaders(user.token, JSON_HEADERS),
+          body,
+        });
+        assert.equal(res.response.status, 400,
+          `${method} with a non-JSON body must be a 400, got ${res.response.status}`);
+        assert.match(res.body.error, /valid JSON/);
+      }
+    }
+
+    // A patch body that isn't a JSON array (the DO iterates it as one) is a
+    // 400 for every client-sendable shape.
+    for (const body of ['{}', 'null', '42', '"entries"', 'true']) {
+      const res = await fetchJson('/api/desktop/items', {
+        method: 'PATCH',
+        headers: authHeaders(user.token, JSON_HEADERS),
+        body,
+      });
+      assert.equal(res.response.status, 400, `PATCH ${body} must be a 400, got ${res.response.status}`);
+    }
+
+    // Valid requests are unchanged: an honest create still works…
+    const created = await createDesktopItem(user.token, {
+      type: 'folder', name: 'Malformed Body Target', position: { x: 0, y: 0 },
+    });
+    assert.ok(created.id);
+    // …an empty patch array is a 200 no-op…
+    const empty = await fetchJson('/api/desktop/items', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: '[]',
+    });
+    assert.equal(empty.response.status, 200, `an empty patch array forwards as before, got ${empty.response.status}`);
+    // …and a well-formed patch still applies.
+    const renamed = await patchItems(user.token, [{ id: created.id, updates: { name: 'Renamed Anyway' } }]);
+    assert.equal(renamed[0].name, 'Renamed Anyway');
+  });
+
   it('exports account data without leaking password-equivalent secrets', async () => {
     const user = await signupUser();
     const exportRes = await worker.fetch(`${BASE_URL}/api/auth/export-data`, {
