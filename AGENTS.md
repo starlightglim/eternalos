@@ -137,8 +137,10 @@ truth for all tokens).
 ## Git / repo facts
 
 - This is a standalone npm-workspaces project. The workspaces are
-  `packages/frontend` (React 19 + Vite + CSS modules + Zustand) and
-  `packages/worker` (Workers + DO + KV + R2 + Workers AI).
+  `packages/frontend` (React 19 + Vite + CSS modules + Zustand),
+  `packages/worker` (Workers + DO + KV + R2 + Workers AI), and
+  `packages/contracts` (types-only shared domain models, re-exported by both
+  — see its README).
 - Branch naming: `cursor/<short-description>`.
 - Never commit: `wrangler.toml` AI-binding workaround, `package-lock.json`
   churn from local installs, `.dev.vars`, `.env.local`.
