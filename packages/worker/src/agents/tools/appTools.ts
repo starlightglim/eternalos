@@ -15,6 +15,12 @@ import { createWorkersAI } from 'workers-ai-provider';
 import type { Env } from '../../index';
 import type { AppManifest, AppPermissions, DesktopItem, UserProfile } from '../../types';
 import type { AppGrantedPermissions } from '../../utils/jwt';
+import {
+  AppValidationError,
+  assertAppBundleValid,
+  formatAppValidationIssues,
+  type AppValidationIssue,
+} from '../../utils/appBundleValidation';
 import { buildTodoTemplate } from './appTemplates';
 
 interface AppToolsContext {
@@ -456,7 +462,13 @@ function wrapBuildError(error: unknown, tracker: ReturnType<typeof createBuildTr
   if (message.startsWith('Build failed during ')) {
     return error instanceof Error ? error : new Error(message);
   }
-  return new Error(`Build failed during ${tracker.currentStageLabel()}: ${message}`);
+  const wrapped = new Error(`Build failed during ${tracker.currentStageLabel()}: ${message}`);
+  // Preserve the structured issues so the repair loop can feed the full
+  // checklist back into the regeneration prompt.
+  if (error instanceof AppValidationError) {
+    return new AppValidationError(error.issues, wrapped.message);
+  }
+  return wrapped;
 }
 
 function selectHtmlEntry(files: Record<string, string>): string {
@@ -498,7 +510,11 @@ function selectDefaultJsEntry(files: Record<string, string>): string | undefined
 export function createAppWorkspace(files: Record<string, string>): AppWorkspace {
   const entries = Object.entries(files);
   if (entries.length === 0 || entries.length > MAX_APP_FILES) {
-    throw new Error(`App source must contain between 1 and ${MAX_APP_FILES} files`);
+    throw new AppValidationError([{
+      code: 'source/file-count',
+      message: `App source must contain between 1 and ${MAX_APP_FILES} files`,
+      hint: `Send between 1 and ${MAX_APP_FILES} source files.`,
+    }]);
   }
 
   const normalizedFiles: Record<string, string> = {};
@@ -508,32 +524,56 @@ export function createAppWorkspace(files: Record<string, string>): AppWorkspace 
     const content = String(rawContent);
     const segments = name.split('/');
     if (!name || name.length > MAX_APP_FILE_NAME_BYTES || segments.some((segment) => !segment || segment === '.' || segment === '..' || segment.includes('\\'))) {
-      throw new Error(`Invalid app source filename "${rawName}"`);
+      throw new AppValidationError([{
+        code: 'source/invalid-filename',
+        message: `Invalid app source filename "${rawName}"`,
+        hint: 'Use plain relative names such as "index.html", "styles.css", or "assets/logo.png".',
+      }]);
     }
     if (name in normalizedFiles) {
-      throw new Error(`Duplicate app source filename "${name}"`);
+      throw new AppValidationError([{
+        code: 'source/duplicate-filename',
+        message: `Duplicate app source filename "${name}"`,
+        hint: 'Send each file exactly once.',
+      }]);
     }
 
     const fileBytes = new TextEncoder().encode(content).byteLength;
     if (fileBytes > MAX_APP_FILE_BYTES) {
-      throw new Error(`App source file "${name}" exceeds the ${MAX_APP_FILE_BYTES / 1024}KB limit`);
+      throw new AppValidationError([{
+        code: 'source/file-too-large',
+        message: `App source file "${name}" exceeds the ${MAX_APP_FILE_BYTES / 1024}KB limit`,
+        hint: 'Split large data out of the bundle or shrink the file.',
+      }]);
     }
     totalBytes += fileBytes;
     if (totalBytes > MAX_APP_SOURCE_BYTES) {
-      throw new Error(`App source exceeds the ${MAX_APP_SOURCE_BYTES / 1024 / 1024}MB limit`);
+      throw new AppValidationError([{
+        code: 'source/source-too-large',
+        message: `App source exceeds the ${MAX_APP_SOURCE_BYTES / 1024 / 1024}MB limit`,
+        hint: 'Send fewer or smaller files.',
+      }]);
     }
     normalizedFiles[name] = content;
   }
 
   for (const reserved of RESERVED_APP_SOURCE_FILES) {
     if (reserved in normalizedFiles) {
-      throw new Error(`Source file name "${reserved}" is reserved by the app runtime`);
+      throw new AppValidationError([{
+        code: 'source/reserved-filename',
+        message: `Source file name "${reserved}" is reserved by the app runtime`,
+        hint: 'Remove the file — the platform injects its own runtime assets with those names.',
+      }]);
     }
   }
 
   const entryHtml = selectHtmlEntry(normalizedFiles);
   if (!(entryHtml in normalizedFiles)) {
-    throw new Error('App bundle must include at least one HTML entry file');
+    throw new AppValidationError([{
+      code: 'entry/no-html',
+      message: 'App bundle must include at least one HTML entry file',
+      hint: 'Include an index.html (or another *.html entry).',
+    }]);
   }
 
   return {
@@ -591,11 +631,23 @@ function normalizeAppFromSpec(spec: AppSpec, files: Record<string, string>): App
   };
 }
 
+/**
+ * Pre-bundle source gate. Throws {@link AppValidationError} with one issue per
+ * rejection so every client-supplied bad bundle maps to HTTP 400
+ * deterministically (`instanceof` check in routes/apps.ts) and the repair
+ * loop can format the issue. The thrown `message` is unchanged from the
+ * historical strings — existing tests and the dev-deploy status mapping match
+ * on them.
+ */
 export function validateGeneratedApp(app: AppBundleInput): void {
   const files = app.files;
   const htmlFiles = Object.entries(files).filter(([name]) => name.endsWith('.html') || name === 'html');
   if (htmlFiles.length === 0) {
-    throw new Error('App bundle must include at least one HTML file');
+    throw new AppValidationError([{
+      code: 'entry/no-html',
+      message: 'App bundle must include at least one HTML file',
+      hint: 'Include an index.html (or another *.html entry).',
+    }]);
   }
 
   const fullSource = Object.values(files).join('\n');
@@ -603,16 +655,36 @@ export function validateGeneratedApp(app: AppBundleInput): void {
   // just explicit http(s) — otherwise `<script src="//evil.com/app.js">` slips
   // past this check (the served CSP's `script-src 'self'` still blocks it at
   // runtime, so this is defense-in-depth, but the check should match its intent).
-  const forbiddenPatterns: Array<{ pattern: RegExp; message: string }> = [
-    { pattern: /<script[^>]+src=["'](?:https?:)?\/\//i, message: 'External script URLs are not allowed' },
-    { pattern: /<link[^>]+href=["'](?:https?:)?\/\//i, message: 'External stylesheet URLs are not allowed' },
-    { pattern: /\bimport\s*\(\s*["'`](?:https?:)?\/\//i, message: 'Dynamic imports from external URLs are not allowed' },
-    { pattern: /\bfrom\s+["'](?:https?:)?\/\//i, message: 'Imports from external URLs are not allowed' },
+  const forbiddenPatterns: Array<{ code: string; pattern: RegExp; message: string; hint?: string }> = [
+    {
+      code: 'source/external-script',
+      pattern: /<script[^>]+src=["'](?:https?:)?\/\//i,
+      message: 'External script URLs are not allowed',
+      hint: 'Bundle the script as a local file and reference it with a relative path.',
+    },
+    {
+      code: 'source/external-stylesheet',
+      pattern: /<link[^>]+href=["'](?:https?:)?\/\//i,
+      message: 'External stylesheet URLs are not allowed',
+      hint: 'Bundle the stylesheet as a local file and reference it with a relative path.',
+    },
+    {
+      code: 'source/external-dynamic-import',
+      pattern: /\bimport\s*\(\s*["'`](?:https?:)?\/\//i,
+      message: 'Dynamic imports from external URLs are not allowed',
+      hint: 'Bundle the module as a local file and import it with a relative path.',
+    },
+    {
+      code: 'source/external-import',
+      pattern: /\bfrom\s+["'](?:https?:)?\/\//i,
+      message: 'Imports from external URLs are not allowed',
+      hint: 'Bundle the module as a local file and import it with a relative path.',
+    },
   ];
 
-  for (const { pattern, message } of forbiddenPatterns) {
+  for (const { pattern, code, message, hint } of forbiddenPatterns) {
     if (pattern.test(fullSource)) {
-      throw new Error(message);
+      throw new AppValidationError([{ code, message, hint }]);
     }
   }
 
@@ -625,25 +697,53 @@ export function validateGeneratedApp(app: AppBundleInput): void {
   const usesIpcListen = /\b(?:window\.)?eternal\.ipc\.on\s*\(/.test(fullSource);
 
   if (usesFsRead && !(app.permissions?.fs?.read?.length || app.permissions?.fs?.mimeTypes?.length)) {
-    throw new Error('App reads through window.eternal.fs but did not declare fs read permissions');
+    throw new AppValidationError([{
+      code: 'permission/undeclared-fs-read',
+      message: 'App reads through window.eternal.fs but did not declare fs read permissions',
+      hint: 'Declare fs: { read: [...] } or fs: { mimeTypes: [...] } in the manifest permissions.',
+    }]);
   }
   if (usesFsWrite && !app.permissions?.fs?.write?.length) {
-    throw new Error('App writes through window.eternal.fs but did not declare fs write permissions');
+    throw new AppValidationError([{
+      code: 'permission/undeclared-fs-write',
+      message: 'App writes through window.eternal.fs but did not declare fs write permissions',
+      hint: 'Declare fs: { write: [...] } in the manifest permissions.',
+    }]);
   }
   if (usesFsDelete && !app.permissions?.fs?.delete?.length) {
-    throw new Error('App deletes through window.eternal.fs but did not declare fs delete permissions');
+    throw new AppValidationError([{
+      code: 'permission/undeclared-fs-delete',
+      message: 'App deletes through window.eternal.fs but did not declare fs delete permissions',
+      hint: 'Declare fs: { delete: [...] } in the manifest permissions.',
+    }]);
   }
   if (usesProfile && !app.permissions?.profile?.read?.length) {
-    throw new Error('App uses window.eternal.profile but did not declare profile permissions');
+    throw new AppValidationError([{
+      code: 'permission/undeclared-profile',
+      message: 'App uses window.eternal.profile but did not declare profile permissions',
+      hint: "Declare profile: { read: ['username', 'displayName', …] } in the manifest permissions.",
+    }]);
   }
   if (usesNetwork && !app.permissions?.network?.outbound?.length) {
-    throw new Error('App uses window.eternal.fetch but did not declare network permissions');
+    throw new AppValidationError([{
+      code: 'permission/undeclared-network',
+      message: 'App uses window.eternal.fetch but did not declare network permissions',
+      hint: "Declare network: { outbound: ['api.example.com'] } in the manifest permissions.",
+    }]);
   }
   if (usesIpcEmit && !app.permissions?.ipc?.emit?.length) {
-    throw new Error('App emits IPC messages but did not declare ipc emit permissions');
+    throw new AppValidationError([{
+      code: 'permission/undeclared-ipc-emit',
+      message: 'App emits IPC messages but did not declare ipc emit permissions',
+      hint: 'Declare ipc: { emit: [topic] } in the manifest permissions.',
+    }]);
   }
   if (usesIpcListen && !app.permissions?.ipc?.listen?.length) {
-    throw new Error('App listens for IPC messages but did not declare ipc listen permissions');
+    throw new AppValidationError([{
+      code: 'permission/undeclared-ipc-listen',
+      message: 'App listens for IPC messages but did not declare ipc listen permissions',
+      hint: 'Declare ipc: { listen: [topic] } in the manifest permissions.',
+    }]);
   }
 
   const knownAssets = new Set([...Object.keys(files), APP_RUNTIME_ASSET_FILE]);
@@ -667,7 +767,12 @@ export function validateGeneratedApp(app: AppBundleInput): void {
 
       const normalizedRef = ref.replace(/^\.\//, '').replace(/^\//, '');
       if (!knownAssets.has(normalizedRef)) {
-        throw new Error(`Missing local asset "${ref}" referenced from ${fileName}`);
+        throw new AppValidationError([{
+          code: 'asset/missing',
+          file: fileName,
+          message: `Missing local asset "${ref}" referenced from ${fileName}`,
+          hint: 'Add the file to the bundle or remove the reference.',
+        }]);
       }
     }
   }
@@ -809,7 +914,10 @@ async function generateAppFromPrompt(
   previousError?: string,
 ): Promise<AppBundleInput> {
   const repairContext = previousError
-    ? `Previous attempt failed during validation or bundling with this error:\n${previousError}\n\nReturn a corrected app bundle.`
+    ? `Previous attempt failed deterministic app validation. Every problem below is exact — fix each one:
+${previousError}
+
+Return the corrected, complete app bundle. Keep everything that was already valid; change only what the problems call out.`
     : 'This is the first generation attempt.';
 
   const contextBlock = desktopSummary
@@ -861,7 +969,16 @@ Rules for files:
 - Output production-ready HTML/CSS/JS. No markdown fences, no placeholder "// TODO" stubs
 - Handle the empty case gracefully: eternal.fs.list() returns [] until the user grants permission
 - Wrap fetches in try/catch so a permission denial or empty desktop doesn't crash the UI
-- Match the supplied app specification exactly for metadata and permissions`,
+- Match the supplied app specification exactly for metadata and permissions
+
+Runtime sandbox contract (violations are rejected by deterministic validation before install):
+- The app runs in a sandboxed iframe with an opaque origin. localStorage, sessionStorage, document.cookie, and indexedDB all throw SecurityError. Use window.eternal.storage.get/set/list/delete for persistent state, and plain variables for the rest.
+- geolocation, camera/microphone (getUserMedia), and Web Workers/service workers are unavailable — there is no bridge alternative; design around them.
+- Direct fetch/XHR/WebSocket/EventSource to absolute external URLs is blocked by the CSP. For external data, declare network.outbound and call window.eternal.fetch(url) (the allowlisted proxy). For bundled data, fetch a relative path like './data.json'.
+- Only the window.eternal APIs listed above exist. Calling any other namespace or method (e.g. eternal.fs.save, eternal.ai.chat) throws at runtime.
+- eternal.fs.list({ path }) must be inside a glob you declare under fs.read (or covered by fs.mimeTypes) — otherwise it silently returns nothing. Same for fs.write paths under fs.write.
+- CSS url() and HTML src/href references must point at files included in the bundle.
+- import statements must reference bundled local files ('./utils.js') and names those files actually export; bare specifiers like 'lodash' cannot resolve — there is no package manager.`,
     `Build a desktop web app for this request:
 
 ${prompt}
@@ -885,6 +1002,18 @@ function emitStage(ctx: AppToolsContext, stage: keyof typeof REAL_BUILD_STAGES):
   if (ctx.toolCallId) {
     ctx.onBuildStage?.(ctx.toolCallId, stage, REAL_BUILD_STAGES[stage]);
   }
+}
+
+/**
+ * Repair-prompt context for a failed build: the full formatted issue
+ * checklist when the failure is deterministic validation (so one regeneration
+ * can fix every problem at once), the raw message otherwise.
+ */
+function buildRepairContext(error: unknown): string {
+  if (error instanceof AppValidationError) {
+    return formatAppValidationIssues(error.issues);
+  }
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function buildAppFromPromptWithRetries(
@@ -926,7 +1055,7 @@ async function buildAppFromPromptWithRetries(
       const registered = await createAndRegisterApp(ctx, generatedApp);
       return { ...registered, permissions: generatedApp.permissions };
     } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
+      lastError = buildRepairContext(error);
       if (isCapacityExceededError(error) && attempt < 2) {
         await waitForCapacityRetry(attempt);
       }
@@ -967,6 +1096,18 @@ async function writeAppArtifact(
     }),
   );
   tracker.markCompleted('bundle-worker');
+
+  // Deterministic post-bundle validation: the compiled artifact is checked
+  // against the runtime contract (bridge surface, declared-permission
+  // coverage, asset packaging, sandbox availability, compiled entrypoint)
+  // before anything is persisted or installed. Collects every issue at once
+  // so a failed build can be repaired in a single regeneration.
+  assertAppBundleValid({
+    files: workspace.files,
+    manifest: workspace.manifest,
+    permissions: input.permissions,
+    compiled: { mainModule, modules },
+  });
 
   const now = Date.now();
   const metadata: StoredAppMetadata = {
@@ -1226,7 +1367,7 @@ async function buildAppPreviewFromPromptWithRetries(
       );
       return createAppPreview(ctx, generatedApp);
     } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
+      lastError = buildRepairContext(error);
       if (isCapacityExceededError(error) && attempt < 2) {
         await waitForCapacityRetry(attempt);
       }
@@ -1969,6 +2110,14 @@ export function createAppTools(ctx: AppToolsContext) {
             }),
           );
           tracker.markCompleted('bundle-worker');
+
+          // Same deterministic post-bundle gate as every other install path.
+          assertAppBundleValid({
+            files: workspace.files,
+            manifest: workspace.manifest,
+            permissions: app.permissions,
+            compiled: { mainModule, modules },
+          });
 
           emitStage(tctx, 'storage');
           const bundle = JSON.stringify({ mainModule, modules });

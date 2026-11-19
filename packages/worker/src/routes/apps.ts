@@ -17,6 +17,11 @@ import type { DesktopItem } from '../types';
 import { signAppCapabilityToken, verifyAppCapabilityToken } from '../utils/jwt';
 import { buildItemPath, pathMatchesGlob as sharedPathMatchesGlob, canReadItem as sharedCanReadItem } from '../utils/fsPolicy';
 import { createWorker } from '@cloudflare/worker-bundler';
+import {
+  AppValidationError,
+  assertAppBundleValid,
+  type AppValidationIssue,
+} from '../utils/appBundleValidation';
 import { createAppWorkspace, createWorkerModuleFiles, validateGeneratedApp } from '../agents/tools/appTools';
 
 // Pack of permission names a client may request. The server validates
@@ -773,6 +778,17 @@ export async function handleAppDevDeploy(
       entryPoint: '__eternal_worker__.js',
     });
 
+    // Deterministic post-bundle validation (after compiling, before anything
+    // is persisted): bridge surface, declared-permission coverage, asset
+    // packaging, sandbox availability, and the compiled worker contract.
+    // Throws AppValidationError with every issue at once.
+    assertAppBundleValid({
+      files: workspace.files,
+      manifest: workspace.manifest,
+      permissions: requestedPermissions,
+      compiled: { mainModule, modules },
+    });
+
     // 2. Write to R2
     const bundleKey = `${r2Prefix}/bundle.json`;
     await env.ETERNALOS_FILES.put(bundleKey, JSON.stringify({ mainModule, modules }));
@@ -904,12 +920,24 @@ export async function handleAppDevDeploy(
     }
     console.error('Developer deployment error:', error);
     const message = error instanceof Error ? error.message : 'Deployment failed';
-    // Map validateGeneratedApp's own rejection messages to 400 (client-supplied
-    // bad bundle), not 500 (server fault). Keep this in sync with every message
-    // that function throws — notably external dynamic/static imports and IPC
-    // declaration errors, which previously fell through to 500 and surfaced in
-    // Developer Studio as a server error (and could trip 5xx alarms).
-    const status = /^(App source|App bundle|Invalid app|Duplicate app source|External |Dynamic imports |Imports from |Missing local asset|App (reads|writes|deletes|uses|emits|listens))/.test(message) ? 400 : 500;
+    // Client-supplied bad bundles are a 4xx, never a 5xx. Every deterministic
+    // validation rejection (workspace shape, source gate, post-bundle pass)
+    // is a typed AppValidationError and maps to 400 with the structured issue
+    // list attached. The prefix match below is only the fallback for plain
+    // Error throws that bypass those gates — notably the createAppWorkspace
+    // filename/size limits. Anything else (bundler/runtime failures) is a
+    // genuine server fault and stays 500.
+    if (error instanceof AppValidationError) {
+      const issues: AppValidationIssue[] = error.issues.map((issue) => ({
+        code: issue.code,
+        message: issue.message,
+        ...(issue.file ? { file: issue.file } : {}),
+        ...(issue.evidence ? { evidence: issue.evidence } : {}),
+        ...(issue.hint ? { hint: issue.hint } : {}),
+      }));
+      return Response.json({ error: message, issues }, { status: 400 });
+    }
+    const status = /^(App source|App bundle|Invalid app|Duplicate app source|External |Dynamic imports |Imports from |Missing local asset|Source file name|App (reads|writes|deletes|uses|emits|listens))/.test(message) ? 400 : 500;
     return Response.json({ error: message }, { status });
   }
 }
