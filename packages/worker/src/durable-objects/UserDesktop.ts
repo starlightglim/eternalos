@@ -14,6 +14,7 @@ import type {
   UserProfile,
   GuestbookConfig,
   GuestbookEntry,
+  StickerConfig,
   SoundAssetMeta,
   CursorAssetMeta,
 } from '../types';
@@ -79,6 +80,24 @@ const CLEARABLE_APPEARANCE_FIELDS: ReadonlySet<keyof UserProfile> = new Set([
   'designTokens',
   'variants',
 ]);
+
+/**
+ * The only item `type` transition an item PATCH may perform: turning an
+ * uploaded image into a freely placed sticker — the "Add Sticker..."
+ * command (packages/frontend/src/components/desktop/stickerUpload.ts)
+ * PATCHes the uploaded image with `type: 'sticker'` plus a stickerConfig.
+ * `type` used to sit outside ALLOWED_UPDATE_FIELDS and was silently
+ * stripped, so an applied sticker reverted to a plain image on the next
+ * reconcile.
+ *
+ * The reverse transition (sticker -> image) stays impossible: the frontend
+ * has no convert-back action — its "Remove Sticker" context command trashes
+ * the item — and every other transition crosses into types (app, folder,
+ * widget, ...) whose create paths carry server-managed semantics a client
+ * PATCH must never switch in or out of. Re-asserting an item's current type
+ * is not a transition and stays a harmless no-op.
+ */
+const ALLOWED_TYPE_TRANSITIONS: ReadonlySet<string> = new Set(['image->sticker']);
 
 export class UserDesktop {
   private state: DurableObjectState;
@@ -489,6 +508,71 @@ export class UserDesktop {
     }
   }
 
+  /**
+   * Validate a PATCH's requested item `type`. Re-asserting the current type
+   * is a no-op; `image -> sticker` is the one allowlisted transition (see
+   * ALLOWED_TYPE_TRANSITIONS); every other requested type is a client error
+   * and is rejected with a 400 naming the transition instead of being
+   * silently stripped — the old strip made an applied sticker look saved
+   * while the server kept the plain image.
+   */
+  private assertValidTypeTransition(item: DesktopItem, requestedType: unknown): void {
+    if (requestedType === undefined) return;
+    if (requestedType === item.type) return;
+    if (ALLOWED_TYPE_TRANSITIONS.has(`${item.type}->${requestedType}`)) return;
+    throw new HttpError(
+      400,
+      `Cannot change item type from '${item.type}' to '${String(requestedType)}' (only image -> sticker is allowed)`
+    );
+  }
+
+  /**
+   * Shape validation for a client-supplied stickerConfig blob (see
+   * StickerConfig in @eternalos/contracts). None existed before: any JSON
+   * value was stored verbatim and echoed back to every visitor. Accept
+   * exactly the shape the frontend writes (stickerUpload.ts and the
+   * sticker context menu): a plain object holding the four numeric fields
+   * below — unknown keys are rejected so junk never round-trips through
+   * the DO snapshot.
+   *
+   * width/height carry no upper bound: the resize gesture compounds with
+   * no natural ceiling, and a stored number is inert (client-rendered
+   * pixels, no injection surface). rotation is bounded to ±360 degrees and
+   * opacity to its documented 0..1 range — the UI only ever produces
+   * values inside both.
+   */
+  private assertValidStickerConfig(config: unknown): void {
+    if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+      throw new HttpError(
+        400,
+        'Invalid stickerConfig: expected an object with width, height, rotation, and opacity'
+      );
+    }
+    const record = config as Record<string, unknown>;
+    const expectedKeys = new Set<keyof StickerConfig>(['width', 'height', 'rotation', 'opacity']);
+    for (const key of Object.keys(record)) {
+      if (!expectedKeys.has(key as keyof StickerConfig)) {
+        throw new HttpError(400, `Invalid stickerConfig: unknown field "${key}"`);
+      }
+    }
+    const bounds: Array<{ field: keyof StickerConfig; min: number; max?: number }> = [
+      { field: 'width', min: 1 },
+      { field: 'height', min: 1 },
+      { field: 'rotation', min: -360, max: 360 },
+      { field: 'opacity', min: 0, max: 1 },
+    ];
+    for (const { field, min, max } of bounds) {
+      const value = record[field];
+      if (
+        typeof value !== 'number' || !Number.isFinite(value) ||
+        value < min || (max !== undefined && value > max)
+      ) {
+        const range = max === undefined ? `at least ${min}` : `between ${min} and ${max}`;
+        throw new HttpError(400, `Invalid stickerConfig.${field}: must be a finite number ${range}`);
+      }
+    }
+  }
+
   private async createItemInternal(partial: Partial<DesktopItem>): Promise<DesktopItem> {
     const now = Date.now();
     const id = partial.id || crypto.randomUUID();
@@ -499,6 +583,12 @@ export class UserDesktop {
     }
 
     this.assertSafeItemUrl(partial.url);
+    // Shape-check the sticker config on create too — the PATCH path
+    // validates the same blob, so create must not be the bypass that
+    // stores (and echoes to visitors) an arbitrary JSON value.
+    if (partial.stickerConfig !== undefined) {
+      this.assertValidStickerConfig(partial.stickerConfig);
+    }
 
     const item: DesktopItem = {
       id,
@@ -568,6 +658,20 @@ export class UserDesktop {
       'originalParentId',
     ];
 
+    // Validate the whole batch before mutating anything: a rejected batch
+    // applies none of its entries (the same all-or-nothing contract the
+    // route-level server-managed-fields gate upholds), so a refused type
+    // transition can never leave a half-applied patch behind.
+    for (const { id, updates } of patches) {
+      const item = this.items.get(id);
+      // Unknown IDs keep today's skip semantics (silently ignored below).
+      if (!item) continue;
+      this.assertValidTypeTransition(item, updates?.type);
+      if (updates?.stickerConfig !== undefined) {
+        this.assertValidStickerConfig(updates.stickerConfig);
+      }
+    }
+
     const updated: DesktopItem[] = [];
 
     for (const { id, updates } of patches) {
@@ -583,6 +687,14 @@ export class UserDesktop {
               (filteredUpdates as Record<string, unknown>)[field] = updates[field];
             }
           }
+        }
+
+        // `type` is deliberately not in ALLOWED_UPDATE_FIELDS: the
+        // pre-validation pass above only admits re-assertions of the
+        // current type or the image -> sticker transition, so applying it
+        // here cannot smuggle in any other type change.
+        if (updates.type !== undefined) {
+          (filteredUpdates as Record<string, unknown>).type = updates.type;
         }
 
         // SECURITY: reject dangerous link URLs on edit too (see createItemInternal).
