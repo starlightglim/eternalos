@@ -14,7 +14,8 @@ import { useAuthStore } from '../../stores/authStore';
 import { useClipboardStore } from '../../stores/clipboardStore';
 import { useCSSPickerStore } from '../../stores/cssPickerStore';
 import { useDesktopSync } from '../../hooks/useDesktopSync';
-import { isApiConfigured, getWallpaperUrl, uploadFile as apiUploadFile } from '../../services/api';
+import { isApiConfigured, getWallpaperUrl } from '../../services/api';
+import { createStickerFromFile } from './stickerUpload';
 import { getTextFileContentType, type DesktopItem, type WidgetType, type WidgetConfig } from '../../types';
 import {
   FOLDER_DRAG_START,
@@ -1748,20 +1749,15 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
             input.onchange = async () => {
               const file = input.files?.[0];
               if (!file || !isApiConfigured) return;
-              try {
-                // Upload via API with sticker override
-                const pixelX = contextMenu?.position.x || 100;
-                const pixelY = contextMenu?.position.y || 100;
-                const result = await apiUploadFile(file, null, { x: pixelX, y: pixelY });
-                // After upload, patch item to be a sticker with config
-                const { updateItem: patchItem } = useDesktopStore.getState();
-                patchItem(result.item.id, {
-                  type: 'sticker' as DesktopItem['type'],
-                  stickerConfig: { width: 120, height: 120, rotation: 0, opacity: 1 },
-                });
-              } catch (error) {
-                console.error('Failed to upload sticker:', error);
-              }
+              // Stickers are pixel-positioned, not grid-snapped.
+              const pixelX = contextMenu?.position.x || 100;
+              const pixelY = contextMenu?.position.y || 100;
+              // The upload and the sticker apply both go through the
+              // store's queued actions and roll themselves back with a
+              // surfaced error on refusal (Upload Failed / Sync Failed) —
+              // a refused upload or apply can never leave a sticker
+              // looking applied.
+              await createStickerFromFile(file, { x: pixelX, y: pixelY });
             };
             input.click();
           },
