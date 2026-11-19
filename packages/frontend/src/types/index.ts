@@ -100,6 +100,8 @@ export interface MenuItem {
   action?: () => void;
   disabled?: boolean;
   divider?: boolean;
+  /** Present on toggleable entries: renders as menuitemcheckbox. */
+  checked?: boolean;
   submenu?: MenuItem[];
 }
 
