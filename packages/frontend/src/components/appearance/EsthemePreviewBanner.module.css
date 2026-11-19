@@ -1,0 +1,114 @@
+/* Estheme preview banner — chrome look via the global theme variables only
+   (no hard-coded colors). Rendered through a portal at document.body level,
+   outside .user-desktop, so token rules and user CSS cannot restyle it. */
+
+.banner {
+  position: fixed;
+  top: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10000;
+  min-width: 320px;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 10px 14px;
+  box-sizing: border-box;
+  background: var(--platinum, #c0c0c0);
+  color: var(--black, #000);
+  border: 2px solid;
+  border-color: var(--white, #fff) var(--shadow, #808080) var(--shadow, #808080) var(--white, #fff);
+  box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.35);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.title {
+  font-weight: 700;
+}
+
+.closeButton {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid;
+  border-color: var(--shadow, #808080) var(--white, #fff) var(--white, #fff) var(--shadow, #808080);
+  background: var(--platinum, #c0c0c0);
+  color: var(--black, #000);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.closeButton:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.details {
+  margin-top: 4px;
+  color: var(--black, #000);
+}
+
+.lineage {
+  color: var(--black, #000);
+  font-style: italic;
+}
+
+.warnings {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--black, #000);
+}
+
+.warnings li {
+  margin: 0;
+}
+
+.error {
+  margin-top: 6px;
+  padding: 4px 6px;
+  background: color-mix(in srgb, var(--danger, #990000) 10%, transparent);
+  border-left: 3px solid var(--danger, #990000);
+  color: var(--black, #000);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  justify-content: flex-end;
+}
+
+.primaryButton,
+.secondaryButton {
+  min-width: 84px;
+  padding: 4px 12px;
+  border: 2px solid;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.primaryButton {
+  border-color: var(--white, #fff) var(--shadow, #808080) var(--shadow, #808080) var(--white, #fff);
+  background: var(--selection, #000080);
+  color: var(--selection-text, #fff);
+}
+
+.secondaryButton {
+  border-color: var(--white, #fff) var(--shadow, #808080) var(--shadow, #808080) var(--white, #fff);
+  background: var(--platinum, #c0c0c0);
+  color: var(--black, #000);
+}
+
+.primaryButton:disabled,
+.secondaryButton:disabled {
+  cursor: default;
+  opacity: 0.6;
+}

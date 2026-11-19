@@ -15,6 +15,8 @@ import { useClipboardStore } from '../../stores/clipboardStore';
 import { useCSSPickerStore } from '../../stores/cssPickerStore';
 import { useDesktopSync } from '../../hooks/useDesktopSync';
 import { isApiConfigured, getWallpaperUrl, uploadFile as apiUploadFile } from '../../services/api';
+import { useEsthemePreviewStore } from '../../estheme/themePreviewStore';
+import { EsthemePreviewBanner } from '../appearance/EsthemePreviewBanner';
 import { getTextFileContentType, type DesktopItem, type WidgetType, type WidgetConfig } from '../../types';
 import {
   FOLDER_DRAG_START,
@@ -1243,14 +1245,25 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
 
       // Check for files first (OS file drop)
       const files = Array.from(e.dataTransfer.files);
-      if (files.length > 0 && isApiConfigured) {
-        // Upload each file
-        for (let i = 0; i < files.length; i++) {
-          const file = files[i];
-          const position = findNearestAvailablePosition(gridX, gridY + i);
-          await uploadFile(file, null, position);
+      if (files.length > 0) {
+        // .estheme bundles are theme imports, not file uploads: route them to
+        // the unsaved Keep/Revert preview instead of the desktop-item upload
+        // path. With several bundles dropped at once the first wins (the
+        // preview banner is modal over the desktop).
+        const themeFiles = files.filter((f) => f.name.toLowerCase().endsWith('.estheme'));
+        const otherFiles = files.filter((f) => !themeFiles.includes(f));
+        if (themeFiles.length > 0) {
+          void useEsthemePreviewStore.getState().beginImport(themeFiles[0]);
         }
-        return;
+        if (otherFiles.length > 0 && isApiConfigured) {
+          // Upload each remaining file
+          for (let i = 0; i < otherFiles.length; i++) {
+            const file = otherFiles[i];
+            const position = findNearestAvailablePosition(gridX, gridY + i);
+            await uploadFile(file, null, position);
+          }
+        }
+        if (otherFiles.length > 0 || themeFiles.length > 0) return;
       }
 
       // Check for URLs dragged from browser
@@ -2072,6 +2085,11 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
         <CSSElementPicker />,
         document.body
       )}
+
+      {/* .estheme import preview banner (Keep / Revert) — portal to document
+          body so previewed themes (token rules + custom CSS, both scoped to
+          .user-desktop) can never restyle or hide its escape hatch. */}
+      {!isVisitorMode && <EsthemePreviewBanner />}
     </>
   );
 }

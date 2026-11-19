@@ -10,6 +10,9 @@ import { VariantPicker } from './VariantPicker';
 import CursorEditor from '../appearance/CursorEditor';
 import SpriteEditor from '../appearance/SpriteEditor';
 import { listCursors, type CursorAsset } from '../../services/api';
+import { exportCurrentTheme } from '../../utils/exportTheme';
+import { useEsthemePreviewStore } from '../../estheme/themePreviewStore';
+import type { UserProfile } from '../../types';
 import styles from './AppearancePanel.module.css';
 
 type TabId = 'themes' | 'palette' | 'windows' | 'controls' | 'typography';
@@ -584,33 +587,7 @@ function TokenGroupSection({ tab, appearance, updateAppearance }: {
   );
 }
 
-/** Export current appearance as a downloadable JSON file */
-function exportTheme(appearance: CustomAppearance) {
-  const theme: Record<string, unknown> = { _format: 'eternalos-theme-v3' };
-  for (const key of APPEARANCE_PROFILE_KEYS) {
-    if (key === 'customCSS') continue;
-    if (appearance[key] !== undefined) {
-      theme[key] = appearance[key];
-    }
-  }
-  // Include extended design tokens
-  if (appearance.designTokens && Object.keys(appearance.designTokens).length > 0) {
-    theme.designTokens = appearance.designTokens;
-  }
-  // Include variant selections
-  if (appearance.variants && Object.keys(appearance.variants).length > 0) {
-    theme.variants = appearance.variants;
-  }
-  const blob = new Blob([JSON.stringify(theme, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'eternalos-theme.json';
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-/** Parse and validate an imported theme file */
+/** Parse and validate an imported theme file (legacy JSON format) */
 function parseThemeFile(text: string): CustomAppearance | null {
   try {
     const obj = JSON.parse(text);
@@ -745,6 +722,14 @@ export function AppearancePanel() {
   const handleImport = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    // .estheme bundles go through the unsaved Keep/Revert preview flow (the
+    // banner the Desktop renders); validation errors surface there too.
+    if (file.name.toLowerCase().endsWith('.estheme')) {
+      void useEsthemePreviewStore.getState().beginImport(file);
+      e.target.value = '';
+      return;
+    }
+    // Legacy JSON theme files keep their immediate apply-as-unsaved-edit flow.
     const reader = new FileReader();
     reader.onload = () => {
       const parsed = parseThemeFile(reader.result as string);
@@ -759,6 +744,32 @@ export function AppearancePanel() {
     // Reset so the same file can be re-imported
     e.target.value = '';
   }, [updateAppearance]);
+
+  // Export the live rice (unsaved edits included) as a single .estheme bundle:
+  // CSS + tokens + variants + typography + wallpaper + cursors + sounds, with
+  // fork lineage when the current theme was itself installed from a bundle.
+  const [exporting, setExporting] = useState(false);
+  const handleExportEstheme = useCallback(async () => {
+    if (!profile) {
+      setFeedback('Sign in to export your theme.');
+      return;
+    }
+    setFeedback(null);
+    setExporting(true);
+    try {
+      const effectiveProfile = { ...profile, ...appearance } as UserProfile;
+      const result = await exportCurrentTheme(effectiveProfile, { autoDownload: true });
+      setFeedback(
+        result.warnings.length > 0
+          ? `Exported with notes: ${result.warnings[0]}${result.warnings.length > 1 ? ` (+${result.warnings.length - 1} more)` : ''}`
+          : `Theme exported as ${result.filename}.`,
+      );
+    } catch (err) {
+      setFeedback(err instanceof Error ? err.message : 'Export failed.');
+    } finally {
+      setExporting(false);
+    }
+  }, [appearance, profile]);
 
   const handleSave = useCallback(async () => {
     setFeedback(null);
@@ -1086,8 +1097,13 @@ export function AppearancePanel() {
         <button className={styles.secondaryButton} onClick={resetAppearance} type="button">
           Reset All
         </button>
-        <button className={styles.secondaryButton} onClick={() => exportTheme(appearance)} type="button">
-          Export
+        <button
+          className={styles.secondaryButton}
+          onClick={() => void handleExportEstheme()}
+          disabled={exporting}
+          type="button"
+        >
+          {exporting ? 'Exporting…' : 'Export .estheme'}
         </button>
         <button className={styles.secondaryButton} onClick={() => importInputRef.current?.click()} type="button">
           Import
@@ -1095,7 +1111,7 @@ export function AppearancePanel() {
         <input
           ref={importInputRef}
           type="file"
-          accept=".json"
+          accept=".json,.estheme"
           style={{ display: 'none' }}
           onChange={handleImport}
         />
