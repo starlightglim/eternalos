@@ -21,7 +21,6 @@ import {
   formatAppValidationIssues,
   type AppValidationIssue,
 } from '../../utils/appBundleValidation';
-import { buildTodoTemplate } from './appTemplates';
 import {
   APP_SPEC_SYSTEM_PROMPT,
   appSpecSchema,
@@ -2081,26 +2080,6 @@ export function createAppTools(ctx: AppToolsContext) {
       }),
       needsApproval: true,
       execute: async (input, { toolCallId }) => buildAppFromPromptWithRetries({ ...ctx, toolCallId }, input.prompt),
-    }),
-
-    createCuratedApp: tool({
-      description: 'Create a polished, known-good app from a curated template. Prefer this for supported starter apps such as a todo list.',
-      inputSchema: z.object({
-        template: z.enum(['todo']).describe('Curated app template to use'),
-        name: z.string().min(1).max(80).optional().describe('Optional app name override'),
-        description: z.string().max(500).optional().describe('Optional app description override'),
-      }),
-      needsApproval: true,
-      execute: async (input, { toolCallId }) => {
-        if (input.template === 'todo') {
-          return createAndRegisterApp(
-            { ...ctx, toolCallId },
-            buildTodoTemplate(input.name ?? 'Tasks', input.description),
-          );
-        }
-
-        throw new Error(`Unsupported curated template: ${input.template}`);
-      },
     }),
 
     createApp: tool({

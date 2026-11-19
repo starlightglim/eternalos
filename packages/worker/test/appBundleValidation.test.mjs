@@ -31,7 +31,7 @@ const {
   formatAppValidationIssues,
   scanScript,
 } = await import('../src/utils/appBundleValidation.ts');
-const { buildTodoTemplate } = await import('../src/agents/tools/appTemplates.ts');
+const { buildTodoTemplate } = await import('./fixtures/apps/templates/appTemplates.ts');
 
 const TEST_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FIXTURES_ROOT = path.join(TEST_ROOT, 'test', 'fixtures', 'apps');
@@ -133,10 +133,11 @@ describe('app fixture validation', () => {
   it('rejects the curated todo template if it ever returns to browser storage', () => {
     // Regression for the real bug the validator surfaced: the shipped todo
     // template used localStorage, which throws a SecurityError in the
-    // opaque-origin app iframe — every save broke. The migrated template must
-    // pass validation.
+    // opaque-origin app iframe — every save broke. The migrated template
+    // must pass validation.
     const todo = buildTodoTemplate('Tasks', 'regression');
     assert.deepEqual(collectAppBundleIssues(appInput(todo.files)), []);
+    assert.doesNotThrow(() => assertAppBundleValid(appInput(todo.files)));
   });
 });
 

@@ -1,10 +1,16 @@
 /**
- * Curated app templates.
+ * Curated app templates — TEST FIXTURES ONLY.
  *
- * Per the roadmap (design/12-orchestrator-v2.md, Decision 6) curated templates
- * are fixtures and quality-control references, not the main product path. They
- * live in this dependency-free module so tests can import them directly and
- * assert that each template keeps passing post-bundle validation
+ * Per the roadmap (design/CORE-ROADMAP.md Workstream 3, Phase A; see also
+ * design/12-orchestrator-v2.md, Decision 6) curated templates are fixtures
+ * and quality-control references, not a product path: every AI-built app
+ * goes through the explicit spec stage (buildSpecFromPrompt in
+ * src/agents/tools/appTools.ts). They used to be reachable from chat via
+ * the `createCuratedApp` tool, which bypassed that stage — demoted to this
+ * directory (outside src/, imported only by tests) on 2026-11-19.
+ *
+ * This module is dependency-free so tests can import it directly and assert
+ * that each template keeps passing post-bundle validation
  * (utils/appBundleValidation.ts) — the same gate every generated and
  * dev-deployed app must pass.
  *
@@ -16,7 +22,7 @@
  * threw, so nothing ever persisted.
  */
 
-import type { AppPermissions } from '../../types';
+import type { AppPermissions } from '../../../../src/types';
 
 export interface CuratedAppTemplate {
   name: string;
