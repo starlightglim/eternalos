@@ -1912,6 +1912,31 @@ describe('worker integration', () => {
     assert.equal(history.versions[0].css, '.a { color: red; }');
   });
 
+  it('persists wallpaper and wallpaperMode so the picker survives reload', async () => {
+    // WallpaperPicker writes profile fields (not design tokens): the auth
+    // store PATCHes /api/profile and useDesktopSync reads them back on boot.
+    const user = await signupUser();
+    await patchProfile(user.token, { wallpaper: 'blue', wallpaperMode: 'tile' });
+
+    const { profile } = await expectOk('/api/profile', { headers: authHeaders(user.token) });
+    assert.equal(profile.wallpaper, 'blue');
+    assert.equal(profile.wallpaperMode, 'tile');
+
+    // SECURITY regression guard: a custom:<uid>/... wallpaper string is later
+    // parsed to derive the R2 key that the next wallpaper upload DELETES. A
+    // foreign uid must be rejected, or an attacker's upload could delete a
+    // victim's wallpaper object.
+    const { response } = await fetchJson('/api/profile', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ wallpaper: 'custom:victim-uid/w1/wallpaper.png' }),
+    });
+    assert.ok(
+      response.status >= 400,
+      `foreign custom: wallpaper must be rejected, got ${response.status}`
+    );
+  });
+
   it('allows customCSS url() to first-party bazaar assets but rejects cross-origin', async () => {
     const user = await signupUser();
 

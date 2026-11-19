@@ -112,6 +112,17 @@ describe('compileTokensToCSS — custom cursor image (security)', () => {
     expect(joined).toMatch(/cursor:\s*url\('[^']*\/api\/cursors\/arrow\.png'\)/);
   });
 
+  test('cursor hotspots parsed from the url|x|y format CursorEditor stores', () => {
+    // CursorEditor/CursorCreator persist 'url|hotspotX|hotspotY' into the
+    // designTokens blob; the compiler must split it back out into the CSS
+    // hotspot position with the named fallback retained.
+    const { rules } = compileTokensToCSS({
+      'cursor.image.default': '/api/cursors/arrow.png|3|2',
+    });
+    const joined = rules.join('\n');
+    expect(joined).toMatch(/cursor:\s*url\('[^']*\/api\/cursors\/arrow\.png'\) 3 2, default !important/);
+  });
+
   test('a cross-origin cursor URL is rejected (no tracking-pixel fetch)', () => {
     const { rules } = compileTokensToCSS({
       'cursor.image.default': 'https://evil.example/pixel.png',
