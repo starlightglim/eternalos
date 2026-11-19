@@ -14,26 +14,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { registerHooks } from 'node:module';
+import { register } from 'node:module';
 
 // This suite runs in plain Node (type stripping, no bundler). The module
 // under test imports its sibling with the project's TS-style extensionless
 // form (`'./fsPolicy'`), which plain-Node ESM cannot resolve on its own — so
-// register a resolve hook HERE, in the test only: when a relative specifier
-// fails to resolve and carries no script extension, retry it with a `.ts`
-// suffix. No project config changes required.
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    try {
-      return nextResolve(specifier, context);
-    } catch (error) {
-      if (specifier.startsWith('.') && !/\.[cm]?[jt]s$/.test(specifier)) {
-        return nextResolve(`${specifier}.ts`, context);
-      }
-      throw error;
-    }
-  },
-});
+// use the shared test hooks (tsModuleHooks.mjs, introduced for the agent
+// sources): they map extensionless relative specifiers to the sibling .ts
+// file. Hooks are per-process, registered before the first dynamic import.
+register(new URL('./tsModuleHooks.mjs', import.meta.url));
 
 const {
   AppValidationError,

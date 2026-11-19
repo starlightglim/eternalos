@@ -7,7 +7,9 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock('../services/api', () => ({ isApiConfigured: true, ...api }));
 vi.mock('./soundStore', () => ({ useSoundStore: { getState: () => ({ playSound: vi.fn() }) } }));
-vi.mock('./alertStore', () => ({ useAlertStore: { getState: () => ({ showError: vi.fn() }) } }));
+// One stable mock so tests can assert that failures are surfaced to the user.
+const alerts = vi.hoisted(() => ({ showError: vi.fn() }));
+vi.mock('./alertStore', () => ({ useAlertStore: { getState: () => alerts } }));
 import { useDesktopStore } from './desktopStore';
 
 const original: DesktopItem = {
@@ -234,4 +236,162 @@ test('an upload that resolves after a session switch does not populate the next 
   resolve({ item: { ...original, id: 'late', name: 'late.png' } });
   expect(await pending).toBe(null);
   expect(useDesktopStore.getState().items).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// Rename (updateItem) — success, rollback, and failure surfacing
+// ---------------------------------------------------------------------------
+
+test('a successful rename persists the new name', async () => {
+  api.updateItems.mockResolvedValue([]);
+  const saved = await useDesktopStore.getState().updateItem('note', { name: 'Renamed.txt' });
+  expect(saved).toBe(true);
+  expect(api.updateItems).toHaveBeenCalledWith([{ id: 'note', updates: { name: 'Renamed.txt' } }]);
+  expect(useDesktopStore.getState().getItem('note')?.name).toBe('Renamed.txt');
+});
+
+test('a failed rename rolls back to the previous name', async () => {
+  api.updateItems.mockRejectedValue(new Error('Offline'));
+  const saved = await useDesktopStore.getState().updateItem('note', { name: 'Renamed.txt' });
+  expect(saved).toBe(false);
+  // The optimistic rename is reverted — nothing looks renamed when the
+  // server never recorded it.
+  expect(useDesktopStore.getState().getItem('note')?.name).toBe('Note.txt');
+});
+
+test('a failed rename surfaces the sync failure to the user', async () => {
+  api.updateItems.mockRejectedValue(new Error('Offline'));
+  await useDesktopStore.getState().updateItem('note', { name: 'Renamed.txt' });
+  expect(alerts.showError).toHaveBeenCalledWith('Could not save your changes. Please try again.', 'Sync Failed');
+});
+
+// ---------------------------------------------------------------------------
+// The reliability bar (CORE-ROADMAP Workstream 1): a forced 401, 429, 500 or
+// network failure must never leave a successful-looking unsaved item. The api
+// client surfaces non-2xx responses as `Error("<status> <message>")` and a
+// dead connection as a TypeError, so each canonical failure is simulated in
+// the shape the store actually receives.
+// ---------------------------------------------------------------------------
+
+const failures: ReadonlyArray<readonly [string, () => Error]> = [
+  ['401', () => new Error('401 Unauthorized')],
+  ['429', () => new Error('429 Too Many Requests')],
+  ['500', () => new Error('500 Internal Server Error')],
+  ['network', () => new TypeError('Failed to fetch')],
+];
+
+test.each(failures)('create: a forced %s failure leaves no phantom item and surfaces the error', async (_label, fail) => {
+  api.createItem.mockRejectedValue(fail());
+  useDesktopStore.getState().addItem({ ...original, id: 'phantom', name: 'Phantom.txt' });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(useDesktopStore.getState().getItem('phantom')).toBeUndefined();
+  expect(alerts.showError).toHaveBeenCalledWith(
+    expect.stringContaining('Could not create "Phantom.txt"'),
+    'Create Failed'
+  );
+});
+
+test.each(failures)('update: a forced %s failure rolls the rename back and surfaces the error', async (_label, fail) => {
+  api.updateItems.mockRejectedValue(fail());
+  const saved = await useDesktopStore.getState().updateItem('note', { name: 'Renamed.txt' });
+  expect(saved).toBe(false);
+  expect(useDesktopStore.getState().getItem('note')?.name).toBe('Note.txt');
+  expect(alerts.showError).toHaveBeenCalledWith('Could not save your changes. Please try again.', 'Sync Failed');
+});
+
+test.each(failures)('update: a forced %s failure keeps the last acknowledged privacy setting', async (_label, fail) => {
+  api.updateItems.mockRejectedValue(fail());
+  const saved = await useDesktopStore.getState().updateItem('note', { isPublic: false });
+  expect(saved).toBe(false);
+  // Privacy only becomes authoritative after a server acknowledgement, so a
+  // failed save can never leave the item looking private (or public) when it
+  // isn't.
+  expect(useDesktopStore.getState().getItem('note')?.isPublic).toBe(true);
+  expect(alerts.showError).toHaveBeenCalledWith('Could not save your changes. Please try again.', 'Sync Failed');
+});
+
+test.each(failures)('move: a forced %s failure reverts to the last saved position', async (_label, fail) => {
+  api.updateItems.mockRejectedValue(fail());
+  useDesktopStore.getState().moveItem('note', { x: 100, y: 50 });
+  await vi.advanceTimersByTimeAsync(600);
+  expect(useDesktopStore.getState().getItem('note')?.position).toEqual({ x: 0, y: 0 });
+  expect(alerts.showError).toHaveBeenCalledWith('Could not save the new position. It has been reverted.', 'Sync Failed');
+});
+
+test.each(failures)('trash: a forced %s failure restores the item and surfaces the error', async (_label, fail) => {
+  api.updateItems.mockRejectedValue(fail());
+  useDesktopStore.getState().moveToTrash(['note']);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(useDesktopStore.getState().getItem('note')?.isTrashed).toBeFalsy();
+  expect(alerts.showError).toHaveBeenCalledWith('Failed to move items to trash. They have been restored.', 'Trash Failed');
+});
+
+// ---------------------------------------------------------------------------
+// The same bar: a retry or reconnect must converge with no duplicates.
+// ---------------------------------------------------------------------------
+
+test('create: retrying after a failure does not produce duplicate items', async () => {
+  api.createItem.mockRejectedValueOnce(new Error('500 Internal Server Error'));
+  api.createItem.mockResolvedValue(undefined);
+  const item = { ...original, id: 'retry-note', name: 'Retry.txt' };
+  useDesktopStore.getState().addItem(item);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(useDesktopStore.getState().getItem('retry-note')).toBeUndefined();
+  // The user retries the same creation once the failure is visible.
+  useDesktopStore.getState().addItem(item);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(useDesktopStore.getState().items.filter((i) => i.id === 'retry-note')).toHaveLength(1);
+  expect(api.createItem).toHaveBeenCalledTimes(2);
+});
+
+test('update: retrying a failed rename applies it exactly once', async () => {
+  api.updateItems.mockRejectedValueOnce(new Error('429 Too Many Requests'));
+  api.updateItems.mockResolvedValue([]);
+  const first = await useDesktopStore.getState().updateItem('note', { name: 'Renamed.txt' });
+  expect(first).toBe(false);
+  expect(useDesktopStore.getState().getItem('note')?.name).toBe('Note.txt');
+  const second = await useDesktopStore.getState().updateItem('note', { name: 'Renamed.txt' });
+  expect(second).toBe(true);
+  expect(useDesktopStore.getState().getItem('note')?.name).toBe('Renamed.txt');
+  expect(api.updateItems).toHaveBeenCalledTimes(2);
+  expect(api.updateItems).toHaveBeenLastCalledWith([{ id: 'note', updates: { name: 'Renamed.txt' } }]);
+});
+
+test('move: retrying after a failed move saves the position exactly once', async () => {
+  api.updateItems.mockRejectedValueOnce(new Error('500 Internal Server Error'));
+  api.updateItems.mockResolvedValue([]);
+  useDesktopStore.getState().moveItem('note', { x: 100, y: 50 });
+  await vi.advanceTimersByTimeAsync(600);
+  expect(useDesktopStore.getState().getItem('note')?.position).toEqual({ x: 0, y: 0 });
+  // The user drags the item again; this time the save succeeds.
+  useDesktopStore.getState().moveItem('note', { x: 100, y: 50 });
+  await vi.advanceTimersByTimeAsync(600);
+  expect(useDesktopStore.getState().getItem('note')?.position).toEqual({ x: 100, y: 50 });
+  expect(api.updateItems).toHaveBeenCalledTimes(2);
+});
+
+test('trash: retrying after a failed trash trashes the item exactly once', async () => {
+  api.updateItems.mockRejectedValueOnce(new Error('500 Internal Server Error'));
+  api.updateItems.mockResolvedValue([]);
+  useDesktopStore.getState().moveToTrash(['note']);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(useDesktopStore.getState().getItem('note')?.isTrashed).toBeFalsy();
+  useDesktopStore.getState().moveToTrash(['note']);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(useDesktopStore.getState().getItem('note')?.isTrashed).toBe(true);
+  expect(api.updateItems).toHaveBeenCalledTimes(2);
+  // The failed attempt + retry left no duplicate behind.
+  expect(useDesktopStore.getState().items.filter((i) => i.id === 'note')).toHaveLength(1);
+});
+
+test('reconnecting after failures converges to the server state without duplicates', async () => {
+  api.createItem.mockRejectedValueOnce(new Error('500 Internal Server Error'));
+  useDesktopStore.getState().addItem({ ...original, id: 'phantom', name: 'Phantom.txt' });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(useDesktopStore.getState().getItem('phantom')).toBeUndefined();
+  // Reconnect: the server is the source of truth and never saw the phantom,
+  // so the client must end up with exactly the server's items.
+  api.fetchDesktop.mockResolvedValue({ items: [original] });
+  await useDesktopStore.getState().loadDesktop();
+  expect(useDesktopStore.getState().items).toEqual([original]);
 });
