@@ -2283,6 +2283,31 @@ function withCors(response) {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
+// EternalService rejects bridge calls it must not serve with typed,
+// message-prefixed errors: 'Not permitted…' / 'No permitted fields…' (policy
+// denial), 'Invalid…' (malformed input), 'Item not found', and size/quota
+// limits. Map those to the matching 4xx so a denied call is distinguishable
+// from a server fault — previously every throw surfaced as 500, which made
+// app-side permission denials look like platform bugs. Unknown messages stay
+// 500 so genuine faults remain observable.
+function bridgeErrorStatus(message) {
+  if (/^Not permitted/.test(message) || /^No permitted fields/.test(message)) return 403;
+  if (/^Network URL is not allowed/.test(message)) return 403;
+  if (/^Item not found/.test(message)) return 404;
+  if (/^Invalid/.test(message)) return 400;
+  if (/^Parent folder not found/.test(message)) return 400;
+  if (/^Network method is not allowed/.test(message)) return 400;
+  if (/^Storage value must be JSON serializable/.test(message)) return 400;
+  if (/too large/i.test(message)) return 413;
+  if (/^Storage key limit exceeded/.test(message)) return 429;
+  return 500;
+}
+
+function bridgeErrorResponse(err) {
+  const message = String(err && err.message ? err.message : err);
+  return withCors(Response.json({ error: message }, { status: bridgeErrorStatus(message) }));
+}
+
 async function handleEternal(request, env, bridgePath) {
   if (request.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS });
@@ -2311,7 +2336,7 @@ async function handleEternal(request, env, bridgePath) {
       });
       return withCors(Response.json({ items }));
     } catch (err) {
-      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+      return bridgeErrorResponse(err);
     }
   }
 
@@ -2321,7 +2346,7 @@ async function handleEternal(request, env, bridgePath) {
       const item = await env.ETERNAL.write(body);
       return withCors(Response.json(item));
     } catch (err) {
-      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+      return bridgeErrorResponse(err);
     }
   }
 
@@ -2333,7 +2358,7 @@ async function handleEternal(request, env, bridgePath) {
       const item = await env.ETERNAL.patch(id, updates);
       return withCors(Response.json(item));
     } catch (err) {
-      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+      return bridgeErrorResponse(err);
     }
   }
 
@@ -2344,7 +2369,7 @@ async function handleEternal(request, env, bridgePath) {
       await env.ETERNAL.delete(id);
       return withCors(Response.json({ success: true }));
     } catch (err) {
-      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+      return bridgeErrorResponse(err);
     }
   }
 
@@ -2354,7 +2379,7 @@ async function handleEternal(request, env, bridgePath) {
     try {
       return withCors(await env.ETERNAL.read(id));
     } catch (err) {
-      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+      return bridgeErrorResponse(err);
     }
   }
 
@@ -2363,7 +2388,7 @@ async function handleEternal(request, env, bridgePath) {
       const profile = await env.ETERNAL.profile();
       return withCors(Response.json(profile));
     } catch (err) {
-      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+      return bridgeErrorResponse(err);
     }
   }
 
@@ -2372,7 +2397,7 @@ async function handleEternal(request, env, bridgePath) {
       const keys = await env.ETERNAL.storageList();
       return withCors(Response.json({ keys }));
     } catch (err) {
-      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+      return bridgeErrorResponse(err);
     }
   }
 
@@ -2385,7 +2410,7 @@ async function handleEternal(request, env, bridgePath) {
       }
       return withCors(Response.json({ value }));
     } catch (err) {
-      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+      return bridgeErrorResponse(err);
     }
   }
 
@@ -2396,7 +2421,7 @@ async function handleEternal(request, env, bridgePath) {
       await env.ETERNAL.storageSet(key, value);
       return withCors(Response.json({ success: true }));
     } catch (err) {
-      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+      return bridgeErrorResponse(err);
     }
   }
 
@@ -2406,7 +2431,7 @@ async function handleEternal(request, env, bridgePath) {
       await env.ETERNAL.storageDelete(key);
       return withCors(Response.json({ success: true }));
     } catch (err) {
-      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+      return bridgeErrorResponse(err);
     }
   }
 
@@ -2416,7 +2441,7 @@ async function handleEternal(request, env, bridgePath) {
       const res = await env.ETERNAL.fetchProxy(url, init);
       return withCors(Response.json(res));
     } catch (err) {
-      return withCors(Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 }));
+      return bridgeErrorResponse(err);
     }
   }
 

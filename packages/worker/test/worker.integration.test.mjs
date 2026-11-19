@@ -606,6 +606,7 @@ describe('worker integration', () => {
     );
     assert.equal(bridgeResponse.status, 200);
 
+    // A private-IP target is a policy denial (403), not a server fault.
     const blockedNetworkResponse = await worker.fetch(
       `${BASE_URL}/api/apps/${encodeURIComponent(app.appId)}/_eternal/fetch`,
       {
@@ -614,7 +615,7 @@ describe('worker integration', () => {
         body: JSON.stringify({ url: 'http://127.0.0.1/' }),
       },
     );
-    assert.equal(blockedNetworkResponse.status, 500);
+    assert.equal(blockedNetworkResponse.status, 403);
 
     const source = await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/source`, {
       headers: authHeaders(user.token),
@@ -977,22 +978,24 @@ describe('worker integration', () => {
 
     // Regression: a public DNS host starting with "fc"/"fd" (e.g. fdic.gov)
     // must NOT be treated as a private IPv6 ULA address. It isn't on the
-    // allowlist here, so it reaches the allowlist rejection ("Not permitted"),
-    // which proves it passed the SSRF gate — no real network call is made.
+    // allowlist here, so it reaches the allowlist rejection ("Not permitted",
+    // 403 — a denial, not a server fault), which proves it passed the SSRF
+    // gate — no real network call is made.
     const fdDomain = await proxyFetch('https://fdic.gov/data');
-    assert.equal(fdDomain.response.status, 500);
+    assert.equal(fdDomain.response.status, 403);
     assert.match(fdDomain.body.error, /Not permitted: outbound access to fdic\.gov/);
     assert.doesNotMatch(fdDomain.body.error, /Network URL is not allowed/);
 
     // Actual private targets stay blocked at the SSRF gate (before the
     // allowlist): an RFC1918 IPv4 host and an IPv6 ULA literal both fail with
-    // the SSRF error, confirming the fix didn't widen the private-host net.
+    // the SSRF denial (403), confirming the fix didn't widen the private-host
+    // net.
     const loopback = await proxyFetch('http://127.0.0.1/');
-    assert.equal(loopback.response.status, 500);
+    assert.equal(loopback.response.status, 403);
     assert.match(loopback.body.error, /Network URL is not allowed/);
 
     const ulaLiteral = await proxyFetch('http://[fd00::1]/');
-    assert.equal(ulaLiteral.response.status, 500);
+    assert.equal(ulaLiteral.response.status, 403);
     assert.match(ulaLiteral.body.error, /Network URL is not allowed/);
   });
 
@@ -1041,11 +1044,12 @@ describe('worker integration', () => {
     assert.equal(mixed.body.name, 'renamed.txt', 'benign field should apply');
     assert.equal(mixed.body.isPublic, false, 'app must not be able to publish the item');
 
-    // A patch of ONLY privileged fields changes nothing and is rejected.
+    // A patch of ONLY privileged fields changes nothing and is denied (403 —
+    // a policy denial, not a server fault).
     const privileged = await bridge(`/fs/patch/${encodeURIComponent(noteId)}`, {
       isPublic: true, grantedPermissions: { fs: { read: ['/**'] } },
     });
-    assert.equal(privileged.response.status, 500);
+    assert.equal(privileged.response.status, 403);
     assert.match(privileged.body.error, /No permitted fields to update/);
   });
 
