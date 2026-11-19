@@ -1081,6 +1081,72 @@ describe('worker integration', () => {
     });
   });
 
+  it('denies profile.get without the profile grant and leaks no profile fields', async () => {
+    const user = await signupUser();
+    // Give the account real profile data so an accidental leak is observable.
+    await patchProfile(user.token, { bio: 'owner bio text' });
+
+    const deploy = (name, permissions) => expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name,
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+          ...(permissions ? { permissions } : {}),
+        },
+        files: { 'index.html': '<!doctype html><html><body>profile</body></html>' },
+      }),
+    });
+    const mint = (appId, body = '{}') => expectOk(`/api/apps/${encodeURIComponent(appId)}/capability`, {
+      method: 'POST', headers: authHeaders(user.token, JSON_HEADERS), body,
+    });
+    const profileVia = (appId, token) => fetchJson(`/api/apps/${encodeURIComponent(appId)}/_eternal/profile`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    // An app that never declared profile access is denied outright — a 403,
+    // not a fake-empty 200 profile.
+    const bare = await deploy('Profile Bare App');
+    const bareCap = await mint(bare.appId);
+    const bareResult = await profileVia(bare.appId, bareCap.token);
+    assert.equal(bareResult.response.status, 403);
+    assert.match(bareResult.body.error, /profile access not granted/);
+    assert.ok(!('username' in bareResult.body) && !('bio' in bareResult.body),
+      'the denial body must not carry profile fields');
+
+    // Declared-but-ungranted is equally denied.
+    const declared = await deploy('Profile Declared App', {
+      profile: { read: ['username', 'displayName', 'bio', 'avatar'] },
+    });
+    const declaredCap = await mint(declared.appId);
+    assert.equal((await profileVia(declared.appId, declaredCap.token)).response.status, 403);
+
+    // Approving a subset exposes exactly that subset.
+    await expectOk(`/api/apps/${encodeURIComponent(declared.appId)}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { profile: { read: ['username'] } } }),
+    });
+    const grantedCap = await mint(declared.appId);
+    const grantedResult = await profileVia(declared.appId, grantedCap.token);
+    assert.equal(grantedResult.response.status, 200);
+    assert.equal(grantedResult.body.username, user.user.username);
+    assert.equal(grantedResult.body.displayName, undefined, 'displayName stays hidden without its grant');
+    assert.equal(grantedResult.body.bio, undefined, 'bio stays hidden without its grant');
+    assert.equal(grantedResult.body.avatar, undefined, 'avatar stays hidden without its grant');
+
+    // A capability mint that asks for more fields cannot exceed the grant.
+    const wideCap = await mint(declared.appId, JSON.stringify({
+      granted: { profile: { read: ['username', 'bio'] } },
+    }));
+    assert.deepEqual(wideCap.granted, { profile: { read: ['username'] } });
+    const wideResult = await profileVia(declared.appId, wideCap.token);
+    assert.equal(wideResult.response.status, 200);
+    assert.equal(wideResult.body.bio, undefined, 'a self-minted wide token must not widen the profile grant');
+  });
+
   it('allows only one concurrent refresh-token rotation', async () => {
     const user = await signupUser();
     const clientIp = `refresh-test-${Date.now()}-${Math.random().toString(36).slice(2)}`;

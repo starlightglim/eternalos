@@ -266,6 +266,19 @@ export class EternalService extends WorkerEntrypoint<Env> {
   }
 
   /**
+   * Whether this app holds any profile grant. The app bridge consults this
+   * before calling profile(), so an ungranted profile.get() is denied with a
+   * 403 instead of a 200-with-empty-object — a 200 tells the app the user's
+   * profile is empty, a 403 tells it the grant is missing. profile() itself
+   * keeps its graceful empty-object contract so bundles compiled before this
+   * check existed keep working.
+   */
+  async profilePermitted(): Promise<boolean> {
+    const allowed = this.props.granted.profile?.read;
+    return Array.isArray(allowed) && allowed.length > 0;
+  }
+
+  /**
    * Read profile fields granted to this app. Returns an empty object if the
    * app has no profile permission — never throws for missing permission, so
    * the calling app can fall back gracefully.

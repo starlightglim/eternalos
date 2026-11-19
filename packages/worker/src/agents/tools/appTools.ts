@@ -2385,6 +2385,14 @@ async function handleEternal(request, env, bridgePath) {
 
   if (bridgePath === '/profile' && request.method === 'GET') {
     try {
+      // Deny profile reads without the grant outright (403) instead of
+      // answering 200 with an empty object: a 200 tells the app the user's
+      // profile is empty, a 403 tells it the grant is missing. profile()
+      // keeps its graceful empty-object behavior for bundles compiled before
+      // this check existed.
+      if (!(await env.ETERNAL.profilePermitted())) {
+        return withCors(Response.json({ error: 'Not permitted: profile access not granted' }, { status: 403 }));
+      }
       const profile = await env.ETERNAL.profile();
       return withCors(Response.json(profile));
     } catch (err) {
