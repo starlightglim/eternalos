@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
+import { useEffect, useRef, useState, useLayoutEffect } from 'react';
+import { useRovingMenuFocus } from './menuKeyboard';
 import styles from './ContextMenu.module.css';
 
 export interface ContextMenuItem {
@@ -38,27 +39,12 @@ export function ContextMenu({ items, position, onClose }: ContextMenuProps) {
   // below moves focus into the menu.
   const openerRef = useRef<HTMLElement | null>(document.activeElement as HTMLElement | null);
 
-  // Indices of the keyboard-navigable (non-divider, non-disabled) items.
-  const enabledIndices = useMemo(
-    () =>
-      items.reduce<number[]>((acc, item, i) => {
-        if (!item.divider && !item.disabled) acc.push(i);
-        return acc;
-      }, []),
-    [items]
-  );
-
-  const [activeIndex, setActiveIndex] = useState<number>(() => enabledIndices[0] ?? -1);
-
-  // Roving focus: move DOM focus to the active item whenever it changes (incl.
-  // on open, where activeIndex starts at the first enabled item).
-  useEffect(() => {
-    if (activeIndex >= 0) {
-      itemRefs.current[activeIndex]?.focus();
-    } else {
-      menuRef.current?.focus();
-    }
-  }, [activeIndex]);
+  // Roving focus over the enabled items (shared with the menu bar dropdowns).
+  const { activeIndex, setActiveIndex, handleMenuKeyDown } = useRovingMenuFocus({
+    items,
+    itemRefs,
+    containerRef: menuRef,
+  });
 
   // Adjust position to keep menu within viewport - runs synchronously before paint
   useLayoutEffect(() => {
@@ -131,45 +117,10 @@ export function ContextMenu({ items, position, onClose }: ContextMenuProps) {
   };
 
   // Arrow/Home/End move the roving focus between enabled items; Enter/Space
-  // activate the focused item. Escape is handled by the document listener.
-  const moveActive = (direction: 1 | -1) => {
-    if (enabledIndices.length === 0) return;
-    const pos = enabledIndices.indexOf(activeIndex);
-    const nextPos =
-      pos === -1
-        ? (direction === 1 ? 0 : enabledIndices.length - 1)
-        : (pos + direction + enabledIndices.length) % enabledIndices.length;
-    setActiveIndex(enabledIndices[nextPos]);
-  };
-
-  const handleMenuKeyDown = (e: React.KeyboardEvent) => {
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault();
-        moveActive(1);
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
-        moveActive(-1);
-        break;
-      case 'Home':
-        e.preventDefault();
-        if (enabledIndices.length) setActiveIndex(enabledIndices[0]);
-        break;
-      case 'End':
-        e.preventDefault();
-        if (enabledIndices.length) setActiveIndex(enabledIndices[enabledIndices.length - 1]);
-        break;
-      case 'Enter':
-      case ' ': {
-        e.preventDefault();
-        const item = items[activeIndex];
-        if (item) handleItemClick(item);
-        break;
-      }
-      default:
-        break;
-    }
+  // activate the focused item. Escape and Tab are handled by the document
+  // listener above.
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    handleMenuKeyDown(e, handleItemClick);
   };
 
   return (
@@ -181,7 +132,7 @@ export function ContextMenu({ items, position, onClose }: ContextMenuProps) {
       aria-orientation="vertical"
       tabIndex={-1}
       onContextMenu={(e) => e.preventDefault()}
-      onKeyDown={handleMenuKeyDown}
+      onKeyDown={handleKeyDown}
     >
       {items.map((item, index) => {
         if (item.divider) {

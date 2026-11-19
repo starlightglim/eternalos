@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type FocusEvent as ReactFocusEvent, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWindowStore } from '../../stores/windowStore';
 import { useDesktopStore } from '../../stores/desktopStore';
@@ -8,7 +8,13 @@ import { useAlertStore } from '../../stores/alertStore';
 import { isApiConfigured } from '../../services/api';
 import { downloadDesktopExport } from '../../utils/exportDesktop';
 import type { MenuItem } from '../../types';
+import { MenuBarDropdown } from './MenuBarDropdown';
 import styles from './MenuBar.module.css';
+
+// The top-level menus, in display order. Keyboard navigation (F10, Left/
+// Right) walks this list; it must match the keys of `menus` below.
+const MENU_NAMES = ['apple', 'file', 'edit', 'view', 'special'] as const;
+type MenuName = (typeof MENU_NAMES)[number];
 
 /**
  * Classic Mac OS-style Menu Bar
@@ -18,6 +24,12 @@ import styles from './MenuBar.module.css';
  * - Click to open dropdown, hover to switch between menus
  * - Inverted colors on hover (black bg, white text)
  * - Keyboard shortcuts display
+ * - Keyboard-operable WAI-ARIA menubar: F10 focuses it, Left/Right move
+ *   between the top-level menus (wrapping), Down/Enter/Space open a menu,
+ *   and the open dropdown supports the shared roving-focus menu keys
+ *   (arrows/Home/End wrap and skip disabled items, Enter/Space activate).
+ *   Escape closes the dropdown and returns focus to the top-level item; a
+ *   second Escape restores focus to where it was before F10.
  */
 export function MenuBar() {
   const { windows, closeWindow, getTopWindow, openWindow } = useWindowStore();
@@ -28,8 +40,17 @@ export function MenuBar() {
   const navigate = useNavigate();
 
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
+  // The top-level menu holding (or entitled to) the menubar's roving focus.
+  // Null while the menubar isn't focused — the top-level items are then not
+  // Tab stops (the desktop owns plain Tab for icon navigation); F10 is the
+  // documented way in.
+  const [focusedMenu, setFocusedMenu] = useState<MenuName | null>(null);
   const [currentTime, setCurrentTime] = useState(new Date());
   const menuBarRef = useRef<HTMLDivElement>(null);
+  const topItemRefs = useRef<Partial<Record<MenuName, HTMLDivElement | null>>>({});
+  // Where focus was before F10 moved it into the menubar; the second Escape
+  // returns to it.
+  const preMenubarFocusRef = useRef<HTMLElement | null>(null);
 
   // ============================================
   // MENU ACTIONS (defined before useEffect)
@@ -525,6 +546,116 @@ export function MenuBar() {
   }, [items, profile]);
 
   // ============================================
+  // MENUBAR KEYBOARD NAVIGATION (WAI-ARIA menubar)
+  // ============================================
+
+  // F10 focuses the menubar (first top-level entry). Nothing else in the app
+  // binds F10 (existing bindings are ⌘+letter / ⌘⌫ / ⌘` and the desktop's
+  // Tab/Enter/arrows), and F10 is the WAI-ARIA APG menubar convention on
+  // Windows/Linux. Already focused inside the menubar: keep position, and
+  // never let a second F10 overwrite the saved restore target.
+  const focusMenuBar = useCallback(() => {
+    const active = document.activeElement as HTMLElement | null;
+    if (active && menuBarRef.current?.contains(active)) {
+      return;
+    }
+    preMenubarFocusRef.current = active;
+    setFocusedMenu(MENU_NAMES[0]);
+    topItemRefs.current[MENU_NAMES[0]]?.focus();
+  }, []);
+
+  // Restore focus to where it was before the menubar was focused.
+  const exitMenuBar = useCallback(() => {
+    const opener = preMenubarFocusRef.current;
+    preMenubarFocusRef.current = null;
+    setFocusedMenu(null);
+    if (opener && document.contains(opener)) {
+      opener.focus();
+    }
+  }, []);
+
+  // Down/Enter/Space on a top-level item: open its dropdown. The dropdown
+  // takes focus on mount (first enabled item) through the shared roving
+  // helper, like ContextMenu.
+  const openMenu = useCallback((name: MenuName) => {
+    setActiveMenu(name);
+  }, []);
+
+  // Left/Right: move to the neighboring top-level menu, wrapping. While a
+  // dropdown is open (from the dropdown itself, or the transient state where
+  // focus is on a title), the open state follows to the next menu, and its
+  // dropdown takes the focus.
+  const switchTopLevel = useCallback(
+    (from: MenuName, direction: 1 | -1) => {
+      const count = MENU_NAMES.length;
+      const next = MENU_NAMES[(MENU_NAMES.indexOf(from) + direction + count) % count];
+      setFocusedMenu(next);
+      topItemRefs.current[next]?.focus();
+      if (activeMenu) {
+        setActiveMenu(next);
+      }
+    },
+    [activeMenu]
+  );
+
+  // Keys pressed on a focused top-level item. (Keys pressed inside the open
+  // dropdown are handled by MenuBarDropdown and stopped there.)
+  const handleTopLevelKeyDown = useCallback(
+    (event: ReactKeyboardEvent, name: MenuName) => {
+      switch (event.key) {
+        case 'ArrowRight':
+          event.preventDefault();
+          switchTopLevel(name, 1);
+          break;
+        case 'ArrowLeft':
+          event.preventDefault();
+          switchTopLevel(name, -1);
+          break;
+        case 'ArrowDown':
+        case 'Enter':
+        case ' ':
+          event.preventDefault();
+          openMenu(name);
+          break;
+        case 'Escape':
+          event.preventDefault();
+          if (activeMenu === name) {
+            // Close the dropdown; focus stays on this top-level item.
+            setActiveMenu(null);
+          } else {
+            // Second Escape (or Escape with nothing open): leave the menubar
+            // and restore the pre-F10 focus.
+            exitMenuBar();
+          }
+          break;
+        default:
+          break;
+      }
+    },
+    [switchTopLevel, openMenu, activeMenu, exitMenuBar]
+  );
+
+  // Escape inside a dropdown: close it and return focus to the top-level item.
+  const handleDropdownEscape = useCallback((name: string) => {
+    setActiveMenu(null);
+    topItemRefs.current[name as MenuName]?.focus();
+  }, []);
+
+  // Left/Right inside a dropdown: switch to the neighboring menu, open.
+  const handleDropdownSwitch = useCallback((name: string, direction: 1 | -1) => {
+    switchTopLevel(name as MenuName, direction);
+  }, [switchTopLevel]);
+
+  // When focus leaves the menubar entirely, drop the roving-tabindex marker.
+  // (Focus events bubble, so the open dropdown's own focus never trips this —
+  // only a relatedTarget outside the menubar does.)
+  const handleTopLevelBlur = useCallback((event: ReactFocusEvent<HTMLDivElement>) => {
+    if (!menuBarRef.current?.contains(event.relatedTarget as Node | null)) {
+      setFocusedMenu(null);
+    }
+  }, []);
+
+  // ============================================
   // EFFECTS
   // ============================================
 
@@ -553,6 +684,14 @@ export function MenuBar() {
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // F10 focuses the menubar — the documented menubar shortcut (see
+      // focusMenuBar). No modifiers: Shift+F10 stays the context-menu key.
+      if (e.key === 'F10' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        focusMenuBar();
+        return;
+      }
+
       const isMeta = e.metaKey || e.ctrlKey;
       if (!isMeta) return;
 
@@ -611,7 +750,7 @@ export function MenuBar() {
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [handleNewFolder, handleOpen, handleCloseWindow, handleGetInfo, handleTrashSelected, handleSelectAll, handleCut, handleCopy, handlePaste, handleDuplicate, handleFind]);
+  }, [focusMenuBar, handleNewFolder, handleOpen, handleCloseWindow, handleGetInfo, handleTrashSelected, handleSelectAll, handleCut, handleCopy, handlePaste, handleDuplicate, handleFind]);
 
   // ============================================
   // OTHER HANDLERS
@@ -647,7 +786,7 @@ export function MenuBar() {
   // MENU DEFINITIONS
   // ============================================
 
-  const menus: Record<string, MenuItem[]> = {
+  const menus: Record<MenuName, MenuItem[]> = {
     apple: [
       { label: 'About EternalOS...', action: handleAbout },
       { divider: true, label: '' },
@@ -727,80 +866,49 @@ export function MenuBar() {
     });
   };
 
-  // Render a dropdown menu
-  const renderDropdown = (menuItems: MenuItem[]) => (
-    <div className={styles.dropdown}>
-      {menuItems.map((item, index) =>
-        item.divider ? (
-          <div key={index} className={styles.divider} />
-        ) : (
-          <div
-            key={index}
-            className={`${styles.dropdownItem} ${item.disabled ? styles.disabled : ''}`}
-            onClick={(event) => {
-              event.stopPropagation();
-              handleDropdownItemClick(item);
-            }}
-          >
-            <span>{item.label}</span>
-            {item.shortcut && <span className={styles.shortcut}>{item.shortcut}</span>}
-          </div>
-        )
+  // Render one top-level menubar entry (the five entries share all keyboard
+  // and ARIA wiring; only the label content and the apple class differ).
+  const renderTopLevel = (name: MenuName, label: ReactNode) => (
+    <div
+      ref={(el) => { topItemRefs.current[name] = el; }}
+      className={`${styles.menuItem} ${name === 'apple' ? styles.appleMenu : ''} ${activeMenu === name ? styles.active : ''}`}
+      role="menuitem"
+      tabIndex={focusedMenu === name ? 0 : -1}
+      aria-haspopup="menu"
+      aria-expanded={activeMenu === name}
+      aria-label={name === 'apple' ? 'Apple' : undefined}
+      onClick={() => handleMenuClick(name)}
+      onMouseEnter={() => handleMenuHover(name)}
+      onFocus={() => setFocusedMenu(name)}
+      onBlur={handleTopLevelBlur}
+      onKeyDown={(event) => handleTopLevelKeyDown(event, name)}
+    >
+      {label}
+      {activeMenu === name && (
+        <MenuBarDropdown
+          menuName={name}
+          items={menus[name]}
+          onActivate={handleDropdownItemClick}
+          onEscape={handleDropdownEscape}
+          onSwitchMenu={handleDropdownSwitch}
+        />
       )}
     </div>
   );
 
   return (
-    <div className={`${styles.menuBar} menuBar`} eos-name="menubar" ref={menuBarRef}>
-      {/* Apple Menu */}
-      <div
-        className={`${styles.menuItem} ${styles.appleMenu} ${activeMenu === 'apple' ? styles.active : ''}`}
-        onClick={() => handleMenuClick('apple')}
-        onMouseEnter={() => handleMenuHover('apple')}
-      >
-        <AppleIcon />
-        {activeMenu === 'apple' && renderDropdown(menus.apple)}
-      </div>
-
-      {/* File Menu */}
-      <div
-        className={`${styles.menuItem} ${activeMenu === 'file' ? styles.active : ''}`}
-        onClick={() => handleMenuClick('file')}
-        onMouseEnter={() => handleMenuHover('file')}
-      >
-        File
-        {activeMenu === 'file' && renderDropdown(menus.file)}
-      </div>
-
-      {/* Edit Menu */}
-      <div
-        className={`${styles.menuItem} ${activeMenu === 'edit' ? styles.active : ''}`}
-        onClick={() => handleMenuClick('edit')}
-        onMouseEnter={() => handleMenuHover('edit')}
-      >
-        Edit
-        {activeMenu === 'edit' && renderDropdown(menus.edit)}
-      </div>
-
-      {/* View Menu */}
-      <div
-        className={`${styles.menuItem} ${activeMenu === 'view' ? styles.active : ''}`}
-        onClick={() => handleMenuClick('view')}
-        onMouseEnter={() => handleMenuHover('view')}
-      >
-        View
-        {activeMenu === 'view' && renderDropdown(menus.view)}
-      </div>
-
-      {/* Special Menu */}
-      <div
-        className={`${styles.menuItem} ${activeMenu === 'special' ? styles.active : ''}`}
-        onClick={() => handleMenuClick('special')}
-        onMouseEnter={() => handleMenuHover('special')}
-      >
-        Special
-        {activeMenu === 'special' && renderDropdown(menus.special)}
-      </div>
+    <div
+      className={`${styles.menuBar} menuBar`}
+      eos-name="menubar"
+      role="menubar"
+      aria-label="Main menu"
+      ref={menuBarRef}
+    >
+      {renderTopLevel('apple', <AppleIcon />)}
+      {renderTopLevel('file', 'File')}
+      {renderTopLevel('edit', 'Edit')}
+      {renderTopLevel('view', 'View')}
+      {renderTopLevel('special', 'Special')}
 
       {/* Bazaar quick-access button */}
       <div

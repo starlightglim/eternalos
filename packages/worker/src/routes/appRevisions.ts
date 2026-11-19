@@ -3,8 +3,9 @@
  * (design/13-source-first-app-workspaces.md, "near-term pragmatic option":
  * source.json stays the workspace serialization; revisions snapshot it).
  *
- * Every successful source save/deploy (routes/apps.ts dev-deploy, restore)
- * writes an immutable revision under
+ * Every successful source save/deploy (routes/apps.ts dev-deploy, restore,
+ * rollback, and the agent app tools' create/update installs) writes an
+ * immutable revision under
  *
  *   apps/{uid}/{appId}/revisions/{revisionId}/
  *     files.json         — the source files as saved (same shape as source.json)
@@ -14,6 +15,9 @@
  * A save that FAILS validation writes the same triple with `valid: false` and
  * the structured issues, so the rejected attempt stays inspectable and the
  * installed bundle is untouched (install = freeze a validated revision).
+ * Failed agent updates record the same way (author 'agent'); failed creates
+ * record nothing — the app was never registered, so there is no history to
+ * attach the attempt to (the dev-deploy create rule).
  *
  * revisionId is `${Date.now()}-${8 hex}` — fixed-width until 2286, so R2's
  * lexicographic key listing doubles as chronological ordering; no separate
@@ -68,7 +72,7 @@ export function makeRevisionId(now: number = Date.now()): string {
   return `${now}-${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`;
 }
 
-export type AppRevisionKind = 'deploy' | 'restore' | 'backfill';
+export type AppRevisionKind = 'deploy' | 'restore' | 'rollback' | 'backfill';
 export type AppRevisionAuthor = 'human' | 'agent';
 
 /** One validation problem, same shape as utils/appBundleValidation issues. */
@@ -104,7 +108,10 @@ export interface AppRevisionManifest {
   summary: string;
   /** Registry release version this revision deployed (valid deploys only). */
   appVersion?: number;
-  /** Revision this one restored its content from (kind 'restore'). */
+  /** Revision this one restored its content from (kind 'restore'), or the
+   *  revision the app rolled back FROM (kind 'rollback' — the registry's
+   *  current_revision at rollback time; the rolled-back-to side is a
+   *  release, recorded as appVersion). */
   parentRevision?: string;
   name?: string;
   description?: string;
