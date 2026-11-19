@@ -300,7 +300,7 @@ describe('appearanceStore CSS + reset actions', () => {
     expect(JSON.parse(storageBacking.get(APPEARANCE_STORAGE_KEY) ?? '{}')).toEqual(saved);
   });
 
-  test('reset then save persists an empty appearance locally and sends no stale fields to the server', async () => {
+  test('reset then save persists an empty appearance locally and sends null for every reset field', async () => {
     const saved: CustomAppearance = {
       accentColor: '#123456',
       customCSS: '.a { color: red; }',
@@ -318,12 +318,34 @@ describe('appearanceStore CSS + reset actions', () => {
     expect(s.originalAppearance).toEqual({});
     // A reload from localStorage starts from a clean slate.
     expect(storageBacking.get(APPEARANCE_STORAGE_KEY)).toBe('{}');
-    // The server PATCH carries only defined fields — reset sends no stale
-    // values and no leftover designTokens/variants blobs. (The server-side
-    // profile keeps previously saved fields; clearing them requires explicit
-    // tombstones the PATCH protocol does not have yet.)
+
+    // The server PATCH carries an explicit `null` tombstone for EVERY reset
+    // field — the legacy keys plus the designTokens and variants blobs — so
+    // the server removes the saved fields and a reload after the reset shows
+    // the reset state instead of the old rice coming back.
     expect(updateProfileMock).toHaveBeenCalledTimes(1);
-    expect(updateProfileMock.mock.calls[0][0]).toEqual({});
+    const payload = updateProfileMock.mock.calls[0][0] as Record<string, unknown>;
+    const resetFields = [...APPEARANCE_PROFILE_KEYS, 'designTokens', 'variants'] as string[];
+    for (const field of resetFields) {
+      expect(payload[field], `reset must clear "${field}" on the server`).toBeNull();
+    }
+    expect(Object.keys(payload).sort()).toEqual(resetFields.slice().sort());
+  });
+
+  test('a partial clear (undefined field) sends null only for the cleared fields, absent fields stay omitted', async () => {
+    // The per-control reset buttons and the Themes tab preset switch mark
+    // individual fields as undefined; only those become null tombstones.
+    useAppearanceStore.setState({
+      appearance: { accentColor: '#123456', customCSS: '.a { color: red; }' },
+      originalAppearance: {},
+    });
+    useAppearanceStore.getState().updateAppearance({ customCSS: undefined });
+
+    const fields = appearanceToProfileFields(useAppearanceStore.getState().appearance);
+    expect(fields).toEqual({ accentColor: '#123456', customCSS: null });
+    // Fields the appearance never set are omitted entirely (no null noise).
+    expect(Object.keys(fields)).not.toContain('desktopColor');
+    expect(Object.keys(fields)).not.toContain('designTokens');
   });
 });
 

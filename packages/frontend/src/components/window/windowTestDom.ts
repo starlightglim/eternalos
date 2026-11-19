@@ -417,6 +417,16 @@ export interface PointerInit {
   isPrimary?: boolean;
 }
 
+export interface KeyInit {
+  key?: string;
+  code?: string;
+  ctrlKey?: boolean;
+  shiftKey?: boolean;
+  altKey?: boolean;
+  metaKey?: boolean;
+  repeat?: boolean;
+}
+
 const DEFAULT_POINTER_ID = 1;
 
 export interface TestDom {
@@ -436,6 +446,8 @@ export interface TestDom {
   click(init?: PointerInit): TestEvent | null;
   /** The element currently holding pointer capture for `pointerId`, if any. */
   captureHolder(pointerId?: number): TestElement | undefined;
+  /** Dispatch a keyboard event (bubbles, cancelable) on `target`. */
+  key(target: TestElement, type: 'keydown' | 'keyup', init?: KeyInit): TestEvent;
   /** First descendant (depth-first) with `name` set to exactly `value`. */
   findDescendant(from: TestElement, name: string, value: string): TestElement | undefined;
   /** Remove the globals this instance installed. */
@@ -593,6 +605,22 @@ export function installTestDom(): TestDom {
       return event;
     },
     captureHolder: (pointerId: number = DEFAULT_POINTER_ID) => document.pointerCapture.get(pointerId),
+    key: (target: TestElement, type: 'keydown' | 'keyup', init: KeyInit = {}): TestEvent => {
+      const event = dispatchEvent(target, type, {
+        bubbles: true,
+        cancelable: true,
+        key: init.key ?? '',
+        code: init.code ?? '',
+        ctrlKey: init.ctrlKey ?? false,
+        shiftKey: init.shiftKey ?? false,
+        altKey: init.altKey ?? false,
+        metaKey: init.metaKey ?? false,
+        repeat: init.repeat ?? false,
+        detail: 0,
+        view: window,
+      });
+      return event;
+    },
     findDescendant: (from: TestElement, name: string, value: string) => {
       const visit = (node: TestNode): TestElement | undefined => {
         for (const child of node.childNodes) {

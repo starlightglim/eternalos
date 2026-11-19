@@ -127,6 +127,11 @@ What apps can do
 - Read the user's desktop via window.eternal.fs.list(), fs.read(), fs.readText(),
   fs.readJson(), fs.urlFor(id) — each Item carries { id, name, type, path,
   mimeType, caption, tags, dominantColors, updatedAt, ... }.
+- fs.urlFor(id) is asynchronous: apps must await it
+  (const url = await window.eternal.fs.urlFor(id)) before assigning the
+  result to <img src>/<audio src>. It resolves to a blob object URL in
+  installed apps and a plain loopback URL in previews; using it without
+  awaiting yields "[object Promise]", not a URL.
 - Read the user's profile via window.eternal.profile.get() (fields the app
   was granted).
 - Use window.eternal.fetch() only through a domain allowlist declared in the

@@ -117,8 +117,16 @@ function createFakeDesktop({ items = [], profile = null } = {}) {
       const method = request.method;
       requests.push({ method, path: url.pathname });
 
-      if (state.fail[method.toLowerCase()] && url.pathname === '/items') {
-        return new Response('injected failure', { status: state.fail[method.toLowerCase()] });
+      // `state.fail.{get,post,patch}` injects failures: a number fails
+      // every matching request; a function is consulted per request and
+      // fails only while it returns a status (lets a test fail one PATCH —
+      // e.g. the createFolder move — but not the cleanup that follows).
+      if (url.pathname === '/items') {
+        const injected = state.fail[method.toLowerCase()];
+        const status = typeof injected === 'function' ? injected() : injected;
+        if (status) {
+          return new Response('injected failure', { status });
+        }
       }
 
       if (url.pathname === '/items' && method === 'GET') {
@@ -163,6 +171,16 @@ function createFakeDesktop({ items = [], profile = null } = {}) {
     get: (id) => state.items.get(id),
   };
 }
+
+/** Failure injector for the fake desktop: fails only the first matching request. */
+const failOnce = (status) => {
+  let pending = true;
+  return () => {
+    if (!pending) return 0;
+    pending = false;
+    return status;
+  };
+};
 
 /** Workers AI binding stub: scripted model responses, recording every call. */
 function createFakeAiBinding() {
@@ -747,15 +765,47 @@ describe('desktopTools', () => {
     );
 
     // Move fails after the folder was created: the tool reports the failure
-    // clearly (nothing is silently half-moved; the empty folder remains, which
-    // the agent can see and mention).
-    desktop.state.fail.patch = 500;
+    // as before (nothing is silently half-moved) AND no longer leaves the
+    // empty folder behind — the folder it just created is trashed. Only
+    // the move PATCH fails, so the cleanup can run.
+    desktop.state.fail.patch = failOnce(500);
     await assert.rejects(
       tools.createFolder.execute({ folderName: 'Y', itemIds: ['i1'] }, { toolCallId: 'tc', messages: [] }),
       /Failed to move items \(500\)/,
     );
     assert.equal(desktop.get('i1').parentId, null, 'the failed move must not have moved anything');
-    assert.equal(desktop.itemsOf('folder').length, 1, 'the created folder remains, nothing moved');
+    assert.equal(desktop.itemsOf('folder').length, 0, 'the created folder must not be left behind');
+    const createdFolder = [...desktop.state.items.values()].find((i) => i.type === 'folder');
+    assert.equal(
+      createdFolder.isTrashed, true,
+      'the folder is trashed — the reversible removal the tools use, not a hard delete',
+    );
+  });
+
+  it('createFolder reports both errors when the move and the cleanup fail', async () => {
+    const desktop = createFakeDesktop({
+      items: [{ id: 'i1', type: 'image', name: 'a.png', parentId: null, isPublic: false, updatedAt: 1 }],
+    });
+    const tools = createDesktopTools({
+      getUserDesktopStub: () => desktop.stub,
+      setState: () => {},
+      getState: () => ({ lastMatchedItemIds: [], lastQuery: null, memories: [] }),
+    });
+
+    // Every PATCH fails: the move fails AND the cleanup of the just-created
+    // folder fails. Both errors must be reported in one clear message — the
+    // folder remains on the desktop, but visibly so, never silently.
+    desktop.state.fail.patch = 500;
+    await assert.rejects(
+      tools.createFolder.execute({ folderName: 'Y', itemIds: ['i1'] }, { toolCallId: 'tc', messages: [] }),
+      (error) => {
+        assert.match(error.message, /Failed to move items \(500\)/);
+        assert.match(error.message, /failed to remove the created folder \(500\)/);
+        return true;
+      },
+    );
+    assert.equal(desktop.get('i1').parentId, null, 'nothing may be moved');
+    assert.equal(desktop.itemsOf('folder').length, 1, 'the cleanup failed, so the folder remains — but the error says so');
   });
 
   it('moveItems moves items and reports clearly when the backend fails', async () => {
@@ -1096,15 +1146,40 @@ describe('appTools', () => {
     assert.equal(h.desktop.itemsOf('app')[0].appManifest.version, '2', 'desktop must keep the last good manifest');
   });
 
-  it('deleteApp removes the app from every store', async () => {
+  it('deleteApp removes the app from every store, trashing the icon before deleting data', async () => {
     const h = createAppToolsHarness();
     const created = await h.tools.createApp.execute(
       { name: 'Deletable', files: { ...MINIMAL_APP_FILES } },
       { toolCallId: 'tc', messages: [] },
     );
 
+    // Record every destructive operation across the stores to pin the order:
+    // the desktop icon must be trashed before any backing data is deleted.
+    const ops = [];
+    const desktopFetch = h.desktop.stub.fetch.bind(h.desktop.stub);
+    h.desktop.stub.fetch = async (request) => {
+      if (request.method === 'PATCH') ops.push('trash-icon');
+      return desktopFetch(request);
+    };
+    const r2Delete = h.r2.delete.bind(h.r2);
+    h.r2.delete = async (key) => {
+      ops.push('r2-delete');
+      return r2Delete(key);
+    };
+    const kvDelete = h.kv.delete.bind(h.kv);
+    h.kv.delete = async (key) => {
+      ops.push('kv-delete');
+      return kvDelete(key);
+    };
+    const sqlExec = h.sql.exec.bind(h.sql);
+    h.sql.exec = (query, ...params) => {
+      ops.push('sql-exec');
+      return sqlExec(query, ...params);
+    };
+
     const result = await h.tools.deleteApp.execute({ appId: created.appId }, { toolCallId: 'tc', messages: [] });
     assert.equal(result.status, 'deleted');
+    assert.equal(ops[0], 'trash-icon', 'the desktop icon must be trashed before any backing data is deleted');
     assert.equal(h.r2.keys(`apps/${UID}/${created.appId}/`).length, 0);
     assert.equal((await h.kv.get(`app:${created.appId}`, 'json')), null);
     assert.ok(h.sql.statements.some((s) => s.query.startsWith('DELETE FROM apps') && s.params[0] === created.appId));
@@ -1112,6 +1187,64 @@ describe('appTools', () => {
     await assert.rejects(
       h.tools.deleteApp.execute({ appId: 'no-such-app' }, { toolCallId: 'tc', messages: [] }),
       /App no-such-app not found/,
+    );
+  });
+
+  it('deleteApp leaves every store intact when trashing the icon fails', async () => {
+    const h = createAppToolsHarness();
+    const created = await h.tools.createApp.execute(
+      { name: 'Stuck', files: { ...MINIMAL_APP_FILES } },
+      { toolCallId: 'tc', messages: [] },
+    );
+
+    // The desktop refuses to trash the icon. The tool must stop right there:
+    // no data may be deleted, or the user is left with an inert icon
+    // pointing at nothing.
+    h.desktop.state.fail.patch = 500;
+    await assert.rejects(
+      h.tools.deleteApp.execute({ appId: created.appId }, { toolCallId: 'tc', messages: [] }),
+      /Failed to remove app from desktop/,
+    );
+    assert.equal(h.desktop.itemsOf('app').length, 1, 'the icon must still be on the desktop');
+    assert.ok(h.r2.keys(`apps/${UID}/${created.appId}/`).length > 0, 'R2 artifacts must not be deleted');
+    assert.ok((await h.kv.get(`app:${created.appId}`, 'json')) !== null, 'the KV registry entry must not be deleted');
+    assert.ok(
+      !h.sql.statements.some((s) => s.query.startsWith('DELETE FROM apps') && s.params[0] === created.appId),
+      'the SQL row must not be deleted',
+    );
+  });
+
+  it('deleteApp reports a data-cleanup failure after the icon is already trashed', async () => {
+    const h = createAppToolsHarness();
+    const created = await h.tools.createApp.execute(
+      { name: 'Messy', files: { ...MINIMAL_APP_FILES } },
+      { toolCallId: 'tc', messages: [] },
+    );
+
+    // The icon trashes fine, but R2 refuses to list the app's files (the
+    // failure mode that propagates out of deleteR2Prefix).
+    const r2List = h.r2.list.bind(h.r2);
+    h.r2.list = async (opts) => {
+      if ((opts?.prefix ?? '').startsWith(`apps/${UID}/`)) throw new Error('R2 unavailable');
+      return r2List(opts);
+    };
+
+    await assert.rejects(
+      h.tools.deleteApp.execute({ appId: created.appId }, { toolCallId: 'tc', messages: [] }),
+      (error) => {
+        assert.match(error.message, /App removed from the desktop, but cleaning up its data failed/);
+        assert.match(error.message, /app files \(R2 unavailable\)/);
+        return true;
+      },
+    );
+    // The icon is already trashed — the user cannot launch a broken app,
+    // which is the safer failure.
+    assert.equal(h.desktop.itemsOf('app').length, 0, 'the icon must be trashed even when data cleanup fails');
+    // The cleanup is best-effort: the other stores are still deleted.
+    assert.equal(await h.kv.get(`app:${created.appId}`, 'json'), null, 'KV cleanup must still run');
+    assert.ok(
+      h.sql.statements.some((s) => s.query.startsWith('DELETE FROM apps') && s.params[0] === created.appId),
+      'SQL cleanup must still run',
     );
   });
 
@@ -1439,6 +1572,9 @@ describe('OrchestratorAgent approval flow', () => {
     const part = h.findToolPart('call_1');
     assert.equal(part.state, 'output-error', 'the failed mutation is recorded as a tool error');
     assert.match(part.errorText, /Failed to move items \(500\)/);
+    // Every PATCH fails, so the cleanup of the just-created folder failed
+    // too — the recorded error reports both.
+    assert.match(part.errorText, /failed to remove the created folder \(500\)/);
     assert.equal(part.approval.approved, true, 'the approval decision stays recorded');
 
     // Nothing was moved, and the thread ends coherent.

@@ -322,7 +322,33 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
           method: 'PATCH',
           body: JSON.stringify(patches),
         }));
-        if (!moveRes.ok) throw new Error(`Failed to move items (${moveRes.status})`);
+
+        if (!moveRes.ok) {
+          // This call just created the folder, so a failed move must not
+          // leave the empty folder behind on the user's desktop. Trash it —
+          // the same reversible removal the other agent tools use — then
+          // report the move failure exactly as before. If the cleanup
+          // itself fails, report both errors; the folder stays behind, but
+          // the failure says so instead of silently half-applying.
+          const moveMessage = `Failed to move items (${moveRes.status})`;
+          try {
+            const trashRes = await stub.fetch(new Request('http://internal/items', {
+              method: 'PATCH',
+              body: JSON.stringify([{
+                id: folder.id,
+                updates: { isTrashed: true, trashedAt: Date.now() },
+              }]),
+            }));
+            if (!trashRes.ok) {
+              throw new Error(`failed to remove the created folder (${trashRes.status})`);
+            }
+          } catch (cleanupError) {
+            const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+            throw new Error(`${moveMessage}; ${cleanupMessage}`);
+          }
+          throw new Error(moveMessage);
+        }
+
         const moved = await moveRes.json<DesktopItem[]>();
 
         return {
