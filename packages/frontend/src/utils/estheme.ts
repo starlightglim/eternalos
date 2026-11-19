@@ -515,9 +515,176 @@ export const MAX_BUNDLE_FILES = 64;
 /**
  * Total extracted (uncompressed) bytes a bundle may carry. Mirrors the build
  * limit (`MAX_BUNDLE_SIZE_BYTES`): a hostile zip must not be able to expand
- * past the size the builder would ever emit.
+ * past the size the builder would ever emit. Enforced in TWO layers, because
+ * the central directory can lie:
+ *
+ *   1. before inflating anything, the entries' DECLARED uncompressed sizes
+ *      are summed and checked (plus a per-entry cap and a plausibility ratio
+ *      check) — a classic zip bomb is turned away at the directory;
+ *   2. every entry is then inflated through a streaming read that aborts the
+ *      moment the running total passes the cap, so a zip whose declared
+ *      sizes lie small is still cut off mid-stream instead of being
+ *      materialized whole.
  */
 export const MAX_BUNDLE_CONTENT_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Cap on manifest.json alone. It is the one entry inflated before the
+ * manifest's own layer table can be cross-checked, and the only one whose
+ * content we JSON.parse — 256KB is two orders of magnitude above the largest
+ * manifest the builder can emit (50 changelog + 50 credits entries at their
+ * per-field caps stay well under 60KB), so nothing legitimate is lost while
+ * a hostile "manifest" costs at most a bounded inflate + parse.
+ */
+export const MAX_MANIFEST_BYTES = 256 * 1024;
+
+/**
+ * Ratio gate tuning: only entries DECLARING more than 1MB uncompressed are
+ * ratio-checked, and anything above 100:1 expansion is rejected. Why 100:1 —
+ * DEFLATE tops out near its theoretical ~1032:1 on crafted input, while the
+ * >1MB payloads a real theme carries (JPEG/PNG wallpapers and previews,
+ * MP3s) are already compressed and re-deflate at ~1:1, and every text layer
+ * the format allows is far below 1MB. No honestly-declared bundle crosses
+ * 100:1 above 1MB; a directory claiming triple-digit expansion for a big
+ * entry is a bomb signature, not a theme.
+ */
+const MAX_PLAUSIBLE_RATIO_ENTRY_BYTES = 1024 * 1024;
+const MAX_PLAUSIBLE_COMPRESSION_RATIO = 100;
+
+/**
+ * The central-directory sizes JSZip records for a loaded entry (`_data` is
+ * the internal CompressedObject; JSZip does not expose these through its
+ * typings). These are exactly the values a hostile zip can LIE about, which
+ * is why nothing security-relevant relies on them alone — the streaming read
+ * re-checks every byte as it inflates.
+ */
+function declaredSizes(entry: JSZip.JSZipObject): { uncompressed: number | null; compressed: number | null } {
+  const data = (entry as unknown as { _data?: { uncompressedSize?: unknown; compressedSize?: unknown } })._data;
+  if (!data || typeof data !== 'object') return { uncompressed: null, compressed: null };
+  const read = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+  return { uncompressed: read(data.uncompressedSize), compressed: read(data.compressedSize) };
+}
+
+const mb = (bytes: number): number => Math.round(bytes / 1024 / 1024);
+
+/**
+ * Pre-inflation gate: reject bundles whose own central directory admits they
+ * are over the content cap — per entry, summed, or by implausible claimed
+ * expansion — BEFORE a single byte is inflated. `manifest.json` is skipped
+ * here; it carries its own (much smaller) declared cap at read time.
+ */
+function assertDeclaredSizesAcceptable(entries: { path: string; entry: JSZip.JSZipObject }[]): void {
+  let declaredTotal = 0;
+  for (const { path, entry } of entries) {
+    if (path === 'manifest.json') continue;
+    const { uncompressed, compressed } = declaredSizes(entry);
+    // A null declared size (entry not backed by a central-directory record)
+    // cannot be pre-checked — the streaming cap below still bounds it.
+    if (uncompressed === null) continue;
+    if (uncompressed > MAX_BUNDLE_CONTENT_BYTES) {
+      throw new Error(
+        `Invalid bundle: "${path}" declares ${mb(uncompressed)}MB of content, over the ${mb(MAX_BUNDLE_CONTENT_BYTES)}MB limit`,
+      );
+    }
+    if (
+      uncompressed > MAX_PLAUSIBLE_RATIO_ENTRY_BYTES &&
+      compressed !== null &&
+      compressed > 0 &&
+      uncompressed / compressed > MAX_PLAUSIBLE_COMPRESSION_RATIO
+    ) {
+      throw new Error(
+        `Invalid bundle: "${path}" declares over ${MAX_PLAUSIBLE_COMPRESSION_RATIO}:1 compression — implausible for theme assets`,
+      );
+    }
+    declaredTotal += uncompressed;
+  }
+  if (declaredTotal > MAX_BUNDLE_CONTENT_BYTES) {
+    throw new Error(
+      `Invalid bundle: entries declare ${mb(declaredTotal)}MB of content in total, over the ${mb(MAX_BUNDLE_CONTENT_BYTES)}MB limit`,
+    );
+  }
+}
+
+/**
+ * Minimal shape of JSZip's StreamHelper (jszip@3.10.1) as returned by
+ * `ZipObject#internalStream(type)` — the machinery `async()` and
+ * `nodeStream()` are themselves built on. Not present in JSZip's bundled
+ * typings, hence the structural cast.
+ */
+interface StreamHelperLike {
+  on(event: 'data', callback: (chunk: Uint8Array) => void): StreamHelperLike;
+  on(event: 'end', callback: () => void): StreamHelperLike;
+  on(event: 'error', callback: (error: Error) => void): StreamHelperLike;
+  resume(): unknown;
+  pause(): unknown;
+}
+
+/**
+ * Inflate one entry through JSZip's streaming read, counting bytes as chunks
+ * arrive and rejecting the moment the running total passes `maxBytes` — an
+ * entry is never materialized whole just to be measured.
+ *
+ * `pause()` stops the block pump between JSZip's 16KB compressed blocks; the
+ * pako inflate of the one in-flight block still runs to completion
+ * synchronously, so chunks that arrive after the abort are dropped rather
+ * than accumulated. Memory therefore stays bounded at the cap (plus one
+ * block's transient output) no matter how large the entry really is.
+ */
+function readEntryBytesCapped(entry: JSZip.JSZipObject, maxBytes: number, failure: () => Error): Promise<Uint8Array> {
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    let aborted = false;
+
+    const stream = (entry as unknown as { internalStream?: (type: string) => StreamHelperLike }).internalStream?.(
+      'uint8array',
+    );
+    if (!stream) {
+      // No streaming surface (a different JSZip): fall back to a capped
+      // materialize-then-check read — still bounded, just less eagerly.
+      entry
+        .async('uint8array')
+        .then((bytes) => {
+          if (bytes.length > maxBytes) throw failure();
+          resolve(bytes);
+        })
+        .catch((e: unknown) => reject(e instanceof Error ? e : new Error(String(e))));
+      return;
+    }
+
+    stream
+      .on('data', (chunk) => {
+        if (aborted) return; // in-flight block draining after the abort — drop it
+        total += chunk.length;
+        if (total > maxBytes) {
+          aborted = true;
+          try {
+            stream.pause();
+          } catch {
+            // stream already finished — the rejection below is the verdict
+          }
+          reject(failure());
+          return;
+        }
+        chunks.push(chunk);
+      })
+      .on('error', (error) => {
+        if (!aborted) reject(error);
+      })
+      .on('end', () => {
+        if (aborted) return;
+        const out = new Uint8Array(total);
+        let offset = 0;
+        for (const chunk of chunks) {
+          out.set(chunk, offset);
+          offset += chunk.length;
+        }
+        resolve(out);
+      })
+      .resume();
+  });
+}
 
 export async function parseEsthemeBundle(source: Blob | ArrayBuffer): Promise<ParsedBundle> {
   const zip = await JSZip.loadAsync(source);
@@ -540,14 +707,37 @@ export async function parseEsthemeBundle(source: Blob | ArrayBuffer): Promise<Pa
     );
   }
 
+  // SECURITY (zip bombs): the central directory is the cheap place to stop a
+  // bomb — reject any bundle that already admits (per entry, summed, or by
+  // claimed compression ratio) to exceeding the content cap, BEFORE a single
+  // byte is inflated. The streaming reads below then bound the bundles whose
+  // directory lies.
+  assertDeclaredSizesAcceptable(entries);
+
   const manifestFile = zip.file('manifest.json');
   if (!manifestFile) {
     throw new Error('Invalid bundle: missing manifest.json');
   }
 
+  // manifest.json gets its own cap: it is inflated before the manifest can
+  // be cross-checked against anything, and it is the only entry we
+  // JSON.parse. Declared cap first (a hostile directory is caught without
+  // inflating), then a capped streaming read for the lying ones.
+  const manifestDeclared = declaredSizes(manifestFile).uncompressed;
+  if (manifestDeclared !== null && manifestDeclared > MAX_MANIFEST_BYTES) {
+    throw new Error(
+      `Invalid bundle: manifest.json declares ${Math.round(manifestDeclared / 1024)}KB, over the ${MAX_MANIFEST_BYTES / 1024}KB limit`,
+    );
+  }
+  const manifestBytes = await readEntryBytesCapped(
+    manifestFile,
+    MAX_MANIFEST_BYTES,
+    () => new Error(`Invalid bundle: manifest.json inflates past the ${MAX_MANIFEST_BYTES / 1024}KB limit`),
+  );
+
   let manifestJson: unknown;
   try {
-    manifestJson = JSON.parse(await manifestFile.async('string'));
+    manifestJson = JSON.parse(new TextDecoder().decode(manifestBytes));
   } catch {
     throw new Error('Invalid bundle: manifest.json is not valid JSON');
   }
@@ -564,21 +754,26 @@ export async function parseEsthemeBundle(source: Blob | ArrayBuffer): Promise<Pa
     );
   }
 
-  // SECURITY: extract sequentially and cap the running total so a crafted zip
-  // cannot materialize an unbounded amount of content in memory
-  // (Promise.all would hold every expansion at once).
+  // SECURITY: inflate sequentially through the streaming read so the running
+  // total is enforced WHILE each entry inflates — a zip whose declared sizes
+  // lie small is cut off mid-stream (Promise.all would also hold every
+  // expansion at once). The per-entry budget is what remains of the cap.
   let totalBytes = 0;
   const files = new Map<string, Blob>();
   for (const { path, entry } of entries) {
     if (path === 'manifest.json') continue;
-    const blob = await entry.async('blob');
-    totalBytes += blob.size;
-    if (totalBytes > MAX_BUNDLE_CONTENT_BYTES) {
-      throw new Error(
-        `Invalid bundle: expanded content exceeds ${Math.round(MAX_BUNDLE_CONTENT_BYTES / 1024 / 1024)}MB`,
-      );
-    }
-    files.set(path, blob);
+    const bytes = await readEntryBytesCapped(
+      entry,
+      MAX_BUNDLE_CONTENT_BYTES - totalBytes,
+      () =>
+        new Error(
+          `Invalid bundle: "${path}" inflates the bundle past the ${mb(MAX_BUNDLE_CONTENT_BYTES)}MB content limit`,
+        ),
+    );
+    totalBytes += bytes.length;
+    // BlobPart formally wants ArrayBufferView<ArrayBuffer> under this TS
+    // lib; every Blob implementation accepts a Uint8Array at runtime.
+    files.set(path, new Blob([bytes as unknown as BlobPart]));
   }
 
   return { manifest: validation.manifest, files };
