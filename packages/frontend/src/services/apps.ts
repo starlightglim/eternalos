@@ -58,6 +58,73 @@ export interface AppVersionsResponse {
   releases: AppRelease[];
 }
 
+// --- Source revisions -------------------------------------------------------
+
+export type AppRevisionKind = 'deploy' | 'restore' | 'backfill';
+export type AppRevisionAuthor = 'human' | 'agent';
+
+export interface AppRevisionSummary {
+  id: string;
+  createdAt: number;
+  author: AppRevisionAuthor;
+  valid: boolean;
+  kind: AppRevisionKind;
+  summary: string;
+  /** Release version this revision deployed (valid deploys/restores). */
+  appVersion?: number;
+  /** Revision a restore took its content from (kind 'restore'). */
+  parentRevision?: string;
+  name?: string;
+}
+
+export interface AppRevisionIssue {
+  code: string;
+  message: string;
+  file?: string;
+  evidence?: string;
+  hint?: string;
+}
+
+export interface AppRevisionDetail {
+  id: string;
+  createdAt: number;
+  author: AppRevisionAuthor;
+  valid: boolean;
+  kind: AppRevisionKind;
+  summary: string;
+  appVersion?: number;
+  parentRevision?: string;
+  name?: string;
+  description?: string;
+  permissions?: Record<string, unknown>;
+  rationale?: string;
+  windowConfig?: { defaultWidth: number; defaultHeight: number; resizable?: boolean };
+  diagnostics: { valid: boolean; issues: AppRevisionIssue[] };
+}
+
+export interface AppRevisionsResponse {
+  appId: string;
+  currentRevision: string | null;
+  lastValidRevision: string | null;
+  revisions: AppRevisionSummary[];
+}
+
+export interface AppRevisionFilesResponse {
+  appId: string;
+  revision: AppRevisionDetail;
+  files: Record<string, string>;
+}
+
+export interface AppRevisionRestoreResponse {
+  success: boolean;
+  appId: string;
+  /** Release version the restore deployed. */
+  version: number;
+  /** The NEW revision the restore created. */
+  revisionId: string;
+  restoredFrom: string;
+}
+
 /** Mint a short-lived capability for the authenticated owner app iframe. */
 export async function mintAppCapability(appId: string): Promise<AppCapabilityResponse> {
   return apiRequest<AppCapabilityResponse>(`/api/apps/${encodeURIComponent(appId)}/capability`, {
@@ -99,6 +166,29 @@ export async function updateAppPermissions(
 
 export async function listAppVersions(appId: string): Promise<AppVersionsResponse> {
   return apiRequest<AppVersionsResponse>(`/api/apps/${encodeURIComponent(appId)}/versions`);
+}
+
+export async function listAppRevisions(appId: string): Promise<AppRevisionsResponse> {
+  return apiRequest<AppRevisionsResponse>(`/api/apps/${encodeURIComponent(appId)}/revisions`);
+}
+
+export async function getAppRevisionFiles(
+  appId: string,
+  revisionId: string,
+): Promise<AppRevisionFilesResponse> {
+  return apiRequest<AppRevisionFilesResponse>(
+    `/api/apps/${encodeURIComponent(appId)}/revisions/${encodeURIComponent(revisionId)}`
+  );
+}
+
+export async function restoreAppRevision(
+  appId: string,
+  revisionId: string,
+): Promise<AppRevisionRestoreResponse> {
+  return apiRequest<AppRevisionRestoreResponse>(
+    `/api/apps/${encodeURIComponent(appId)}/revisions/${encodeURIComponent(revisionId)}/restore`,
+    { method: 'POST' },
+  );
 }
 
 export async function rollbackApp(appId: string, version: number): Promise<{ appId: string; version: number }> {

@@ -37,6 +37,46 @@ export async function buildTestBundle(
   return zip.generateAsync({ type: 'arraybuffer' });
 }
 
+/**
+ * Same as `buildTestBundle` but DEFLATED. The lying-size crafter below needs
+ * entries stored compressed: JSZip re-generating a loaded zip reuses the
+ * compressed bytes verbatim when the compression magic matches, so a patched
+ * declared size survives into the output's central directory.
+ */
+export async function buildDeflatedTestBundle(
+  layers: EsthemeManifest['layers'],
+  files: Record<string, string | Uint8Array>,
+  extraManifest: Partial<Omit<EsthemeManifest, 'layers'>> = {},
+): Promise<ArrayBuffer> {
+  const zip = new JSZip();
+  zip.file('manifest.json', JSON.stringify({ ...TEST_META, ...extraManifest, layers }));
+  for (const [path, content] of Object.entries(files)) {
+    zip.file(path, content);
+  }
+  return zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
+}
+
+/**
+ * Craft a bundle whose central directory LIES: each `lies` entry rewrites the
+ * DECLARED uncompressed size of that path (compressed size stays honest).
+ * JSZip trusts the directory when loading, so this reproduces the hostile
+ * "small claim, big payload" shape that only the parser's streaming cap —
+ * not its declared-size gate — can catch. The input must be a DEFLATED
+ * bundle (see `buildDeflatedTestBundle`) or the lie is recomputed away.
+ */
+export async function withLyingDeclaredSizes(
+  bundle: ArrayBuffer,
+  lies: Record<string, number>,
+): Promise<ArrayBuffer> {
+  const zip = await JSZip.loadAsync(bundle);
+  for (const [path, size] of Object.entries(lies)) {
+    const entry = zip.file(path);
+    if (!entry) throw new Error(`fixture: no zip entry "${path}" to lie about`);
+    (entry as unknown as { _data: { uncompressedSize: number } })._data.uncompressedSize = size;
+  }
+  return zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE' });
+}
+
 /** Blob stand-in for node tests (JSZip reads Uint8Array directly). */
 export const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 
