@@ -30,6 +30,14 @@ import {
   type AppValidationIssue,
 } from '../utils/appBundleValidation';
 import { createAppWorkspace, createWorkerModuleFiles, validateGeneratedApp } from '../agents/tools/appTools';
+import {
+  ensureRevisionBaseline,
+  isValidRevisionId,
+  pruneAppRevisions,
+  readAppRevision,
+  writeAppRevision,
+  type AppRevisionWindowConfig,
+} from './appRevisions';
 
 // Pack of permission names a client may request. The server validates
 // unknown keys out rather than fail the whole mint.
@@ -115,6 +123,11 @@ interface AppRegistryMetadata {
   version: number;
   granted?: AppGrantedPermissions;
   r2Prefix?: string;
+  /** Latest source revision (valid or not) — see routes/appRevisions.ts. */
+  current_revision?: string;
+  /** Latest revision that passed validation; the installed bundle derives
+   *  from a release this pointer's history led to. */
+  last_valid_revision?: string;
 }
 
 interface AppRelease {
@@ -720,8 +733,24 @@ export async function handleAppDevDeploy(
 ): Promise<Response> {
   let deployedAppId: string | undefined;
   let writtenR2Keys: string[] = [];
+  // Revision objects are tracked separately from release keys: on a genuine
+  // infra failure both are cleaned up, but on a *validation* failure the
+  // revision is the diagnostics record and is deliberately kept.
+  let writtenRevisionKeys: string[] = [];
   let previousAppMetadata: Record<string, unknown> | null = null;
   let appMetadataWriteStarted = false;
+  // Visible to the catch block so a rejected save can be recorded on the app
+  // it targeted (failed saves on an existing app keep the installed bundle
+  // and leave a revision carrying the validation diagnostics).
+  let isUpdateFlow = false;
+  let attemptedSave: {
+    name: string;
+    description?: string;
+    rationale?: string;
+    windowConfig: { defaultWidth: number; defaultHeight: number; resizable?: boolean };
+    permissions?: unknown;
+    files: Record<string, string>;
+  } | null = null;
 
   try {
     const contentLength = Number(request.headers.get('content-length') ?? 0);
@@ -769,6 +798,14 @@ export async function handleAppDevDeploy(
     }
 
     const { appId: inputAppId, manifest, files } = body;
+    attemptedSave = {
+      name: manifest.name,
+      description: manifest.description,
+      rationale: manifest.rationale,
+      windowConfig: manifest.windowConfig,
+      permissions: manifest.permissions,
+      files,
+    };
     const requestedPermissions = sanitizeGranted(manifest.permissions);
     const uid = auth.uid;
 
@@ -790,9 +827,15 @@ export async function handleAppDevDeploy(
       if (appMeta.uid !== uid) {
         return Response.json({ error: 'Not authorized' }, { status: 403 });
       }
-      previousAppMetadata = appMeta as Record<string, unknown>;
       isUpdate = true;
+      isUpdateFlow = true;
       version = await getNextAppVersion(env, uid, appId, appMeta.version || 1);
+      // Lazy migration: apps deployed before revisions existed get their
+      // current source snapshotted as revision #0 on this first touch, so
+      // this update lands on top of a real history instead of starting one.
+      await ensureRevisionBaseline(env, uid, appId, appMeta);
+      // Re-read so an infra-failure rollback restores the baselined record.
+      previousAppMetadata = await env.DESKTOP_KV.get<Record<string, unknown>>(`app:${appId}`, 'json');
     } else {
       // Create flow
       appId = crypto.randomUUID();
@@ -855,6 +898,25 @@ export async function handleAppDevDeploy(
     }));
     writtenR2Keys.push(metadataKey);
 
+    // 2b. Write the immutable source revision for this save. Every
+    // successful save produces one; the registry below points at it.
+    // (design/13: install = freeze a validated revision — this object is
+    // the source side of that freeze, bundle.json above the runtime side.)
+    const revision = await writeAppRevision(env, uid, appId, {
+      kind: 'deploy',
+      author: 'human',
+      valid: true,
+      files: workspace.files,
+      name: manifest.name,
+      description: manifest.description,
+      permissions: requestedPermissions,
+      rationale: manifest.rationale,
+      windowConfig: manifest.windowConfig,
+      appVersion: version,
+      summary: isUpdate ? `Deployed v${version}` : `Initial deploy (v${version})`,
+    });
+    writtenRevisionKeys.push(...revision.keys);
+
     // 3. Register in KV
     const existingMetadata = isUpdate
       ? await env.DESKTOP_KV.get<{ granted?: AppGrantedPermissions }>(`app:${appId}`, 'json')
@@ -871,6 +933,8 @@ export async function handleAppDevDeploy(
         version,
         granted,
         r2Prefix,
+        current_revision: revision.revisionId,
+        last_valid_revision: revision.revisionId,
       })
     );
 
@@ -958,10 +1022,22 @@ export async function handleAppDevDeploy(
         console.error('App release cleanup failed:', error);
       });
     }
-    return Response.json({ success: true, appId, version, isUpdate });
+    // Cap the revision history: keep the newest MAX_APP_REVISIONS objects,
+    // with the registry pointers pinned so they can never be evicted.
+    await pruneAppRevisions(env, uid, appId, new Set([revision.revisionId])).catch((error) => {
+      console.error('App revision cleanup failed:', error);
+    });
+    return Response.json({ success: true, appId, version, isUpdate, revision: revision.revisionId });
   } catch (error) {
     if (writtenR2Keys.length > 0) {
       await Promise.allSettled(writtenR2Keys.map((key) => env.ETERNALOS_FILES.delete(key)));
+    }
+    if (writtenRevisionKeys.length > 0) {
+      // Infra failure mid-flight: the revision never became a save. A
+      // validation failure takes the branch below instead and keeps its
+      // revision (writtenRevisionKeys is only populated on the success path,
+      // after validation, so this never deletes a diagnostics record).
+      await Promise.allSettled(writtenRevisionKeys.map((key) => env.ETERNALOS_FILES.delete(key)));
     }
     if (appMetadataWriteStarted && deployedAppId) {
       if (previousAppMetadata) {
@@ -980,6 +1056,41 @@ export async function handleAppDevDeploy(
     // filename/size limits. Anything else (bundler/runtime failures) is a
     // genuine server fault and stays 500.
     if (error instanceof AppValidationError) {
+      // A rejected save on an EXISTING app is itself history: nothing above
+      // was persisted (all validation runs before any release write), so the
+      // installed bundle is untouched — but the attempted source and the
+      // diagnostics are recorded as an invalid revision, and only
+      // current_revision moves (last_valid_revision does not). Failed
+      // creates record nothing: the app was never registered, so there is
+      // no history to attach the attempt to.
+      let failedRevisionId: string | undefined;
+      if (isUpdateFlow && deployedAppId && attemptedSave) {
+        try {
+          const failed = await writeAppRevision(env, auth.uid, deployedAppId, {
+            kind: 'deploy',
+            author: 'human',
+            valid: false,
+            issues: error.issues,
+            files: attemptedSave.files,
+            name: attemptedSave.name,
+            description: attemptedSave.description,
+            permissions: sanitizeGranted(attemptedSave.permissions),
+            rationale: attemptedSave.rationale,
+            windowConfig: attemptedSave.windowConfig,
+            summary: 'Failed save — validation rejected',
+          });
+          failedRevisionId = failed.revisionId;
+          const currentMeta = await env.DESKTOP_KV.get<AppRegistryMetadata>(`app:${deployedAppId}`, 'json');
+          if (currentMeta && currentMeta.uid === auth.uid) {
+            await env.DESKTOP_KV.put(`app:${deployedAppId}`, JSON.stringify({
+              ...currentMeta,
+              current_revision: failed.revisionId,
+            }));
+          }
+        } catch (revisionError) {
+          console.error('Failed to record invalid app revision:', revisionError);
+        }
+      }
       const issues: AppValidationIssue[] = error.issues.map((issue) => ({
         code: issue.code,
         message: issue.message,
@@ -987,7 +1098,10 @@ export async function handleAppDevDeploy(
         ...(issue.evidence ? { evidence: issue.evidence } : {}),
         ...(issue.hint ? { hint: issue.hint } : {}),
       }));
-      return Response.json({ error: message, issues }, { status: 400 });
+      return Response.json(
+        { error: message, issues, ...(failedRevisionId ? { revision: failedRevisionId } : {}) },
+        { status: 400 },
+      );
     }
     const status = /^(App source|App bundle|Invalid app|Duplicate app source|External |Dynamic imports |Imports from |Missing local asset|Source file name|App (reads|writes|deletes|uses|emits|listens))/.test(message) ? 400 : 500;
     return Response.json({ error: message }, { status });
@@ -1087,6 +1201,280 @@ export async function handleAppRollback(
   }
 
   return Response.json({ success: true, version: release.version, appId });
+}
+
+/**
+ * POST /api/apps/:appId/revisions/:revisionId/restore
+ *
+ * Restore a stored source revision: the revision's files are re-validated,
+ * re-compiled, and deployed as a NEW release + a NEW revision (kind
+ * 'restore', parentRevision = the source). History is never rewritten — the
+ * restored-from revision stays exactly as it was.
+ *
+ * Install = freeze a validated revision, same as dev-deploy: all validation
+ * gates run before anything is persisted, so a revision that no longer
+ * validates leaves the installed bundle untouched and records the attempt
+ * as an invalid revision carrying the diagnostics.
+ *
+ * Grants never widen — the restored manifest's declared set is intersected
+ * with the CURRENT stored grant (the same rule as dev-deploy updates and
+ * rollback), so restoring an older, broader declaration cannot re-open a
+ * scope the user has since narrowed or never granted.
+ */
+export async function handleAppRevisionRestore(
+  env: Env,
+  auth: AuthContext,
+  appId: string,
+  revisionId: string,
+): Promise<Response> {
+  const appMeta = await env.DESKTOP_KV.get<AppRegistryMetadata>(`app:${appId}`, 'json');
+  if (!appMeta) return Response.json({ error: 'App not found' }, { status: 404 });
+  if (appMeta.uid !== auth.uid) return Response.json({ error: 'Not authorized' }, { status: 403 });
+  if (!isValidRevisionId(revisionId)) return Response.json({ error: 'Invalid revision ID' }, { status: 400 });
+
+  const uid = auth.uid;
+  const revision = await readAppRevision(env, uid, appId, revisionId);
+  if (!revision) return Response.json({ error: 'Revision not found' }, { status: 404 });
+
+  // Lazy migration for apps whose registry record predates revisions.
+  await ensureRevisionBaseline(env, uid, appId, appMeta);
+
+  const revisionManifest = revision.manifest;
+  const files = revision.files;
+  const name = typeof revisionManifest.name === 'string' ? revisionManifest.name.trim() : '';
+  if (!name || name.length > 80) {
+    return Response.json({ error: 'Revision manifest is invalid' }, { status: 400 });
+  }
+
+  // The restored window config comes from the revision when it recorded one
+  // (dev-deploy saves always do); baseline snapshots of older releases may
+  // not, so fall back to the currently installed manifest's dimensions.
+  const doId = env.USER_DESKTOP.idFromName(uid);
+  const stub = env.USER_DESKTOP.get(doId);
+  const itemsResponse = await stub.fetch(new Request('http://internal/items'));
+  if (!itemsResponse.ok) return Response.json({ error: 'Failed to load app desktop item' }, { status: 500 });
+  const items = (await itemsResponse.json() as { items: DesktopItem[] }).items;
+  const appItem = items.find((item) => item.type === 'app' && item.appManifest?.appId === appId && !item.isTrashed);
+  if (!appItem?.appManifest) return Response.json({ error: 'App desktop item not found' }, { status: 409 });
+
+  const windowConfig: AppRevisionWindowConfig = revisionManifest.windowConfig
+    ?? (appItem.appManifest.windowConfig
+      ? {
+        defaultWidth: appItem.appManifest.windowConfig.defaultWidth,
+        defaultHeight: appItem.appManifest.windowConfig.defaultHeight,
+        resizable: appItem.appManifest.windowConfig.resizable !== false,
+      }
+      : { defaultWidth: 600, defaultHeight: 500, resizable: true });
+  if (
+    !Number.isInteger(windowConfig.defaultWidth) ||
+    windowConfig.defaultWidth < 360 ||
+    windowConfig.defaultWidth > 1600 ||
+    !Number.isInteger(windowConfig.defaultHeight) ||
+    windowConfig.defaultHeight < 320 ||
+    windowConfig.defaultHeight > 1200
+  ) {
+    return Response.json({ error: 'Revision window configuration is invalid' }, { status: 400 });
+  }
+
+  const requestedPermissions = sanitizeGranted(revisionManifest.permissions);
+  const version = await getNextAppVersion(env, uid, appId, appMeta.version || 1);
+  const r2Prefix = `apps/${uid}/${appId}/v${version}`;
+  const writtenR2Keys: string[] = [];
+  const writtenRevisionKeys: string[] = [];
+  const previousAppMetadata = await env.DESKTOP_KV.get<Record<string, unknown>>(`app:${appId}`, 'json');
+  let appMetadataWriteStarted = false;
+
+  try {
+    // Same gates as dev-deploy, in the same order — the restored source must
+    // clear them before anything is persisted or installed.
+    validateGeneratedApp({
+      name,
+      description: revisionManifest.description ?? '',
+      files,
+      width: windowConfig.defaultWidth,
+      height: windowConfig.defaultHeight,
+      permissions: requestedPermissions,
+      rationale: revisionManifest.rationale,
+    });
+    const workspace = createAppWorkspace(files);
+    const workerFiles = createWorkerModuleFiles(workspace, '/api/apps');
+    const { mainModule, modules } = await createWorker({
+      files: {
+        ...workerFiles,
+        ['__eternal_worker__.js']: workerFiles['__eternal_worker__.js'].replaceAll('__APP_ID__', appId),
+      },
+      entryPoint: '__eternal_worker__.js',
+    });
+    assertAppBundleValid({
+      files: workspace.files,
+      manifest: workspace.manifest,
+      permissions: requestedPermissions,
+      compiled: { mainModule, modules },
+    });
+
+    // Deploy the validated revision as a new release.
+    const bundleKey = `${r2Prefix}/bundle.json`;
+    await env.ETERNALOS_FILES.put(bundleKey, JSON.stringify({ mainModule, modules }));
+    writtenR2Keys.push(bundleKey);
+
+    const sourceKey = `${r2Prefix}/source.json`;
+    await env.ETERNALOS_FILES.put(sourceKey, JSON.stringify(workspace.files));
+    writtenR2Keys.push(sourceKey);
+
+    const metadataKey = `${r2Prefix}/metadata.json`;
+    await env.ETERNALOS_FILES.put(metadataKey, JSON.stringify({
+      id: appId,
+      uid,
+      name,
+      description: revisionManifest.description,
+      version,
+      r2Prefix,
+      createdAt: Date.now(),
+      permissions: requestedPermissions,
+      rationale: revisionManifest.rationale,
+    }));
+    writtenR2Keys.push(metadataKey);
+
+    // And append the restore revision. The restored-from revision is left
+    // untouched — restoring appends, it never rewrites.
+    const revisionWrite = await writeAppRevision(env, uid, appId, {
+      kind: 'restore',
+      author: 'human',
+      valid: true,
+      files: workspace.files,
+      name,
+      description: revisionManifest.description,
+      permissions: requestedPermissions,
+      rationale: revisionManifest.rationale,
+      windowConfig,
+      appVersion: version,
+      parentRevision: revisionId,
+      summary: `Restored from revision ${revisionId.slice(-8)}`,
+    });
+    writtenRevisionKeys.push(...revisionWrite.keys);
+
+    // Registry: grants only ever narrow here (intersection with the current
+    // stored grant — the dev-deploy update rule), and both revision pointers
+    // move to the new revision.
+    const existingMetadata = await env.DESKTOP_KV.get<{ granted?: AppGrantedPermissions }>(`app:${appId}`, 'json');
+    const granted = existingMetadata?.granted
+      ? intersectGranted(requestedPermissions, existingMetadata.granted)
+      : {};
+    appMetadataWriteStarted = true;
+    await env.DESKTOP_KV.put(`app:${appId}`, JSON.stringify({
+      uid,
+      version,
+      granted,
+      r2Prefix,
+      current_revision: revisionWrite.revisionId,
+      last_valid_revision: revisionWrite.revisionId,
+    }));
+
+    // Desktop item: the restored manifest becomes the installed manifest.
+    // Surviving grants keep their approval metadata; scopes whose grant
+    // fell away are pruned (same as dev-deploy updates and rollback).
+    const appManifestObj = {
+      name,
+      description: revisionManifest.description,
+      version: String(version),
+      windowConfig: {
+        defaultWidth: windowConfig.defaultWidth,
+        defaultHeight: windowConfig.defaultHeight,
+        resizable: windowConfig.resizable !== false,
+      },
+      appId,
+      permissions: requestedPermissions,
+      rationale: revisionManifest.rationale,
+    };
+    const updateResponse = await stub.fetch(
+      new Request('http://internal/items', {
+        method: 'PATCH',
+        body: JSON.stringify([{
+          id: appItem.id,
+          updates: {
+            name,
+            appManifest: appManifestObj,
+            grantedPermissions: granted,
+            grantedPermissionApprovals: pruneGrantApprovals(appItem.grantedPermissionApprovals, granted),
+          },
+        }]),
+      })
+    );
+    if (!updateResponse.ok) throw new Error('Failed to update app desktop item');
+
+    await pruneAppReleases(env, uid, appId, r2Prefix).catch((error) => {
+      console.error('App release cleanup failed:', error);
+    });
+    await pruneAppRevisions(env, uid, appId, new Set([revisionWrite.revisionId])).catch((error) => {
+      console.error('App revision cleanup failed:', error);
+    });
+
+    return Response.json({
+      success: true,
+      appId,
+      version,
+      revisionId: revisionWrite.revisionId,
+      restoredFrom: revisionId,
+    });
+  } catch (error) {
+    if (writtenR2Keys.length > 0) {
+      await Promise.allSettled(writtenR2Keys.map((key) => env.ETERNALOS_FILES.delete(key)));
+    }
+    if (writtenRevisionKeys.length > 0) {
+      await Promise.allSettled(writtenRevisionKeys.map((key) => env.ETERNALOS_FILES.delete(key)));
+    }
+    if (appMetadataWriteStarted && previousAppMetadata) {
+      await env.DESKTOP_KV.put(`app:${appId}`, JSON.stringify(previousAppMetadata));
+    }
+    console.error('App revision restore error:', error);
+    const message = error instanceof Error ? error.message : 'Restore failed';
+
+    if (error instanceof AppValidationError) {
+      // The stored source no longer clears the gates. Keep the installed
+      // bundle exactly as it was and record the rejected attempt as an
+      // invalid revision (kind 'restore', diagnostics attached).
+      let failedRevisionId: string | undefined;
+      try {
+        const failed = await writeAppRevision(env, uid, appId, {
+          kind: 'restore',
+          author: 'human',
+          valid: false,
+          issues: error.issues,
+          files,
+          name,
+          description: revisionManifest.description,
+          permissions: requestedPermissions,
+          rationale: revisionManifest.rationale,
+          windowConfig,
+          parentRevision: revisionId,
+          summary: 'Failed restore — validation rejected',
+        });
+        failedRevisionId = failed.revisionId;
+        const currentMeta = await env.DESKTOP_KV.get<AppRegistryMetadata>(`app:${appId}`, 'json');
+        if (currentMeta && currentMeta.uid === uid) {
+          await env.DESKTOP_KV.put(`app:${appId}`, JSON.stringify({
+            ...currentMeta,
+            current_revision: failed.revisionId,
+          }));
+        }
+      } catch (revisionError) {
+        console.error('Failed to record invalid app revision:', revisionError);
+      }
+      const issues: AppValidationIssue[] = error.issues.map((issue) => ({
+        code: issue.code,
+        message: issue.message,
+        ...(issue.file ? { file: issue.file } : {}),
+        ...(issue.evidence ? { evidence: issue.evidence } : {}),
+        ...(issue.hint ? { hint: issue.hint } : {}),
+      }));
+      return Response.json(
+        { error: message, issues, ...(failedRevisionId ? { revision: failedRevisionId } : {}) },
+        { status: 400 },
+      );
+    }
+    const status = /^(App source|App bundle|Invalid app|Duplicate app source|External |Dynamic imports |Imports from |Missing local asset|Source file name|App (reads|writes|deletes|uses|emits|listens))/.test(message) ? 400 : 500;
+    return Response.json({ error: message }, { status });
+  }
 }
 
 export async function handleAppDelete(

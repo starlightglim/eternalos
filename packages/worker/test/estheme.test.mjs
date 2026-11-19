@@ -125,4 +125,64 @@ describe('estheme manifest mirror (worker, zod 4)', () => {
       assert.equal(hasAnyLayer(result.manifest), true);
     });
   });
+
+  describe('v1.1 additions (fork lineage + cursor hotspots) on zod 4', () => {
+    // These pin the merge of the estheme branch's new fields into the zod 4
+    // port: the cursor-object form must validate inside a PARTIAL layer
+    // (partialRecord), mixed with plain strings, and forkedFrom must stay
+    // optional + strict.
+    it('accepts cursor slots in the { file, hotspotX?, hotspotY? } object form, mixed with plain paths', () => {
+      const result = validateManifest(manifestWithLayers({
+        cursors: {
+          default: { file: 'cursors/default.png', hotspotX: 3, hotspotY: 4 },
+          pointer: 'cursors/pointer.png',
+        },
+      }));
+      assert.ok(result.ok, `object-form cursor slots must validate: ${JSON.stringify(result.ok ? null : result.errors)}`);
+      assert.deepEqual(result.manifest.layers.cursors, {
+        default: { file: 'cursors/default.png', hotspotX: 3, hotspotY: 4 },
+        pointer: 'cursors/pointer.png',
+      });
+    });
+
+    it('resolves the bundle path of object-form cursor slots for the file cross-check', () => {
+      const manifest = manifestWithLayers({
+        cursors: { default: { file: 'cursors/default.png', hotspotX: 3, hotspotY: 4 } },
+      });
+
+      const complete = validateManifestAgainstFiles(manifest, new Set(['cursors/default.png']));
+      assert.ok(complete.ok, `declared object-form slot file must pass the cross-check: ${JSON.stringify(complete.ok ? null : complete.errors)}`);
+
+      const missing = validateManifestAgainstFiles(manifest, new Set());
+      assert.ok(!missing.ok, 'a missing object-form slot file must fail the cross-check');
+      assert.ok(
+        missing.errors.some((error) => error.path === 'layers.cursors.default'),
+        `the missing slot should be named: ${JSON.stringify(missing.errors)}`,
+      );
+    });
+
+    it('accepts the optional forkedFrom lineage and keeps it optional', () => {
+      const forked = validateManifest({
+        ...manifestWithLayers({ cursors: { default: 'cursors/default.png' } }),
+        forkedFrom: { id: 'retro-theme', name: 'Retro Theme', author: '@themist', version: '1.0.0' },
+      });
+      assert.ok(forked.ok, `forkedFrom must validate: ${JSON.stringify(forked.ok ? null : forked.errors)}`);
+      assert.equal(forked.manifest.forkedFrom.id, 'retro-theme');
+
+      const without = validateManifest(manifestWithLayers({ cursors: { default: 'cursors/default.png' } }));
+      assert.ok(without.ok, `forkedFrom must stay optional: ${JSON.stringify(without.ok ? null : without.errors)}`);
+    });
+
+    it('rejects a malformed forkedFrom entry', () => {
+      const result = validateManifest({
+        ...manifestWithLayers({ cursors: { default: 'cursors/default.png' } }),
+        forkedFrom: { id: 'x', author: 'nope' },
+      });
+      assert.ok(!result.ok, 'a forkedFrom with a bad author must be rejected');
+      assert.ok(
+        result.errors.some((error) => error.path.startsWith('forkedFrom')),
+        `error should name the forkedFrom field: ${JSON.stringify(result.errors)}`,
+      );
+    });
+  });
 });

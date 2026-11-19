@@ -1,0 +1,352 @@
+/* App revision history panel — Developer Studio. All colors derive from the
+ * theme's global palette variables (same vocabulary as
+ * DeveloperStudio.module.css); no hard-coded colors. */
+
+.panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--surface);
+  font-family: var(--font-geneva), -apple-system, sans-serif;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  background: var(--surface-chrome);
+  border-bottom: 1px solid var(--control-border);
+  box-shadow: 0 1px 0 var(--highlight);
+  flex-shrink: 0;
+}
+
+.title {
+  font-family: var(--font-chicago);
+  font-size: 11px;
+  font-weight: bold;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.headerActions {
+  display: flex;
+  gap: 4px;
+}
+
+.headerBtn {
+  font-family: var(--font-chicago);
+  font-size: 10px;
+  background: var(--control-bg);
+  color: var(--control-text);
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+  padding: 3px 8px;
+  cursor: pointer;
+  box-shadow:
+    inset 1px 1px 0 var(--highlight),
+    inset -1px -1px 0 var(--shadow);
+}
+
+.headerBtn:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
+}
+
+.headerBtn:active {
+  background: var(--selection);
+  color: var(--selection-text, var(--white));
+}
+
+.headerBtn:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.list {
+  width: 240px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--surface-chrome);
+  border-right: 1px solid var(--control-border);
+}
+
+.empty {
+  padding: 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.row:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-chrome));
+  border-color: var(--control-border);
+}
+
+.rowActive {
+  background: var(--selection);
+  color: var(--selection-text, var(--white));
+  border: 1px dashed var(--accent);
+}
+
+.row:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.rowSummary {
+  font-size: 11px;
+  font-weight: bold;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowMeta {
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.rowActive .rowMeta {
+  color: var(--selection-text, var(--white));
+  opacity: 0.85;
+}
+
+.rowBadges {
+  display: flex;
+  gap: 4px;
+}
+
+.badge,
+.badgeValid,
+.badgeInvalid {
+  font-size: 9px;
+  font-weight: bold;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid var(--control-border);
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--control-bg) 70%, transparent);
+}
+
+.badgeValid {
+  color: var(--selection-text, var(--white));
+  background: color-mix(in srgb, var(--accent) 55%, var(--control-bg));
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--control-border));
+}
+
+.badgeInvalid {
+  color: var(--white, var(--text));
+  background: color-mix(in srgb, var(--danger) 55%, var(--control-bg));
+  border-color: color-mix(in srgb, var(--danger) 70%, var(--control-border));
+}
+
+.detail {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.detailHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.detailTitle {
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--text);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.detailParent {
+  font-weight: normal;
+  color: var(--text-muted);
+}
+
+.restoreBtn {
+  font-family: var(--font-chicago);
+  font-size: 10px;
+  font-weight: bold;
+  background: var(--control-bg);
+  color: var(--control-text);
+  border: 2px solid var(--control-border);
+  border-radius: 3px;
+  padding: 4px 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+  box-shadow:
+    inset 1px 1px 0 var(--highlight),
+    inset -1px -1px 0 var(--shadow);
+}
+
+.restoreBtn:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--control-bg));
+}
+
+.restoreBtn:active {
+  background: var(--selection);
+  color: var(--selection-text, var(--white));
+}
+
+.restoreBtn:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.diagnostics {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 60%, var(--control-border));
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.diagnosticsTitle {
+  font-size: 11px;
+  font-weight: bold;
+  color: var(--danger, var(--text));
+}
+
+.issue {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.issueCode {
+  font-family: var(--font-monaco), monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.issueHint {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.noDiff {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.diffFile {
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--surface-chrome);
+}
+
+.diffFileHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  background: var(--control-bg);
+  border-bottom: 1px solid var(--control-border);
+}
+
+.diffFileName {
+  font-family: var(--font-monaco), monospace;
+  font-size: 11px;
+  font-weight: bold;
+  color: var(--text);
+}
+
+.diffStatus {
+  font-size: 9px;
+  font-weight: bold;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border: 1px solid var(--control-border);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.diffStatus[data-status='added'] {
+  color: var(--accent, var(--text));
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--control-border));
+}
+
+.diffStatus[data-status='removed'] {
+  color: var(--danger, var(--text));
+  border-color: color-mix(in srgb, var(--danger) 60%, var(--control-border));
+}
+
+.diffBody {
+  margin: 0;
+  padding: 8px;
+  font-family: var(--font-monaco), monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--surface);
+  overflow-x: auto;
+  tab-size: 2;
+  -moz-tab-size: 2;
+}
+
+.statusBar {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--surface-chrome);
+  border-top: 1px solid var(--control-border);
+  box-shadow: inset 0 1px 0 var(--highlight);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.statusBar[data-kind='error'] {
+  color: var(--danger, var(--text));
+}
+
+.statusBar[data-kind='success'] {
+  color: var(--accent, var(--text));
+}
+
+.statusBar[data-kind='loading'] {
+  color: var(--text);
+  opacity: 0.75;
+}

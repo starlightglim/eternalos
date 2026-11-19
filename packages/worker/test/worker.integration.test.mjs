@@ -666,6 +666,44 @@ describe('worker integration', () => {
       method: 'POST', headers: authHeaders(user.token), body: badForm,
     });
     assert.equal(badAuthor.response.status, 403);
+
+    // Fork lineage + hotspot-object cursor slots (the v1.1 manifest additions)
+    // publish and read back; the schema additions are optional so this
+    // old-shape manifest above still validates too.
+    const forkedManifest = {
+      ...manifest,
+      id: 'retro-fork',
+      layers: {
+        tokens: 'tokens.json',
+        cursors: { default: { file: 'cursors/default.png', hotspotX: 3, hotspotY: 4 } },
+      },
+      forkedFrom: { id: 'retro-theme', name: 'Retro Theme', author, version: '1.0.0' },
+    };
+    const forkedForm = new UndiciFormData();
+    forkedForm.set('manifest', JSON.stringify(forkedManifest));
+    forkedForm.set('preview', createPngFile('preview.png'));
+    forkedForm.set('file_tokens.json', tokensFile());
+    forkedForm.set('file_cursors/default.png', createPngFile('default.png'));
+    const forked = await expectOk('/api/bazaar/publish-estheme', {
+      method: 'POST', headers: authHeaders(user.token), body: forkedForm,
+    });
+    assert.equal(forked.manifest.forkedFrom.id, 'retro-theme');
+    assert.deepEqual(forked.manifest.layers.cursors, {
+      default: { file: 'cursors/default.png', hotspotX: 3, hotspotY: 4 },
+    });
+
+    // Malformed lineage (bad author handle) is a 400, not a 500.
+    const badLineage = await fetchJson('/api/bazaar/publish-estheme', {
+      method: 'POST', headers: authHeaders(user.token), body: (() => {
+        const form = new UndiciFormData();
+        form.set('manifest', JSON.stringify({ ...forkedManifest, forkedFrom: { id: 'x', author: 'nope' } }));
+        form.set('preview', createPngFile('p.png'));
+        form.set('file_tokens.json', tokensFile());
+        form.set('file_cursors/default.png', createPngFile('d.png'));
+        return form;
+      })(),
+    });
+    assert.equal(badLineage.response.status, 400);
   });
 
   it('publishes and republishes a playable Bazaar game', async () => {
@@ -3037,6 +3075,106 @@ describe('worker integration', () => {
     assert.equal(renamed[0].name, 'Renamed Anyway');
   });
 
+  it('applies item writes all-or-nothing: a bad entry rejects the batch and applies nothing', async () => {
+    const user = await signupUser();
+
+    // Two target items. The 1st entry of every rejected batch below tries to
+    // rename `first` — with the old mid-loop validation that rename was
+    // already applied to the DO's in-memory map when a later entry threw, so
+    // GET showed a change storage never saw (and the client got a 500 for
+    // bad input). The harness keeps the DO instance alive for the worker's
+    // lifetime with no restart API, so a forced fresh storage read isn't
+    // reachable; the GET assertions below are the observable half — they
+    // fail on the old code precisely because memory and storage disagreed.
+    const first = await createDesktopItem(user.token, {
+      type: 'folder', name: 'First', position: { x: 0, y: 0 },
+    });
+    const second = await createDesktopItem(user.token, {
+      type: 'link', name: 'Second', url: 'https://example.com/', position: { x: 1, y: 0 },
+    });
+
+    // An unsafe URL in the 2nd entry rejects the whole batch: a 400 naming
+    // the entry, and the 1st entry is not applied.
+    const badUrl = await fetchJson('/api/desktop/items', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify([
+        { id: first.id, updates: { name: 'Should Not Apply' } },
+        { id: second.id, updates: { url: 'javascript:alert(1)' } },
+      ]),
+    });
+    assert.equal(badUrl.response.status, 400, `unsafe URL must be a 400, got ${badUrl.response.status}`);
+    assert.match(badUrl.body.error, /Patch entry 1/, 'the rejection names the offending entry index');
+    assert.match(badUrl.body.error, /URL/, 'the rejection names the reason');
+    let desktop = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+    assert.equal(desktop.items.find((item) => item.id === first.id).name, 'First',
+      'the 1st entry of a rejected batch is not applied');
+
+    // Every malformed entry shape gets the same all-or-nothing treatment
+    // (a null entry used to 500 mid-batch, a shapeless entry was a 500 or a
+    // silent no-op depending on whether its id resolved).
+    const badEntries = [
+      ['a null entry', null],
+      ['a non-object entry', 42],
+      ['an entry without a string id', { updates: { name: 'Nope' } }],
+      ['an entry with a non-string id', { id: 42, updates: { name: 'Nope' } }],
+      ['an entry without updates', { id: first.id }],
+      ['an entry with null updates', { id: first.id, updates: null }],
+      ['an entry with non-object updates', { id: first.id, updates: 'junk' }],
+    ];
+    for (const [label, entry] of badEntries) {
+      const res = await fetchJson('/api/desktop/items', {
+        method: 'PATCH',
+        headers: authHeaders(user.token, JSON_HEADERS),
+        body: JSON.stringify([
+          { id: first.id, updates: { name: 'Should Not Apply' } },
+          entry,
+        ]),
+      });
+      assert.equal(res.response.status, 400, `${label} must be a 400, got ${res.response.status}`);
+      assert.match(res.body.error, /Patch entry 1/, `${label}: the rejection names the offending entry`);
+      desktop = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+      assert.equal(desktop.items.find((item) => item.id === first.id).name, 'First',
+        `${label}: the batch applied nothing`);
+    }
+
+    // POST with valid JSON that isn't an object is a 400 and creates
+    // nothing (it used to spread into the defaults and silently create a
+    // default "Untitled" folder).
+    const idsBefore = new Set(
+      (await expectOk('/api/desktop', { headers: authHeaders(user.token) })).items.map((item) => item.id)
+    );
+    for (const body of ['42', '"x"', '[]', 'null', 'true']) {
+      const res = await fetchJson('/api/desktop/items', {
+        method: 'POST',
+        headers: authHeaders(user.token, JSON_HEADERS),
+        body,
+      });
+      assert.equal(res.response.status, 400, `POST ${body} must be a 400, got ${res.response.status}`);
+      assert.match(res.body.error, /JSON object/, `POST ${body} names the reason`);
+    }
+    desktop = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+    assert.deepEqual(
+      new Set(desktop.items.map((item) => item.id)),
+      idsBefore,
+      'no phantom item was created by the refused creates',
+    );
+
+    // Valid batches are unchanged: a well-formed two-entry batch applies
+    // both entries and returns them in order.
+    const both = await patchItems(user.token, [
+      { id: first.id, updates: { name: 'First Renamed' } },
+      { id: second.id, updates: { url: 'https://example.org/' } },
+    ]);
+    assert.equal(both.length, 2);
+    assert.equal(both[0].name, 'First Renamed');
+    assert.equal(both[1].url, 'https://example.org/');
+
+    // Unknown ids keep their silent-skip semantics inside a valid batch.
+    const skipped = await patchItems(user.token, [{ id: 'does-not-exist', updates: { name: 'X' } }]);
+    assert.deepEqual(skipped, []);
+  });
+
   it('exports account data without leaking password-equivalent secrets', async () => {
     const user = await signupUser();
     const exportRes = await worker.fetch(`${BASE_URL}/api/auth/export-data`, {
@@ -4245,5 +4383,293 @@ describe('worker integration', () => {
     // Idempotent: a second scheduled run with nothing due does not error.
     const scheduledAgain = await worker.fetch(`${BASE_URL}/cdn-cgi/handler/scheduled`, { method: 'POST' });
     assert.ok(scheduledAgain.ok);
+  });
+
+  // -------------------------------------------------------------------------
+  // App source revisions (design/13, first slice): every save records an
+  // immutable revision; failed saves keep the installed bundle and record
+  // diagnostics; restore appends a new revision and never widens grants.
+  // -------------------------------------------------------------------------
+
+  it('records an immutable revision per dev-deploy and restores without rewriting history', async () => {
+    const user = await signupUser();
+    const deploy = (appId, marker) => expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        ...(appId ? { appId } : {}),
+        manifest: {
+          name: 'Revision App',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+        },
+        files: {
+          'index.html': `<!doctype html><html><body><h1>${marker}</h1></body></html>`,
+          'app.js': `/* ${marker} */`,
+        },
+      }),
+    });
+    const revisionsList = () => expectOk(`/api/apps/${encodeURIComponent(appId)}/revisions`, {
+      headers: authHeaders(user.token),
+    });
+    const revisionDetail = (revisionId) => expectOk(
+      `/api/apps/${encodeURIComponent(appId)}/revisions/${encodeURIComponent(revisionId)}`,
+      { headers: authHeaders(user.token) },
+    );
+
+    const created = await deploy(null, 'rev-one');
+    const appId = created.appId;
+    assert.ok(created.revision, 'a successful create returns its revision id');
+
+    let history = await revisionsList();
+    assert.equal(history.revisions.length, 1);
+    const firstRevision = history.revisions[0];
+    assert.equal(firstRevision.kind, 'deploy');
+    assert.equal(firstRevision.author, 'human');
+    assert.equal(firstRevision.valid, true);
+    assert.equal(firstRevision.appVersion, 1);
+    assert.equal(history.currentRevision, firstRevision.id);
+    assert.equal(history.lastValidRevision, firstRevision.id);
+
+    const updated = await deploy(appId, 'rev-two');
+    assert.equal(updated.version, 2);
+    history = await revisionsList();
+    assert.deepEqual(
+      history.revisions.map((revision) => revision.appVersion),
+      [2, 1],
+      'revisions list newest-first',
+    );
+    assert.equal(history.currentRevision, updated.revision);
+    assert.equal(history.lastValidRevision, updated.revision);
+
+    // The old revision's files are intact and fetchable.
+    const firstFiles = await revisionDetail(firstRevision.id);
+    assert.match(firstFiles.files['index.html'], /rev-one/);
+    assert.deepEqual(firstFiles.revision.diagnostics, { valid: true, issues: [] });
+
+    // Restore appends: a NEW revision + a NEW release; nothing is rewritten.
+    const restored = await expectOk(
+      `/api/apps/${encodeURIComponent(appId)}/revisions/${encodeURIComponent(firstRevision.id)}/restore`,
+      { method: 'POST', headers: authHeaders(user.token) },
+    );
+    assert.equal(restored.version, 3, 'restore deploys the next release version');
+    assert.equal(restored.restoredFrom, firstRevision.id);
+    assert.notEqual(restored.revisionId, firstRevision.id);
+
+    const served = await worker.fetch(`${BASE_URL}/api/apps/${encodeURIComponent(appId)}/`);
+    assert.equal(served.status, 200);
+    assert.match(await served.text(), /rev-one/, 'the installed bundle is the restored source');
+
+    history = await revisionsList();
+    assert.equal(history.revisions.length, 3);
+    const restoreRow = history.revisions[0];
+    assert.equal(restoreRow.kind, 'restore');
+    assert.equal(restoreRow.parentRevision, firstRevision.id);
+    assert.equal(restoreRow.valid, true);
+    assert.equal(restoreRow.appVersion, 3);
+    assert.equal(history.currentRevision, restored.revisionId);
+    assert.equal(history.lastValidRevision, restored.revisionId);
+
+    // History stays immutable: the v2 revision still holds the v2 source.
+    const secondFiles = await revisionDetail(updated.revision);
+    assert.match(secondFiles.files['index.html'], /rev-two/);
+    const restoredFiles = await revisionDetail(firstRevision.id);
+    assert.match(restoredFiles.files['index.html'], /rev-one/);
+
+    const source = await expectOk(`/api/apps/${encodeURIComponent(appId)}/source`, {
+      headers: authHeaders(user.token),
+    });
+    assert.match(source.files['index.html'], /rev-one/);
+  });
+
+  it('keeps the installed bundle when a save fails and records diagnostics on the failed revision', async () => {
+    const user = await signupUser();
+    const deploy = (appId, files) => expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        ...(appId ? { appId } : {}),
+        manifest: {
+          name: 'Failed Save App',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+        },
+        files,
+      }),
+    });
+
+    const created = await deploy(null, {
+      'index.html': '<!doctype html><html><body><h1>still-installed</h1></body></html>',
+      'app.js': '/* ok */',
+    });
+    const appId = created.appId;
+    const installedRevision = created.revision;
+
+    // A rejected update: validation runs before any release write, so the
+    // installed bundle must survive — and the attempt must be recorded.
+    const rejected = await fetchJson('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        appId,
+        manifest: {
+          name: 'Failed Save App',
+          version: '2.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+        },
+        files: {
+          'index.html': '<!doctype html><html><body><script src="https://evil.example/x.js"></script></body></html>',
+          'app.js': '/* still ok */',
+        },
+      }),
+    });
+    assert.equal(rejected.response.status, 400);
+    assert.ok(Array.isArray(rejected.body.issues));
+    assert.equal(rejected.body.issues[0].code, 'source/external-script');
+    assert.ok(rejected.body.revision, 'a failed update records its revision id');
+
+    // The installed bundle and the served source are unchanged.
+    const served = await worker.fetch(`${BASE_URL}/api/apps/${encodeURIComponent(appId)}/`);
+    assert.match(await served.text(), /still-installed/);
+    const source = await expectOk(`/api/apps/${encodeURIComponent(appId)}/source`, {
+      headers: authHeaders(user.token),
+    });
+    assert.match(source.files['index.html'], /still-installed/);
+
+    const history = await expectOk(`/api/apps/${encodeURIComponent(appId)}/revisions`, {
+      headers: authHeaders(user.token),
+    });
+    assert.equal(history.revisions.length, 2, 'the failed attempt is part of the history');
+    const failed = history.revisions[0];
+    assert.equal(failed.valid, false);
+    assert.equal(failed.summary, 'Failed save — validation rejected');
+    assert.equal(history.currentRevision, rejected.body.revision);
+    assert.equal(history.lastValidRevision, installedRevision, 'the last valid pointer did not move');
+
+    const detail = await expectOk(
+      `/api/apps/${encodeURIComponent(appId)}/revisions/${encodeURIComponent(rejected.body.revision)}`,
+      { headers: authHeaders(user.token) },
+    );
+    assert.equal(detail.revision.valid, false);
+    assert.ok(detail.revision.diagnostics.issues.length >= 1);
+    assert.equal(detail.revision.diagnostics.issues[0].code, 'source/external-script');
+    assert.match(detail.files['index.html'], /evil\.example/, 'the attempted (rejected) source is recorded');
+  });
+
+  it('restore never widens grants beyond the current grant', async () => {
+    const user = await signupUser();
+    const html = (marker) => ({
+      'index.html': `<!doctype html><html><body><h1>${marker}</h1></body></html>`,
+    });
+
+    // v1 declares a narrow scope and a broad one; the user grants both.
+    const app = await expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name: 'Grant Restore App',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+          permissions: { fs: { read: ['/Gallery/**', '/**'] } },
+          rationale: 'Needs broad read.',
+        },
+        files: html('v1'),
+      }),
+    });
+    const appIdEncoded = encodeURIComponent(app.appId);
+    await expectOk(`/api/apps/${appIdEncoded}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        granted: { fs: { read: ['/Gallery/**', '/**'] } },
+        broadApprovals: ['fs.read'],
+      }),
+    });
+
+    // v2 stops re-declaring the broad scope. Under dev-deploy's update rule
+    // (grants intersect with the declaration, never expand), the stored
+    // grant drops the scope that is no longer declared.
+    await expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        appId: app.appId,
+        manifest: {
+          name: 'Grant Restore App',
+          version: '2.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+          permissions: { fs: { read: ['/Gallery/**'] } },
+          rationale: 'Narrowed.',
+        },
+        files: html('v2'),
+      }),
+    });
+    const afterNarrow = await expectOk(`/api/apps/${appIdEncoded}/permissions`, {
+      headers: authHeaders(user.token),
+    });
+    assert.deepEqual(afterNarrow.granted, { fs: { read: ['/Gallery/**'] } });
+
+    // Restoring the broad v1 revision re-declares BOTH scopes, but the
+    // grant intersects with the current grant and must not re-open the
+    // broad one — restore follows the same never-expand rule as updates.
+    const restored = await expectOk(
+      `/api/apps/${appIdEncoded}/revisions/${encodeURIComponent(app.revision)}/restore`,
+      { method: 'POST', headers: authHeaders(user.token) },
+    );
+    assert.equal(restored.success, true);
+
+    const afterRestore = await expectOk(`/api/apps/${appIdEncoded}/permissions`, {
+      headers: authHeaders(user.token),
+    });
+    assert.deepEqual(afterRestore.requested.fs.read, ['/Gallery/**', '/**'],
+      'the declared set follows the restored revision');
+    assert.deepEqual(afterRestore.granted, { fs: { read: ['/Gallery/**'] } },
+      'restore must never re-grant a scope the current grant dropped');
+  });
+
+  it('gates the revision routes to the app owner and validates revision ids', async () => {
+    const owner = await signupUser();
+    const rival = await signupUser();
+    const app = await expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(owner.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name: 'Guarded History App',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+        },
+        files: { 'index.html': '<!doctype html><html><body>guarded</body></html>' },
+      }),
+    });
+    const appIdEncoded = encodeURIComponent(app.appId);
+    const ownerHeaders = authHeaders(owner.token);
+    const rivalHeaders = authHeaders(rival.token, JSON_HEADERS);
+
+    // Unauthenticated requests never reach the handler.
+    assert.equal((await fetchJson(`/api/apps/${appIdEncoded}/revisions`, {})).response.status, 401);
+
+    // The owner sees the history; nobody else does.
+    const ownerHistory = await expectOk(`/api/apps/${appIdEncoded}/revisions`, { headers: ownerHeaders });
+    assert.equal(ownerHistory.revisions.length, 1);
+    assert.equal((await fetchJson(`/api/apps/${appIdEncoded}/revisions`, { headers: rivalHeaders })).response.status, 403);
+    assert.equal((await fetchJson(`/api/apps/${appIdEncoded}/revisions/${encodeURIComponent(app.revision)}`, { headers: rivalHeaders })).response.status, 403);
+    assert.equal((await fetchJson(`/api/apps/${appIdEncoded}/revisions/${encodeURIComponent(app.revision)}/restore`, { method: 'POST', headers: rivalHeaders })).response.status, 403);
+
+    // Unknown app → 404 (not 403: existence is not leaked to a stranger).
+    assert.equal((await fetchJson('/api/apps/missing-app/revisions', { headers: ownerHeaders })).response.status, 404);
+
+    // Unknown but well-formed revision → 404; malformed revision id → 400.
+    assert.equal((await fetchJson(`/api/apps/${appIdEncoded}/revisions/1770000000000-zzzzzzzz`, { headers: ownerHeaders })).response.status, 404);
+    const malformed = await fetchJson(`/api/apps/${appIdEncoded}/revisions/${encodeURIComponent('../../v1')}`, { headers: ownerHeaders });
+    assert.equal(malformed.response.status, 400);
+
+    // The owner's own restore is allowed (positive control).
+    const restored = await expectOk(
+      `/api/apps/${appIdEncoded}/revisions/${encodeURIComponent(app.revision)}/restore`,
+      { method: 'POST', headers: ownerHeaders },
+    );
+    assert.equal(restored.restoredFrom, app.revision);
   });
 });

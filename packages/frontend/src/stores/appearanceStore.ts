@@ -293,6 +293,13 @@ interface AppearanceStore {
   resetAppearance: () => void;
   saveAppearance: () => Promise<void>;
   loadAppearance: (appearance: CustomAppearance) => void;
+  /**
+   * Restore an exact appearance snapshot — the .estheme preview Revert path.
+   * Unlike loadAppearance this NEVER persists: the restored state is whatever
+   * the user had before the preview (saved or not), so localStorage keeps the
+   * last-saved mirror and the unsaved flag is whatever the snapshot carried.
+   */
+  restoreAppearanceSnapshot: (appearance: CustomAppearance, wasUnsaved: boolean) => void;
 }
 
 export const useAppearanceStore = create<AppearanceStore>((set, get) => {
@@ -425,6 +432,15 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => {
         customCSSPreviewSummary: undefined,
         hasUnsavedChanges: false,
       });
+    },
+
+    restoreAppearanceSnapshot: (appearance: CustomAppearance, wasUnsaved: boolean) => {
+      // Paint the exact pre-preview state without touching persistence: the
+      // localStorage mirror still holds the last-saved appearance, and the
+      // unsaved flag returns to whatever the snapshot carried (a preview over
+      // unsaved manual edits reverts to those unsaved edits).
+      applyAppearance(appearance);
+      set({ appearance, hasUnsavedChanges: wasUnsaved });
     },
   };
 });

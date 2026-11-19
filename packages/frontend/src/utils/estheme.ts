@@ -17,7 +17,7 @@ import { z } from 'zod';
 // Schema (mirror of worker/src/utils/estheme.ts)
 // ---------------------------------------------------------------------------
 
-const CURSOR_STATES = [
+export const CURSOR_STATES = [
   'default',
   'pointer',
   'grab',
@@ -28,7 +28,7 @@ const CURSOR_STATES = [
   'nwse-resize',
 ] as const;
 
-const SOUND_EVENTS = [
+export const SOUND_EVENTS = [
   'click',
   'windowOpen',
   'windowClose',
@@ -62,6 +62,26 @@ const bundlePathRegex = /^(?!\.\.\/)(?!\/)(?!.*\/\.\.\/)[A-Za-z0-9._\-/]+$/;
 
 const bundlePath = z.string().regex(bundlePathRegex, 'Invalid bundle path');
 const colorValue = z.string().max(200);
+
+/**
+ * True only for a zip-entry-safe bundle path: relative, forward slashes, no
+ * `.`/`..` segments, no backslashes or control characters, bounded length.
+ * The manifest schema's `bundlePath` regex rejects the dangerous *declared*
+ * shapes (`../`, leading `/`); this additionally rejects any entry whose
+ * *segments* are `.` or `..` (e.g. a file literally named `..` or
+ * `cursors/..`), and is applied to EVERY file in a parsed bundle, not just
+ * the ones the manifest references — a hostile zip must not carry traversal-
+ * shaped paths at all. (JSZip normalizes `../` segments itself on load; the
+ * backslash/control-character shapes it preserves are what this guard
+ * actually intercepts, and `isSafeBundlePath` is exported so the rule is
+ * pinned regardless of which loader sits in front of it.)
+ */
+export function isSafeBundlePath(path: string): boolean {
+  if (!path || path.length > 200) return false;
+  if (path.startsWith('/') || path.includes('\\')) return false;
+  if (!/^[A-Za-z0-9._\-/]+$/.test(path)) return false;
+  return path.split('/').every((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
+}
 
 export const tokensLayerSchema = z
   .object({
@@ -109,8 +129,33 @@ const wallpaperLayerSchema = z
 // theme supplying only some cursor/sound/icon slots would be wrongly rejected.
 // Themes declare only the slots they override, so these layers must be partial.
 // (The worker mirror is on zod 3, where plain `record` is already partial.)
+//
+// A cursor slot value is either a plain bundle path (the original v1 form) or
+// `{ file, hotspotX?, hotspotY? }`. The object form carries the authored
+// hotspot so exported cursor packs round-trip their click point instead of
+// silently degrading to 0,0; plain-string values keep old bundles importing.
+export interface EsthemeCursorSlot {
+  file: string;
+  hotspotX?: number;
+  hotspotY?: number;
+}
+export type EsthemeCursorLayerValue = string | EsthemeCursorSlot;
+
+/** The bundle path a cursor layer value refers to, in either form. */
+export function cursorSlotPath(value: EsthemeCursorLayerValue): string {
+  return typeof value === 'string' ? value : value.file;
+}
+
+const cursorSlotSchema = z
+  .object({
+    file: bundlePath,
+    hotspotX: z.number().int().min(0).max(64).optional(),
+    hotspotY: z.number().int().min(0).max(64).optional(),
+  })
+  .strict();
+
 const cursorsLayerSchema = z
-  .partialRecord(z.enum(CURSOR_STATES), bundlePath)
+  .partialRecord(z.enum(CURSOR_STATES), z.union([bundlePath, cursorSlotSchema]))
   .refine((value) => Object.keys(value).length > 0, {
     message: 'cursors layer declared but empty',
   });
@@ -158,6 +203,20 @@ const creditsEntrySchema = z
   })
   .strict();
 
+/**
+ * Fork lineage — recorded when a theme was exported from a rice that was
+ * itself installed from another `.estheme`. Optional in the manifest so
+ * formatVersion-1 bundles written before this field exist still import.
+ */
+export const forkedFromSchema = z
+  .object({
+    id: z.string().regex(slugRegex),
+    name: z.string().min(1).max(80).optional(),
+    author: z.string().regex(authorRegex),
+    version: z.string().regex(semverRegex).optional(),
+  })
+  .strict();
+
 export const esthemeManifestSchema = z
   .object({
     formatVersion: z.literal(1),
@@ -167,6 +226,8 @@ export const esthemeManifestSchema = z
     version: z.string().regex(semverRegex),
     author: z.string().regex(authorRegex),
     extends: z.string().max(128).optional(),
+    /** Fork lineage (optional — see forkedFromSchema). */
+    forkedFrom: forkedFromSchema.optional(),
     tags: z.array(z.string().min(1).max(32)).max(10).optional(),
     license: z.string().max(64).optional(),
     homepage: z.string().url().max(512).optional(),
@@ -179,9 +240,13 @@ export const esthemeManifestSchema = z
   .strict();
 
 export type EsthemeManifest = z.infer<typeof esthemeManifestSchema>;
+export type EsthemeForkedFrom = z.infer<typeof forkedFromSchema>;
 export type EsthemeTokens = z.infer<typeof tokensLayerSchema>;
 export type EsthemeVariants = z.infer<typeof variantsLayerSchema>;
 export type EsthemeTypography = z.infer<typeof typographyLayerSchema>;
+export type EsthemeCursorState = (typeof CURSOR_STATES)[number];
+export type EsthemeSoundEvent = (typeof SOUND_EVENTS)[number];
+export type EsthemeIconSlot = (typeof ICON_SLOTS)[number];
 
 // ---------------------------------------------------------------------------
 // Builder input types (what the caller hands us to pack)
@@ -205,8 +270,10 @@ export interface EsthemeBuildInput {
     mode?: 'cover' | 'tile' | 'center';
   };
 
-  /** Cursor slots → Blob + filename. */
-  cursors?: Partial<Record<(typeof CURSOR_STATES)[number], { blob: Blob; filename: string }>>;
+  /** Cursor slots → Blob + filename (+ authored hotspot, 0–64). */
+  cursors?: Partial<
+    Record<(typeof CURSOR_STATES)[number], { blob: Blob; filename: string; hotspotX?: number; hotspotY?: number }>
+  >;
 
   /** Sound slots → Blob + filename. */
   sounds?: Partial<Record<(typeof SOUND_EVENTS)[number], { blob: Blob; filename: string }>>;
@@ -273,7 +340,7 @@ export function validateManifestAgainstFiles(
     if (layers.wallpaper.mobileFile) check(layers.wallpaper.mobileFile, 'wallpaper.mobileFile');
   }
   for (const [slot, pathValue] of Object.entries(layers.cursors ?? {})) {
-    check(pathValue, `cursors.${slot}`);
+    check(cursorSlotPath(pathValue as EsthemeCursorLayerValue), `cursors.${slot}`);
   }
   for (const [slot, pathValue] of Object.entries(layers.sounds ?? {})) {
     check(pathValue, `sounds.${slot}`);
@@ -337,12 +404,22 @@ export async function buildEsthemeBundle(
   }
 
   if (input.cursors && Object.keys(input.cursors).length > 0) {
-    const cursorMap: Record<string, string> = {};
+    const cursorMap: Record<string, string | EsthemeCursorSlot> = {};
     for (const [slot, asset] of Object.entries(input.cursors)) {
       if (!asset) continue;
       const path = `cursors/${asset.filename}`;
       zip.file(path, asset.blob);
-      cursorMap[slot] = path;
+      // Object form whenever the author supplied a hotspot so the click
+      // point survives the round-trip; plain string otherwise (v1 form).
+      if (asset.hotspotX !== undefined || asset.hotspotY !== undefined) {
+        cursorMap[slot] = {
+          file: path,
+          hotspotX: asset.hotspotX ?? 0,
+          hotspotY: asset.hotspotY ?? 0,
+        };
+      } else {
+        cursorMap[slot] = path;
+      }
     }
     if (Object.keys(cursorMap).length > 0) {
       layers.cursors = cursorMap as EsthemeManifest['layers']['cursors'];
@@ -432,25 +509,243 @@ export interface ParsedBundle {
   files: Map<string, Blob>;
 }
 
+/** Hard ceiling on the files a bundle may declare (assets + layers + previews). */
+export const MAX_BUNDLE_FILES = 64;
+
+/**
+ * Total extracted (uncompressed) bytes a bundle may carry. Mirrors the build
+ * limit (`MAX_BUNDLE_SIZE_BYTES`): a hostile zip must not be able to expand
+ * past the size the builder would ever emit. Enforced in TWO layers, because
+ * the central directory can lie:
+ *
+ *   1. before inflating anything, the entries' DECLARED uncompressed sizes
+ *      are summed and checked (plus a per-entry cap and a plausibility ratio
+ *      check) — a classic zip bomb is turned away at the directory;
+ *   2. every entry is then inflated through a streaming read that aborts the
+ *      moment the running total passes the cap, so a zip whose declared
+ *      sizes lie small is still cut off mid-stream instead of being
+ *      materialized whole.
+ */
+export const MAX_BUNDLE_CONTENT_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Cap on manifest.json alone. It is the one entry inflated before the
+ * manifest's own layer table can be cross-checked, and the only one whose
+ * content we JSON.parse — 256KB is two orders of magnitude above the largest
+ * manifest the builder can emit (50 changelog + 50 credits entries at their
+ * per-field caps stay well under 60KB), so nothing legitimate is lost while
+ * a hostile "manifest" costs at most a bounded inflate + parse.
+ */
+export const MAX_MANIFEST_BYTES = 256 * 1024;
+
+/**
+ * Ratio gate tuning: only entries DECLARING more than 1MB uncompressed are
+ * ratio-checked, and anything above 100:1 expansion is rejected. Why 100:1 —
+ * DEFLATE tops out near its theoretical ~1032:1 on crafted input, while the
+ * >1MB payloads a real theme carries (JPEG/PNG wallpapers and previews,
+ * MP3s) are already compressed and re-deflate at ~1:1, and every text layer
+ * the format allows is far below 1MB. No honestly-declared bundle crosses
+ * 100:1 above 1MB; a directory claiming triple-digit expansion for a big
+ * entry is a bomb signature, not a theme.
+ */
+const MAX_PLAUSIBLE_RATIO_ENTRY_BYTES = 1024 * 1024;
+const MAX_PLAUSIBLE_COMPRESSION_RATIO = 100;
+
+/**
+ * The central-directory sizes JSZip records for a loaded entry (`_data` is
+ * the internal CompressedObject; JSZip does not expose these through its
+ * typings). These are exactly the values a hostile zip can LIE about, which
+ * is why nothing security-relevant relies on them alone — the streaming read
+ * re-checks every byte as it inflates.
+ */
+function declaredSizes(entry: JSZip.JSZipObject): { uncompressed: number | null; compressed: number | null } {
+  const data = (entry as unknown as { _data?: { uncompressedSize?: unknown; compressedSize?: unknown } })._data;
+  if (!data || typeof data !== 'object') return { uncompressed: null, compressed: null };
+  const read = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+  return { uncompressed: read(data.uncompressedSize), compressed: read(data.compressedSize) };
+}
+
+const mb = (bytes: number): number => Math.round(bytes / 1024 / 1024);
+
+/**
+ * Pre-inflation gate: reject bundles whose own central directory admits they
+ * are over the content cap — per entry, summed, or by implausible claimed
+ * expansion — BEFORE a single byte is inflated. `manifest.json` is skipped
+ * here; it carries its own (much smaller) declared cap at read time.
+ */
+function assertDeclaredSizesAcceptable(entries: { path: string; entry: JSZip.JSZipObject }[]): void {
+  let declaredTotal = 0;
+  for (const { path, entry } of entries) {
+    if (path === 'manifest.json') continue;
+    const { uncompressed, compressed } = declaredSizes(entry);
+    // A null declared size (entry not backed by a central-directory record)
+    // cannot be pre-checked — the streaming cap below still bounds it.
+    if (uncompressed === null) continue;
+    if (uncompressed > MAX_BUNDLE_CONTENT_BYTES) {
+      throw new Error(
+        `Invalid bundle: "${path}" declares ${mb(uncompressed)}MB of content, over the ${mb(MAX_BUNDLE_CONTENT_BYTES)}MB limit`,
+      );
+    }
+    if (
+      uncompressed > MAX_PLAUSIBLE_RATIO_ENTRY_BYTES &&
+      compressed !== null &&
+      compressed > 0 &&
+      uncompressed / compressed > MAX_PLAUSIBLE_COMPRESSION_RATIO
+    ) {
+      throw new Error(
+        `Invalid bundle: "${path}" declares over ${MAX_PLAUSIBLE_COMPRESSION_RATIO}:1 compression — implausible for theme assets`,
+      );
+    }
+    declaredTotal += uncompressed;
+  }
+  if (declaredTotal > MAX_BUNDLE_CONTENT_BYTES) {
+    throw new Error(
+      `Invalid bundle: entries declare ${mb(declaredTotal)}MB of content in total, over the ${mb(MAX_BUNDLE_CONTENT_BYTES)}MB limit`,
+    );
+  }
+}
+
+/**
+ * Minimal shape of JSZip's StreamHelper (jszip@3.10.1) as returned by
+ * `ZipObject#internalStream(type)` — the machinery `async()` and
+ * `nodeStream()` are themselves built on. Not present in JSZip's bundled
+ * typings, hence the structural cast.
+ */
+interface StreamHelperLike {
+  on(event: 'data', callback: (chunk: Uint8Array) => void): StreamHelperLike;
+  on(event: 'end', callback: () => void): StreamHelperLike;
+  on(event: 'error', callback: (error: Error) => void): StreamHelperLike;
+  resume(): unknown;
+  pause(): unknown;
+}
+
+/**
+ * Inflate one entry through JSZip's streaming read, counting bytes as chunks
+ * arrive and rejecting the moment the running total passes `maxBytes` — an
+ * entry is never materialized whole just to be measured.
+ *
+ * `pause()` stops the block pump between JSZip's 16KB compressed blocks; the
+ * pako inflate of the one in-flight block still runs to completion
+ * synchronously, so chunks that arrive after the abort are dropped rather
+ * than accumulated. Memory therefore stays bounded at the cap (plus one
+ * block's transient output) no matter how large the entry really is.
+ */
+function readEntryBytesCapped(entry: JSZip.JSZipObject, maxBytes: number, failure: () => Error): Promise<Uint8Array> {
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    let aborted = false;
+
+    const stream = (entry as unknown as { internalStream?: (type: string) => StreamHelperLike }).internalStream?.(
+      'uint8array',
+    );
+    if (!stream) {
+      // No streaming surface (a different JSZip): fall back to a capped
+      // materialize-then-check read — still bounded, just less eagerly.
+      entry
+        .async('uint8array')
+        .then((bytes) => {
+          if (bytes.length > maxBytes) throw failure();
+          resolve(bytes);
+        })
+        .catch((e: unknown) => reject(e instanceof Error ? e : new Error(String(e))));
+      return;
+    }
+
+    stream
+      .on('data', (chunk) => {
+        if (aborted) return; // in-flight block draining after the abort — drop it
+        total += chunk.length;
+        if (total > maxBytes) {
+          aborted = true;
+          try {
+            stream.pause();
+          } catch {
+            // stream already finished — the rejection below is the verdict
+          }
+          reject(failure());
+          return;
+        }
+        chunks.push(chunk);
+      })
+      .on('error', (error) => {
+        if (!aborted) reject(error);
+      })
+      .on('end', () => {
+        if (aborted) return;
+        const out = new Uint8Array(total);
+        let offset = 0;
+        for (const chunk of chunks) {
+          out.set(chunk, offset);
+          offset += chunk.length;
+        }
+        resolve(out);
+      })
+      .resume();
+  });
+}
+
 export async function parseEsthemeBundle(source: Blob | ArrayBuffer): Promise<ParsedBundle> {
   const zip = await JSZip.loadAsync(source);
+
+  // SECURITY: every entry path must be a safe bundle path — traversal-shaped
+  // entries are rejected outright, even when the manifest never references
+  // them. A bundle is a bag of paths we later hand to other systems; none of
+  // them may be `../`-shaped.
+  const entries: { path: string; entry: JSZip.JSZipObject }[] = [];
+  zip.forEach((relativePath, entry) => {
+    if (entry.dir) return;
+    if (relativePath !== 'manifest.json' && !isSafeBundlePath(relativePath)) {
+      throw new Error(`Invalid bundle: unsafe entry path "${relativePath}"`);
+    }
+    entries.push({ path: relativePath, entry });
+  });
+  if (entries.length > MAX_BUNDLE_FILES) {
+    throw new Error(
+      `Invalid bundle: ${entries.length} files exceeds limit ${MAX_BUNDLE_FILES}`,
+    );
+  }
+
+  // SECURITY (zip bombs): the central directory is the cheap place to stop a
+  // bomb — reject any bundle that already admits (per entry, summed, or by
+  // claimed compression ratio) to exceeding the content cap, BEFORE a single
+  // byte is inflated. The streaming reads below then bound the bundles whose
+  // directory lies.
+  assertDeclaredSizesAcceptable(entries);
 
   const manifestFile = zip.file('manifest.json');
   if (!manifestFile) {
     throw new Error('Invalid bundle: missing manifest.json');
   }
 
+  // manifest.json gets its own cap: it is inflated before the manifest can
+  // be cross-checked against anything, and it is the only entry we
+  // JSON.parse. Declared cap first (a hostile directory is caught without
+  // inflating), then a capped streaming read for the lying ones.
+  const manifestDeclared = declaredSizes(manifestFile).uncompressed;
+  if (manifestDeclared !== null && manifestDeclared > MAX_MANIFEST_BYTES) {
+    throw new Error(
+      `Invalid bundle: manifest.json declares ${Math.round(manifestDeclared / 1024)}KB, over the ${MAX_MANIFEST_BYTES / 1024}KB limit`,
+    );
+  }
+  const manifestBytes = await readEntryBytesCapped(
+    manifestFile,
+    MAX_MANIFEST_BYTES,
+    () => new Error(`Invalid bundle: manifest.json inflates past the ${MAX_MANIFEST_BYTES / 1024}KB limit`),
+  );
+
   let manifestJson: unknown;
   try {
-    manifestJson = JSON.parse(await manifestFile.async('string'));
+    manifestJson = JSON.parse(new TextDecoder().decode(manifestBytes));
   } catch {
     throw new Error('Invalid bundle: manifest.json is not valid JSON');
   }
 
   const fileIndex = new Set<string>();
-  zip.forEach((relativePath) => {
-    if (relativePath !== 'manifest.json') fileIndex.add(relativePath);
-  });
+  for (const { path } of entries) {
+    if (path !== 'manifest.json') fileIndex.add(path);
+  }
 
   const validation = validateManifestAgainstFiles(manifestJson, fileIndex);
   if (!validation.ok) {
@@ -459,20 +754,27 @@ export async function parseEsthemeBundle(source: Blob | ArrayBuffer): Promise<Pa
     );
   }
 
+  // SECURITY: inflate sequentially through the streaming read so the running
+  // total is enforced WHILE each entry inflates — a zip whose declared sizes
+  // lie small is cut off mid-stream (Promise.all would also hold every
+  // expansion at once). The per-entry budget is what remains of the cap.
+  let totalBytes = 0;
   const files = new Map<string, Blob>();
-  const entries: { path: string; entry: JSZip.JSZipObject }[] = [];
-  zip.forEach((relativePath, entry) => {
-    if (!entry.dir && relativePath !== 'manifest.json') {
-      entries.push({ path: relativePath, entry });
-    }
-  });
-
-  await Promise.all(
-    entries.map(async ({ path, entry }) => {
-      const blob = await entry.async('blob');
-      files.set(path, blob);
-    }),
-  );
+  for (const { path, entry } of entries) {
+    if (path === 'manifest.json') continue;
+    const bytes = await readEntryBytesCapped(
+      entry,
+      MAX_BUNDLE_CONTENT_BYTES - totalBytes,
+      () =>
+        new Error(
+          `Invalid bundle: "${path}" inflates the bundle past the ${mb(MAX_BUNDLE_CONTENT_BYTES)}MB content limit`,
+        ),
+    );
+    totalBytes += bytes.length;
+    // BlobPart formally wants ArrayBufferView<ArrayBuffer> under this TS
+    // lib; every Blob implementation accepts a Uint8Array at runtime.
+    files.set(path, new Blob([bytes as unknown as BlobPart]));
+  }
 
   return { manifest: validation.manifest, files };
 }
