@@ -23,7 +23,7 @@
 import type { Env } from '../index';
 import type { AuthContext } from '../middleware/auth';
 import type { BazaarPack, PackType } from '../types';
-import { sanitizeFilename } from '../utils/sanitize';
+import { sanitizeFilename, isFirstPartyAssetUrl } from '../utils/sanitize';
 import { validateCartridge } from '../utils/cartridge';
 import { setDraftPublishedPack } from './games';
 import { validateManifestAgainstFiles, validateManifest, formatValidationErrors } from '../utils/estheme';
@@ -208,9 +208,8 @@ export async function handleBazaarPublish(
     // to reject obviously-malicious packs here too so they never see installers.
     //   - keys: dotted identifier, <= 100 chars
     //   - values: string/number/bool, strings <= 500 chars, no `{};` (CSS
-    //     rule-terminators would enable CSS breakout) and no scheme:// URLs
-    //     that don't point at first-party assets
-    const bazaarAllowedUrlPrefixes = ['/api/css-assets/', '/api/wallpaper/', '/api/icon/', '/api/sounds/', '/api/cursors/', '/api/bazaar/assets/'];
+    //     rule-terminators would enable CSS breakout) and no URLs outside
+    //     first-party asset paths / the API's own origin
     for (const [cKey, cVal] of Object.entries(config)) {
       if (!/^[a-zA-Z][a-zA-Z0-9.\-]*$/.test(cKey) || cKey.length > 100) {
         return Response.json({ error: `Invalid config key: ${cKey}` }, { status: 400 });
@@ -226,11 +225,11 @@ export async function handleBazaarPublish(
           return Response.json({ error: `config value contains disallowed CSS punctuation for ${cKey}` }, { status: 400 });
         }
         if (cKey.startsWith('cursor.image.') && cVal.trim().length > 0) {
+          // Origin-aware allowlist (the old base-parse pathname check let a
+          // cross-origin URL with an allowlisted path through). See
+          // isFirstPartyAssetUrl in utils/sanitize.ts.
           const bareUrl = cVal.split('|')[0].trim();
-          let pathname: string;
-          try { pathname = new URL(bareUrl, 'http://localhost').pathname; }
-          catch { return Response.json({ error: `Invalid URL for ${cKey}` }, { status: 400 }); }
-          if (pathname.includes('..') || !bazaarAllowedUrlPrefixes.some((p) => pathname.startsWith(p))) {
+          if (!isFirstPartyAssetUrl(bareUrl, new URL(request.url).origin)) {
             return Response.json({ error: `config ${cKey}: URL must reference first-party assets` }, { status: 400 });
           }
         }

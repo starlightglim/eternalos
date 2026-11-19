@@ -1347,8 +1347,12 @@ export default {
         const doId = env.USER_DESKTOP.idFromName(authResult.uid);
         const stub = env.USER_DESKTOP.get(doId);
         const body = await request.text();
+        // Forward the API's own origin so the DO's appearance URL validation
+        // can accept same-origin absolute URLs (CursorEditor stores those).
+        // See isFirstPartyAssetUrl in utils/sanitize.ts.
         const doResponse = await stub.fetch(new Request('http://internal/profile', {
           method: 'PATCH',
+          headers: { 'X-API-Origin': new URL(request.url).origin },
           body,
         }));
         return withCors(doResponse, corsHeaders);
@@ -1381,8 +1385,12 @@ export default {
 
         const doId = env.USER_DESKTOP.idFromName(authResult.uid);
         const stub = env.USER_DESKTOP.get(doId);
+        // X-API-Origin: the revert re-validates the stored CSS through
+        // updateProfile, which needs the API origin to keep accepting
+        // legitimate same-origin absolute asset URLs.
         const doResponse = await stub.fetch(new Request(`http://internal/css-history/${versionId}/revert`, {
           method: 'POST',
+          headers: { 'X-API-Origin': new URL(request.url).origin },
         }));
         return withCors(doResponse, corsHeaders);
       }

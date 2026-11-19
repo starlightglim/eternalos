@@ -416,6 +416,34 @@ describe('worker integration', () => {
     assert.equal(afterDelete.response.status, 404);
   });
 
+  it('rejects bazaar cursor configs that smuggle cross-origin URLs with allowlisted paths', async () => {
+    const user = await signupUser();
+    const publishWithConfig = (configValue) => {
+      const form = new UndiciFormData();
+      form.set('manifest', JSON.stringify({
+        type: 'cursor',
+        name: 'Beacon Cursors',
+        tags: [],
+        config: { 'cursor.image.default': configValue },
+      }));
+      form.set('preview', createPngFile('preview.png'));
+      return fetchJson('/api/bazaar/publish', {
+        method: 'POST', headers: authHeaders(user.token), body: form,
+      });
+    };
+
+    // Regression: the publish validator compared only the base-parsed pathname
+    // against the allowlist, so a cross-origin URL with an allowlisted-looking
+    // path was accepted into the pack config (and from there into installers'
+    // designTokens). Origin equality is now authoritative → 400.
+    const hostile = await publishWithConfig('https://evil.example/api/cursors/beacon.png|0|0');
+    assert.equal(hostile.response.status, 400, `expected 400, got ${hostile.response.status}`);
+
+    // Relative first-party asset paths still publish.
+    const ok = await publishWithConfig('/api/cursors/arrow.png|0|0');
+    assert.equal(ok.response.status, 200, `expected publish to succeed, got ${ok.response.status}`);
+  });
+
   it('publishes an .estheme theme bundle and re-validates it on read', async () => {
     const user = await signupUser();
     const author = `@${user.user.username}`;
@@ -1861,8 +1889,7 @@ describe('worker integration', () => {
     await patchProfile(user.token, { customCSS: bazaarCSS }); // expectOk → 200
 
     // A cross-origin url() is still rejected (the save fails; the value is not
-    // stored). The profile route currently surfaces validation throws as 5xx
-    // rather than 400, so assert on "rejected", not the exact code.
+    // stored). URL-validation failures are client errors — HttpError(400).
     const { response } = await fetchJson('/api/profile', {
       method: 'PATCH',
       headers: authHeaders(user.token, JSON_HEADERS),
@@ -1870,11 +1897,73 @@ describe('worker integration', () => {
         customCSS: '.x { background: url(https://evil.example/beacon.png); }',
       }),
     });
-    assert.ok(response.status >= 400, `cross-origin url() should be rejected, got ${response.status}`);
+    assert.equal(response.status, 400, `cross-origin url() should be a 400, got ${response.status}`);
 
     // And the hostile CSS was not persisted anywhere on the profile.
     const profile = await expectOk('/api/profile', { headers: authHeaders(user.token) });
     assert.ok(!JSON.stringify(profile).includes('evil.example'), 'hostile url must not be stored');
+  });
+
+  it('rejects cross-origin appearance URLs with allowlisted-looking paths (stored-beacon guard)', async () => {
+    const user = await signupUser();
+    const patchProfileRaw = (updates) => fetchJson('/api/profile', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify(updates),
+    });
+
+    // The old validation compared only new URL(x, base).pathname against the
+    // allowlist, so a cross-origin URL with an allowlisted PATH passed and was
+    // stored — a stored cursor.image.* would then be fetched in every
+    // visitor's browser (tracking pixel / stored beacon). All of these must
+    // now be 400 client errors, not stored.
+    const cases = [
+      // designTokens cursor image (bare URL + hotspot suffix)
+      { designTokens: { 'cursor.image.default': 'https://evil.example/api/cursors/beacon.png|0|0' } },
+      // customCSS url()
+      { customCSS: '.x { background: url(https://evil.example/api/cursors/beacon.png); }' },
+      // designTokens url() value
+      { designTokens: { 'menu.icon': 'url(https://evil.example/api/cursors/beacon.png)' } },
+      // adversarial variants of the same trick on a cursor token
+      { designTokens: { 'cursor.image.default': '//evil.example/api/cursors/beacon.png|0|0' } },          // protocol-relative
+      { designTokens: { 'cursor.image.default': 'https:/\\evil.example/api/cursors/beacon.png|0|0' } },   // backslash authority
+      { designTokens: { 'cursor.image.default': 'https://api@evil.example/api/cursors/beacon.png|0|0' } }, // userinfo
+      { designTokens: { 'cursor.image.default': '/api/cursors/%2e%2e/%2e%2e/beacon.png|0|0' } },          // encoded traversal
+    ];
+    for (const updates of cases) {
+      const { response, body } = await patchProfileRaw(updates);
+      assert.equal(
+        response.status, 400,
+        `expected 400 for ${JSON.stringify(updates)}, got ${response.status}: ${JSON.stringify(body)}`
+      );
+    }
+
+    // data: and javascript: values are also rejected (the pre-existing
+    // dangerous-pattern scan fires first, so assert "rejected", not a code).
+    for (const updates of [
+      { designTokens: { 'cursor.image.default': 'data:image/png;base64,AAAA|0|0' } },
+      { designTokens: { 'cursor.image.default': 'javascript:alert(1)|0|0' } },
+      { customCSS: '.x { background: url(data:image/png;base64,AAAA); }' },
+    ]) {
+      const { response } = await patchProfileRaw(updates);
+      assert.ok(response.status >= 400, `expected rejection for ${JSON.stringify(updates)}`);
+    }
+
+    // Absolute URLs on the API's own origin — what CursorEditor legitimately
+    // stores (getCursorUrl prefixes VITE_API_URL) — must keep working.
+    const absolute = await patchProfile(user.token, {
+      designTokens: { 'cursor.image.default': `${BASE_URL}/api/cursors/arrow.png|3|2` },
+    });
+    assert.equal(absolute.profile.designTokens['cursor.image.default'], `${BASE_URL}/api/cursors/arrow.png|3|2`);
+
+    // Relative first-party paths still work.
+    await patchProfile(user.token, {
+      designTokens: { 'cursor.image.default': '/api/cursors/arrow.png|0|0' },
+    });
+
+    // Nothing hostile was persisted anywhere on the profile.
+    const profile = await expectOk('/api/profile', { headers: authHeaders(user.token) });
+    assert.ok(!JSON.stringify(profile).includes('evil.example'), 'hostile URL must not be stored');
   });
 
   it('hard-deletes an account once past the deletion grace deadline', async () => {

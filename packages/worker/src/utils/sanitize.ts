@@ -136,6 +136,131 @@ export function sanitizeDisplayName(name: string): string {
 }
 
 /**
+ * First-party asset routes that appearance URL values (customCSS `url()`,
+ * designTokens cursor images, bazaar pack configs) are allowed to reference.
+ * Must stay in sync with the frontend `TOKEN_ASSET_PATH_PREFIXES` in
+ * `packages/frontend/src/tokens/tokenCompiler.ts`.
+ */
+export const FIRST_PARTY_ASSET_PREFIXES: readonly string[] = [
+  '/api/css-assets/',
+  '/api/wallpaper/',
+  '/api/icon/',
+  '/api/sounds/',
+  '/api/cursors/',
+  '/api/bazaar/assets/',
+];
+
+/** Normalize an origin-ish string to a canonical `URL.origin`, or null. */
+function normalizeOrigin(origin?: string | null): string | null {
+  if (!origin) return null;
+  try {
+    return new URL(origin).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * SECURITY: validate a URL stored in appearance fields against the
+ * first-party asset allowlist.
+ *
+ * Accepts ONLY:
+ *   - relative site-absolute paths ("/api/cursors/x.png"), and
+ *   - absolute http(s) URLs whose origin equals the API's own origin
+ *     (CursorEditor legitimately stores those).
+ *
+ * Rejects everything else: cross-origin hosts — even with an allowlisted-
+ * looking path ("https://evil.example/api/cursors/beacon.png"), protocol-
+ * relative URLs ("//evil.example/…"), backslash tricks, userinfo
+ * ("https://api@evil.example"), percent-encoded variants, path traversal,
+ * and non-http(s) schemes (data:, javascript:).
+ *
+ * The old check compared only `new URL(x, base).pathname` against the
+ * allowlist, which let any cross-origin URL with an allowlisted path pass —
+ * so a stored `cursor.image.*` would be fetched by every visitor's browser
+ * (tracking pixel / stored beacon). Origin equality is now authoritative.
+ *
+ * `apiOrigin` is the API's own origin ("scheme://host"), taken from the
+ * incoming request by the routes that proxy one. When it is absent or
+ * unparseable (internal callers with no request), absolute URLs are
+ * rejected outright — only relative `/api/...` paths are accepted.
+ */
+export function isFirstPartyAssetUrl(rawUrl: string, apiOrigin?: string | null): boolean {
+  if (!rawUrl || typeof rawUrl !== 'string') return false;
+  const raw = rawUrl.trim();
+  if (!raw) return false;
+
+  // Backslashes and control characters are never legitimate in a stored
+  // asset URL. Browsers treat "\" as "/" inside special URLs
+  // (https:\evil.example parses as the host evil.example) and strip
+  // TAB/LF/CR before parsing, so both can smuggle a different URL past
+  // string checks — reject instead of trying to out-parse them. \p{Cc}
+  // covers C0 controls (U+0000–U+001F) and DEL/C1 (U+007F–U+009F).
+  if (raw.includes('\\') || /\p{Cc}/u.test(raw)) return false;
+
+  // Protocol-relative URLs resolve against the page's scheme with a
+  // cross-origin authority; they are never first-party.
+  if (raw.startsWith('//')) return false;
+
+  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw);
+
+  if (hasScheme) {
+    // Absolute URL: scheme, origin, and path must all check out.
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      return false;
+    }
+    // data:, javascript:, vbscript:, file:, and every other non-http(s)
+    // scheme is rejected here.
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    // No userinfo: "https://api@evil.example" has origin https://evil.example
+    // (caught by the origin check), but "https://user@api.example/…" would
+    // pass it — and no stored asset URL ever needs credentials.
+    if (parsed.username !== '' || parsed.password !== '') return false;
+    // The URL must point at the API's own origin; without a known origin,
+    // absolute URLs are rejected (fail closed).
+    const expectedOrigin = normalizeOrigin(apiOrigin);
+    if (!expectedOrigin || parsed.origin !== expectedOrigin) return false;
+    // Still an allowlisted first-party route…
+    if (!FIRST_PARTY_ASSET_PREFIXES.some((prefix) => parsed.pathname.startsWith(prefix))) {
+      return false;
+    }
+    // …and the decoded path must not smuggle traversal.
+    return !decodeLoosely(parsed.pathname).includes('..');
+  }
+
+  // Relative reference: must be a site-absolute path (leading "/") onto an
+  // allowlisted route. Checked on the RAW value so percent-decoding cannot
+  // change the shape afterwards ("%2F%2Fevil.example/…" stays a path).
+  if (!FIRST_PARTY_ASSET_PREFIXES.some((prefix) => raw.startsWith(prefix))) return false;
+
+  // Decode (falling back to the raw value when it isn't valid percent-
+  // encoding, e.g. a literal "%" in a filename) and re-verify the normalized
+  // form: no traversal, and the parsed path stays on an allowlisted route.
+  const decoded = decodeLoosely(raw);
+  if (decoded.includes('..')) return false;
+  let normalized: URL;
+  try {
+    normalized = new URL(decoded, 'http://internal.invalid');
+  } catch {
+    return false;
+  }
+  if (normalized.host !== 'internal.invalid') return false;
+  return FIRST_PARTY_ASSET_PREFIXES.some((prefix) => normalized.pathname.startsWith(prefix));
+}
+
+/** decodeURIComponent that keeps the input on malformed percent-encoding. */
+function decodeLoosely(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
  * Validate and sanitize a URL
  * Use for: link items, external URLs
  */
