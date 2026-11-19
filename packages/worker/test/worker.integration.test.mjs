@@ -1292,6 +1292,92 @@ describe('worker integration', () => {
     assert.match(await allowedRead.text(), /inside gallery/);
   });
 
+  it('hides installed app items from app-scoped fs lists but not from the owner', async () => {
+    // The bridge's fs.list has always skipped type:'app' items ("apps don't
+    // list themselves to apps"); the capability-token REST fs list must apply
+    // the same rule. An app holding a /** read grant must not be able to
+    // enumerate installed app names and ids through any list path, while the
+    // owner's own desktop list still shows them exactly as before.
+    const user = await signupUser();
+
+    const deployApp = (name) => expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name,
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+          permissions: { fs: { read: ['/**'] } },
+        },
+        files: { 'index.html': `<!doctype html><html><body><h1>${name}</h1></body></html>` },
+      }),
+    });
+    const readerApp = await deployApp('Enumerating Reader');
+    const otherApp = await deployApp('Other Installed App');
+
+    // A regular item, so the app-scoped lists are observably non-empty and
+    // the app-item skip can't hide behind "everything was filtered anyway".
+    const note = await createDesktopItem(user.token, {
+      type: 'text', name: 'shopping.txt', parentId: null, position: { x: 0, y: 0 },
+      isPublic: false, textContent: 'buy oats',
+    });
+
+    await expectOk(`/api/apps/${encodeURIComponent(readerApp.appId)}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { fs: { read: ['/**'] } } }),
+    });
+    const capability = await expectOk(`/api/apps/${encodeURIComponent(readerApp.appId)}/capability`, {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({}),
+    });
+    const bearer = { Authorization: `Bearer ${capability.token}` };
+
+    // REST fs list (capability token): no app items — not the reader's own,
+    // not the other installed app's — while the regular note stays listable.
+    const restList = await expectOk(`/api/apps/${encodeURIComponent(readerApp.appId)}/fs/list`, { headers: bearer });
+    assert.equal(
+      restList.items.filter((item) => item.type === 'app').length,
+      0,
+      'REST fs.list must not expose installed app items to an app',
+    );
+    assert.ok(
+      restList.items.some((item) => item.id === note.id),
+      'the regular note stays listable through the REST fs list',
+    );
+
+    // Bridge fs list (Dynamic Worker service binding): same rule. Pass an
+    // explicit limit: the compiled worker's clampInt treats a missing limit
+    // as 1 (Number(null) is 0, not NaN), so a bare bridge list only ever
+    // returns the first item — not enough to observe the desktop.
+    const bridgeResponse = await worker.fetch(
+      `${BASE_URL}/api/apps/${encodeURIComponent(readerApp.appId)}/_eternal/fs/list?limit=500`,
+      { headers: bearer },
+    );
+    assert.equal(bridgeResponse.status, 200);
+    const bridgeList = await readJson(bridgeResponse);
+    assert.equal(
+      bridgeList.items.filter((item) => item.type === 'app').length,
+      0,
+      'bridge fs.list must not expose installed app items to an app',
+    );
+    assert.ok(
+      bridgeList.items.some((item) => item.id === note.id),
+      'the regular note stays listable through the bridge',
+    );
+
+    // The owner's own desktop list still includes every installed app.
+    const desktop = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+    const ownerAppItems = desktop.items.filter((item) => item.type === 'app');
+    assert.equal(ownerAppItems.length, 2, 'the owner still sees both installed apps');
+    assert.ok(
+      ownerAppItems.some((item) => item.appManifest?.appId === otherApp.appId),
+      'the other installed app is still visible to its owner',
+    );
+  });
+
   it('classifies outbound hosts for SSRF without false-positives on fc/fd domains', async () => {
     const user = await signupUser();
     const app = await expectOk('/api/apps/dev-deploy', {
@@ -1936,13 +2022,25 @@ describe('worker integration', () => {
     assert.deepEqual(ipcApprove.granted, { fs: { read: ['/**'], write: ['/**'] } },
       'approving an undeclared domain must not grant it');
 
-    // With the approved write scope the app can see its own desktop item —
-    // but patching itself to add permissions is filtered to benign fields.
+    // fs.list no longer surfaces app items to apps (same rule as the
+    // bridge) — even under a full read grant the app cannot discover its
+    // own desktop item by listing. The self-escalation guard below must
+    // still hold when the app knows the id out-of-band: knowing it is not
+    // the same as being able to use it.
     const list = await expectOk(`/api/apps/${appId}/fs/list`, {
       headers: { Authorization: `Bearer ${approved.token}` },
     });
-    const selfItem = list.items.find((item) => item.type === 'app' && item.name === 'Escalation Guard');
-    assert.ok(selfItem, 'the app item should be visible under a full read grant');
+    assert.equal(
+      list.items.filter((item) => item.type === 'app').length,
+      0,
+      'fs.list must not surface app items even under a full read grant',
+    );
+
+    // The owner's session still sees the app item; use its id for the
+    // app-side patch attempts below.
+    const ownerDesktop = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+    const selfItem = ownerDesktop.items.find((item) => item.type === 'app' && item.name === 'Escalation Guard');
+    assert.ok(selfItem, 'the app item should still be visible to its owner');
 
     const selfPatch = await fetchJson(
       `/api/apps/${appId}/_eternal/fs/patch/${encodeURIComponent(selfItem.id)}`,
