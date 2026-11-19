@@ -544,6 +544,10 @@ export async function handleAppFsList(
   const results: AppListResponse['items'] = [];
   for (const item of data.items) {
     if (!includeTrashed && item.isTrashed) continue;
+    // Same rule as the bridge (EternalService.list): installed apps are not
+    // listable by apps — an app holding a broad read grant must not be able
+    // to enumerate the user's installed app names and ids.
+    if (item.type === 'app') continue;
 
     const itemPath = buildItemPath(item.id, itemsMap);
 
