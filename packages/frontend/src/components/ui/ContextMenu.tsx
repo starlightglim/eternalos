@@ -25,12 +25,18 @@ interface ContextMenuProps {
  * - Hover highlight with inverted colors
  * - Keyboard shortcut display
  * - Dividers between groups
- * - Dismisses on click outside, Escape, or item selection
+ * - Dismisses on click outside, Escape (restoring the pre-menu focus), Tab,
+ *   or item selection
  */
 export function ContextMenu({ items, position, onClose }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
   const [adjustedPos] = useState(position);
+
+  // The element that held focus before the menu opened; Escape restores focus
+  // to it. Captured during the mount render — before the roving-focus effect
+  // below moves focus into the menu.
+  const openerRef = useRef<HTMLElement | null>(document.activeElement as HTMLElement | null);
 
   // Indices of the keyboard-navigable (non-divider, non-disabled) items.
   const enabledIndices = useMemo(
@@ -90,9 +96,17 @@ export function ContextMenu({ items, position, onClose }: ContextMenuProps) {
       }
     }
 
-    // Close on Escape key
+    // Escape closes the menu and returns focus to the element that had focus
+    // before the menu opened. Tab closes it too, without preventing default,
+    // so the browser's normal Tab sequence moves focus out of the menu.
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape') {
+        const opener = openerRef.current;
+        if (opener && document.contains(opener)) {
+          opener.focus();
+        }
+        onClose();
+      } else if (e.key === 'Tab') {
         onClose();
       }
     }
