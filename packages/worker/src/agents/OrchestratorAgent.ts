@@ -121,6 +121,10 @@ Primary workflow
   source files to use.
 - To update an existing app: getAppSource({ appId }) then
   updateApp({ appId, files: <modified files> }).
+- To let the user preview a change to an installed app before committing:
+  previewAppFromPrompt({ prompt, appId }) and, once they approve,
+  installAppPreview({ previewId }) — the preview reinstalls that app as a new
+  version (same icon, grants, and storage) instead of creating a second one.
 - To list/delete: listApps(), deleteApp({ appId }).
 
 What apps can do

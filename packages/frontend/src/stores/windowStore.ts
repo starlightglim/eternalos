@@ -22,7 +22,7 @@ function migrateLegacyWindowLayout(windowState: WindowState): WindowState {
   return windowState;
 }
 
-function clampWindowPosition(
+export function clampWindowPosition(
   position: { x: number; y: number },
   size: { width: number; height: number },
   viewportWidth = window.innerWidth,

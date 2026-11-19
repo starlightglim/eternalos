@@ -22,6 +22,8 @@ export function WindowTitleBar({
   onDragStart,
   onDragMove,
   onDragEnd,
+  onKeyDown,
+  onFocus,
   children,
 }: TitleBarSlotProps) {
   const variantId = useAppearanceStore(
@@ -43,9 +45,17 @@ export function WindowTitleBar({
       <div
         className={`${styles.titleBar} titleBar`}
         eos-part="titlebar"
+        // Keyboard surface for the window: Tab reaches the title bar, the
+        // arrow keys move/resize, Escape returns to the content, and the
+        // close/zoom/collapse controls inside are Tab-reachable buttons.
+        tabIndex={0}
+        role="toolbar"
+        aria-label={title}
         onPointerDown={onDragStart}
         onPointerMove={onDragMove}
         onPointerUp={onDragEnd}
+        onKeyDown={onKeyDown}
+        onFocus={onFocus}
       >
         {/* Window buttons injected as children */}
         {children}

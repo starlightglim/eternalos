@@ -19,9 +19,11 @@ import { buildItemPath, pathMatchesGlob as sharedPathMatchesGlob, canReadItem as
 import {
   broadScopeIds,
   buildGrantApprovals,
+  intersectGranted,
   pruneGrantApprovals,
   resolveGrantApprovals,
   sanitizeBroadApprovals,
+  sanitizeGranted,
 } from '../utils/appScopes';
 import { createWorker } from '@cloudflare/worker-bundler';
 import {
@@ -54,68 +56,6 @@ interface CapabilityRequest {
   granted?: AppGrantedPermissions;
   /** Optional TTL in seconds; server clamps to [60, 900]. Default 300. */
   ttlSeconds?: number;
-}
-
-function sanitizeGranted(input: unknown): AppGrantedPermissions {
-  if (!input || typeof input !== 'object') return {};
-  const output: AppGrantedPermissions = {};
-  const inputRecord = input as Record<string, unknown>;
-
-  const strings = (value: unknown, maxItems: number, maxLength: number, predicate?: (value: string) => boolean) => {
-    if (!Array.isArray(value)) return undefined;
-    const result = Array.from(new Set(value.filter((entry): entry is string =>
-      typeof entry === 'string' && entry.length > 0 && entry.length <= maxLength && (!predicate || predicate(entry))
-    ))).slice(0, maxItems);
-    return result.length > 0 ? result : undefined;
-  };
-  const domain = (name: string, value: Record<string, unknown>) => {
-    if (Object.keys(value).length > 0) (output as Record<string, unknown>)[name] = value;
-  };
-
-  const fs = inputRecord.fs && typeof inputRecord.fs === 'object' ? inputRecord.fs as Record<string, unknown> : {};
-  domain('fs', Object.fromEntries([
-    ['read', strings(fs.read, 20, 200)],
-    ['write', strings(fs.write, 20, 200)],
-    ['delete', strings(fs.delete, 20, 200)],
-    ['mimeTypes', strings(fs.mimeTypes, 20, 100)],
-    ['readMimeTypes', strings(fs.readMimeTypes, 20, 100)],
-    ['writeMimeTypes', strings(fs.writeMimeTypes, 20, 100)],
-    ['deleteMimeTypes', strings(fs.deleteMimeTypes, 20, 100)],
-  ].filter(([, value]) => value !== undefined)));
-
-  const profile = inputRecord.profile && typeof inputRecord.profile === 'object' ? inputRecord.profile as Record<string, unknown> : {};
-  domain('profile', Object.fromEntries([
-    ['read', strings(profile.read, 4, 30, (value) => ['username', 'displayName', 'bio', 'avatar'].includes(value))],
-  ].filter(([, value]) => value !== undefined)));
-
-  const network = inputRecord.network && typeof inputRecord.network === 'object' ? inputRecord.network as Record<string, unknown> : {};
-  domain('network', Object.fromEntries([
-    ['outbound', strings(network.outbound, 20, 300, (value) => /^(?:\*|(?:\*\.)?[A-Za-z0-9.-]+)$/.test(value))],
-  ].filter(([, value]) => value !== undefined)));
-
-  const ipc = inputRecord.ipc && typeof inputRecord.ipc === 'object' ? inputRecord.ipc as Record<string, unknown> : {};
-  domain('ipc', Object.fromEntries([
-    ['listen', strings(ipc.listen, 50, 120)],
-    ['emit', strings(ipc.emit, 50, 120)],
-  ].filter(([, value]) => value !== undefined)));
-
-  const handlers = inputRecord.handlers && typeof inputRecord.handlers === 'object' ? inputRecord.handlers as Record<string, unknown> : {};
-  domain('handlers', Object.fromEntries([
-    ['mimeTypes', strings(handlers.mimeTypes, 20, 100)],
-    ['extensions', strings(handlers.extensions, 20, 30)],
-  ].filter(([, value]) => value !== undefined)));
-
-  const virtualFolders = inputRecord.virtualFolders && typeof inputRecord.virtualFolders === 'object' ? inputRecord.virtualFolders as Record<string, unknown> : {};
-  domain('virtualFolders', Object.fromEntries([
-    ['mountAt', strings(virtualFolders.mountAt, 20, 200)],
-  ].filter(([, value]) => value !== undefined)));
-
-  const ai = inputRecord.ai && typeof inputRecord.ai === 'object' ? inputRecord.ai as Record<string, unknown> : {};
-  domain('ai', Object.fromEntries([
-    ['modes', strings(ai.modes, 3, 20, (value) => ['ask', 'search', 'enrich'].includes(value))],
-  ].filter(([, value]) => value !== undefined)));
-
-  return output;
 }
 
 interface AppRegistryMetadata {
@@ -249,76 +189,6 @@ async function listAppReleases(env: Env, appId: string, uid: string, appMeta: Ap
 async function resolveAppOwner(env: Env, appId: string): Promise<{ uid: string; version: number; granted?: AppGrantedPermissions } | null> {
   const meta = await env.DESKTOP_KV.get<{ uid: string; version: number; granted?: AppGrantedPermissions }>(`app:${appId}`, 'json');
   return meta ?? null;
-}
-
-function intersectGranted(
-  available: AppGrantedPermissions,
-  requested: AppGrantedPermissions,
-): AppGrantedPermissions {
-  const result: AppGrantedPermissions = {};
-  const intersect = (availableValues: string[] | undefined, requestedValues: string[] | undefined) => {
-    if (!availableValues || !requestedValues) return undefined;
-    return requestedValues.filter((value) => availableValues.includes(value));
-  };
-
-  if (available.fs && requested.fs) {
-    const fs: NonNullable<AppGrantedPermissions['fs']> = {};
-    const read = intersect(available.fs.read, requested.fs.read);
-    const write = intersect(available.fs.write, requested.fs.write);
-    const del = intersect(available.fs.delete, requested.fs.delete);
-    const mimeTypes = intersect(available.fs.mimeTypes, requested.fs.mimeTypes);
-    const readMimeTypes = intersect(available.fs.readMimeTypes, requested.fs.readMimeTypes);
-    const writeMimeTypes = intersect(available.fs.writeMimeTypes, requested.fs.writeMimeTypes);
-    const deleteMimeTypes = intersect(available.fs.deleteMimeTypes, requested.fs.deleteMimeTypes);
-    if (read?.length) fs.read = read;
-    if (write?.length) fs.write = write;
-    if (del?.length) fs.delete = del;
-    if (mimeTypes?.length) fs.mimeTypes = mimeTypes;
-    if (readMimeTypes?.length) fs.readMimeTypes = readMimeTypes;
-    if (writeMimeTypes?.length) fs.writeMimeTypes = writeMimeTypes;
-    if (deleteMimeTypes?.length) fs.deleteMimeTypes = deleteMimeTypes;
-    if (Object.keys(fs).length) result.fs = fs;
-  }
-
-  if (available.profile && requested.profile) {
-    const read = (requested.profile.read ?? []).filter((field) => available.profile?.read?.includes(field));
-    if (read.length) result.profile = { read };
-  }
-
-  if (available.ipc && requested.ipc) {
-    const ipc: NonNullable<AppGrantedPermissions['ipc']> = {};
-    const listen = intersect(available.ipc.listen, requested.ipc.listen);
-    const emit = intersect(available.ipc.emit, requested.ipc.emit);
-    if (listen?.length) ipc.listen = listen;
-    if (emit?.length) ipc.emit = emit;
-    if (Object.keys(ipc).length) result.ipc = ipc;
-  }
-
-  if (available.network && requested.network) {
-    const outbound = intersect(available.network.outbound, requested.network.outbound);
-    if (outbound?.length) result.network = { outbound };
-  }
-
-  if (available.handlers && requested.handlers) {
-    const handlers: NonNullable<AppGrantedPermissions['handlers']> = {};
-    const mimeTypes = intersect(available.handlers.mimeTypes, requested.handlers.mimeTypes);
-    const extensions = intersect(available.handlers.extensions, requested.handlers.extensions);
-    if (mimeTypes?.length) handlers.mimeTypes = mimeTypes;
-    if (extensions?.length) handlers.extensions = extensions;
-    if (Object.keys(handlers).length) result.handlers = handlers;
-  }
-
-  if (available.virtualFolders && requested.virtualFolders) {
-    const mountAt = intersect(available.virtualFolders.mountAt, requested.virtualFolders.mountAt);
-    if (mountAt?.length) result.virtualFolders = { mountAt };
-  }
-
-  if (available.ai && requested.ai) {
-    const modes = intersect(available.ai.modes, requested.ai.modes);
-    if (modes?.length) result.ai = { modes: modes as NonNullable<AppGrantedPermissions['ai']>['modes'] };
-  }
-
-  return result;
 }
 
 function grantsCover(current: AppGrantedPermissions, token: AppGrantedPermissions): boolean {

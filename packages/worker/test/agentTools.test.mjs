@@ -56,6 +56,10 @@ const {
   AppValidationError,
   collectAppBundleIssues,
 } = await import('../src/utils/appBundleValidation.ts');
+const {
+  handleAppPermissions,
+  handleAppRollback,
+} = await import('../src/routes/apps.ts');
 const { AIChatAgent } = await import('@cloudflare/ai-chat');
 
 const UID = 'user-abc123';
@@ -2270,6 +2274,348 @@ describe('appTools', () => {
       h.tools.installAppPreview.execute({ previewId: 'expired' }, { toolCallId: 'tc', messages: [] }),
       /App preview expired; generate a new preview/,
     );
+  });
+
+  it('one app survives build -> edit -> preview -> reinstall, and rollback returns to the pre-preview release', async () => {
+    // CORE-ROADMAP "Open gaps" W3: the journey was only covered leg-by-leg
+    // (updateApp, previewAppFromPrompt, installAppPreview each in
+    // isolation). This drives ONE app through the whole sequence on the
+    // Photo Grid fixture: build -> user-approved grants -> edit ->
+    // app-written storage -> preview a change targeted at the installed
+    // app -> reinstall -> grant the newly declared scope -> rollback.
+    //
+    // The contract under test: installing a preview that was staged FOR an
+    // installed app reinstalls THAT app — the previewed bundle becomes the
+    // app's next release on the SAME desktop item (no duplicate icon), the
+    // appId is unchanged so eternal.storage keys survive, and grants are
+    // untouched by the reinstall itself (the change may declare new scopes,
+    // but only the permissions route — with the user's approval — can
+    // grant them). The release rollback then returns the pre-preview
+    // version, narrowing grants back to that release's declaration.
+    const h = createAppToolsHarness();
+    const reference = readFixtureFiles('photo-grid');
+    const grantedRead = { fs: { read: ['/**'], mimeTypes: ['image/*'] } };
+    const auth = { uid: UID, username: 'jane', kind: 'session' };
+
+    // The previewed change: the grid greets the user by display name — a
+    // DECLARED new permission (profile.read) the user has not granted.
+    const changedAppJs = [
+      reference['app.js'],
+      'async function greetUser() {',
+      '  try {',
+      '    const profile = await window.eternal.profile.get();',
+      '    if (profile && profile.displayName) {',
+      '      elements.summary.textContent = `Hi ${profile.displayName}`;',
+      '    }',
+      '  } catch {',
+      '    // Profile not granted — the greeting is optional.',
+      '  }',
+      '}',
+      'greetUser();',
+    ].join('\n');
+
+    // --- Build: the scripted binding returns a Photo Grid spec, then files.
+    h.ai.script.push(
+      {
+        response: JSON.stringify({
+          name: 'Photo Grid',
+          purpose: "Shows the user's photos as a scrollable grid.",
+          screens: [
+            {
+              name: 'Grid',
+              summary: 'All photos, newest first.',
+              emptyState: 'A hint to upload photos when none exist yet.',
+            },
+          ],
+          dataReads: [{ kind: 'fs', paths: ['/**'], mimeTypes: ['image/*'] }],
+          storageKeys: ['photo-grid.tileSize'],
+          width: 880,
+          height: 620,
+        }),
+      },
+      { response: JSON.stringify({ files: { ...reference } }) },
+    );
+
+    const built = await h.tools.buildAppFromPrompt.execute(
+      { prompt: 'build me a gallery app for my photos' },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(built.status, 'created');
+    const appId = built.appId;
+
+    // The agentrevisions slice has landed on this base: the install froze a
+    // valid agent revision and both registry pointers moved to it.
+    const buildRevisions = await listAppRevisionManifests(h.env, UID, appId);
+    assert.equal(buildRevisions.length, 1);
+    assert.equal(buildRevisions[0].kind, 'deploy');
+    assert.equal(buildRevisions[0].author, 'agent');
+    assert.equal(buildRevisions[0].valid, true);
+    const builtMeta = await h.kv.get(`app:${appId}`, 'json');
+    assert.equal(builtMeta.current_revision, buildRevisions[0].id);
+    assert.equal(builtMeta.last_valid_revision, buildRevisions[0].id);
+
+    // The user approves the declared read through the REAL permissions
+    // route — the only path that widens grants. `/**` is a broad fs glob,
+    // so the request carries its explicit approval tick.
+    const grantRes = await handleAppPermissions(
+      new Request(`https://eternalos.test/api/apps/${appId}/permissions`, {
+        method: 'PATCH',
+        body: JSON.stringify({ granted: grantedRead, broadApprovals: ['fs.read'] }),
+      }),
+      h.env,
+      auth,
+      appId,
+    );
+    assert.equal(grantRes.status, 200);
+    const firstGrant = await grantRes.json();
+    assert.deepEqual(firstGrant.granted, grantedRead);
+
+    // --- Edit: updateApp writes v2. Grants are neither widened nor lost.
+    const updated = await h.tools.updateApp.execute(
+      {
+        appId,
+        files: { ...reference, 'app.js': `${reference['app.js']}\nconsole.log('v2');` },
+      },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(updated.status, 'updated');
+    assert.equal(updated.version, 2);
+    assert.deepEqual((await h.kv.get(`app:${appId}`, 'json')).granted, grantedRead);
+    assert.deepEqual(
+      h.desktop.itemsOf('app')[0].grantedPermissions,
+      grantedRead,
+      'the edit must not widen (or drop) grants',
+    );
+
+    // The running app persists its tile-size preference through the storage
+    // bridge — the exact key and serialization EternalService.storageSet
+    // writes (app-storage:{uid}:{appId}:{key}, JSON.stringify'd value).
+    await h.kv.put(`app-storage:${UID}:${appId}:photo-grid.tileSize`, JSON.stringify('large'));
+
+    // --- Preview a change to the installed app, targeted at its appId.
+    h.ai.script.push(
+      {
+        response: JSON.stringify({
+          name: 'Photo Grid',
+          purpose: "Shows the user's photos as a scrollable grid with a personal greeting.",
+          screens: [
+            {
+              name: 'Grid',
+              summary: 'All photos, newest first, greeted by name.',
+              emptyState: 'A hint to upload photos when none exist yet.',
+            },
+          ],
+          dataReads: [{ kind: 'fs', paths: ['/**'], mimeTypes: ['image/*'] }],
+          profileFields: ['displayName'],
+          storageKeys: ['photo-grid.tileSize'],
+          width: 880,
+          height: 620,
+        }),
+      },
+      { response: JSON.stringify({ files: { ...reference, 'app.js': changedAppJs } }) },
+    );
+
+    const preview = await h.tools.previewAppFromPrompt.execute(
+      { prompt: 'add a greeting with my display name to my Photo Grid app', appId },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(preview.status, 'preview-ready');
+    assert.equal(h.desktop.itemsOf('app').length, 1, 'a preview must not touch the desktop');
+    const previewMeta = await h.kv.get(`app-preview:${preview.previewId}`, 'json');
+    assert.equal(previewMeta.targetAppId, appId, 'the staged preview is linked to the app it changes');
+
+    // --- Reinstall: installing the targeted preview updates app A in place.
+    const reinstalled = await h.tools.installAppPreview.execute(
+      { previewId: preview.previewId },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(reinstalled.status, 'updated');
+    assert.equal(reinstalled.appId, appId, 'the reinstall keeps the app id');
+    assert.equal(reinstalled.itemId, built.itemId, 'the reinstall keeps the SAME desktop item — no duplicate icon');
+    assert.equal(reinstalled.version, 3);
+
+    // The installed bundle is the previewed one, and there is still exactly
+    // one app on the desktop.
+    const appItems = h.desktop.itemsOf('app');
+    assert.equal(appItems.length, 1, 'no duplicate icon after the reinstall');
+    const item = appItems[0];
+    assert.equal(item.id, built.itemId);
+    assert.equal(item.appManifest.version, '3');
+    const v3Source = JSON.parse(h.r2.objects.get(`apps/${UID}/${appId}/v3/source.json`));
+    assert.equal(v3Source['app.js'], changedAppJs, 'the installed bundle is the previewed one');
+
+    // The change's new declaration travels with the release (the greeting
+    // needs profile), but grants are unchanged: the reinstall itself never
+    // grants anything, and the previously approved read survives with its
+    // approval metadata intact (not re-dated by the reinstall).
+    assert.deepEqual(item.appManifest.permissions, {
+      fs: { read: ['/**'], mimeTypes: ['image/*'] },
+      profile: { read: ['displayName'] },
+    });
+    assert.deepEqual(item.grantedPermissions, grantedRead, 'a reinstall must not widen grants');
+    assert.equal(
+      item.grantedPermissionApprovals['fs.read'].approvedAt,
+      firstGrant.approvals['fs.read'].approvedAt,
+      'the reinstall must not re-date the existing approval',
+    );
+    const reinstalledMeta = await h.kv.get(`app:${appId}`, 'json');
+    assert.deepEqual(reinstalledMeta.granted, grantedRead);
+    assert.equal(reinstalledMeta.version, 3);
+
+    // The reinstall appends a valid agent revision, like any other release.
+    const revisions = await listAppRevisionManifests(h.env, UID, appId);
+    const reinstallRevision = revisions.find((m) => m.appVersion === 3 && m.valid);
+    assert.ok(reinstallRevision, 'the reinstall is recorded as a valid v3 revision');
+    assert.equal(reinstallRevision.kind, 'deploy');
+    assert.equal(reinstallRevision.author, 'agent');
+
+    // Storage the app wrote before the edit is still readable after the
+    // reinstall — same appId, same keys (EternalService.storageGet's read).
+    assert.deepEqual(
+      JSON.parse(await h.kv.get(`app-storage:${UID}:${appId}:photo-grid.tileSize`)),
+      'large',
+    );
+
+    // The "unless the change declared and was granted more" leg: the user
+    // grants the newly declared profile scope through the same permissions
+    // route — the only way grants ever widen.
+    const widened = await handleAppPermissions(
+      new Request(`https://eternalos.test/api/apps/${appId}/permissions`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          granted: {
+            fs: { read: ['/**'], mimeTypes: ['image/*'] },
+            profile: { read: ['displayName'] },
+          },
+          broadApprovals: ['fs.read'],
+        }),
+      }),
+      h.env,
+      auth,
+      appId,
+    );
+    assert.equal(widened.status, 200);
+    assert.deepEqual((await widened.json()).granted, {
+      fs: { read: ['/**'], mimeTypes: ['image/*'] },
+      profile: { read: ['displayName'] },
+    });
+
+    // --- Rollback returns to the pre-preview release (v2).
+    const rollbackRes = await handleAppRollback(
+      new Request(`https://eternalos.test/api/apps/${appId}/rollback`, {
+        method: 'POST',
+        body: JSON.stringify({ version: 2 }),
+      }),
+      h.env,
+      auth,
+      appId,
+    );
+    assert.equal(rollbackRes.status, 200);
+    assert.deepEqual(await rollbackRes.json(), { success: true, version: 2, appId });
+
+    const rolledBackItem = h.desktop.itemsOf('app')[0];
+    assert.equal(rolledBackItem.id, built.itemId, 'rollback keeps the same icon too');
+    assert.equal(rolledBackItem.appManifest.version, '2');
+    const v2Source = JSON.parse(h.r2.objects.get(`apps/${UID}/${appId}/v2/source.json`));
+    assert.match(v2Source['app.js'], /console\.log\('v2'\)/, 'the pre-preview release is what runs again');
+    const rolledBackMeta = await h.kv.get(`app:${appId}`, 'json');
+    assert.equal(rolledBackMeta.version, 2);
+
+    // Grants only ever narrow on rollback: v2 declares no profile scope, so
+    // the widened grant falls away and the approved read stays.
+    assert.deepEqual(rolledBackItem.grantedPermissions, grantedRead);
+
+    // And the app's storage survives the rollback as well.
+    assert.deepEqual(
+      JSON.parse(await h.kv.get(`app-storage:${UID}:${appId}:photo-grid.tileSize`)),
+      'large',
+    );
+  });
+
+  it('a failed preview reinstall keeps the previous release and leaves the preview retryable', async () => {
+    // The failure point of the journey's reinstall leg: the desktop refuses
+    // the update mid-reinstall. The previous release must stay installed,
+    // the half-written release must be cleaned up, and the preview must NOT
+    // be consumed — the user can fix the desktop and retry.
+    const h = createAppToolsHarness();
+    h.ai.script.push(
+      {
+        response: JSON.stringify({
+          name: 'Sturdy',
+          purpose: 'An app that survives a failed reinstall.',
+          screens: [{ name: 'Main', summary: 'One screen.', emptyState: 'A hint.' }],
+        }),
+      },
+      { response: JSON.stringify({ files: { ...MINIMAL_APP_FILES } }) },
+    );
+    const built = await h.tools.buildAppFromPrompt.execute(
+      { prompt: 'build me a sturdy app' },
+      { toolCallId: 'tc', messages: [] },
+    );
+
+    h.ai.script.push(
+      {
+        response: JSON.stringify({
+          name: 'Sturdy',
+          purpose: 'An app that survives a failed reinstall.',
+          screens: [{ name: 'Main', summary: 'One changed screen.', emptyState: 'A hint.' }],
+        }),
+      },
+      { response: JSON.stringify({ files: { ...MINIMAL_APP_FILES, 'app.js': 'console.log("changed");' } }) },
+    );
+    const preview = await h.tools.previewAppFromPrompt.execute(
+      { prompt: 'change the app', appId: built.appId },
+      { toolCallId: 'tc', messages: [] },
+    );
+
+    h.desktop.state.fail.patch = 500;
+    await assert.rejects(
+      h.tools.installAppPreview.execute({ previewId: preview.previewId }, { toolCallId: 'tc', messages: [] }),
+      /Build failed during .*Failed to update desktop item \(500\)/,
+    );
+
+    // The previous release is what remains: v1 still installed everywhere.
+    assert.equal(h.desktop.itemsOf('app').length, 1);
+    assert.equal(h.desktop.itemsOf('app')[0].appManifest.version, '1');
+    assert.equal((await h.kv.get(`app:${built.appId}`, 'json')).version, 1);
+    assert.equal(h.r2.keys(`apps/${UID}/${built.appId}/v2/`).length, 0, 'the failed release must be cleaned up');
+
+    // The preview survives the failed install, so a retry is possible.
+    assert.ok(await h.kv.get(`app-preview:${preview.previewId}`, 'json'), 'the preview must not be consumed on failure');
+    h.desktop.state.fail.patch = null;
+    const retried = await h.tools.installAppPreview.execute(
+      { previewId: preview.previewId },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(retried.status, 'updated');
+    assert.equal(retried.version, 2);
+    assert.equal(h.desktop.itemsOf('app').length, 1);
+  });
+
+  it('previewAppFromPrompt rejects an unknown or foreign target app before generating anything', async () => {
+    const h = createAppToolsHarness();
+
+    await assert.rejects(
+      h.tools.previewAppFromPrompt.execute(
+        { prompt: 'change it', appId: 'no-such-app' },
+        { toolCallId: 'tc', messages: [] },
+      ),
+      /App no-such-app not found/,
+    );
+    h.kv.store.set('app:foreign-app', JSON.stringify({ uid: 'someone-else', version: 1, granted: {} }));
+    await assert.rejects(
+      h.tools.previewAppFromPrompt.execute(
+        { prompt: 'change it', appId: 'foreign-app' },
+        { toolCallId: 'tc', messages: [] },
+      ),
+      /App foreign-app not found/,
+    );
+
+    // The target check runs before any generation work: no model calls,
+    // no staged preview artifacts.
+    assert.equal(h.ai.calls.length, 0);
+    assert.equal(h.r2.keys('app-previews/').length, 0);
+    assert.equal(h.kv.keys().filter((k) => k.startsWith('app-preview:')).length, 0);
   });
 });
 

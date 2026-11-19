@@ -1,5 +1,5 @@
 import { useRef, useCallback, useEffect } from 'react';
-import { useWindowStore } from '../../stores/windowStore';
+import { useWindowStore, clampWindowPosition } from '../../stores/windowStore';
 import { useSlot } from '../../variants/useSlot';
 import type { WindowButtonsSlotProps, ResizeHandleSlotProps } from '../../variants/slots';
 import { WindowChrome } from '../../variants/builtin/chrome/WindowChrome';
@@ -15,6 +15,18 @@ const INTERACTIVE_TAGS = new Set([
 
 // Containers that handle their own pointer interactions (e.g. folder selection rect)
 const INTERACTIVE_CONTAINERS = new Set(['folder-view']);
+
+// Keyboard steps for move/resize from the focused title bar:
+// 10px per press, Shift = 50px (the pointer drag's coarse counterpart).
+const KEYBOARD_STEP = 10;
+const KEYBOARD_STEP_LARGE = 50;
+
+const ARROW_DELTAS: Record<string, { x: number; y: number }> = {
+  ArrowLeft: { x: -1, y: 0 },
+  ArrowRight: { x: 1, y: 0 },
+  ArrowUp: { x: 0, y: -1 },
+  ArrowDown: { x: 0, y: 1 },
+};
 
 /** Walk up from target to boundary, checking for interactive elements */
 function isInteractiveTarget(target: EventTarget | null, boundary: HTMLElement | null): boolean {
@@ -83,6 +95,7 @@ export function Window({
   const Resize = useSlot<ResizeHandleSlotProps>('window.resizeHandle');
 
   const windowRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const isDragging = useRef(false);
   const isResizing = useRef(false);
   const dragOffset = useRef({ x: 0, y: 0 });
@@ -99,7 +112,7 @@ export function Window({
 
   // Close button handler
   const handleClose = useCallback(
-    (e: React.MouseEvent) => {
+    (e: React.SyntheticEvent) => {
       e.stopPropagation();
       closeWindow(id);
     },
@@ -108,7 +121,7 @@ export function Window({
 
   // Collapse button handler (window shade)
   const handleCollapse = useCallback(
-    (e: React.MouseEvent) => {
+    (e: React.SyntheticEvent) => {
       e.stopPropagation();
       toggleCollapse(id);
     },
@@ -117,7 +130,7 @@ export function Window({
 
   // Zoom button handler (maximize/restore)
   const handleZoom = useCallback(
-    (e: React.MouseEvent) => {
+    (e: React.SyntheticEvent) => {
       e.stopPropagation();
       toggleMaximize(id);
     },
@@ -303,6 +316,144 @@ export function Window({
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
   }, []);
 
+  // ============================================
+  // KEYBOARD HANDLING (title bar is the focus surface)
+  // ============================================
+  //
+  // With the title bar focused (it is the window's first tab stop once
+  // focus enters the window — by pointer click, or by Tabbing from any
+  // focusable the window hosts):
+  //   - arrows move the window (10px; Shift = 50px)
+  //   - Alt/Option+arrows resize it (same steps, bottom-right-corner
+  //     semantics: the store's resizeWindow enforces the 200x150 minimum,
+  //     growing stops at the viewport edge)
+  //   - Escape returns focus to the window content
+  //   - Alt/Option+W closes (documented: the MenuBar's global Ctrl/Cmd+W
+  //     shortcut is reserved by browsers — the tab closes before the page
+  //     sees the keydown — so the title-bar surface uses Alt+W, which no
+  //     browser or existing app shortcut claims)
+  // Every handled key is stopped at the title bar so the document-level
+  // shortcuts (Desktop icon navigation, MenuBar ⌘-keys) never double-fire.
+
+  const handleTitleBarKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      // Tab keeps the browser's native focus order (title bar → close →
+      // zoom → collapse → content), but must not reach Desktop's
+      // document-level icon-cycling handler, which hijacks every Tab that
+      // doesn't start inside a text input.
+      if (e.key === 'Tab') {
+        e.stopPropagation();
+        return;
+      }
+
+      const hasOsModifier = e.metaKey || e.ctrlKey;
+
+      // Close shortcut — Alt/Option+W. Matched on `code` as well as `key`
+      // because macOS Option+W reports key = "Ω".
+      if (e.altKey && !hasOsModifier && (e.code === 'KeyW' || e.key === 'w' || e.key === 'W')) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeWindow(id);
+        return;
+      }
+
+      // Escape returns focus to the window content. (When collapsed the
+      // content isn't rendered; the focus simply stays.)
+      if (e.key === 'Escape' && !e.altKey && !hasOsModifier) {
+        e.preventDefault();
+        e.stopPropagation();
+        contentRef.current?.focus();
+        return;
+      }
+
+      // The title bar is a toolbar, not a button: Enter/Space on it do
+      // nothing, and must not leak to the document shortcuts (Enter there
+      // opens the selected desktop icon). The close/zoom/collapse buttons
+      // inside stop their own Enter/Space before they bubble this far.
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+
+      const delta = ARROW_DELTAS[e.key];
+      // Leave OS/browser arrow combos (Cmd+Arrow, Ctrl+Arrow…) alone.
+      if (!delta || hasOsModifier) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      // Read the window's current geometry from the store rather than the
+      // props: repeated keydowns can arrive between re-renders, and each
+      // step must accumulate from the freshest committed position/size.
+      const current = useWindowStore.getState().windows.find((w) => w.id === id);
+      if (!current) return;
+
+      const step = e.shiftKey ? KEYBOARD_STEP_LARGE : KEYBOARD_STEP;
+
+      if (e.altKey) {
+        // Resize with the bottom-right corner's semantics.
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
+        const next = { width: current.size.width, height: current.size.height };
+
+        if (delta.x !== 0) {
+          const desired = current.size.width + delta.x * step;
+          if (delta.x > 0) {
+            // Don't grow past the viewport's right edge — unless the window
+            // already extends past it, in which case growing from there is
+            // still refused (it can only stay or shrink back).
+            const maxWidth = Math.max(viewportWidth - current.position.x, current.size.width);
+            next.width = Math.min(desired, maxWidth);
+          } else {
+            // Shrinking flows through resizeWindow, which floors the
+            // 200px minimum.
+            next.width = desired;
+          }
+        }
+        if (delta.y !== 0) {
+          const desired = current.size.height + delta.y * step;
+          if (delta.y > 0) {
+            const maxHeight = Math.max(viewportHeight - current.position.y, current.size.height);
+            next.height = Math.min(desired, maxHeight);
+          } else {
+            next.height = desired;
+          }
+        }
+
+        resizeWindow(id, next);
+      } else {
+        // Move, clamped by the same rule the store applies on open and on
+        // viewport resize (clampWindowPosition), so a keyboard move can
+        // never push a window off-screen.
+        moveWindow(
+          id,
+          clampWindowPosition(
+            {
+              x: current.position.x + delta.x * step,
+              y: current.position.y + delta.y * step,
+            },
+            current.size
+          )
+        );
+      }
+    },
+    [closeWindow, moveWindow, resizeWindow, id]
+  );
+
+  // Focusing the title bar (or a control inside it) raises the window,
+  // mirroring what the pointer path does on every press.
+  const handleTitleBarFocus = useCallback(() => {
+    focusWindow(id);
+  }, [focusWindow, id]);
+
+  // Same Tab contract for the content area: Tab stays native inside the
+  // window (it already did inside inputs; now it does from any focusable
+  // the content hosts) instead of cycling desktop icons underneath.
+  const handleContentKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Tab') e.stopPropagation();
+  }, []);
+
   useEffect(() => {
     return () => {
       isDragging.current = false;
@@ -335,6 +486,8 @@ export function Window({
         onDragStart={handleDragStart}
         onDragMove={handleDragMove}
         onDragEnd={handleDragEnd}
+        onKeyDown={handleTitleBarKeyDown}
+        onFocus={handleTitleBarFocus}
       >
         <Buttons
           isActive={isActive}
@@ -347,11 +500,16 @@ export function Window({
       {/* Content Area (hidden when collapsed) */}
       {!collapsed && (
         <div
+          ref={contentRef}
           className={`${styles.content} windowContent`}
           eos-part="content"
+          // Programmatically focusable so Escape from the title bar can
+          // hand focus back to the content; not a Tab stop itself.
+          tabIndex={-1}
           onPointerDown={handleBodyDragStart}
           onPointerMove={handleBodyDragMove}
           onPointerUp={handleBodyDragEnd}
+          onKeyDown={handleContentKeyDown}
         >
           {children}
         </div>

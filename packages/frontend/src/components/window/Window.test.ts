@@ -27,7 +27,7 @@ vi.mock('../../stores/soundStore', () => ({
 import { act, createElement } from 'react';
 import type { Root } from 'react-dom/client';
 import { Window } from './Window';
-import { installTestDom, type TestDom, type TestElement } from './windowTestDom';
+import { installTestDom, type TestDom, type TestElement, type TestEvent, type KeyInit } from './windowTestDom';
 import { useWindowStore } from '../../stores/windowStore';
 
 const WINDOW_ID = 'w1';
@@ -49,8 +49,23 @@ function seededWindow() {
 let dom: TestDom;
 let reactRoot: Root | null = null;
 
-/** Mount the real Window with a plain, non-interactive div inside its content. */
-async function renderWindowWithRow(onRowClick: () => void): Promise<{ row: TestElement; content: TestElement }> {
+/**
+ * Mount the real Window with a plain, non-interactive div inside its content.
+ * `opts` overrides the rendered geometry (and re-syncs the seeded store to
+ * match — the keyboard handlers read the window's position/size from the
+ * store, not from props).
+ */
+async function renderWindowWithRow(
+  onRowClick: () => void,
+  opts: { position?: { x: number; y: number }; size?: { width: number; height: number } } = {}
+): Promise<{ row: TestElement; content: TestElement }> {
+  const position = opts.position ?? { ...INITIAL_POSITION };
+  const size = opts.size ?? { width: 400, height: 300 };
+  useWindowStore.setState({
+    windows: [{ ...seededWindow(), position: { ...position }, size: { ...size } }],
+    nextZIndex: 10,
+  });
+
   const reactDom = await import('react-dom/client');
   const root = reactDom.createRoot(dom.root as unknown as Element);
   reactRoot = root;
@@ -61,8 +76,8 @@ async function renderWindowWithRow(onRowClick: () => void): Promise<{ row: TestE
         {
           id: WINDOW_ID,
           title: 'Test Window',
-          position: { ...INITIAL_POSITION },
-          size: { width: 400, height: 300 },
+          position: { ...position },
+          size: { ...size },
           zIndex: 5,
           minimized: false,
           isActive: true,
@@ -75,6 +90,23 @@ async function renderWindowWithRow(onRowClick: () => void): Promise<{ row: TestE
   const content = dom.findDescendant(dom.root, 'eos-part', 'content');
   if (!row || !content) throw new Error('Window content did not render');
   return { row, content };
+}
+
+/** Dispatch a keydown on `target` and return the event (see `dom.key`). */
+function pressKey(target: TestElement, init?: KeyInit): TestEvent {
+  let event: TestEvent | undefined;
+  act(() => {
+    event = dom.key(target, 'keydown', init);
+  });
+  if (!event) throw new Error('keydown did not dispatch');
+  return event;
+}
+
+/** The rendered element carrying the given eos-part, or a thrown error. */
+function findPart(name: string): TestElement {
+  const el = dom.findDescendant(dom.root, 'eos-part', name);
+  if (!el) throw new Error(`missing [eos-part="${name}"]`);
+  return el;
 }
 
 beforeEach(() => {
@@ -148,4 +180,165 @@ test('pointer movement past the threshold still starts a body drag', async () =>
   expect(useWindowStore.getState().windows[0].position).toEqual({ x: 210, y: 100 });
   // The press became a drag, so the row must not also receive a click.
   expect(rowClicks).not.toHaveBeenCalled();
+});
+
+// ============================================
+// KEYBOARD: move, resize, close from the title bar
+// ============================================
+
+test('title bar is a focusable keyboard surface naming the window', async () => {
+  await renderWindowWithRow(() => {});
+  const titleBar = findPart('titlebar');
+
+  expect(titleBar.getAttribute('tabindex')).toBe('0');
+  expect(titleBar.getAttribute('role')).toBe('toolbar');
+  expect(titleBar.getAttribute('aria-label')).toBe('Test Window');
+  // The content is programmatically focusable (Escape's target) but is not
+  // itself a tab stop.
+  expect(findPart('content').getAttribute('tabindex')).toBe('-1');
+
+  // Enter/Space on the toolbar itself are inert and must not leak to the
+  // document-level shortcuts (Enter there opens the selected desktop icon).
+  const enter = pressKey(titleBar, { key: 'Enter' });
+  expect(enter.propagationStopped).toBe(true);
+  expect(useWindowStore.getState().windows).toHaveLength(1);
+});
+
+test('arrow keys move the focused window; Shift is the large step', async () => {
+  await renderWindowWithRow(() => {});
+  const titleBar = findPart('titlebar');
+
+  act(() => {
+    dom.key(titleBar, 'keydown', { key: 'ArrowRight' });
+    dom.key(titleBar, 'keydown', { key: 'ArrowDown' });
+  });
+  expect(useWindowStore.getState().windows[0].position).toEqual({ x: 110, y: 110 });
+
+  act(() => {
+    dom.key(titleBar, 'keydown', { key: 'ArrowLeft', shiftKey: true });
+    dom.key(titleBar, 'keydown', { key: 'ArrowUp', shiftKey: true });
+  });
+  expect(useWindowStore.getState().windows[0].position).toEqual({ x: 60, y: 60 });
+
+  // OS-modifier arrows are left to the browser/OS.
+  act(() => {
+    dom.key(titleBar, 'keydown', { key: 'ArrowRight', metaKey: true });
+    dom.key(titleBar, 'keydown', { key: 'ArrowDown', ctrlKey: true });
+  });
+  expect(useWindowStore.getState().windows[0].position).toEqual({ x: 60, y: 60 });
+});
+
+test('keyboard moves respect the viewport clamp the store applies', async () => {
+  await renderWindowWithRow(() => {}, { position: { x: 5, y: 25 } });
+  const titleBar = findPart('titlebar');
+
+  // Left/top edges (top edge is the menu bar height, 20px in the test DOM).
+  act(() => {
+    dom.key(titleBar, 'keydown', { key: 'ArrowLeft' });
+    dom.key(titleBar, 'keydown', { key: 'ArrowUp' });
+  });
+  expect(useWindowStore.getState().windows[0].position).toEqual({ x: 0, y: 20 });
+
+  // Right/bottom edges: hundreds of px of overshoot must stop at
+  // (1280 - 400, 800 - 300).
+  act(() => {
+    for (let i = 0; i < 10; i++) dom.key(titleBar, 'keydown', { key: 'ArrowDown', shiftKey: true });
+    for (let i = 0; i < 18; i++) dom.key(titleBar, 'keydown', { key: 'ArrowRight', shiftKey: true });
+  });
+  expect(useWindowStore.getState().windows[0].position).toEqual({ x: 880, y: 500 });
+});
+
+test('Alt+arrows resize with the min-size and viewport clamps', async () => {
+  await renderWindowWithRow(() => {}, { position: { x: 875, y: 100 } });
+  const titleBar = findPart('titlebar');
+
+  // Growth stops at the viewport's right edge (1280 - 875 = 405).
+  act(() => {
+    dom.key(titleBar, 'keydown', { key: 'ArrowRight', altKey: true });
+  });
+  expect(useWindowStore.getState().windows[0].size).toEqual({ width: 405, height: 300 });
+
+  act(() => {
+    dom.key(titleBar, 'keydown', { key: 'ArrowDown', altKey: true });
+  });
+  expect(useWindowStore.getState().windows[0].size).toEqual({ width: 405, height: 310 });
+
+  // Shrinking floors at the store's 200×150 minimum.
+  act(() => {
+    for (let i = 0; i < 5; i++) dom.key(titleBar, 'keydown', { key: 'ArrowLeft', altKey: true, shiftKey: true });
+    for (let i = 0; i < 4; i++) dom.key(titleBar, 'keydown', { key: 'ArrowUp', altKey: true, shiftKey: true });
+  });
+  expect(useWindowStore.getState().windows[0].size).toEqual({ width: 200, height: 150 });
+});
+
+test('Escape from the title bar returns focus to the window content', async () => {
+  await renderWindowWithRow(() => {});
+  const titleBar = findPart('titlebar');
+  const content = findPart('content');
+
+  const event = pressKey(titleBar, { key: 'Escape' });
+
+  expect(dom.document.activeElement).toBe(content);
+  // The keypress must not reach the document-level shortcuts
+  // (Escape there deselects desktop icons).
+  expect(event.propagationStopped).toBe(true);
+});
+
+test('Alt/Option+W closes the focused window', async () => {
+  await renderWindowWithRow(() => {});
+  const titleBar = findPart('titlebar');
+
+  // macOS reports Option+W as key="Ω" — the shortcut matches e.code.
+  act(() => {
+    dom.key(titleBar, 'keydown', { key: 'Ω', code: 'KeyW', altKey: true });
+  });
+  expect(useWindowStore.getState().windows).toHaveLength(0);
+
+  // Windows/Linux report key="w".
+  useWindowStore.setState({ windows: [seededWindow()] });
+  act(() => {
+    dom.key(titleBar, 'keydown', { key: 'w', code: 'KeyW', altKey: true });
+  });
+  expect(useWindowStore.getState().windows).toHaveLength(0);
+});
+
+test('window buttons are keyboard-reachable and operable', async () => {
+  await renderWindowWithRow(() => {});
+  const zoom = findPart('zoom');
+  const collapse = findPart('collapse');
+  const close = findPart('close');
+
+  // Reachable by Tab (tabbable) and named — the ARIA button pattern.
+  for (const btn of [close, zoom, collapse]) {
+    expect(btn.getAttribute('tabindex')).toBe('0');
+    expect(btn.getAttribute('role')).toBe('button');
+    expect(btn.getAttribute('aria-label')).toBeTruthy();
+  }
+
+  // Operable: Space zooms, Enter collapses, Enter closes.
+  let event = pressKey(zoom, { key: ' ' });
+  expect(useWindowStore.getState().windows[0].maximized).toBe(true);
+  expect(event.defaultPrevented).toBe(true);
+  expect(event.propagationStopped).toBe(true);
+
+  event = pressKey(collapse, { key: 'Enter' });
+  expect(useWindowStore.getState().windows[0].collapsed).toBe(true);
+
+  event = pressKey(close, { key: 'Enter' });
+  expect(useWindowStore.getState().windows).toHaveLength(0);
+  expect(event.defaultPrevented).toBe(true);
+});
+
+test('Tab stays native inside the window and never reaches the desktop icon cycler', async () => {
+  await renderWindowWithRow(() => {});
+  const titleBar = findPart('titlebar');
+  const content = findPart('content');
+
+  const fromTitleBar = pressKey(titleBar, { key: 'Tab' });
+  expect(fromTitleBar.propagationStopped).toBe(true);
+  expect(fromTitleBar.defaultPrevented).toBe(false); // native focus order preserved
+
+  const fromContent = pressKey(content, { key: 'Tab' });
+  expect(fromContent.propagationStopped).toBe(true);
+  expect(fromContent.defaultPrevented).toBe(false);
 });
