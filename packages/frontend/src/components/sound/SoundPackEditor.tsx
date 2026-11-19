@@ -9,7 +9,6 @@ import { useState, useRef, useCallback } from 'react';
 import { useSoundStore, type SoundType } from '../../stores/soundStore';
 import { uploadSound, deleteSound, type SoundAsset } from '../../services/api';
 import { BUILTIN_PACK_LABELS, type BuiltInPackId } from '../../sounds/builtInPacks';
-import { updateProfile } from '../../services/api';
 import styles from './SoundPackEditor.module.css';
 
 /** Human-readable labels and descriptions for each sound type */
@@ -35,7 +34,7 @@ interface Props {
 }
 
 export default function SoundPackEditor({ soundAssets, onAssetsChange }: Props) {
-  const { builtInPack, setBuiltInPack, customSoundPack, setCustomSoundUrl, playSound, preloadCustomSounds } = useSoundStore();
+  const { builtInPack, setBuiltInPack, customSoundPack, setCustomSoundUrl, saveCustomSoundPack, playSound, preloadCustomSounds } = useSoundStore();
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState<SoundType | null>(null);
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -63,13 +62,20 @@ export default function SoundPackEditor({ soundAssets, onAssetsChange }: Props) 
 
     try {
       const result = await uploadSound(file, type);
-      // Update sound pack in store and profile
+      // Snapshot the pack before this edit — it is the rollback target if
+      // the profile sync below is refused.
+      const previousPack = useSoundStore.getState().customSoundPack;
+      // Update sound pack in store
       setCustomSoundUrl(type, result.asset.url);
 
       // Sync to profile
-      const currentPack = useSoundStore.getState().customSoundPack;
-      if (currentPack) {
-        await updateProfile({ soundPack: currentPack });
+      const saved = await saveCustomSoundPack(previousPack);
+      if (!saved) {
+        // The upload reached storage, but the profile never recorded it —
+        // the store has rolled back, so don't preload or present the sound
+        // as applied.
+        setError('Sound uploaded, but it could not be added to your profile. The change was not applied.');
+        return;
       }
 
       // Preload the new sound
@@ -85,16 +91,29 @@ export default function SoundPackEditor({ soundAssets, onAssetsChange }: Props) 
 
   const handleRemove = async (type: SoundType) => {
     const asset = getCustomAsset(type);
-    if (!asset) return;
+    // Also allow clearing a pack mapping whose asset is already gone (e.g.
+    // a previous remove whose profile sync failed).
+    const mappedUrl = customSoundPack?.sounds?.[type];
+    if (!asset && !mappedUrl) return;
 
     setError(null);
     try {
-      await deleteSound(asset.soundId);
+      const previousPack = useSoundStore.getState().customSoundPack;
+      if (asset) {
+        await deleteSound(asset.soundId);
+      }
       setCustomSoundUrl(type, null);
 
       // Sync to profile
-      const currentPack = useSoundStore.getState().customSoundPack;
-      await updateProfile({ soundPack: currentPack || { name: 'Custom', sounds: {} } });
+      const saved = await saveCustomSoundPack(previousPack);
+      if (!saved) {
+        // The asset is deleted, but the server profile still maps this
+        // sound — the store has rolled back to match the profile. The user
+        // can retry; the mapping-only removal above keeps that reachable.
+        setError('Sound deleted, but your profile could not be updated — it is still set as custom. Try removing it again.');
+        onAssetsChange();
+        return;
+      }
 
       // Re-preload
       await preloadCustomSounds();

@@ -11,6 +11,7 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { updateProfile, isApiConfigured } from '../services/api';
 import {
   BUILTIN_PACKS,
   playSynthSound,
@@ -61,6 +62,15 @@ interface SoundState {
   // Custom sound management
   setCustomSoundUrl: (type: SoundType, url: string | null) => void;
   setCustomSoundPack: (pack: SoundPack | null) => void;
+  /**
+   * PATCH the current custom pack to the profile (the mapping visitors and
+   * reloads restore from). Resolves true when the server acknowledged it;
+   * resolves false after rolling the pack back to `previous` — the pack as
+   * it was before the edit that prompted this save — so a refused save
+   * (offline / 401 / 429 / 500) never leaves the new sounds playing and
+   * looking set when the server never recorded them.
+   */
+  saveCustomSoundPack: (previous: SoundPack | null) => Promise<boolean>;
   preloadCustomSounds: () => Promise<void>;
 
   // Visitor mode
@@ -114,7 +124,12 @@ export const useSoundStore = create<SoundState>()(
 
       setCustomSoundUrl: (type, url) => {
         const { customSoundPack } = get();
-        const current = customSoundPack || { name: 'Custom', sounds: {} };
+        // Clone before mutating: the pack object a caller captured before
+        // this edit (the rollback target for saveCustomSoundPack) must not
+        // be corrupted in place.
+        const current: SoundPack = customSoundPack
+          ? { name: customSoundPack.name, sounds: { ...customSoundPack.sounds } }
+          : { name: 'Custom', sounds: {} };
 
         if (url) {
           current.sounds[type] = url;
@@ -128,6 +143,26 @@ export const useSoundStore = create<SoundState>()(
       },
 
       setCustomSoundPack: (pack) => set({ customSoundPack: pack }),
+
+      saveCustomSoundPack: async (previous) => {
+        const pack = get().customSoundPack;
+        // Demo mode: no server to refuse the change; the local pack stands.
+        if (!isApiConfigured) return true;
+
+        try {
+          await updateProfile({ soundPack: pack || { name: 'Custom', sounds: {} } });
+          return true;
+        } catch (error) {
+          console.error('Failed to sync sound pack to profile:', error);
+          // The server never recorded this pack. Revert the local mapping
+          // unless the user already made another edit — that edit carries
+          // the pack forward and gets its own save.
+          if (get().customSoundPack === pack) {
+            set({ customSoundPack: previous });
+          }
+          return false;
+        }
+      },
 
       preloadCustomSounds: async () => {
         const { customSoundPack } = get();
