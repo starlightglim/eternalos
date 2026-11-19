@@ -25,6 +25,15 @@ interface AlertDialogProps {
   onClose?: () => void;
 }
 
+/** Focusable elements inside the dialog, in DOM order. */
+function getFocusableElements(root: HTMLElement): HTMLElement[] {
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    )
+  ).filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
+}
+
 /**
  * Classic Mac OS Alert Dialog
  * - Error: Stop sign icon (⛔)
@@ -63,6 +72,25 @@ export function AlertDialog({
     [buttons, type, onClose]
   );
 
+  // Initial focus: the primary action. That is the established pattern in
+  // this codebase — every call site marks its default action primary, and
+  // the autoFocus attribute focuses it on mount (classic Mac OS alerts
+  // focus the outlined default button too). This effect is the safety net
+  // for the shapes autoFocus cannot cover: button sets without a primary
+  // (fall back to the first — least destructive — action) and focus that
+  // escaped while the dialog stayed open (e.g. a new alert swapped the
+  // buttons out from under it). It only acts when focus is outside the
+  // dialog, so it never fights the Tab trap.
+  useEffect(() => {
+    const root = dialogRef.current;
+    if (!root) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && root.contains(active)) return;
+    const focusables = getFocusableElements(root);
+    if (focusables.length === 0) return;
+    (root.querySelector<HTMLElement>('[data-primary]') ?? focusables[0]).focus();
+  }, [defaultButtons]);
+
   // Escape closes; Tab is trapped inside the dialog.
   //
   // Enter is deliberately NOT handled here. A global Enter handler used to
@@ -80,11 +108,7 @@ export function AlertDialog({
       if (e.key === 'Tab') {
         const root = dialogRef.current;
         if (!root) return;
-        const focusables = Array.from(
-          root.querySelectorAll<HTMLElement>(
-            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-          )
-        ).filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
+        const focusables = getFocusableElements(root);
         if (focusables.length === 0) return;
         const first = focusables[0];
         const last = focusables[focusables.length - 1];
@@ -148,6 +172,7 @@ export function AlertDialog({
               className={`${styles.button} ${button.primary ? styles.primaryButton : ''}`}
               onClick={button.onClick}
               autoFocus={button.primary}
+              data-primary={button.primary || undefined}
             >
               {button.label}
             </button>
