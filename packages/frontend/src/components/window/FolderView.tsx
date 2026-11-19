@@ -447,6 +447,8 @@ export function FolderView({ folderId, visitorItems, isVisitorMode = false, isDr
           id: 'duplicate',
           label: 'Duplicate',
           shortcut: '⌘D',
+          // duplicateItems skips installed apps (they can't be cloned).
+          disabled: item.type === 'app',
           action: () => {
             duplicateItems([item.id], folderId);
           },
