@@ -623,3 +623,46 @@ test('a sort waits for an earlier in-flight save on the same item', async () => 
   expect(store.getItem('note-c')?.position).toEqual({ x: 0, y: 2 });
 });
 
+// ---------------------------------------------------------------------------
+// Empty trash (CORE-ROADMAP Workstream 1): a refused permanent delete must
+// restore the trashed items from the acknowledged snapshot — the server still
+// holds them, so they must not stay gone locally.
+// ---------------------------------------------------------------------------
+
+test('a failed empty-trash restores the trashed items from the acknowledged snapshot', async () => {
+  const store = useDesktopStore.getState();
+  const second = { ...original, id: 'memo', name: 'Memo.txt', position: { x: 1, y: 0 } };
+  store.setItems([{ ...original }, second]);
+  // Both items are trashed with the server's blessing first.
+  api.updateItems.mockResolvedValue([]);
+  store.moveToTrash(['note', 'memo']);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(useDesktopStore.getState().getTrashCount()).toBe(2);
+
+  // The server refuses the permanent delete.
+  api.emptyTrashApi.mockRejectedValue(new Error('500 Internal Server Error'));
+  useDesktopStore.getState().emptyTrash();
+  expect(useDesktopStore.getState().getTrashCount()).toBe(0); // optimistic removal
+  await vi.advanceTimersByTimeAsync(0);
+  // Rolled back: both items are back, exactly as the server still knows
+  // them, and the failure says so instead of "they may reappear on reload".
+  expect(useDesktopStore.getState().getTrashCount()).toBe(2);
+  expect(useDesktopStore.getState().getItem('note')).toEqual(getAcknowledgedItem('note'));
+  expect(useDesktopStore.getState().getItem('memo')).toEqual(getAcknowledgedItem('memo'));
+  expect(alerts.showError).toHaveBeenCalledWith(
+    'Failed to permanently delete the trash. Your trashed items have been restored.',
+    'Empty Trash Failed'
+  );
+});
+
+test('a successful empty-trash forgets the acknowledged items', async () => {
+  api.updateItems.mockResolvedValue([]);
+  useDesktopStore.getState().moveToTrash(['note']);
+  await vi.advanceTimersByTimeAsync(0);
+  api.emptyTrashApi.mockResolvedValue({ success: true });
+  useDesktopStore.getState().emptyTrash();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(useDesktopStore.getState().items).toHaveLength(0);
+  expect(getAcknowledgedItem('note')).toBeUndefined();
+});
+

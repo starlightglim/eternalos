@@ -38,6 +38,7 @@ import {
   bumpDesktopSession,
   currentDesktopSession,
   forgetAcknowledgedItems,
+  getAcknowledgedItem,
   noteAcknowledgedCreate,
   noteAcknowledgedWrite,
   noteServerItems,
@@ -1290,8 +1291,22 @@ export const useDesktopStore = create<DesktopStore>()((set, get, api) => {
           })
           .catch((error) => {
             console.error('Failed to empty trash:', error);
+            if (version !== currentDesktopSession()) return;
+            // The server refused the permanent delete, so it still holds
+            // every trashed item. Put back the ones this call removed,
+            // restored from the acknowledged snapshot (exactly what the
+            // server still knows — falling back to the removed values for
+            // items it never confirmed), so nothing looks destroyed when
+            // it isn't.
+            const present = new Set(get().items.map((item) => item.id));
+            const restored = trashedItems
+              .filter((item) => !present.has(item.id))
+              .map((item) => getAcknowledgedItem(item.id) ?? item);
+            if (restored.length > 0) {
+              setDisplayedItems([...get().items, ...restored]);
+            }
             showError(
-              'Failed to permanently delete some items. They may reappear on reload.',
+              'Failed to permanently delete the trash. Your trashed items have been restored.',
               'Empty Trash Failed'
             );
           });
