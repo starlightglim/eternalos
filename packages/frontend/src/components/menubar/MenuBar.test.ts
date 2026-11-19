@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { act, createElement } from 'react';
+import { act, createElement, type ReactElement } from 'react';
 import type { Root } from 'react-dom/client';
 
 // MenuBar pulls in the real stores (windowStore registers a top-level
@@ -52,19 +52,22 @@ vi.mock('../../services/api', () => ({
 
 import { MemoryRouter } from 'react-router-dom';
 import { MenuBar } from './MenuBar';
+import { AlertDialog } from '../ui/AlertDialog';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { useWindowStore } from '../../stores/windowStore';
-import { installTestDom, TestElement, type TestDom, type TestNode } from '../window/windowTestDom';
+import { installTestDom, TestElement, type TestDom, type KeyInit, type TestEvent, type TestNode } from '../window/windowTestDom';
 
 let dom: TestDom;
 let reactRoot: Root | null = null;
 
-async function renderMenuBar(): Promise<void> {
+async function renderMenuBar(extraChild?: ReactElement): Promise<void> {
   const reactDom = await import('react-dom/client');
   const root = reactDom.createRoot(dom.root as unknown as Element);
   reactRoot = root;
   await act(async () => {
-    root.render(createElement(MemoryRouter, null, createElement(MenuBar)));
+    root.render(
+      createElement(MemoryRouter, null, createElement(MenuBar), ...(extraChild ? [extraChild] : []))
+    );
   });
 }
 
@@ -107,10 +110,47 @@ function focusedText(): string | null {
   return dom.document.activeElement?.textContent ?? null;
 }
 
-function pressKey(key: string): void {
+function pressKey(key: string, init?: KeyInit): void {
   act(() => {
-    dom.key(focusedItem(), 'keydown', { key });
+    dom.key(focusedItem(), 'keydown', { key, ...init });
   });
+}
+
+/** Dispatch a keydown on `target` — it bubbles to the document handler. */
+function pressOn(target: TestElement, key: string, init?: KeyInit): TestEvent {
+  let event: TestEvent | undefined;
+  act(() => {
+    event = dom.key(target, 'keydown', { key, ...init });
+  });
+  return event as TestEvent;
+}
+
+/** Two text items on the desktop, alpha selected — the ⌘-commands' target. */
+function seedDesktopItems(): void {
+  const store = useDesktopStore.getState();
+  act(() => {
+    store.addItem({
+      id: 'alpha', type: 'text' as const, name: 'alpha.txt', parentId: null,
+      position: { x: 0, y: 0 }, isPublic: true, createdAt: 1, updatedAt: 1,
+    });
+    store.addItem({
+      id: 'bravo', type: 'text' as const, name: 'bravo.txt', parentId: null,
+      position: { x: 1, y: 0 }, isPublic: true, createdAt: 1, updatedAt: 1,
+    });
+    store.selectItem('alpha', false);
+  });
+}
+
+function itemNames(): string[] {
+  return useDesktopStore.getState().items.map((item) => item.name);
+}
+
+function isTrashed(id: string): boolean {
+  return useDesktopStore.getState().items.find((item) => item.id === id)?.isTrashed === true;
+}
+
+function selection(): string[] {
+  return Array.from(useDesktopStore.getState().selectedIds);
 }
 
 /** F10 is a document-level shortcut — dispatch it wherever focus is. */
@@ -406,4 +446,126 @@ test('mouse clicks still open and close the dropdown', async () => {
   });
   expect(elementsWith(dom.root, 'role', 'menu')).toHaveLength(0);
   expect(titles[1].getAttribute('aria-expanded')).toBe('false');
+});
+
+// ============================================
+// ⌘-SHORTCUT GATING (menuguard)
+// ============================================
+
+test('with an AlertDialog open, ⌘⌫/⌘D/⌘A and F10 do nothing', async () => {
+  seedDesktopItems();
+  await renderMenuBar(
+    createElement(AlertDialog, {
+      type: 'confirm',
+      title: 'Trash this item?',
+      message: 'The selection would move to the trash.',
+      onClose: () => {},
+    })
+  );
+
+  // The dialog traps focus: keys land on its focused (primary) button.
+  expect(dom.document.activeElement?.nodeName).toBe('BUTTON');
+
+  // ⌘⌫ must not trash the selection behind the confirm.
+  pressKey('Backspace', { metaKey: true });
+  expect(isTrashed('alpha')).toBe(false);
+  expect(selection()).toEqual(['alpha']);
+
+  // ⌘D must not duplicate behind it, and ⌘A must not touch the selection.
+  pressKey('d', { metaKey: true });
+  expect(itemNames()).toEqual(['alpha.txt', 'bravo.txt']);
+  pressKey('a', { metaKey: true });
+  expect(selection()).toEqual(['alpha']);
+
+  // F10 stands down too — a modal owns the keyboard: focus stays in the
+  // dialog, and the menubar's roving tabindex is never armed.
+  pressKey('F10');
+  expect(dom.document.activeElement?.nodeName).toBe('BUTTON');
+  expect(topLevelTitles()[0].getAttribute('tabindex')).toBe('-1');
+});
+
+test('any open aria-modal dialog gates the ⌘-commands; closed, they work as before', async () => {
+  seedDesktopItems();
+  await renderMenuBar();
+
+  // The LinkDialog / DeveloperStudio scaffold shape: a plain role="dialog"
+  // with aria-modal="true" — the shared signal, not an AlertDialog special
+  // case.
+  const dialog = dom.document.createElement('div');
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dom.document.body.appendChild(dialog);
+
+  try {
+    pressOn(dom.document.body, 'Backspace', { metaKey: true });
+    expect(isTrashed('alpha')).toBe(false);
+    pressOn(dom.document.body, 'd', { metaKey: true });
+    expect(itemNames()).toEqual(['alpha.txt', 'bravo.txt']);
+    pressOn(dom.document.body, 'a', { metaKey: true });
+    expect(selection()).toEqual(['alpha']);
+  } finally {
+    dialog.remove();
+  }
+
+  // Once it is gone, the ⌘-commands work exactly as before.
+  pressOn(dom.document.body, 'a', { metaKey: true }); // ⌘A selects the desktop
+  expect(selection()).toEqual(['alpha', 'bravo']);
+  pressOn(dom.document.body, 'd', { metaKey: true }); // ⌘D duplicates the selection
+  expect(itemNames()).toEqual(['alpha.txt', 'bravo.txt', 'alpha.txt copy', 'bravo.txt copy']);
+  pressOn(dom.document.body, 'Backspace', { metaKey: true }); // ⌘⌫ trashes and deselects
+  expect(isTrashed('alpha')).toBe(true);
+  expect(isTrashed('bravo')).toBe(true);
+  expect(selection()).toEqual([]);
+});
+
+test('typing in an input, textarea, select, or contenteditable never triggers the ⌘-commands', async () => {
+  seedDesktopItems();
+  await renderMenuBar();
+
+  // The keystrokes a user actually types in a control, as the browser
+  // delivers them: targeted at the focused control, bubbling to document.
+  const commands: Array<[string, KeyInit]> = [
+    ['Backspace', { metaKey: true }],
+    ['d', { metaKey: true }],
+    ['a', { metaKey: true }],
+    ['n', { metaKey: true }],
+  ];
+
+  const input = dom.document.createElement('input');
+  dom.document.body.appendChild(input);
+  input.focus();
+  expect(dom.document.activeElement).toBe(input);
+  for (const [key, init] of commands) {
+    const event = pressOn(input, key, init);
+    expect(event.defaultPrevented).toBe(false);
+  }
+
+  const textarea = dom.document.createElement('textarea');
+  dom.document.body.appendChild(textarea);
+  textarea.focus();
+  for (const [key, init] of commands) {
+    pressOn(textarea, key, init);
+  }
+
+  const select = dom.document.createElement('select');
+  dom.document.body.appendChild(select);
+  select.focus();
+  for (const [key, init] of commands) {
+    pressOn(select, key, init);
+  }
+
+  // Contenteditable: the caret can sit in a descendant of the editable root.
+  const editable = dom.document.createElement('div');
+  editable.setAttribute('contenteditable', 'true');
+  dom.document.body.appendChild(editable);
+  editable.focus();
+  for (const [key, init] of commands) {
+    pressOn(editable, key, init);
+  }
+
+  // The keystrokes stayed with the controls: nothing trashed, nothing
+  // duplicated, no New Folder, and the desktop selection untouched.
+  expect(isTrashed('alpha')).toBe(false);
+  expect(itemNames()).toEqual(['alpha.txt', 'bravo.txt']);
+  expect(selection()).toEqual(['alpha']);
 });

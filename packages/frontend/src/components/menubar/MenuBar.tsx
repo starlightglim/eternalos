@@ -7,6 +7,7 @@ import { useClipboardStore } from '../../stores/clipboardStore';
 import { useAlertStore } from '../../stores/alertStore';
 import { isApiConfigured } from '../../services/api';
 import { downloadDesktopExport } from '../../utils/exportDesktop';
+import { isModalOpen } from '../../utils/modalGate';
 import type { MenuItem } from '../../types';
 import { MenuBarDropdown } from './MenuBarDropdown';
 import styles from './MenuBar.module.css';
@@ -15,6 +16,34 @@ import styles from './MenuBar.module.css';
 // Right) walks this list; it must match the keys of `menus` below.
 const MENU_NAMES = ['apple', 'file', 'edit', 'view', 'special'] as const;
 type MenuName = (typeof MENU_NAMES)[number];
+
+// True when the keydown's target is a text control — an input, textarea,
+// select, or anything inside a contenteditable root: the keystroke belongs
+// to that control, not the menu commands. Mirrors the desktop shortcuts'
+// rule (`isTextEditingTarget` in desktopKeyboard.ts), extended with SELECT
+// (a focused <select> owns its keys the same way). Tag names instead of
+// `instanceof HTMLInputElement`/`HTMLTextAreaElement` — identical semantics
+// in the browser (those are exactly the INPUT/TEXTAREA tags), and it also
+// runs under the repo's node-env test DOM, where those globals don't
+// exist. The contenteditable check walks ancestors because the caret can
+// sit in a descendant of the editable root, and the attribute read covers
+// the test DOM, for the same reasons as in desktopKeyboard.ts.
+const ELEMENT_NODE = 1;
+function isTextControlTarget(target: EventTarget | null): boolean {
+  const start = target as Node | null;
+  if (start && start.nodeType === ELEMENT_NODE) {
+    const tag = (start as Element).tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  }
+  for (let node = start; node; node = node.parentNode) {
+    if (node.nodeType !== ELEMENT_NODE) continue;
+    const candidate = node as Element;
+    if ((candidate as HTMLElement).isContentEditable) return true;
+    const declared = candidate.getAttribute('contenteditable');
+    if (declared === 'true' || declared === '') return true;
+  }
+  return false;
+}
 
 /**
  * Classic Mac OS-style Menu Bar
@@ -30,6 +59,11 @@ type MenuName = (typeof MENU_NAMES)[number];
  *   (arrows/Home/End wrap and skip disabled items, Enter/Space activate).
  *   Escape closes the dropdown and returns focus to the top-level item; a
  *   second Escape restores focus to where it was before F10.
+ * - The document-level shortcuts stand down while any aria-modal dialog is
+ *   open (F10 and the ⌘-commands alike — a modal owns the keyboard, shared
+ *   modalGate signal), and the ⌘-commands stand down while focus is in a
+ *   text control (input/textarea/select/contenteditable), like the desktop
+ *   shortcuts.
  */
 export function MenuBar() {
   const { windows, closeWindow, getTopWindow, openWindow } = useWindowStore();
@@ -684,6 +718,14 @@ export function MenuBar() {
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // An open modal owns the keyboard: the whole handler stands down —
+      // F10 must not pull focus into the menubar from under a dialog, and
+      // the ⌘-commands must not act on the desktop behind one (⌘⌫ used to
+      // trash the selection under an AlertDialog's confirm). One shared
+      // signal, the same one the desktop shortcuts gate on
+      // (utils/modalGate — see desktopKeyboard.ts), not a second mechanism.
+      if (isModalOpen()) return;
+
       // F10 focuses the menubar — the documented menubar shortcut (see
       // focusMenuBar). No modifiers: Shift+F10 stays the context-menu key.
       if (e.key === 'F10' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
@@ -695,22 +737,12 @@ export function MenuBar() {
       const isMeta = e.metaKey || e.ctrlKey;
       if (!isMeta) return;
 
-      // Check if focus is on a text-editable element — if so, let the
-      // browser handle native clipboard (copy/paste/cut/select-all) and
-      // other text-editing shortcuts so users can interact with textareas,
-      // inputs, and contenteditable elements normally.
-      const active = document.activeElement;
-      const isTextEditable =
-        active instanceof HTMLTextAreaElement ||
-        active instanceof HTMLInputElement ||
-        (active instanceof HTMLElement && active.isContentEditable);
-
-      // These shortcuts should always go to the browser when a text field
-      // is focused: cut, copy, paste, select-all, undo, redo, find
-      const textNativeKeys = new Set(['x', 'c', 'v', 'a', 'z', 'f']);
-      if (isTextEditable && textNativeKeys.has(e.key)) {
-        return; // Let browser handle natively
-      }
+      // Focus is in a text control: its keys belong to it. The native
+      // clipboard/editing shortcuts reach the control untouched, and no
+      // menu command fires from under the field (⌘⌫ used to trash the
+      // desktop selection while the user was editing text) — the same rule
+      // the desktop shortcuts follow (desktopKeyboard.ts).
+      if (isTextControlTarget(e.target)) return;
 
       if (e.key === 'n') {
         e.preventDefault();
