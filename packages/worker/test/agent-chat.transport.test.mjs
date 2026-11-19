@@ -10,6 +10,13 @@
  * request exercises the provider-failure path end to end: the reply must
  * terminate with a clear error frame + done (never a silent hang) and must
  * leave the persisted history free of orphaned or duplicated rows.
+ *
+ * The drop-and-replay contract with a REAL streaming generation (slow
+ * chunks, mid-stream drop, RESUME_REQUEST/RESUMING handshake, replay of
+ * the still-running generation, exactly-once persistence) can't be driven
+ * here — a local [ai] binding needs Cloudflare credentials — so it lives in
+ * agent-chat.replay.test.mjs, which drives the real OrchestratorAgent and
+ * the real ai-chat WS protocol in-process with a scripted slow AI binding.
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
