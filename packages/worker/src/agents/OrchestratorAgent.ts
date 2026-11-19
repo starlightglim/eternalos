@@ -254,19 +254,28 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
     return extractOwnerUid(this.name);
   }
 
-  async onChatMessage(_onFinish?: Parameters<AIChatAgent<Env, OrchestratorState>['onChatMessage']>[0], options?: { body?: Record<string, unknown> }) {
+  async onChatMessage(_onFinish?: Parameters<AIChatAgent<Env, OrchestratorState>['onChatMessage']>[0], options?: { body?: Record<string, unknown>; abortSignal?: AbortSignal }) {
     const lastUserMessage = [...this.messages].reverse().find((message) => message.role === 'user');
     const lastUserText = extractMessageText(lastUserMessage);
     const ownerUid = this.getOwnerUid();
     const threadId = normalizeThreadId(
       typeof options?.body?.threadId === 'string' ? options.body.threadId : this.name.split(':')[1],
     );
-    const existingThread = await upsertThread(this.env, ownerUid, threadId, { updatedAt: Date.now() });
-    if (lastUserText && shouldReplaceThreadTitle(existingThread.title)) {
-      await upsertThread(this.env, ownerUid, threadId, {
-        title: deriveThreadTitleFromMessage(lastUserText),
-        updatedAt: Date.now(),
-      });
+    // The thread registry is bookkeeping, not a precondition for the reply:
+    // a transient KV failure here used to reject the whole WebSocket request
+    // handler, leaving the client with no response frame at all — a stuck
+    // "Working..." spinner. Log and continue; the chat itself still works and
+    // the title/updatedAt bump lands on the next successful message.
+    try {
+      const existingThread = await upsertThread(this.env, ownerUid, threadId, { updatedAt: Date.now() });
+      if (lastUserText && shouldReplaceThreadTitle(existingThread.title)) {
+        await upsertThread(this.env, ownerUid, threadId, {
+          title: deriveThreadTitleFromMessage(lastUserText),
+          updatedAt: Date.now(),
+        });
+      }
+    } catch (registryError) {
+      console.error('Failed to update agent thread registry entry:', registryError);
     }
 
     const route = classifyRoute(lastUserText);
@@ -350,6 +359,11 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
             toolCalls: 'before-last-10-messages',
           }),
           tools: activeRouteTools as any,
+          // Cancel the upstream model call when the client stops or the
+          // request is cancelled — otherwise the DO keeps generating and
+          // paying for tokens nobody will see (the response reader is torn
+          // down on abort either way).
+          abortSignal: options?.abortSignal,
           prepareStep: async ({ stepNumber }) => {
             if (activeToolNames.length === 0) {
               return {
