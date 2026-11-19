@@ -392,43 +392,48 @@ export const ROUTES: RouteDefinition[] = [
 
   // -------------------------------------------------------------------
   // Agent (Ask Eternal)
-  // Legacy: these routes returned before the general rate-limit block and
-  // were therefore unlimited. Kept unlimited in this refactor commit to
-  // preserve behavior exactly.
+  // These routes historically returned before the general rate-limit block
+  // and were therefore unlimited — an unauthenticated flood could hammer
+  // thread CRUD, token minting, and the AI-backed chat transport. The route
+  // table now closes that gap: they get the standard 300 req/min API bucket
+  // (the same one every other authenticated non-auth route uses), enforced
+  // before auth like the general block. The only behavior change of the
+  // refactor; everything else (status codes, CORS, success headers — no
+  // X-RateLimit-* on 2xx) is unchanged.
   // -------------------------------------------------------------------
   {
     name: 'agent-chat-ws-token',
     method: 'POST',
     match: exact('/api/agent/chat/ws-token'),
-    policy: { auth: 'required', rateLimit: null },
+    policy: { auth: 'required', rateLimit: RATE_LIMIT_API },
     handler: handleAgentChatWsToken,
   },
   {
     name: 'agent-threads-list',
     method: 'GET',
     match: exact('/api/agent/threads'),
-    policy: { auth: 'required', rateLimit: null },
+    policy: { auth: 'required', rateLimit: RATE_LIMIT_API },
     handler: handleListAgentThreads,
   },
   {
     name: 'agent-thread-create',
     method: 'POST',
     match: exact('/api/agent/threads'),
-    policy: { auth: 'required', rateLimit: null },
+    policy: { auth: 'required', rateLimit: RATE_LIMIT_API },
     handler: handleCreateAgentThread,
   },
   {
     name: 'agent-thread-rename',
     method: 'PATCH',
     match: regex(/^\/api\/agent\/threads\/([^/]+)$/),
-    policy: { auth: 'required', rateLimit: null },
+    policy: { auth: 'required', rateLimit: RATE_LIMIT_API },
     handler: handleRenameAgentThread,
   },
   {
     name: 'agent-thread-delete',
     method: 'DELETE',
     match: regex(/^\/api\/agent\/threads\/([^/]+)$/),
-    policy: { auth: 'required', rateLimit: null },
+    policy: { auth: 'required', rateLimit: RATE_LIMIT_API },
     handler: handleDeleteAgentThread,
   },
   // Authenticated stateful chat agent routed through a stable API path; the
@@ -439,7 +444,7 @@ export const ROUTES: RouteDefinition[] = [
     name: 'agent-chat',
     method: '*',
     match: agentChatPath,
-    policy: { auth: 'agent-chat', rateLimit: null },
+    policy: { auth: 'agent-chat', rateLimit: RATE_LIMIT_API },
     handler: handleAgentChatForward,
   },
 

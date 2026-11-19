@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { unstable_dev } from 'wrangler';
 import { FormData as UndiciFormData } from 'undici';
+import WebSocket from 'ws';
 
 const BASE_URL = 'http://127.0.0.1';
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -227,6 +228,39 @@ async function waitFor(assertion, { timeoutMs = 1500, intervalMs = 50 } = {}) {
 
 function createPngFile(name = 'pixel.png') {
   return new File([PNG_BYTES], name, { type: 'image/png' });
+}
+
+// Perform a real WebSocket upgrade handshake with custom headers and report
+// the HTTP status + body the worker answered with. The agent-chat gate
+// rejects these handshakes with 401/403 before any socket is established, so
+// `unexpected-response` is the expected outcome. (undici's fetch refuses to
+// send a bare `Upgrade: websocket` header, which is why the `ws` client is
+// needed here.)
+function wsUpgrade(path, headers) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://${worker.address || '127.0.0.1'}:${worker.port}${path}`, {
+      headers,
+    });
+    socket.on('unexpected-response', (_request, response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => {
+        socket.terminate();
+        resolve({ status: response.statusCode, text: Buffer.concat(chunks).toString('utf8') });
+      });
+      response.on('error', () => {
+        socket.terminate();
+        resolve({ status: response.statusCode, text: '' });
+      });
+    });
+    socket.on('error', (error) => {
+      reject(error);
+    });
+    socket.on('open', () => {
+      socket.close();
+      resolve({ status: 101, text: '' });
+    });
+  });
 }
 
 function createTestCartridge(version = '1.0.0') {
@@ -1577,6 +1611,181 @@ describe('worker integration', () => {
       headers: authHeaders(user.token),
     });
     assert.equal(del.deleted, true);
+  });
+
+  it('rate limits agent routes with the general API bucket', async () => {
+    // Dedicated client IP so this flood can't pollute — or be polluted by —
+    // the suite's other requests, which share the default bucket.
+    const headers = { 'CF-Connecting-IP': `agent-rate-${Date.now()}-${Math.random().toString(36).slice(2)}` };
+
+    // Push /api/agent/threads past the 300/min API bucket. The limiter runs
+    // before auth middleware, so the first 300 unauthenticated requests get
+    // 401 and the excess comes back 429.
+    const statuses = [];
+    for (let batch = 0; batch < 7; batch++) {
+      const requests = Array.from({ length: batch === 6 ? 10 : 50 }, () =>
+        worker.fetch(`${BASE_URL}/api/agent/threads`, { headers }));
+      for (const response of await Promise.all(requests)) {
+        statuses.push(response.status);
+      }
+    }
+    const accepted = statuses.filter((status) => status === 401).length;
+    const rejected = statuses.filter((status) => status === 429).length;
+
+    assert.ok(rejected > 0, 'expected requests beyond the API limit to receive 429');
+    assert.ok(accepted <= 300, 'rate limiter allowed more requests than the API bucket holds');
+    assert.ok(accepted > 60, 'agent routes must use the 300/min API bucket, not the 60/min auth bucket');
+
+    // The bucket is shared per IP: with it exhausted, the other agent
+    // surfaces are limited too — token minting and the chat transport.
+    const wsToken = await worker.fetch(`${BASE_URL}/api/agent/chat/ws-token`, {
+      method: 'POST',
+      headers,
+    });
+    assert.equal(wsToken.status, 429);
+    const chat = await worker.fetch(`${BASE_URL}/api/agent/chat?threadId=t`, { headers });
+    assert.equal(chat.status, 429);
+
+    // The 429 keeps the legacy general-block shape: JSON body, retry hints,
+    // CORS + security headers.
+    const chatBody = JSON.parse(await chat.text());
+    assert.equal(chatBody.error, 'Too many requests. Please try again later.');
+    assert.ok(chat.headers.get('Retry-After'), '429 carries a Retry-After hint');
+    assert.equal(chat.headers.get('X-RateLimit-Remaining'), '0');
+    assert.ok(chat.headers.get('Access-Control-Allow-Origin'), '429 is CORS-decorated');
+    assert.equal(chat.headers.get('X-Content-Type-Options'), 'nosniff', '429 carries security headers');
+  });
+
+  it('keeps agent route success responses unchanged', async () => {
+    const user = await signupUser();
+    const headers = authHeaders(user.token, {
+      'CF-Connecting-IP': `agent-ok-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    });
+
+    // Sub-limit requests still succeed and keep their legacy headers:
+    // decorated with CORS + security headers, but — like every non-auth
+    // route — WITHOUT success-path X-RateLimit-* headers.
+    const threads = await fetchJson('/api/agent/threads', { headers });
+    assert.equal(threads.response.status, 200);
+    assert.ok(Array.isArray(threads.body.threads));
+    assert.equal(threads.response.headers.get('Access-Control-Allow-Origin'), '*');
+    assert.equal(threads.response.headers.get('X-Frame-Options'), 'DENY');
+    assert.equal(threads.response.headers.get('X-RateLimit-Limit'), null,
+      'agent routes must not gain success-path rate-limit headers');
+
+    const wsToken = await fetchJson('/api/agent/chat/ws-token', { method: 'POST', headers });
+    assert.equal(wsToken.response.status, 200);
+    assert.ok(wsToken.body.token);
+    assert.equal(typeof wsToken.body.expiresAt, 'number');
+    assert.equal(wsToken.response.headers.get('X-RateLimit-Limit'), null);
+  });
+
+  it('rejects agent chat WebSocket upgrades from disallowed origins before credentials', async () => {
+    // An upgrade with a disallowed Origin is refused before any credential
+    // is examined — so without a token the response is 403, not 401. Real
+    // handshake via the ws client (see wsUpgrade for why).
+    const disallowed = await wsUpgrade('/api/agent/chat?threadId=t', {
+      'CF-Connecting-IP': `ws-origin-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      'Origin': 'https://not-allowed.example',
+    });
+    assert.equal(disallowed.status, 403);
+    assert.deepEqual(JSON.parse(disallowed.text), { error: 'CORS origin not allowed' });
+
+    // An upgrade without an Origin header passes the origin gate and fails
+    // on credentials instead (401).
+    const noOrigin = await wsUpgrade('/api/agent/chat?threadId=t', {
+      'CF-Connecting-IP': `ws-noorigin-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    });
+    assert.equal(noOrigin.status, 401);
+    assert.deepEqual(JSON.parse(noOrigin.text), { error: 'Unauthorized' });
+  });
+
+  it('preserves the legacy policies of a sample of existing routes', async () => {
+    // Health: any method, CORS-only headers (no security headers), never
+    // rate limited.
+    const health = await worker.fetch(`${BASE_URL}/api/health`);
+    const healthBody = JSON.parse(await health.text());
+    assert.equal(health.status, 200);
+    assert.equal(healthBody.status, 'ok');
+    assert.equal(typeof healthBody.timestamp, 'number');
+    assert.ok(health.headers.get('Access-Control-Allow-Origin'));
+    assert.equal(health.headers.get('X-Frame-Options'), null,
+      'health keeps its legacy CORS-only decoration (no security headers)');
+
+    const healthPost = await worker.fetch(`${BASE_URL}/api/health`, { method: 'POST' });
+    assert.equal(healthPost.status, 200);
+
+    // Preflight: CORS-only headers, no security headers.
+    const preflight = await worker.fetch(`${BASE_URL}/api/desktop`, { method: 'OPTIONS' });
+    assert.equal(preflight.status, 200);
+    assert.ok(preflight.headers.get('Access-Control-Allow-Origin'));
+    assert.equal(preflight.headers.get('X-Frame-Options'), null);
+
+    // Unmatched paths: CORS-only JSON 404 after the fallback rate-limit check.
+    const missing = await worker.fetch(`${BASE_URL}/api/no-such-route`);
+    assert.equal(missing.status, 404);
+    assert.deepEqual(JSON.parse(await missing.text()), { error: 'Not found' });
+    assert.ok(missing.headers.get('Access-Control-Allow-Origin'));
+    assert.equal(missing.headers.get('X-Frame-Options'), null,
+      'the 404 fallback keeps its legacy CORS-only decoration');
+
+    // Auth routes keep their success-path X-RateLimit-* headers (60/min bucket).
+    const identity = createTestIdentity();
+    const signup = await fetchJson('/api/auth/signup', {
+      method: 'POST',
+      headers: freshAuthIp('policy-sample'),
+      body: JSON.stringify(identity),
+    });
+    assert.equal(signup.response.status, 200);
+    assert.equal(signup.response.headers.get('X-RateLimit-Limit'), '60');
+
+    // Desktop: auth-required, full withCors decoration (security headers),
+    // no success-path rate-limit headers.
+    const desktop = await fetchJson('/api/desktop', { headers: authHeaders(signup.body.token) });
+    assert.equal(desktop.response.status, 200);
+    assert.equal(desktop.response.headers.get('X-Frame-Options'), 'DENY');
+    assert.equal(desktop.response.headers.get('X-RateLimit-Limit'), null);
+
+    const unauthDesktop = await fetchJson('/api/desktop');
+    assert.equal(unauthDesktop.response.status, 401);
+    assert.equal(unauthDesktop.response.headers.get('X-Frame-Options'), 'DENY');
+
+    // Fallthrough order preserved: auth runs before the inner method checks,
+    // so an unauthenticated odd-method request still gets 401 — not the
+    // fallthrough target's response.
+    const appVersionsDelete = await fetchJson('/api/apps/some-app/versions', { method: 'DELETE' });
+    assert.equal(appVersionsDelete.response.status, 401);
+    const soundMultiSegment = await fetchJson('/api/sounds/a/b', { method: 'DELETE' });
+    assert.equal(soundMultiSegment.response.status, 401);
+
+    // And an authenticated odd-method draft request falls through to the
+    // shared 404.
+    const draftOddMethod = await fetchJson('/api/games/drafts/xyz', {
+      method: 'POST',
+      headers: authHeaders(signup.body.token, JSON_HEADERS),
+    });
+    assert.equal(draftOddMethod.response.status, 404);
+    assert.deepEqual(draftOddMethod.body, { error: 'Not found' });
+  });
+
+  it('keeps the explicit no-rate-limit policy on game and app routes', async () => {
+    // Game and app-management routes are deliberately unlimited (documented
+    // per entry in the route table). A flood far past the general 300/min
+    // bucket must still reach auth middleware on every request: all 401,
+    // never 429.
+    const headers = { 'CF-Connecting-IP': `games-rate-${Date.now()}-${Math.random().toString(36).slice(2)}` };
+    const statuses = [];
+    for (let batch = 0; batch < 7; batch++) {
+      const requests = Array.from({ length: batch === 6 ? 10 : 50 }, () =>
+        worker.fetch(`${BASE_URL}/api/games/drafts`, { headers }));
+      for (const response of await Promise.all(requests)) {
+        statuses.push(response.status);
+      }
+    }
+    assert.ok(
+      statuses.every((status) => status === 401),
+      `expected every request to reach auth middleware (401), saw ${JSON.stringify(statuses.filter((s) => s !== 401).slice(0, 5))}`
+    );
   });
 
   it('manages game cartridge drafts per-user and mints play capabilities', async () => {
