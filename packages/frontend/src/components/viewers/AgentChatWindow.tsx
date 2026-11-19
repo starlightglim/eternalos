@@ -12,6 +12,10 @@ import {
   renameAgentThread,
   type AgentThreadSummary,
 } from '../../services/api';
+import {
+  mergeChatHistory,
+  shouldReloadHistoryAfterReconnect,
+} from '../../utils/agentChatReconciliation';
 import { useAuthStore } from '../../stores/authStore';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { useWindowStore } from '../../stores/windowStore';
@@ -209,6 +213,20 @@ type AppBuildSummary = {
 };
 
 type OpenWindowFn = ReturnType<typeof useWindowStore.getState>['openWindow'];
+
+/** The message values produced by useAgentChat (UIMessage from the AI SDK). */
+type AgentChatMessage = ReturnType<typeof useAgentChat>['messages'][number];
+
+function isAgentChatMessage(value: unknown): value is AgentChatMessage {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as { id?: unknown; role?: unknown; parts?: unknown };
+  return (
+    typeof candidate.id === 'string'
+    && candidate.id.length > 0
+    && (candidate.role === 'user' || candidate.role === 'assistant' || candidate.role === 'system')
+    && Array.isArray(candidate.parts)
+  );
+}
 
 const REAL_BUILD_STAGE_ORDER = ['spec', 'codegen', 'bundle', 'storage', 'install'] as const;
 
@@ -581,15 +599,89 @@ function AgentChatThreadPane({
   const {
     messages,
     sendMessage,
+    setMessages,
     clearHistory,
     status,
     error,
+    stop,
     addToolApprovalResponse,
   } = useAgentChat({
     agent,
     headers: chatHeaders,
     body: { threadId: activeThread.id },
   });
+
+  // Socket lifecycle for disconnect recovery. partysocket reconnects on its
+  // own, but the chat transport has no close handling: without the stop()
+  // below, a request that was mid-flight when the socket dropped spins
+  // forever (its local stream never hears the close, and the server keeps
+  // this connection out of stream broadcasts until a resume handshake
+  // completes). The recovery logic itself is pure and tested in
+  // utils/agentChatReconciliation.ts. The handlers close over the current
+  // render's status/stop/setMessages, so they always see fresh values (the
+  // effect re-attaches them when those change).
+  const [socketOnline, setSocketOnline] = useState(false);
+  const [sawDrop, setSawDrop] = useState(false);
+
+  const reloadThreadHistory = useCallback(async (): Promise<AgentChatMessage[] | null> => {
+    if (!authToken) return null;
+    const url = new URL('/api/agent/chat/get-messages', apiBaseUrl.origin);
+    url.searchParams.set('threadId', activeThread.id);
+    try {
+      const response = await fetch(url, { headers: { Authorization: `Bearer ${authToken}` } });
+      if (!response.ok) return null;
+      const text = await response.text();
+      if (!text.trim()) return [];
+      const parsed: unknown = JSON.parse(text);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(isAgentChatMessage);
+    } catch (reloadError) {
+      console.error('Failed to reload agent chat history:', reloadError);
+      return null;
+    }
+  }, [activeThread.id, apiBaseUrl, authToken]);
+
+  useEffect(() => {
+    const handleSocketOpen = () => {
+      setSocketOnline(true);
+      const hadDisconnect = sawDrop;
+      setSawDrop(false);
+      if (!shouldReloadHistoryAfterReconnect(hadDisconnect, status)) return;
+      // Converge with anything the server settled while we were offline
+      // (e.g. a reply that finished after the drop, or messages sent from
+      // another device) without duplicating what is already on screen.
+      void reloadThreadHistory().then((history) => {
+        if (!history) return;
+        setMessages((current) => mergeChatHistory(current, history));
+      });
+    };
+
+    const handleSocketClose = (event: Event) => {
+      // Intentional closes (unmount, thread switch, socket recreation) must
+      // not abort an in-flight reply — the server finishes and persists it
+      // either way, and the pane (or its successor) reloads it later.
+      const target = event.target as { shouldReconnect?: boolean } | null;
+      if (target?.shouldReconnect === false) return;
+      setSocketOnline(false);
+      setSawDrop(true);
+      // stop() self-guards on the chat's authoritative internal status, so
+      // this is a no-op unless a request is actually in flight. Aborting
+      // releases the request id, so the reconnecting client can ACK the
+      // server's stream-resuming notification; the built-in replay then
+      // rebuilds the same message in place (by id — no duplicate, no orphan)
+      // while the queued cancel finalizes the partial server-side. Without
+      // it, the request's local stream never hears the close and the pane
+      // is stuck on "Working..." forever.
+      void stop();
+    };
+
+    agent.addEventListener('open', handleSocketOpen);
+    agent.addEventListener('close', handleSocketClose);
+    return () => {
+      agent.removeEventListener('open', handleSocketOpen);
+      agent.removeEventListener('close', handleSocketClose);
+    };
+  }, [agent, reloadThreadHistory, sawDrop, setMessages, status, stop]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -1547,7 +1639,9 @@ function AgentChatThreadPane({
 
   const statusText = !wsReady
     ? 'Connecting...'
-    : hasPendingApproval
+    : !socketOnline
+      ? sawDrop ? 'Reconnecting...' : 'Connecting...'
+      : hasPendingApproval
       ? 'Approval needed'
       : latestPendingToolPart?.type === 'tool-buildAppFromPrompt'
         || latestPendingToolPart?.type === 'tool-previewAppFromPrompt'
@@ -1560,7 +1654,9 @@ function AgentChatThreadPane({
             ? 'Removing app...'
             : status === 'submitted' || status === 'streaming'
               ? 'Working through your desktop...'
-              : 'Ready';
+              : status === 'error'
+                ? 'Error'
+                : 'Ready';
   const currentRequestLabel = activeThread.title.length > 42
     ? `${activeThread.title.slice(0, 39)}...`
     : activeThread.title;
@@ -1608,7 +1704,7 @@ function AgentChatThreadPane({
         </div>
 
         <div className={`${styles.toolbarGroup} ${styles.toolbarGroupEnd}`}>
-          <span className={`${styles.statusDot} ${wsReady ? styles.statusDotReady : ''}`} aria-hidden="true" />
+          <span className={`${styles.statusDot} ${wsReady && socketOnline ? styles.statusDotReady : ''}`} aria-hidden="true" />
           <span className={styles.toolbarStatus}>{statusText}</span>
         </div>
       </header>
@@ -1772,8 +1868,19 @@ function AgentChatThreadPane({
                 <div className={styles.composerRow}>
                   <div className={styles.composerChips}>
                     <span className={styles.composerChip}>Workers AI</span>
-                    <span className={styles.composerChip}>{isBusy ? 'Working...' : 'Ready'}</span>
+                    <span className={styles.composerChip}>
+                      {isBusy ? 'Working...' : status === 'error' ? 'Error' : 'Ready'}
+                    </span>
                   </div>
+                  {isBusy ? (
+                    <button
+                      className={styles.stopButton}
+                      type="button"
+                      onClick={() => void stop()}
+                    >
+                      Stop
+                    </button>
+                  ) : null}
                   <button
                     className={styles.sendButton}
                     type="submit"
@@ -1793,7 +1900,9 @@ function AgentChatThreadPane({
             <div className={styles.statusCard}>
               <div className={styles.statusCardTitle}>{statusText}</div>
               <div className={styles.statusCardMeta}>
-                {wsReady ? 'Realtime connection active' : 'Connecting to agent transport'}
+                {wsReady && socketOnline
+                  ? 'Realtime connection active'
+                  : sawDrop ? 'Reconnecting to agent transport' : 'Connecting to agent transport'}
               </div>
             </div>
           </div>
