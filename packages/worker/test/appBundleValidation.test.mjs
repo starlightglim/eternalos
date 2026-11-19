@@ -14,15 +14,35 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { registerHooks } from 'node:module';
 
-import {
+// This suite runs in plain Node (type stripping, no bundler). The module
+// under test imports its sibling with the project's TS-style extensionless
+// form (`'./fsPolicy'`), which plain-Node ESM cannot resolve on its own — so
+// register a resolve hook HERE, in the test only: when a relative specifier
+// fails to resolve and carries no script extension, retry it with a `.ts`
+// suffix. No project config changes required.
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    try {
+      return nextResolve(specifier, context);
+    } catch (error) {
+      if (specifier.startsWith('.') && !/\.[cm]?[jt]s$/.test(specifier)) {
+        return nextResolve(`${specifier}.ts`, context);
+      }
+      throw error;
+    }
+  },
+});
+
+const {
   AppValidationError,
   assertAppBundleValid,
   collectAppBundleIssues,
   formatAppValidationIssues,
   scanScript,
-} from '../src/utils/appBundleValidation.ts';
-import { buildTodoTemplate } from '../src/agents/tools/appTemplates.ts';
+} = await import('../src/utils/appBundleValidation.ts');
+const { buildTodoTemplate } = await import('../src/agents/tools/appTemplates.ts');
 
 const TEST_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FIXTURES_ROOT = path.join(TEST_ROOT, 'test', 'fixtures', 'apps');
@@ -280,6 +300,75 @@ describe('sandbox availability checks', () => {
     assert.deepEqual(codesOf(issues), Array(4).fill('sandbox/blocked-storage'));
     assert.match(issues[0].message, /opaque origin/);
     assert.match(issues[0].hint, /window\.eternal\.storage/);
+  });
+
+  it('accepts storage feature detects (typeof / in-window)', () => {
+    const issues = collectAppBundleIssues(appInput({
+      'index.html': htmlShell,
+      'app.js': [
+        'const hasLs = typeof localStorage !== "undefined";',
+        'const hasSs = typeof window.sessionStorage !== "undefined";',
+        "const hasIdb = typeof indexedDB !== 'undefined';",
+        'const hasCookie = typeof (document.cookie) !== "undefined";',
+        "const probe1 = 'localStorage' in window;",
+        'const probe2 = "sessionStorage" in window;',
+        "const probe3 = 'indexedDB' in globalThis;",
+        'void hasLs; void hasSs; void hasIdb; void hasCookie; void probe1; void probe2; void probe3;',
+      ].join('\n'),
+    }));
+    assert.deepEqual(issues, [], `expected feature detects to pass, got: ${JSON.stringify(issues)}`);
+  });
+
+  it('accepts storage access lexically inside a try block', () => {
+    const issues = collectAppBundleIssues(appInput({
+      'index.html': htmlShell,
+      'app.js': [
+        'function load() {',
+        '  try {',
+        "    const raw = localStorage.getItem('k');",
+        '    return JSON.parse(raw);',
+        '  } catch {',
+        '    return null;',
+        '  }',
+        '}',
+        'try { void indexedDB; } finally {}',
+        'function save(v) { try { document.cookie = "k=" + v; } catch (e) { void e; } }',
+        'const guarded = () => { try { window.sessionStorage.setItem("k", "v"); } catch {} };',
+        'void load; void save; void guarded;',
+      ].join('\n'),
+    }));
+    assert.deepEqual(issues, [], `expected try-guarded access to pass, got: ${JSON.stringify(issues)}`);
+  });
+
+  it('still rejects unguarded storage, including inside catch blocks', () => {
+    const issues = collectAppBundleIssues(appInput({
+      'index.html': htmlShell,
+      'app.js': [
+        "localStorage.setItem('k', 'v');",
+        'try { void 0; } catch { sessionStorage.setItem("k", "v"); }',
+        'const store = window.localStorage;',
+      ].join('\n'),
+    }));
+    // One issue per blocked API per file (deduped by design, so the repair
+    // checklist stays tight): localStorage appears twice unguarded (call and
+    // bare reference), sessionStorage once inside a catch block.
+    assert.deepEqual(codesOf(issues), Array(2).fill('sandbox/blocked-storage'));
+    const apis = issues.map((issue) => issue.message.split(' is not available')[0]).sort();
+    assert.deepEqual(apis, ['localStorage', 'sessionStorage']);
+  });
+
+  it('rejects a bare if-guard but not the typeof probe beside it', () => {
+    // `if (window.localStorage)` still throws — the property read itself is
+    // the crash — so it stays an error; the typeof probe next to it passes.
+    const issues = collectAppBundleIssues(appInput({
+      'index.html': htmlShell,
+      'app.js': [
+        'const known = typeof localStorage !== "undefined"; void known;',
+        'if (window.localStorage) { void 1; }',
+      ].join('\n'),
+    }));
+    assert.deepEqual(codesOf(issues), ['sandbox/blocked-storage']);
+    assert.match(issues[0].message, /localStorage is not available/);
   });
 
   it('flags geolocation, getUserMedia, and worker construction', () => {

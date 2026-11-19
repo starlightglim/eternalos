@@ -964,6 +964,22 @@ describe('worker integration', () => {
     assert.equal(reserved.body.issues[0].code, 'source/reserved-filename');
   });
 
+  it('accepts guarded browser-storage idioms in dev-deploy', async () => {
+    // Positive control for the sandbox-storage guard rules: typeof probes,
+    // 'x' in window probes, and try/catch-wrapped access are standard
+    // survival idioms for the opaque-origin iframe and must deploy — only
+    // unguarded access is rejected (covered by the sandbox-local-storage
+    // negative fixture above).
+    const user = await signupUser();
+    const { response, body } = await fetchJson('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify(devDeployBody(loadAppFixture('guarded-storage'))),
+    });
+    assert.equal(response.status, 200, `guarded-storage fixture should deploy: ${JSON.stringify(body)}`);
+    assert.ok(body.appId);
+  });
+
   it('deploys the Photo Grid reference app and reads real photos through the fs grant', async () => {
     // The Workstream 3 acceptance story (design/12-orchestrator-v2.md):
     // "Build me a gallery app for my photos" -> app installs -> reads the

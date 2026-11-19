@@ -1,5 +1,7 @@
-// Any localStorage access throws a SecurityError in the sandboxed iframe
-// (opaque origin). Use window.eternal.storage instead.
+// The guarded load() below is allowed: a try/catch is the standard way to
+// survive the opaque-origin SecurityError. The unguarded save() is what this
+// fixture exists to catch — localStorage.setItem throws on every call, so
+// nothing ever persists.
 const Prefs = {
   load() {
     try {

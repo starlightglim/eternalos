@@ -46,6 +46,12 @@
  * Deliberately NOT flagged (documented so the list stays intentional):
  *   - alert/confirm/prompt and window.open — silent no-ops in the sandbox
  *     iframe, not crashes; apps may degrade on purpose.
+ *   - Guarded opaque-origin storage probes — `typeof localStorage`,
+ *     `'localStorage' in window`, and access lexically inside a `try { … }`
+ *     block. The try/catch pattern is the standard way to survive the
+ *     SecurityError, and feature detects never touch the throwing accessor's
+ *     value. Unguarded access still fails deterministically and stays an
+ *     error.
  *   - Relative (same-origin) fetch/XHR — allowed by the served CSP; used for
  *     bundled asset fetches.
  *   - fs.read/readText/urlFor path coverage — those calls take item *ids*
@@ -53,11 +59,7 @@
  */
 
 import type { AppPermissions } from '../types';
-// Explicit .ts extension so this module is importable from the plain-Node
-// unit tests (Node's type stripping resolves runtime imports literally);
-// typecheck allows it via allowImportingTsExtensions and esbuild resolves it
-// identically to the extensionless form.
-import { pathMatchesGlob } from './fsPolicy.ts';
+import { pathMatchesGlob } from './fsPolicy';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -760,16 +762,68 @@ function* iterateCodeMatches(
 const SANDBOX_STORAGE_HINT =
   'Use window.eternal.storage (get/set/list/delete) — the platform bridge — for state that must persist, and plain in-memory variables otherwise.';
 
+/**
+ * Spans of `try { … }` blocks in the (comment/string-stripped) code stream.
+ * The brace walk only sees real code braces: string, comment, and regex
+ * bodies are blanked, and template-expression braces are balanced pairs, so
+ * the depth count holds even inside templates.
+ */
+function computeTryGuardedSpans(code: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  const tryPattern = /\btry\s*\{/g;
+  let match: RegExpExecArray | null;
+  while ((match = tryPattern.exec(code)) !== null) {
+    const open = match.index + match[0].length - 1;
+    let depth = 0;
+    for (let i = open; i < code.length; i += 1) {
+      const ch = code[i];
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          spans.push([open, i]);
+          break;
+        }
+      }
+    }
+  }
+  return spans;
+}
+
+/**
+ * Storage references that must NOT be flagged:
+ *   - a `typeof X` feature-detect (incl. the parenthesized `typeof (X)` form);
+ *   - an `'X' in window` probe — the probed name lives in a string literal,
+ *     which is blanked in the code stream, so it never matches at all;
+ *   - any reference lexically inside a `try { … }` block — a try/catch is the
+ *     standard way to survive the SecurityError the opaque origin throws.
+ *
+ * Everything else is a deterministic runtime crash and stays an error. Note a
+ * bare `if (window.localStorage)` guard does NOT pass: the property *read*
+ * itself throws, so flagging it is correct.
+ */
+function isGuardedStorageReference(
+  code: string,
+  matchStart: number,
+  trySpans: ReadonlyArray<readonly [number, number]>,
+): boolean {
+  const prefix = code.slice(Math.max(0, matchStart - 24), matchStart);
+  if (/\btypeof\s*(?:\(\s*)?$/.test(prefix)) return true;
+  return trySpans.some(([start, end]) => matchStart >= start && matchStart <= end);
+}
+
 function checkSandboxAvailability(scans: AppFileScan[], issues: AppValidationIssue[]): void {
   const blockedStorage: Array<[RegExp, string]> = [
-    [/\b(?:window\.)?localStorage\b/, 'localStorage'],
-    [/\b(?:window\.)?sessionStorage\b/, 'sessionStorage'],
-    [/\bindexedDB\b/, 'indexedDB'],
-    [/\bdocument\s*\.\s*cookie\b/, 'document.cookie'],
+    [/\b(?:window\.)?localStorage\b/g, 'localStorage'],
+    [/\b(?:window\.)?sessionStorage\b/g, 'sessionStorage'],
+    [/\bindexedDB\b/g, 'indexedDB'],
+    [/\bdocument\s*\.\s*cookie\b/g, 'document.cookie'],
   ];
   // Calls, not bare references: `if (navigator.mediaDevices)` is a harmless
   // feature-detect, while these calls deterministically fail (media is denied
   // by the served permissions policy; opaque origins cannot start workers).
+  // They fail even inside a try/catch (getUserMedia rejects asynchronously;
+  // Worker construction throws), so no guard exemption applies to them.
   const blockedMedia: Array<[RegExp, string]> = [
     [/\bgeolocation\s*\.\s*(?:getCurrentPosition|watchPosition)\s*\(/, 'geolocation.getCurrentPosition()'],
     [/\bgetUserMedia\s*\(/, 'getUserMedia()'],
@@ -781,8 +835,12 @@ function checkSandboxAvailability(scans: AppFileScan[], issues: AppValidationIss
   ];
 
   for (const scan of jsScans(scans)) {
+    const trySpans = computeTryGuardedSpans(scan.code);
     for (const [pattern, api] of blockedStorage) {
-      if (pattern.test(scan.code)) {
+      pattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(scan.code)) !== null) {
+        if (isGuardedStorageReference(scan.code, match.index, trySpans)) continue;
         issues.push({
           code: 'sandbox/blocked-storage',
           file: scan.name,
