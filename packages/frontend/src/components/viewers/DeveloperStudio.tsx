@@ -7,8 +7,9 @@ import {
   listAppVersions,
   rollbackApp,
   type AppRelease,
-} from '../../services/api';
+} from '../../services/apps';
 import { AlertDialog } from '../ui/AlertDialog';
+import { AppHistoryPanel } from '../studio/AppHistoryPanel';
 import styles from './DeveloperStudio.module.css';
 
 
@@ -41,6 +42,7 @@ export function DeveloperStudio() {
   const [statusMsg, setStatusMsg] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [releases, setReleases] = useState<AppRelease[]>([]);
   const [rollbackVersion, setRollbackVersion] = useState('');
 
@@ -201,6 +203,23 @@ export function DeveloperStudio() {
       setIsLoading(false);
     }
   }, [activeApp, handleSelectApp, loadDesktop, rollbackVersion]);
+
+  // A revision was restored through the History panel: the app's deployed
+  // release, desktop item, and source all changed server-side, so reload the
+  // studio's view of the app (source files + releases) and the desktop.
+  const handleRestored = useCallback(async (result: { version: number; revisionId: string }) => {
+    await loadDesktop();
+    if (activeApp) {
+      await handleSelectApp(activeApp);
+      setActiveApp((previous) => previous ? { ...previous, version: String(result.version) } : previous);
+    }
+    setStatus('success');
+    setStatusMsg(`Restored app to version ${result.version}.`);
+    setTimeout(() => {
+      setStatus('idle');
+      setStatusMsg('');
+    }, 3000);
+  }, [activeApp, handleSelectApp, loadDesktop]);
 
   // Delete/Uninstall the app
   const handleDeleteApp = useCallback(async () => {
@@ -482,9 +501,12 @@ button:focus-visible { outline: 3px solid color-mix(in srgb, var(--app-accent) 5
                     key={tab}
                     className={[
                       styles.tab,
-                      activeTab === tab ? styles.tabActive : '',
+                      activeTab === tab && !showHistory ? styles.tabActive : '',
                     ].filter(Boolean).join(' ')}
-                    onClick={() => setActiveTab(tab)}
+                    onClick={() => {
+                      setShowHistory(false);
+                      setActiveTab(tab);
+                    }}
                   >
                     {tab === 'eternal.app.json' ? '⚙️ ' : '📝 '}
                     {tab}
@@ -498,6 +520,17 @@ button:focus-visible { outline: 3px solid color-mix(in srgb, var(--app-accent) 5
                   disabled={isLoading}
                 >
                   🚀 Deploy to Desktop
+                </button>
+                <button
+                  className={[
+                    styles.actionBtn,
+                    showHistory ? styles.tabActive : '',
+                  ].filter(Boolean).join(' ')}
+                  onClick={() => setShowHistory((previous) => !previous)}
+                  disabled={isLoading}
+                  aria-pressed={showHistory}
+                >
+                  🕘 History
                 </button>
                 {releases.some((release) => !release.current) && (
                   <div className={styles.releaseControls}>
@@ -534,19 +567,28 @@ button:focus-visible { outline: 3px solid color-mix(in srgb, var(--app-accent) 5
               </div>
             </div>
 
-            {/* Code Field */}
+            {/* Code Field / Revision History */}
             <div className={styles.editorArea}>
-              <textarea
-                className={styles.textarea}
-                value={files[activeTab] || ''}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setFiles((prev) => ({ ...prev, [activeTab]: val }));
-                  setSourceFiles((prev) => ({ ...prev, [activeTab]: val }));
-                }}
-                disabled={isLoading}
-                spellCheck={false}
-              />
+              {showHistory ? (
+                <AppHistoryPanel
+                  appId={activeApp.appId}
+                  currentFiles={sourceFiles}
+                  onRestored={(result) => void handleRestored(result)}
+                  onClose={() => setShowHistory(false)}
+                />
+              ) : (
+                <textarea
+                  className={styles.textarea}
+                  value={files[activeTab] || ''}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setFiles((prev) => ({ ...prev, [activeTab]: val }));
+                    setSourceFiles((prev) => ({ ...prev, [activeTab]: val }));
+                  }}
+                  disabled={isLoading}
+                  spellCheck={false}
+                />
+              )}
             </div>
 
           </>
