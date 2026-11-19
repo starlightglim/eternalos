@@ -15,7 +15,9 @@ import {
 import {
   abortChatRequestLocally,
   mergeChatHistory,
+  resolveDisconnectAction,
   shouldReloadHistoryAfterReconnect,
+  shouldResumeStreamAfterReconnect,
 } from '../../utils/agentChatReconciliation';
 import { useAuthStore } from '../../stores/authStore';
 import { useDesktopStore } from '../../stores/desktopStore';
@@ -605,6 +607,7 @@ function AgentChatThreadPane({
     status,
     error,
     stop,
+    resumeStream,
     addToolApprovalResponse,
   } = useAgentChat({
     agent,
@@ -623,6 +626,14 @@ function AgentChatThreadPane({
   // effect re-attaches them when those change).
   const [socketOnline, setSocketOnline] = useState(false);
   const [sawDrop, setSawDrop] = useState(false);
+  // Set by the close handler when the drop aborted an in-flight request,
+  // consumed by the open handler to re-attach to the still-running server
+  // stream. Since @cloudflare/ai-chat 0.2.x the abort KEEPS the request id
+  // in the transport's active-request set, so the server's spontaneous
+  // stream-resuming notification for it is skipped locally and never
+  // ACKed — the replay must be driven explicitly via resumeStream()
+  // (shouldResumeStreamAfterReconnect pins the exact rule).
+  const pendingStreamResume = useRef(false);
 
   const reloadThreadHistory = useCallback(async (): Promise<AgentChatMessage[] | null> => {
     if (!authToken) return null;
@@ -647,6 +658,18 @@ function AgentChatThreadPane({
       setSocketOnline(true);
       const hadDisconnect = sawDrop;
       setSawDrop(false);
+      // If the drop aborted a mid-flight request, re-attach to the server
+      // stream that kept running (the strip kept its cancel frame from
+      // truncating it). The resume handshake ACKs the server's resuming
+      // notification and replays the generation into the same message —
+      // the 0.2.x transport no longer does this by itself for a request it
+      // aborted. If the server already finished (or nothing is active) the
+      // handshake resolves empty and the history reload below converges.
+      const requestAbortedAtDrop = pendingStreamResume.current;
+      pendingStreamResume.current = false;
+      if (shouldResumeStreamAfterReconnect(hadDisconnect, requestAbortedAtDrop, status)) {
+        void resumeStream();
+      }
       if (!shouldReloadHistoryAfterReconnect(hadDisconnect, status)) return;
       // Converge with anything the server settled while we were offline
       // (e.g. a reply that finished after the drop, or messages sent from
@@ -673,6 +696,11 @@ function AgentChatThreadPane({
       // this is a no-op unless a request is actually in flight. A
       // user-pressed Stop on a live socket is unaffected — its cancel is
       // sent immediately and the queue is empty while the socket is open.
+      // Remember whether a request was dropped mid-flight: 0.2.x keeps the
+      // aborted request id in the transport's active set, so the server's
+      // spontaneous resuming notification for it is never ACKed locally —
+      // the open handler must drive the resume handshake itself.
+      pendingStreamResume.current = resolveDisconnectAction(status) === 'stop-request';
       abortChatRequestLocally(stop, (agent as unknown as { _messageQueue?: unknown })._messageQueue);
     };
 
@@ -682,7 +710,7 @@ function AgentChatThreadPane({
       agent.removeEventListener('open', handleSocketOpen);
       agent.removeEventListener('close', handleSocketClose);
     };
-  }, [agent, reloadThreadHistory, sawDrop, setMessages, status, stop]);
+  }, [agent, reloadThreadHistory, resumeStream, sawDrop, setMessages, status, stop]);
 
   useEffect(() => {
     inputRef.current?.focus();
