@@ -960,6 +960,7 @@ Available in window.eternal (platform-injected — do not re-implement):
                               URL to <img src>/<audio src>/<video src> (a blob:
                               object URL in installed apps, a plain URL in
                               previews)
+  eternal.fs.write(options), fs.patch(id, updates), fs.delete(id)
   eternal.profile.get()     -> { username?, displayName?, bio?, avatar? }
   eternal.fetch(url, init?) -> allowlisted proxy response
   eternal.ipc.emit(topic, payload), ipc.on(topic, callback)
@@ -974,14 +975,17 @@ Permissions — DERIVED from the app specification by the platform, not declared
   - eternal.fs.list/read/readText/readJson/urlFor require derived fs
     permissions; list with a path inside a derived fs.read glob or with a
     derived fs.mimeTypes type, otherwise the call silently returns nothing
+  - eternal.fs.write/patch require derived fs.write: write only to paths
+    inside a derived fs.write glob, otherwise the write is rejected with 403
+  - eternal.fs.delete requires derived fs.delete
   - eternal.profile.get requires derived profile.read fields
   - eternal.fetch requires the URL's host to be in derived network.outbound
   - eternal.ipc.emit/on require the topic in derived ipc.emit/listen
   - eternal.storage.get/set/list/delete need no permission (private per-app)
-  fs.write, fs.patch, and fs.delete are NOT available to generated apps —
-  persist state with eternal.storage instead of writing desktop files.
-  If the derived permissions are empty, the app runs hermetic: use only
-  plain variables and eternal.storage.
+  Without derived fs write/delete scopes, do not write or delete desktop
+  files — persist state with eternal.storage instead. If the derived
+  permissions are empty, the app runs hermetic: use only plain variables and
+  eternal.storage.
 
 Rules for files:
 - Return a COMPLETE app bundle: at minimum index.html, styles.css, app.js

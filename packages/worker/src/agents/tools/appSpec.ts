@@ -26,15 +26,22 @@
  * What each spec section implies:
  *
  *   dataReads (kind 'fs')  -> fs.read globs and fs.mimeTypes
+ *   dataWrites (kind 'fs') -> fs.write globs and (via deletePaths) fs.delete
+ *                             globs — the same manifest write shape
+ *                             chat-supplied apps declare; whole-desktop
+ *                             write scopes require the entry to mark the app
+ *                             a file manager (arbitraryFiles)
  *   networkDomains         -> network.outbound host patterns
  *   profileFields          -> profile.read fields
  *   ipcTopics              -> ipc.emit / ipc.listen topics
  *   storageKeys            -> no manifest permission (eternal.storage is
  *                             private, per-app sandboxed KV — always allowed)
  *
- * Note: the spec is read-only over the desktop (`dataReads`). Generated apps
- * do not receive fs.write/fs.delete permissions; persistence goes through
- * eternal.storage. Declaring writes is Phase B (permission mediation) work.
+ * The spec model chooses WHERE each kind of state lives: dataWrites is for
+ * files the user should see and open on their desktop; storageKeys is for the
+ * app's own private state. Write mime types are generator guidance only —
+ * the manifest's declared write shape carries path globs (there is no
+ * write-mime permission field), so that is exactly what derivation emits.
  */
 
 import { z } from 'zod';
@@ -46,11 +53,12 @@ import type { AppValidationIssue } from '../../utils/appBundleValidation';
 // ---------------------------------------------------------------------------
 
 /**
- * Data-read kinds the platform can derive permissions from. Anything else the
- * model produces is rejected by `validateAppSpec` with a structured issue
- * (not a zod parse error) so the repair loop can name the supported kinds.
+ * Data kinds the platform can derive permissions from, for both reads and
+ * writes. Anything else the model produces is rejected by `validateAppSpec`
+ * with a structured issue (not a zod parse error) so the repair loop can
+ * name the supported kinds.
  */
-export const APP_SPEC_DATA_READ_KINDS = ['fs'] as const;
+export const APP_SPEC_DATA_KINDS = ['fs'] as const;
 
 export const appSpecSchema = z.object({
   name: z.string().min(1).max(80),
@@ -70,6 +78,25 @@ export const appSpecSchema = z.object({
     paths: z.array(z.string().min(1).max(200)).max(20).optional(),
     /** Mime patterns such as 'image/*', 'text/*', 'application/pdf'. */
     mimeTypes: z.array(z.string().min(1).max(100)).max(20).optional(),
+  })).max(10).default([]),
+  /**
+   * Desktop files the app creates/writes/patches (and deletes) — for files
+   * the USER should see on their desktop. Each entry implies fs write (and,
+   * via deletePaths, fs delete) permissions.
+   */
+  dataWrites: z.array(z.object({
+    kind: z.string().min(1).max(40),
+    /** '/'-rooted path globs the app writes into, e.g. ['/Notes/**']. */
+    paths: z.array(z.string().min(1).max(200)).max(20).optional(),
+    /** '/'-rooted path globs the app deletes within — scope to what it manages. */
+    deletePaths: z.array(z.string().min(1).max(200)).max(20).optional(),
+    /** Formats of the written files — generator guidance, derives no permission. */
+    mimeTypes: z.array(z.string().min(1).max(100)).max(20).optional(),
+    /**
+     * True only when the app genuinely manages files across the whole
+     * desktop (file managers, batch tools). Gates the '**' write scope.
+     */
+    arbitraryFiles: z.boolean().default(false),
   })).max(10).default([]),
   /** eternal.storage keys the app persists to (no permission implied). */
   storageKeys: z.array(z.string().min(1).max(256)).max(50).optional(),
@@ -100,7 +127,9 @@ Your job:
 - plan the app as screens/views, each with a one-line summary and an empty state
 - declare the desktop data the app reads as dataReads, and request the narrowest scopes that still let the app work (prefer mimeTypes like 'image/*' over broad path globs like '**')
 - if the app does not need desktop data, omit dataReads entirely — it runs hermetic
-- persist app state with storageKeys (window.eternal.storage — private per-app, no permission needed), never by writing desktop files
+- choose WHERE the app's state lives: dataWrites for files the USER should see and open on their desktop (e.g. "save my notes as markdown files"), storageKeys for the app's own private state (settings, drafts, caches — window.eternal.storage, no permission needed)
+- declare desktop file writes as dataWrites: kind 'fs', with paths globs the app writes into (e.g. ['/Notes/**']) and, only when the app manages its own files' lifecycle, deletePaths; keep write scopes as narrow as the request allows
+- reserve whole-desktop write scopes ('**') for apps that genuinely manage arbitrary user files (file managers, batch tools): such an entry must set arbitraryFiles: true, and the spec should include a rationale
 - declare external services as bare hostnames in networkDomains (the app calls them through window.eternal.fetch)
 - include a short rationale whenever a broad scope ('**', '*') is genuinely required
 
@@ -111,6 +140,7 @@ Spec fields:
 - purpose: ONE sentence describing what the app does (becomes its description)
 - screens: every screen/view (at least one); each has name, summary, and emptyState (what it shows with no data or a denied permission)
 - dataReads: desktop data reads; kind must be 'fs'; scope via paths globs ('**', '/Photos/**', '/Notes/*.md', '*.jpg') and/or mimeTypes ('image/*', 'audio/*', 'text/*', 'application/pdf')
+- dataWrites: desktop file writes (creates/patches; deletePaths for deletes); kind must be 'fs'; '/'-rooted paths globs like '/Notes/**'; optional mimeTypes say what formats it writes
 - storageKeys: eternal.storage keys the app will read/write
 - networkDomains: bare hostnames only — 'api.example.com', '*.example.com', '*'; never URLs
 - profileFields: subset of 'username', 'displayName', 'bio', 'avatar'
@@ -144,12 +174,13 @@ export function isValidNetworkDomain(domain: string): boolean {
 
 /**
  * Path glob the fs policy (utils/fsPolicy.ts pathMatchesGlob) can actually
- * match against "/"-rooted item paths. Relative folder globs ('Photos/**')
- * would silently match nothing, so they are rejected up front:
+ * match against "/"-rooted item paths, used for both reads and writes.
+ * Relative folder globs ('Photos/**') would silently match nothing, so they
+ * are rejected up front:
  *   ok:   '**', the root glob, '/Photos/**', '/Notes/*.md', '*.jpg'
  *   bad:  'Photos/**', a bare '*', '/Photos/../Secret/**', '/Photos//x'
  */
-export function isValidFsReadGlob(glob: string): boolean {
+export function isValidFsGlob(glob: string): boolean {
   if (glob === '**' || glob === '/**' || glob === '**/*') return true;
   if (glob.includes('\\') || CONTROL_CHARS_PATTERN.test(glob)) return false;
   if (glob.startsWith('*.')) return !glob.includes('/'); // extension glob: '*.jpg'
@@ -158,6 +189,9 @@ export function isValidFsReadGlob(glob: string): boolean {
   return segments.length > 0
     && segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..');
 }
+
+/** Globs whose write scope is the entire desktop — see spec/broad-fs-write. */
+const WHOLE_DESKTOP_GLOBS = new Set(['**', '/**', '**/*']);
 
 /**
  * eternal.storage key, mirroring EternalService.validateStorageKey exactly:
@@ -205,13 +239,13 @@ export function validateAppSpec(spec: AppSpec): AppValidationIssue[] {
     }
   }
 
-  const knownKinds = new Set<string>(APP_SPEC_DATA_READ_KINDS);
+  const knownKinds = new Set<string>(APP_SPEC_DATA_KINDS);
   for (const [index, read] of spec.dataReads.entries()) {
     if (!knownKinds.has(read.kind)) {
       issues.push({
         code: 'spec/unknown-permission-kind',
         message: `Data read #${index + 1} declares unknown permission kind "${read.kind}"`,
-        hint: `Supported data-read kinds: ${APP_SPEC_DATA_READ_KINDS.join(', ')}.`,
+        hint: `Supported data kinds: ${APP_SPEC_DATA_KINDS.join(', ')}.`,
       });
       continue;
     }
@@ -224,7 +258,7 @@ export function validateAppSpec(spec: AppSpec): AppValidationIssue[] {
       continue;
     }
     for (const glob of read.paths ?? []) {
-      if (!isValidFsReadGlob(glob)) {
+      if (!isValidFsGlob(glob)) {
         issues.push({
           code: 'spec/invalid-fs-glob',
           message: `fs read path "${glob}" is not a supported path glob`,
@@ -238,6 +272,54 @@ export function validateAppSpec(spec: AppSpec): AppValidationIssue[] {
           code: 'spec/invalid-mime-type',
           message: `fs read mime type "${mime}" is not a valid type/subtype pattern`,
           hint: 'Use a wildcard pattern like "image/*", "audio/*", "text/*", or an exact type like "application/pdf".',
+        });
+      }
+    }
+  }
+
+  for (const [index, write] of spec.dataWrites.entries()) {
+    if (!knownKinds.has(write.kind)) {
+      issues.push({
+        code: 'spec/unknown-permission-kind',
+        message: `Data write #${index + 1} declares unknown permission kind "${write.kind}"`,
+        hint: `Supported data kinds: ${APP_SPEC_DATA_KINDS.join(', ')}.`,
+      });
+      continue;
+    }
+    if ((write.paths?.length ?? 0) === 0 && (write.deletePaths?.length ?? 0) === 0) {
+      issues.push({
+        code: 'spec/data-write-without-scope',
+        message: `Data write #${index + 1} declares neither paths nor deletePaths`,
+        hint: 'Scope the write with path globs (e.g. ["/Notes/**"]) and, if it deletes, deletePaths — or remove it.',
+      });
+      continue;
+    }
+    for (const glob of [...(write.paths ?? []), ...(write.deletePaths ?? [])]) {
+      if (!isValidFsGlob(glob)) {
+        issues.push({
+          code: 'spec/invalid-fs-glob',
+          message: `fs write path "${glob}" is not a supported path glob`,
+          hint: 'Use an absolute folder glob like "/Notes/**" or a file glob like "/Notes/*.md".',
+        });
+        continue;
+      }
+      // A write/delete scope that covers the whole desktop is a file-manager
+      // grant. It is only derivable when the spec says so explicitly, so a
+      // note-taking app can't quietly land fs.write: ['**'] in the manifest.
+      if (!write.arbitraryFiles && WHOLE_DESKTOP_GLOBS.has(glob)) {
+        issues.push({
+          code: 'spec/broad-fs-write',
+          message: `fs write scope "${glob}" covers the whole desktop but the write is not marked arbitraryFiles`,
+          hint: 'Scope the write to a folder glob like "/Notes/**", or set arbitraryFiles: true only if the app genuinely manages files across the desktop, and explain why in the rationale.',
+        });
+      }
+    }
+    for (const mime of write.mimeTypes ?? []) {
+      if (!MIME_TYPE_PATTERN.test(mime)) {
+        issues.push({
+          code: 'spec/invalid-mime-type',
+          message: `fs write mime type "${mime}" is not a valid type/subtype pattern`,
+          hint: 'Use a wildcard pattern like "text/*" or an exact type like "text/markdown".',
         });
       }
     }
@@ -279,8 +361,11 @@ function dedupe<T>(values: readonly T[]): T[] {
  * Deterministic and pure: same spec, same permissions (de-duplicated, stable
  * key order fs -> profile -> network -> ipc). `storageKeys` deliberately
  * contribute nothing — eternal.storage is private per-app KV and needs no
- * grant. Unknown data-read kinds are skipped here; validateAppSpec rejects
- * them first, so derivation only ever runs on a valid spec.
+ * grant — and write `mimeTypes` contribute nothing either: the manifest's
+ * declared write shape is path globs (there is no write-mime permission
+ * field), matching what chat-supplied apps declare. Unknown data kinds are
+ * skipped here; validateAppSpec rejects them first, so derivation only ever
+ * runs on a valid spec.
  */
 export function derivePermissionsFromSpec(spec: AppSpec): AppPermissions {
   const permissions: AppPermissions = {};
@@ -292,12 +377,23 @@ export function derivePermissionsFromSpec(spec: AppSpec): AppPermissions {
     fsRead.push(...(read.paths ?? []));
     fsMime.push(...(read.mimeTypes ?? []));
   }
+  const fsWrite: string[] = [];
+  const fsDelete: string[] = [];
+  for (const write of spec.dataWrites) {
+    if (write.kind !== 'fs') continue;
+    fsWrite.push(...(write.paths ?? []));
+    fsDelete.push(...(write.deletePaths ?? []));
+  }
   const readGlobs = dedupe(fsRead);
   const mimeTypes = dedupe(fsMime);
-  if (readGlobs.length > 0 || mimeTypes.length > 0) {
+  const writeGlobs = dedupe(fsWrite);
+  const deleteGlobs = dedupe(fsDelete);
+  if (readGlobs.length > 0 || mimeTypes.length > 0 || writeGlobs.length > 0 || deleteGlobs.length > 0) {
     permissions.fs = {};
     if (readGlobs.length > 0) permissions.fs.read = readGlobs;
     if (mimeTypes.length > 0) permissions.fs.mimeTypes = mimeTypes;
+    if (writeGlobs.length > 0) permissions.fs.write = writeGlobs;
+    if (deleteGlobs.length > 0) permissions.fs.delete = deleteGlobs;
   }
 
   const profileFields = dedupe(spec.profileFields ?? []);

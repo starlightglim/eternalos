@@ -1013,6 +1013,25 @@ describe('appSpec', () => {
     assert.deepEqual(permissions, {});
   });
 
+  it('derivePermissionsFromSpec maps declared writes to the manifest fs write/delete shape', () => {
+    const permissions = derivePermissionsFromSpec(spec({
+      dataReads: [],
+      dataWrites: [{
+        kind: 'fs',
+        paths: ['/Notes/**', '/Journal/*.md', '/Notes/**'], // duplicate — deduped
+        deletePaths: ['/Notes/**'],
+        mimeTypes: ['text/markdown'],
+      }],
+    }));
+
+    assert.deepEqual(permissions, {
+      fs: { write: ['/Notes/**', '/Journal/*.md'], delete: ['/Notes/**'] },
+    });
+    // The manifest's declared write shape is path globs only — write mime
+    // types guide the file generator, they derive no permission.
+    assert.ok(!permissions.fs.mimeTypes);
+  });
+
   it('validateAppSpec accepts a well-formed spec', () => {
     assert.deepEqual(validateAppSpec(spec()), []);
   });
@@ -1091,6 +1110,39 @@ describe('appSpec', () => {
       dataReads: [],
       screens: [{ name: 'Timer', summary: 'A countdown.', emptyState: '' }],
     })), []);
+  });
+
+  it('validateAppSpec accepts folder-scoped writes and whole-desktop writes marked arbitrary', () => {
+    assert.deepEqual(
+      validateAppSpec(spec({ dataWrites: [{ kind: 'fs', paths: ['/Notes/**'] }] })),
+      [],
+    );
+    assert.deepEqual(validateAppSpec(spec({
+      dataWrites: [{ kind: 'fs', paths: ['**'], deletePaths: ['**'], arbitraryFiles: true }],
+    })), []);
+  });
+
+  it('validateAppSpec rejects whole-desktop write scopes unless the spec marks them arbitrary', () => {
+    const issues = validateAppSpec(spec({
+      dataWrites: [{ kind: 'fs', paths: ['**'], deletePaths: ['/**'] }],
+    }));
+    assert.deepEqual(issues.map((issue) => issue.code), ['spec/broad-fs-write', 'spec/broad-fs-write']);
+    assert.match(issues[0].hint, /arbitraryFiles/);
+  });
+
+  it('validateAppSpec rejects unknown write kinds, unscoped writes, and bad write globs', () => {
+    const issues = validateAppSpec(spec({
+      dataWrites: [
+        { kind: 'disk' },
+        { kind: 'fs' },
+        { kind: 'fs', paths: ['Notes/**'] },
+      ],
+    }));
+    assert.deepEqual(issues.map((issue) => issue.code), [
+      'spec/unknown-permission-kind',
+      'spec/data-write-without-scope',
+      'spec/invalid-fs-glob',
+    ]);
   });
 });
 
@@ -1537,6 +1589,50 @@ describe('appTools', () => {
       fs: { mimeTypes: ['text/*'] },
       network: { outbound: ['api.weather.example.com'] },
     });
+  });
+
+  it('buildAppFromPrompt derives fs write/delete permissions when the spec declares desktop-file writes', async () => {
+    const h = createAppToolsHarness();
+    h.ai.script.push(
+      // Spec stage: the app saves notes as real desktop files (and lists
+      // what it saved), keeping only its draft in private storage.
+      {
+        response: JSON.stringify({
+          name: 'Note Saver',
+          purpose: "Saves the user's quick notes as markdown files on their desktop.",
+          screens: [
+            {
+              name: 'Notes',
+              summary: 'Saved notes with a compose box.',
+              emptyState: 'A prompt to write the first note.',
+            },
+          ],
+          dataReads: [{ kind: 'fs', paths: ['/Notes/**'] }],
+          dataWrites: [{ kind: 'fs', paths: ['/Notes/**'], deletePaths: ['/Notes/**'] }],
+          storageKeys: ['notesaver.draft'],
+        }),
+      },
+      // File generation: no permissions field — the manifest gets the
+      // permissions derived from the spec.
+      { response: JSON.stringify({ files: { ...MINIMAL_APP_FILES } }) },
+    );
+
+    const result = await h.tools.buildAppFromPrompt.execute(
+      { prompt: 'save my notes as desktop files I can open anywhere' },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(result.status, 'created');
+    assert.equal(h.ai.calls.length, 2);
+
+    // The manifest carries read + write + delete, all derived from the spec,
+    // in the same path-glob shape chat-supplied apps declare.
+    const expected = { fs: { read: ['/Notes/**'], write: ['/Notes/**'], delete: ['/Notes/**'] } };
+    const appItem = h.desktop.itemsOf('app')[0];
+    assert.deepEqual(appItem.appManifest.permissions, expected);
+    const metadata = JSON.parse(h.r2.objects.get(`apps/${UID}/${result.appId}/metadata.json`));
+    assert.deepEqual(metadata.permissions, expected);
+    // The private storage key still derives no permission.
+    assert.deepEqual(Object.keys(expected.fs), ['read', 'write', 'delete']);
   });
 
   it('buildAppFromPrompt reports a generation failure clearly and writes nothing', async () => {
