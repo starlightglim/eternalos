@@ -13,6 +13,7 @@ import {
   type AgentThreadSummary,
 } from '../../services/api';
 import {
+  abortChatRequestLocally,
   mergeChatHistory,
   shouldReloadHistoryAfterReconnect,
 } from '../../utils/agentChatReconciliation';
@@ -664,15 +665,15 @@ function AgentChatThreadPane({
       if (target?.shouldReconnect === false) return;
       setSocketOnline(false);
       setSawDrop(true);
+      // Abort the in-flight request so the pane is not stuck — and strip the
+      // cancel frame the abort just queued: the socket is down, so party-
+      // socket would flush that frame on reconnect, where it would cancel
+      // the very generation the resume path replays (a truncated reply).
       // stop() self-guards on the chat's authoritative internal status, so
-      // this is a no-op unless a request is actually in flight. Aborting
-      // releases the request id, so the reconnecting client can ACK the
-      // server's stream-resuming notification; the built-in replay then
-      // rebuilds the same message in place (by id — no duplicate, no orphan)
-      // while the queued cancel finalizes the partial server-side. Without
-      // it, the request's local stream never hears the close and the pane
-      // is stuck on "Working..." forever.
-      void stop();
+      // this is a no-op unless a request is actually in flight. A
+      // user-pressed Stop on a live socket is unaffected — its cancel is
+      // sent immediately and the queue is empty while the socket is open.
+      abortChatRequestLocally(stop, (agent as unknown as { _messageQueue?: unknown })._messageQueue);
     };
 
     agent.addEventListener('open', handleSocketOpen);

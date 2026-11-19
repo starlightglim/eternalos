@@ -36,20 +36,90 @@ export interface ChatHistoryMessage {
  *   reconnecting connection excluded from stream broadcasts until a resume
  *   handshake completes. Aborting releases the request id, which lets the
  *   built-in resume machinery ACK the server's `cf_agent_stream_resuming`
- *   notification on reconnect and replay the stream into the same message
- *   (replaced by id — no duplicate, no orphan). The abort also queues a
- *   cancel to the server, which finalizes and persists the partial reply.
+ *   notification on reconnect and replay the still-running generation into
+ *   the same message (replaced by id — no duplicate, no orphan). The
+ *   cancel frame that the abort path queues is stripped locally (see
+ *   abortChatRequestLocally) so the server never truncates that generation.
  * - `'none'`: nothing is in flight; leave the request state alone.
  *
- * In the chat pane this rule is enforced by calling the chat's `stop()` on a
+ * In the chat pane this rule is enforced by abortChatRequestLocally on a
  * non-intentional socket close: `stop()` no-ops unless its own authoritative
- * status is `submitted`/`streaming` — exactly this predicate, read without any
- * render-staleness window. Intentional closes (unmount / thread switch /
+ * status is `submitted`/`streaming` — exactly this predicate, read without
+ * any render-staleness window. Intentional closes (unmount / thread switch /
  * socket recreation — where partysocket reports `shouldReconnect === false`)
  * are filtered out by the caller before deciding.
  */
 export function resolveDisconnectAction(status: ChatRequestStatus): 'stop-request' | 'none' {
   return status === 'submitted' || status === 'streaming' ? 'stop-request' : 'none';
+}
+
+/**
+ * The wire type of the cancel frame @cloudflare/ai-chat's transport sends when
+ * a chat request is aborted (dist/react.js, sendMessages → onAbort →
+ * agent.send(CF_AGENT_CHAT_REQUEST_CANCEL)). Knowing the literal here lets
+ * the disconnect recovery strip that frame from partysocket's outbound queue.
+ */
+const AGENT_CHAT_CANCEL_FRAME_TYPE = 'cf_agent_chat_request_cancel';
+
+/**
+ * Whether a partysocket outbound frame is an agent-chat cancel. Tolerates
+ * non-JSON and non-string entries (the queue can hold blobs/array buffers);
+ * a cheap substring pre-filter avoids parsing every frame.
+ */
+export function isAgentChatCancelFrame(frame: unknown): boolean {
+  if (typeof frame !== 'string') return false;
+  if (!frame.includes(`"${AGENT_CHAT_CANCEL_FRAME_TYPE}"`)) return false;
+  try {
+    const parsed = JSON.parse(frame) as { type?: unknown };
+    return parsed?.type === AGENT_CHAT_CANCEL_FRAME_TYPE;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove cancel frames from a partysocket outbound queue, in place. Returns
+ * the number removed; a non-array (e.g. a future partysocket rename of
+ * `_messageQueue`) is ignored, degrading to the frame being delivered — the
+ * pre-fix truncated-reply behavior, never a crash.
+ */
+export function stripQueuedCancelFramesInPlace(queue: unknown): number {
+  if (!Array.isArray(queue)) return 0;
+  let removed = 0;
+  for (let i = queue.length - 1; i >= 0; i--) {
+    if (isAgentChatCancelFrame(queue[i])) {
+      queue.splice(i, 1);
+      removed++;
+    }
+  }
+  return removed;
+}
+
+/**
+ * Abort an in-flight chat request after a non-intentional socket drop —
+ * without letting the cancel frame reach the server.
+ *
+ * `stop()` (from useAgentChat) is the only way to clear the stuck request
+ * locally: it synchronously aborts the transport's stream (abortController
+ * abort listeners fire synchronously), which unblocks the pending request,
+ * resets the status and releases the request id so the built-in resume
+ * machinery can ACK the server's stream-resuming notification on reconnect.
+ * But that abort path unconditionally sends a cancel frame, and since the
+ * socket is down partysocket enqueues it and flushes it on the next open —
+ * where it would cancel the very generation the resume path is meant to
+ * replay (with abortSignal wired server-side, a truncated reply).
+ *
+ * So: run the stop, then strip the cancel it just queued. A user-pressed
+ * Stop is unaffected — on a live socket its cancel is sent immediately and
+ * the queue is empty, so nothing is stripped.
+ *
+ * @param stop The chat's stop() (synchronous through the abort dispatch).
+ * @param outboundQueue partysocket's `_messageQueue` (private field, read
+ *   defensively — see stripQueuedCancelFramesInPlace).
+ */
+export function abortChatRequestLocally(stop: () => unknown, outboundQueue: unknown): void {
+  void stop();
+  stripQueuedCancelFramesInPlace(outboundQueue);
 }
 
 /**
