@@ -274,6 +274,47 @@ describe('agent chat transport', () => {
     );
   });
 
+  it('tolerates a stale cancel delivered on a fresh connection after a drop', async () => {
+    const user = await signupUser();
+    const threadId = threadIdFor('stale-cancel');
+    const firstSocket = await openChatSocket(user.token, threadId);
+    const collector = collectFrames(firstSocket);
+
+    sendChatRequest(firstSocket, 'req-stale-1', 'What is on my desktop?', threadId);
+    await collector.waitFor(
+      (frame) => frame.type === 'cf_agent_use_chat_response' && frame.done === true && frame.id === 'req-stale-1',
+    );
+    // Dropped socket — no close handshake.
+    firstSocket.terminate();
+
+    // A client that aborted its in-flight request at the drop (pre-strip
+    // behavior, or any foreign client) flushes its queued cancel frame on
+    // the NEXT connection. Asserting that such a cancel leaves a live
+    // in-flight stream alone needs a Workers AI binding the local harness
+    // does not have; what this pins is the sequence the server must
+    // tolerate: the stale cancel arrives on a fresh connection and neither
+    // breaks the DO nor the reconnecting client's next exchange.
+    const secondSocket = await openChatSocket(user.token, threadId);
+    secondSocket.send(JSON.stringify({ id: 'req-stale-1', type: 'cf_agent_chat_request_cancel' }));
+
+    const secondCollector = collectFrames(secondSocket);
+    sendChatRequest(secondSocket, 'req-stale-2', 'And my folders?', threadId);
+    const errorFrame = await secondCollector.waitFor(
+      (frame) => frame.type === 'cf_agent_use_chat_response' && frame.error === true && frame.id === 'req-stale-2',
+    );
+    assert.ok(typeof errorFrame.body === 'string' && errorFrame.body.trim().length > 0);
+    await secondCollector.waitFor(
+      (frame) => frame.type === 'cf_agent_use_chat_response' && frame.done === true && frame.id === 'req-stale-2',
+    );
+    secondSocket.close();
+
+    const history = await getThreadHistory(user.token, threadId);
+    assert.deepEqual(
+      history.map((message) => message.id),
+      ['user-req-stale-1', 'user-req-stale-2'],
+    );
+  });
+
   it('answers a resume handshake with resume-none when no stream is active', async () => {
     const user = await signupUser();
     const threadId = threadIdFor('resume-none');
