@@ -46,9 +46,10 @@ Gotchas:
   not document their credentials here.
 - After restarting the Vite server, browser tabs can keep serving stale
   CSS/JS modules — hard reload (Cmd+Shift+R) before debugging "broken" UI.
-- Pre-existing lint failures (not ours): `Desktop.tsx` (react-compiler memo),
-  `AppViewer.tsx` (`any`), `DeveloperStudio.tsx` (unused `e`).
-  `npm run typecheck --workspace=@eternalos/frontend` should stay clean.
+- `npm run lint` and `npm run typecheck --workspace=@eternalos/frontend`
+  should both stay clean. (Earlier revisions listed pre-existing lint
+  failures in `Desktop.tsx`, `AppViewer.tsx`, and `DeveloperStudio.tsx`;
+  those no longer reproduce.)
 
 ## Theme / appearance system
 
