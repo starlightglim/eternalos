@@ -7,7 +7,7 @@
 
 import { adjustColor, getContrastingTextColor, getSecondaryTextColor } from '../utils/colorUtils';
 import { resolveFontFamily } from '../utils/fontCatalog';
-import { TOKEN_REGISTRY, getAllCSSVars, type DerivedTransform } from './tokenSchema';
+import { TOKEN_REGISTRY, getAllCSSVars, getConditionalTokens, type DerivedTransform, type TokenDefinition } from './tokenSchema';
 
 /** Resolve a relative /api/ path to a full URL using the configured API base */
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -210,10 +210,15 @@ export function compileTokensToCSS(
   // Track title bar stripes
   let hasTitleBarBgOverride = false;
 
-  for (const token of TOKEN_REGISTRY) {
-    // Skip conditional tokens whose variant is not active
-    if (token.condition && activeVariants) {
-      const activeForSlot = activeVariants[token.condition.slotId];
+  // Conditional tokens (registered by variants — the sprite/skin system) join
+  // the static registry here so they flow through the same pipeline. A token
+  // with a condition compiles ONLY when its variant is explicitly active —
+  // never on an unspecified variants map.
+  const pipelineTokens: TokenDefinition[] = [...TOKEN_REGISTRY, ...getConditionalTokens()];
+
+  for (const token of pipelineTokens) {
+    if (token.condition) {
+      const activeForSlot = activeVariants?.[token.condition.slotId];
       if (activeForSlot !== token.condition.variantId) continue;
     }
 

@@ -5,7 +5,13 @@
  * HMAC-SHA256 signing and verification.
  */
 
+import type { AppGrantedPermissions } from '@eternalos/contracts';
 import type { JWTPayload } from '../types';
+
+// The granted-permissions shape — also used as DesktopItem.grantedPermissions
+// — is shared with the frontend and lives in @eternalos/contracts. Re-export
+// it so existing `from './jwt'` / `from '../utils/jwt'` imports keep working.
+export type { AppGrantedPermissions };
 
 const ALGORITHM = { name: 'HMAC', hash: 'SHA-256' };
 
@@ -148,40 +154,9 @@ export async function verifyFileToken(
  * worker without seeing the user's root JWT. Carries the *granted*
  * permissions embedded so the worker can do stateless authorization.
  *
- * See design/01-apps-interop.md §capability tokens for the threat model.
+ * See design/01-apps-interop.md §capability tokens for the threat model, and
+ * @eternalos/contracts (AppGrantedPermissions) for the permissions shape.
  */
-export interface AppGrantedPermissions {
-  fs?: {
-    read?: string[];              // glob patterns: ['**'] | ['/Photos/**']
-    write?: string[];
-    delete?: string[];
-    mimeTypes?: string[];          // legacy/read-only MIME patterns
-    readMimeTypes?: string[];
-    writeMimeTypes?: string[];
-    deleteMimeTypes?: string[];
-  };
-  ipc?: {
-    listen?: string[];
-    emit?: string[];
-  };
-  network?: {
-    outbound?: string[];
-  };
-  handlers?: {
-    mimeTypes?: string[];
-    extensions?: string[];
-  };
-  virtualFolders?: {
-    mountAt?: string[];
-  };
-  profile?: {
-    read?: Array<'username' | 'displayName' | 'bio' | 'avatar'>;
-  };
-  ai?: {
-    modes?: Array<'ask' | 'search' | 'enrich'>;
-  };
-}
-
 export interface AppCapabilityPayload {
   typ: 'cap';
   uid: string;

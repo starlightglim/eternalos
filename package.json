@@ -6,6 +6,7 @@
     "node": ">=22.23.2 <23"
   },
   "workspaces": [
+    "packages/contracts",
     "packages/frontend",
     "packages/worker"
   ],
