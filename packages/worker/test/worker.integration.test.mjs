@@ -1683,35 +1683,59 @@ describe('worker integration', () => {
       method: 'POST', headers: { Authorization: `Bearer ${galleryCap.token}` },
     })).response.status, 401, 'an app capability must not mint file tokens');
 
-    // urlFor results (same-origin /_eternal/fs/read URLs) are appId- and
-    // scope-bound. Without any credential — exactly how an <img src> fetches
-    // one — the bridge answers 401 before any scope check.
+    // fs.urlFor in an installed app is capability-aware. The plain bridge URL
+    // it used to return 401s when an <img src> fetches it (no Authorization
+    // header), so the bridge runtime now performs the authorized fetch itself
+    // and hands the app a blob: object URL. This block pins both halves.
+    const urlForFetch = (id) => worker.fetch(
+      `${BASE_URL}/api/apps/${galleryAppId}/_eternal/fs/read/${encodeURIComponent(id)}`,
+      { headers: bearer },
+    );
+    // Server auth is unchanged: the raw bridge URL (what urlFor used to hand
+    // out) still demands the Bearer capability — there is deliberately no
+    // query-string token a bare <img src> could carry.
     assert.equal(
       (await worker.fetch(`${BASE_URL}/api/apps/${galleryAppId}/_eternal/fs/read/${encodeURIComponent(inScope.id)}`)).status, 401,
-      'a urlFor result must not resolve without the capability',
+      'the raw bridge URL must still require the capability',
     );
-    // With the app's own capability: another user's item id never resolves.
+    // The urlFor path — the runtime's authorized fetch, with the capability a
+    // bare <img src> cannot send — returns the in-scope bytes (which the app
+    // would then wrap into an object URL).
+    const okRead = await urlForFetch(inScope.id);
+    assert.equal(okRead.status, 200, 'urlFor must fetch in-scope bytes with the capability');
+    assert.equal(await okRead.text(), 'inside gallery');
+    // Scope bounds hold through the urlFor path: another user's item id never
+    // resolves (404)...
     assert.equal(
-      (await worker.fetch(`${BASE_URL}/api/apps/${galleryAppId}/_eternal/fs/read/${encodeURIComponent(strangerUpload.item.id)}`, { headers: bearer })).status, 404,
-      'another user\'s item id must not resolve through the bridge',
+      (await urlForFetch(strangerUpload.item.id)).status, 404,
+      'another user\'s item id must not resolve through urlFor',
     );
-    // An out-of-scope item in the same desktop is denied.
+    // ...and an out-of-scope item in the same desktop is denied (403).
     assert.equal(
-      (await worker.fetch(`${BASE_URL}/api/apps/${galleryAppId}/_eternal/fs/read/${encodeURIComponent(outOfScope.id)}`, { headers: bearer })).status, 403,
-      'an out-of-scope item must be denied through the bridge',
+      (await urlForFetch(outOfScope.id)).status, 403,
+      'an out-of-scope item must be denied through urlFor',
     );
     // A capability is appId-bound: it does not authenticate on another app's mount.
     assert.equal(
       (await worker.fetch(`${BASE_URL}/api/apps/${vaultAppId}/_eternal/fs/read/${encodeURIComponent(outOfScope.id)}`, { headers: bearer })).status, 401,
       'a capability must not authenticate on another app\'s mount',
     );
-    // Positive control: the in-scope read through the app's own mount works.
-    const okRead = await worker.fetch(
-      `${BASE_URL}/api/apps/${galleryAppId}/_eternal/fs/read/${encodeURIComponent(inScope.id)}`,
-      { headers: bearer },
+    // The runtime asset the installed app actually loads must implement that
+    // behavior: capability mode, blob object URLs minted from authorized
+    // fetches, revoked on pagehide — with the plain-URL path kept for
+    // capability-free previews.
+    const runtimeResponse = await worker.fetch(`${BASE_URL}/api/apps/${galleryAppId}/eternal-runtime.js`);
+    assert.equal(runtimeResponse.status, 200, 'the app must serve its bridge runtime asset');
+    const runtimeSource = await runtimeResponse.text();
+    assert.match(runtimeSource, /const requiresCapability = true/, 'installed apps must run the capability-gated runtime');
+    assert.match(runtimeSource, /URL\.createObjectURL\(/, 'capability-mode urlFor must mint blob object URLs');
+    assert.match(runtimeSource, /URL\.revokeObjectURL\(/, 'minted object URLs must be revocable');
+    assert.match(runtimeSource, /pagehide/, 'object URLs must be revoked on pagehide');
+    assert.match(
+      runtimeSource,
+      /if \(!requiresCapability\) return apiUrl\(path\)/,
+      'previews must keep the plain-URL urlFor behavior',
     );
-    assert.equal(okRead.status, 200);
-    assert.match(await okRead.text(), /inside gallery/);
   });
 
   it('requires explicit re-approval to expand app permissions (no self-escalation)', async () => {
