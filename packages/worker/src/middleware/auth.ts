@@ -199,3 +199,62 @@ export async function requireAuth(
   }
   return auth;
 }
+
+// ---------------------------------------------------------------------------
+// Route-table auth policy
+// ---------------------------------------------------------------------------
+
+/**
+ * Auth enforcement vocabulary for the route table (routes/routeTable.ts). The
+ * dispatcher resolves the credential for a request BEFORE the route handler
+ * runs, according to the route's policy.auth mode.
+ */
+export type AuthMode =
+  | 'none' // public route; no credential resolved
+  | 'required' // full-session Bearer credential; 401 without one
+  | 'agent-chat' // dual credential: Bearer (HTTP) or one-time wsToken
+  // (WebSocket upgrade); upgrades must additionally come from an allowed origin
+  | 'file' // Bearer session or short-lived `?ft=` file token; null when absent
+  // (public file reads are allowed) — this mode never rejects a request
+  | 'handler-scoped'; // capability token / none — the handler enforces access
+// itself (game console, app serving, previews, visitor WS)
+
+/**
+ * Resolve the credential for a route request according to its auth mode.
+ * Returns an AuthContext on success, a Response (401/403) when the mode
+ * rejects the request, or null when the mode resolves no credential
+ * ('none' / 'handler-scoped') or the credential is legitimately absent
+ * ('file' — public reads).
+ */
+export async function resolveRouteAuth(
+  mode: AuthMode,
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<AuthContext | Response | null> {
+  switch (mode) {
+    case 'none':
+    case 'handler-scoped':
+      return null;
+    case 'required':
+      return requireAuth(request, env);
+    case 'file':
+      return authenticateFileRequest(request, env);
+    case 'agent-chat': {
+      if (request.headers.get('Upgrade') !== 'websocket') {
+        return requireAuth(request, env);
+      }
+
+      // WebSocket upgrades carry an Origin browsers set automatically; an
+      // upgrade from a disallowed origin is rejected before credentials are
+      // examined (mirrors the legacy agent-chat route order).
+      const origin = request.headers.get('Origin');
+      if (origin && !corsHeaders['Access-Control-Allow-Origin']) {
+        return Response.json({ error: 'CORS origin not allowed' }, { status: 403 });
+      }
+
+      const auth = await authenticateAgentChatWebSocket(request, env);
+      return auth ?? Response.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+  }
+}
