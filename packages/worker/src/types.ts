@@ -27,6 +27,7 @@ export type {
   AppPermissions,
   AppManifest,
   AppGrantedPermissions,
+  AppGrantApproval,
   UserProfile,
 } from '@eternalos/contracts';
 

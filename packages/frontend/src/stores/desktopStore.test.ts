@@ -11,6 +11,7 @@ vi.mock('./soundStore', () => ({ useSoundStore: { getState: () => ({ playSound: 
 const alerts = vi.hoisted(() => ({ showError: vi.fn() }));
 vi.mock('./alertStore', () => ({ useAlertStore: { getState: () => alerts } }));
 import { useDesktopStore } from './desktopStore';
+import { getAcknowledgedItem } from './desktopItemSync';
 
 const original: DesktopItem = {
   id: 'note', name: 'Note.txt', type: 'text', textContent: 'Saved',
@@ -394,4 +395,119 @@ test('reconnecting after failures converges to the server state without duplicat
   api.fetchDesktop.mockResolvedValue({ items: [original] });
   await useDesktopStore.getState().loadDesktop();
   expect(useDesktopStore.getState().items).toEqual([original]);
+});
+
+// ---------------------------------------------------------------------------
+// CORE-ROADMAP Workstream 1, item 4: acknowledged server state vs
+// interaction state. The displayed items are optimistic; the acknowledged
+// snapshot (./desktopItemSync) is the last server-confirmed value per item;
+// the selection (./desktopSelectionSlice) is interaction state that a
+// server reconcile must never touch.
+// ---------------------------------------------------------------------------
+
+test('a successful write makes the displayed item match the acknowledged snapshot', async () => {
+  api.updateItems.mockResolvedValue([]);
+  const saved = await useDesktopStore.getState().updateItem('note', { name: 'Renamed.txt' });
+  expect(saved).toBe(true);
+  expect(getAcknowledgedItem('note')?.name).toBe('Renamed.txt');
+  expect(useDesktopStore.getState().getItem('note')?.name).toBe('Renamed.txt');
+});
+
+test('a failed write rolls back to the acknowledged snapshot, not the last optimistic value', async () => {
+  // Two renames queue back to back and both saves fail. The old code rolled
+  // the second failure back to the *intermediate optimistic* rename; the
+  // acknowledged snapshot is the only value the server ever knew.
+  api.updateItems.mockRejectedValue(new Error('Offline'));
+  const first = useDesktopStore.getState().updateItem('note', { name: 'First.txt' });
+  const second = useDesktopStore.getState().updateItem('note', { name: 'Second.txt' });
+  expect(await first).toBe(false);
+  expect(await second).toBe(false);
+  expect(useDesktopStore.getState().getItem('note')?.name).toBe('Note.txt');
+  expect(getAcknowledgedItem('note')?.name).toBe('Note.txt');
+});
+
+test('a failed rename still reverts while a newer interaction on the same item is preserved', async () => {
+  // The rename save is in flight; the user drags the item; the save fails.
+  // The name reverts to the acknowledged value, the newer move is untouched.
+  let reject!: (e: Error) => void;
+  api.updateItems.mockImplementationOnce(() => new Promise((_, r) => { reject = r; }));
+  const pending = useDesktopStore.getState().updateItem('note', { name: 'Renamed.txt' });
+  await Promise.resolve();
+  await Promise.resolve();
+  useDesktopStore.getState().moveItem('note', { x: 5, y: 5 });
+  reject(new Error('Offline'));
+  expect(await pending).toBe(false);
+  const item = useDesktopStore.getState().getItem('note');
+  expect(item?.name).toBe('Note.txt');
+  expect(item?.position).toEqual({ x: 5, y: 5 });
+});
+
+test('a failed position save reverts to the last server-acknowledged position', async () => {
+  // First drag's save is in flight; the user drags again; the first save
+  // lands (the server now knows (10,10)); the second save fails. The old
+  // code deleted the rollback target on the first success and left the
+  // unsaved (20,20) looking persisted.
+  let resolveFirst!: (value: unknown) => void;
+  api.updateItems.mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }));
+  api.updateItems.mockRejectedValue(new Error('Offline'));
+  const store = useDesktopStore.getState();
+  store.moveItem('note', { x: 10, y: 10 });
+  await vi.advanceTimersByTimeAsync(600); // first save fires, still pending
+  store.moveItem('note', { x: 20, y: 20 }); // user drags again before it settles
+  resolveFirst([]); // first save lands: the server knows (10,10)
+  await vi.advanceTimersByTimeAsync(600); // second save fires and fails
+  expect(useDesktopStore.getState().getItem('note')?.position).toEqual({ x: 10, y: 10 });
+});
+
+test('a server echo after an optimistic write converges to one item with no duplicate', async () => {
+  api.createItem.mockResolvedValue(undefined);
+  const created = { ...original, id: 'echo-note', name: 'Echo.txt' };
+  useDesktopStore.getState().addItem(created);
+  await vi.advanceTimersByTimeAsync(0); // the create lands server-side
+  // Reconnect: the server list echoes the item back.
+  api.fetchDesktop.mockResolvedValue({ items: [original, created] });
+  await useDesktopStore.getState().loadDesktop();
+  const items = useDesktopStore.getState().items;
+  expect(items.filter((i) => i.id === 'echo-note')).toHaveLength(1);
+  expect(items).toHaveLength(2);
+  expect(useDesktopStore.getState().getItem('echo-note')?.name).toBe('Echo.txt');
+});
+
+test('a server reconcile refreshes the acknowledged snapshot', async () => {
+  api.fetchDesktop.mockResolvedValue({ items: [{ ...original, name: 'Server.txt' }] });
+  await useDesktopStore.getState().loadDesktop();
+  expect(useDesktopStore.getState().getItem('note')?.name).toBe('Server.txt');
+  expect(getAcknowledgedItem('note')?.name).toBe('Server.txt');
+});
+
+test('interaction state survives a server reconcile', async () => {
+  api.fetchDesktop.mockResolvedValue({ items: [{ ...original }] });
+  useDesktopStore.getState().selectItem('note');
+  await useDesktopStore.getState().loadDesktop();
+  expect(useDesktopStore.getState().isSelected('note')).toBe(true);
+});
+
+test('interaction state survives a server snapshot applied via setItems', () => {
+  useDesktopStore.getState().selectItem('note');
+  useDesktopStore.getState().setItems([{ ...original, name: 'Echo.txt' }]);
+  expect(useDesktopStore.getState().selectedIds.has('note')).toBe(true);
+});
+
+test('trashing or deleting a selected item drops it from the selection', async () => {
+  api.updateItems.mockResolvedValue([]);
+  const store = useDesktopStore.getState();
+  store.selectItem('note');
+  store.moveToTrash(['note']);
+  expect(useDesktopStore.getState().selectedIds.has('note')).toBe(false);
+  // And the delete path.
+  useDesktopStore.getState().restoreFromTrash(['note']);
+  useDesktopStore.getState().selectItem('note');
+  useDesktopStore.getState().removeItem('note');
+  expect(useDesktopStore.getState().selectedIds.has('note')).toBe(false);
+});
+
+test('reset clears the interaction state with the session', () => {
+  useDesktopStore.getState().selectItem('note');
+  useDesktopStore.getState().reset();
+  expect(useDesktopStore.getState().selectedIds.size).toBe(0);
 });

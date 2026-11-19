@@ -528,6 +528,7 @@ export class UserDesktop {
       cartridgeRef: partial.cartridgeRef,
       grantedPermissions: partial.grantedPermissions,
       permissionGrantedAt: partial.permissionGrantedAt,
+      grantedPermissionApprovals: partial.grantedPermissionApprovals,
     };
 
     this.items.set(item.id, item);
@@ -561,6 +562,7 @@ export class UserDesktop {
       'appManifest',
       'grantedPermissions',
       'permissionGrantedAt',
+      'grantedPermissionApprovals',
       'isTrashed',
       'trashedAt',
       'originalParentId',

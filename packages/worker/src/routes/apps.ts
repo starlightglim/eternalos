@@ -16,6 +16,13 @@ import type { AppGrantedPermissions, AppCapabilityPayload } from '../utils/jwt';
 import type { DesktopItem } from '../types';
 import { signAppCapabilityToken, verifyAppCapabilityToken } from '../utils/jwt';
 import { buildItemPath, pathMatchesGlob as sharedPathMatchesGlob, canReadItem as sharedCanReadItem } from '../utils/fsPolicy';
+import {
+  broadScopeIds,
+  buildGrantApprovals,
+  pruneGrantApprovals,
+  resolveGrantApprovals,
+  sanitizeBroadApprovals,
+} from '../utils/appScopes';
 import { createWorker } from '@cloudflare/worker-bundler';
 import {
   AppValidationError,
@@ -406,11 +413,20 @@ export async function handleAppPermissions(
   if (!appItem?.appManifest) return Response.json({ error: 'App desktop item not found' }, { status: 409 });
 
   const requested = sanitizeGranted(appItem.appManifest.permissions);
+  // Broad scopes within the *declared* set — the ones the install/approval UI
+  // must render as explicit warnings (see utils/appScopes.ts).
+  const broad = broadScopeIds(requested);
+  // Approval metadata per granted scope. Lazy migration: grants recorded
+  // before approval metadata existed have no stored entry and read as
+  // approved with approvedAt unknown.
+  const approvals = resolveGrantApprovals(appMeta.granted ?? {}, appItem.grantedPermissionApprovals);
   if (request.method === 'GET') {
     return Response.json({
       appId,
       requested,
       granted: appMeta.granted ?? {},
+      broad,
+      approvals,
       rationale: appItem.appManifest.rationale,
     });
   }
@@ -419,22 +435,44 @@ export async function handleAppPermissions(
     return Response.json({ error: 'Method not allowed' }, { status: 405 });
   }
 
-  let body: { granted?: unknown };
+  let body: { granted?: unknown; broadApprovals?: unknown };
   try {
-    body = await request.json() as { granted?: unknown };
+    body = await request.json() as { granted?: unknown; broadApprovals?: unknown };
   } catch {
     return Response.json({ error: 'A permission selection is required' }, { status: 400 });
   }
 
   const available = Object.keys(requested).length > 0 ? requested : (appMeta.granted ?? {});
-  const granted = intersectGranted(available, sanitizeGranted(body.granted));
+  const requestedGrant = sanitizeGranted(body.granted);
+
+  // Broad-scope rule (design/CORE-ROADMAP.md Workstream 3, Phase B): a grant
+  // request that includes a broad scope — a whole-filesystem read/write
+  // glob, a wildcard network domain, or all profile fields — is rejected
+  // unless it carries that scope's explicit approval tick. Narrow scopes
+  // keep today's flow. Nothing here widens grants: the intersection with the
+  // declared set below is unchanged.
+  const broadInRequest = broadScopeIds(requestedGrant);
+  const approvedBroad = sanitizeBroadApprovals(body.broadApprovals);
+  const missingApproval = broadInRequest.filter((scope) => !approvedBroad.has(scope));
+  if (missingApproval.length > 0) {
+    return Response.json({
+      error: 'Broad permission scopes require explicit approval',
+      broadScopes: missingApproval,
+    }, { status: 400 });
+  }
+
+  const granted = intersectGranted(available, requestedGrant);
   const previousMeta = appMeta;
   const permissionGrantedAt = Object.keys(granted).length > 0 ? Date.now() : undefined;
+  // Approval metadata for every scope in the final granted set: approved
+  // now, by this user, with the manifest's rationale as it reads at
+  // approval time.
+  const nextApprovals = buildGrantApprovals(granted, auth.uid, appItem.appManifest.rationale);
   const updateResponse = await stub.fetch(new Request('http://internal/items', {
     method: 'PATCH',
     body: JSON.stringify([{
       id: appItem.id,
-      updates: { grantedPermissions: granted, permissionGrantedAt },
+      updates: { grantedPermissions: granted, permissionGrantedAt, grantedPermissionApprovals: nextApprovals },
     }]),
   }));
   if (!updateResponse.ok) return Response.json({ error: 'Failed to save app permissions' }, { status: 500 });
@@ -449,13 +487,14 @@ export async function handleAppPermissions(
         updates: {
           grantedPermissions: previousMeta.granted ?? {},
           permissionGrantedAt: appItem.permissionGrantedAt,
+          grantedPermissionApprovals: appItem.grantedPermissionApprovals ?? {},
         },
       }]),
     })).catch(() => {});
     return Response.json({ error: 'Failed to save app permissions' }, { status: 500 });
   }
 
-  return Response.json({ appId, requested, granted });
+  return Response.json({ appId, requested, granted, broad, approvals: nextApprovals });
 }
 
 // ---------------------------------------------------------------------------
@@ -853,20 +892,24 @@ export async function handleAppDevDeploy(
       rationale: manifest.rationale,
     };
 
+    let existingAppItem: DesktopItem | undefined;
     if (isUpdate) {
       // Find the existing desktop item by scanning items in the user desktop DO
       const doRes = await stub.fetch(new Request('http://internal/items'));
       if (!doRes.ok) throw new Error('Failed to load existing desktop items');
       if (doRes.ok) {
         const data = await doRes.json<{ items: DesktopItem[] }>();
-        const existingItem = data.items.find((item) => item.type === 'app' && item.appManifest?.appId === appId);
-        if (existingItem) {
-          oldDesktopItemId = existingItem.id;
+        existingAppItem = data.items.find((item) => item.type === 'app' && item.appManifest?.appId === appId);
+        if (existingAppItem) {
+          oldDesktopItemId = existingAppItem.id;
         }
       }
 
       if (oldDesktopItemId) {
-        // Update Desktop Item
+        // Update Desktop Item. Grants only ever narrow here (intersection
+        // with the previous stored grant), so keep each surviving scope's
+        // approval metadata as it read when the user approved it and drop
+        // entries for scopes whose grant fell away.
         const updateResponse = await stub.fetch(
           new Request('http://internal/items', {
             method: 'PATCH',
@@ -876,6 +919,10 @@ export async function handleAppDevDeploy(
                 name: manifest.name,
                 appManifest: appManifestObj,
                 grantedPermissions: granted,
+                grantedPermissionApprovals: pruneGrantApprovals(
+                  existingAppItem?.grantedPermissionApprovals,
+                  granted,
+                ),
               },
             }]),
           })
@@ -898,6 +945,7 @@ export async function handleAppDevDeploy(
             isPublic: false,
             appManifest: appManifestObj,
             grantedPermissions: granted,
+            grantedPermissionApprovals: {},
             permissionGrantedAt: Date.now(),
           }),
         })
@@ -1016,6 +1064,10 @@ export async function handleAppRollback(
     permissions: release.permissions ?? appItem.appManifest.permissions,
     rationale: release.rationale ?? appItem.appManifest.rationale,
   };
+  // Grants only ever narrow on rollback (intersection with the release's
+  // declared set), so keep surviving scopes' approval metadata and drop the
+  // entries for scopes whose grant fell away.
+  const nextApprovals = pruneGrantApprovals(appItem.grantedPermissionApprovals, nextGranted);
   const updateResponse = await stub.fetch(new Request('http://internal/items', {
     method: 'PATCH',
     body: JSON.stringify([{
@@ -1024,6 +1076,7 @@ export async function handleAppRollback(
         name: nextManifest.name,
         appManifest: nextManifest,
         grantedPermissions: nextGranted,
+        grantedPermissionApprovals: nextApprovals,
       },
     }]),
   }));

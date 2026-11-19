@@ -765,7 +765,7 @@ describe('worker integration', () => {
     const grantedPermissions = await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/permissions`, {
       method: 'PATCH',
       headers: authHeaders(user.token, JSON_HEADERS),
-      body: JSON.stringify({ granted: { fs: { read: ['/**'] }, network: { outbound: ['api.example.com', 'evil.example'] } } }),
+      body: JSON.stringify({ granted: { fs: { read: ['/**'] }, network: { outbound: ['api.example.com', 'evil.example'] } }, broadApprovals: ['fs.read'] }),
     });
     assert.deepEqual(grantedPermissions.granted, { fs: { read: ['/**'] }, network: { outbound: ['api.example.com'] } });
 
@@ -803,7 +803,7 @@ describe('worker integration', () => {
     await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/permissions`, {
       method: 'PATCH',
       headers: authHeaders(user.token, JSON_HEADERS),
-      body: JSON.stringify({ granted: { fs: { read: ['/**'] }, network: { outbound: ['api.example.com'] } } }),
+      body: JSON.stringify({ granted: { fs: { read: ['/**'] }, network: { outbound: ['api.example.com'] } }, broadApprovals: ['fs.read'] }),
     });
 
     const capability = await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/capability`, {
@@ -928,7 +928,7 @@ describe('worker integration', () => {
 
     await expectOk(`/api/apps/${encodeURIComponent(appA.appId)}/permissions`, {
       method: 'PATCH', headers: authHeaders(user.token, JSON_HEADERS),
-      body: JSON.stringify({ granted: { fs: { read: ['/**'] } } }),
+      body: JSON.stringify({ granted: { fs: { read: ['/**'] } }, broadApprovals: ['fs.read'] }),
     });
     const capA = await expectOk(`/api/apps/${encodeURIComponent(appA.appId)}/capability`, {
       method: 'POST', headers: authHeaders(user.token, JSON_HEADERS), body: '{}',
@@ -1195,10 +1195,11 @@ describe('worker integration', () => {
     // Grant the declared fs read (the "fs read grant" from the fixture
     // manifest), then verify the bridge the app calls at runtime exposes the
     // uploaded photo: fs.list must include it and fs.read must stream the PNG.
+    // The fixture declares a broad '/**' read, so the explicit tick is required.
     await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/permissions`, {
       method: 'PATCH',
       headers: authHeaders(user.token, JSON_HEADERS),
-      body: JSON.stringify({ granted: photoGrid.manifest.permissions }),
+      body: JSON.stringify({ granted: photoGrid.manifest.permissions, broadApprovals: ['fs.read'] }),
     });
     const capability = await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/capability`, {
       method: 'POST',
@@ -1326,7 +1327,7 @@ describe('worker integration', () => {
     await expectOk(`/api/apps/${encodeURIComponent(readerApp.appId)}/permissions`, {
       method: 'PATCH',
       headers: authHeaders(user.token, JSON_HEADERS),
-      body: JSON.stringify({ granted: { fs: { read: ['/**'] } } }),
+      body: JSON.stringify({ granted: { fs: { read: ['/**'] } }, broadApprovals: ['fs.read'] }),
     });
     const capability = await expectOk(`/api/apps/${encodeURIComponent(readerApp.appId)}/capability`, {
       method: 'POST',
@@ -1452,7 +1453,7 @@ describe('worker integration', () => {
     await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/permissions`, {
       method: 'PATCH',
       headers: authHeaders(user.token, JSON_HEADERS),
-      body: JSON.stringify({ granted: { fs: { read: ['/**'], write: ['/**'] } } }),
+      body: JSON.stringify({ granted: { fs: { read: ['/**'], write: ['/**'] } }, broadApprovals: ['fs.read', 'fs.write'] }),
     });
     const capability = await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/capability`, {
       method: 'POST',
@@ -2027,7 +2028,7 @@ describe('worker integration', () => {
     await expectOk(`/api/apps/${appId}/permissions`, {
       method: 'PATCH',
       headers: authHeaders(user.token, JSON_HEADERS),
-      body: JSON.stringify({ granted: { fs: { read: ['/**'], write: ['/**'] } } }),
+      body: JSON.stringify({ granted: { fs: { read: ['/**'], write: ['/**'] } }, broadApprovals: ['fs.read', 'fs.write'] }),
     });
     const approved = await mint();
     const openedRead = await bridge(`/fs/read/${encodeURIComponent(privateRoot.id)}`, approved.token, 'GET');
@@ -2041,6 +2042,7 @@ describe('worker integration', () => {
       headers: authHeaders(user.token, JSON_HEADERS),
       body: JSON.stringify({
         granted: { fs: { read: ['/**'], write: ['/**'] }, ipc: { emit: ['*'] } },
+        broadApprovals: ['fs.read', 'fs.write'],
       }),
     });
     assert.deepEqual(ipcApprove.granted, { fs: { read: ['/**'], write: ['/**'] } },
@@ -2141,6 +2143,257 @@ describe('worker integration', () => {
     const still = await bridge(`/fs/read/${encodeURIComponent(inScope.id)}`, approved.token, 'GET');
     assert.equal(still.status, 200);
     assert.match(await still.text(), /inside gallery/);
+  });
+
+  it('requires an explicit per-scope tick before granting broad scopes', async () => {
+    const user = await signupUser();
+    const appId = encodeURIComponent(
+      (await expectOk('/api/apps/dev-deploy', {
+        method: 'POST',
+        headers: authHeaders(user.token, JSON_HEADERS),
+        body: JSON.stringify({
+          manifest: {
+            name: 'Broad Scope Guard',
+            version: '1.0.0',
+            windowConfig: { defaultWidth: 600, defaultHeight: 500 },
+            rationale: 'Full-disk indexer.',
+            permissions: {
+              fs: { read: ['/**'], write: ['/Notes/**'] },
+              network: { outbound: ['*', 'api.example.com'] },
+              profile: { read: ['username', 'displayName', 'bio', 'avatar'] },
+            },
+          },
+          files: { 'index.html': '<!doctype html><html><body>guarded</body></html>' },
+        }),
+      })).appId
+    );
+
+    const grant = (body) => fetchJson(`/api/apps/${appId}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify(body),
+    });
+
+    // Everything at once, unticked → 400 naming the broad scopes.
+    const denied = await grant({
+      granted: {
+        fs: { read: ['/**'], write: ['/Notes/**'] },
+        network: { outbound: ['*'] },
+        profile: { read: ['username', 'displayName', 'bio', 'avatar'] },
+      },
+    });
+    assert.equal(denied.response.status, 400);
+    assert.match(denied.body.error, /Broad permission scopes require explicit approval/);
+    assert.deepEqual([...denied.body.broadScopes].sort(), ['fs.read', 'network.outbound', 'profile.read']);
+
+    // The rejection is per-scope: ticking fs.read but not the others still
+    // fails on the unticked ones.
+    const partial = await grant({
+      granted: {
+        fs: { read: ['/**'], write: ['/Notes/**'] },
+        network: { outbound: ['*'] },
+        profile: { read: ['username', 'displayName', 'bio', 'avatar'] },
+      },
+      broadApprovals: ['fs.read'],
+    });
+    assert.equal(partial.response.status, 400);
+    assert.deepEqual([...partial.body.broadScopes].sort(), ['network.outbound', 'profile.read']);
+
+    // With every broad scope ticked, the same request is granted.
+    const approved = await grant({
+      granted: {
+        fs: { read: ['/**'], write: ['/Notes/**'] },
+        network: { outbound: ['*'] },
+        profile: { read: ['username', 'displayName', 'bio', 'avatar'] },
+      },
+      broadApprovals: ['fs.read', 'network.outbound', 'profile.read'],
+    });
+    assert.equal(approved.response.status, 200);
+    assert.deepEqual(approved.body.granted, {
+      fs: { read: ['/**'], write: ['/Notes/**'] },
+      network: { outbound: ['*'] },
+      profile: { read: ['username', 'displayName', 'bio', 'avatar'] },
+    });
+
+    // Narrow scopes keep today's flow: no tick needed, and the grant is
+    // still bounded by the declaration.
+    const narrow = await grant({
+      granted: { fs: { write: ['/Notes/**'] }, network: { outbound: ['api.example.com'] }, profile: { read: ['username'] } },
+    });
+    assert.equal(narrow.response.status, 200, 'a narrow-only grant needs no approval flag');
+    assert.deepEqual(narrow.body.granted, {
+      fs: { write: ['/Notes/**'] },
+      network: { outbound: ['api.example.com'] },
+      profile: { read: ['username'] },
+    });
+
+    // A request asking beyond the declaration for a broad value is still a
+    // 400 without the tick — and with the tick it still grants no more than
+    // was declared ('/Vault/**' is not in the declaration).
+    const undeclared = await grant({ granted: { fs: { read: ['/**', '/Vault/**'] } } });
+    assert.equal(undeclared.response.status, 400);
+    const bounded = await grant({
+      granted: { fs: { read: ['/**', '/Vault/**'] } },
+      broadApprovals: ['fs.read'],
+    });
+    assert.equal(bounded.response.status, 200);
+    assert.deepEqual(bounded.body.granted, { fs: { read: ['/**'] } },
+      'the tick approves the user\'s confirmation, never more than the declaration');
+
+    // Client-shaped junk in the flag field must not 500.
+    const junk = await grant({ granted: { fs: { read: ['/**'] } }, broadApprovals: 'fs.read' });
+    assert.equal(junk.response.status, 400, 'a non-array broadApprovals is a 4xx');
+    const junkIds = await grant({ granted: { fs: { read: ['/**'] } }, broadApprovals: [{ evil: true }, 42] });
+    assert.equal(junkIds.response.status, 400, 'unknown/non-string tick ids are ignored, leaving the scope unticked');
+  });
+
+  it('persists per-scope grant approval metadata, keeping the rationale from approval time', async () => {
+    const user = await signupUser();
+    const deployed = await expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name: 'Approval Ledger',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500 },
+          rationale: 'v1: mirrors your gallery.',
+          permissions: { fs: { read: ['/Gallery/**'] }, network: { outbound: ['api.example.com'] } },
+        },
+        files: { 'index.html': '<!doctype html><html><body>ledger</body></html>' },
+      }),
+    });
+    const appId = encodeURIComponent(deployed.appId);
+
+    const before = await expectOk(`/api/apps/${appId}/permissions`, { headers: authHeaders(user.token) });
+    assert.deepEqual(before.approvals, {}, 'an ungranted app exposes no approvals');
+    assert.deepEqual(before.broad, [], 'nothing broad is declared');
+
+    const granted = await expectOk(`/api/apps/${appId}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { fs: { read: ['/Gallery/**'] }, network: { outbound: ['api.example.com'] } } }),
+    });
+    assert.equal(typeof granted.approvals['fs.read'].approvedAt, 'number');
+    assert.equal(granted.approvals['fs.read'].approvedBy, user.user.uid);
+    assert.equal(granted.approvals['fs.read'].rationale, 'v1: mirrors your gallery.');
+    assert.equal(granted.approvals['network.outbound'].approvedBy, user.user.uid,
+      'narrow grants get approval metadata too, not just broad ones');
+
+    // The GET exposes the same metadata ("approved on …") for the UI.
+    const after = await expectOk(`/api/apps/${appId}/permissions`, { headers: authHeaders(user.token) });
+    assert.equal(after.approvals['fs.read'].approvedAt, granted.approvals['fs.read'].approvedAt);
+    assert.equal(after.approvals['fs.read'].rationale, 'v1: mirrors your gallery.');
+
+    // A dev-deploy update that keeps the same declaration but ships a new
+    // rationale keeps the approval record as it read at approval time.
+    await expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        appId: deployed.appId,
+        manifest: {
+          name: 'Approval Ledger',
+          version: '2.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500 },
+          rationale: 'v2: totally different reason.',
+          permissions: { fs: { read: ['/Gallery/**'] }, network: { outbound: ['api.example.com'] } },
+        },
+        files: { 'index.html': '<!doctype html><html><body>ledger v2</body></html>' },
+      }),
+    });
+    const survived = await expectOk(`/api/apps/${appId}/permissions`, { headers: authHeaders(user.token) });
+    assert.deepEqual(survived.granted, { fs: { read: ['/Gallery/**'] }, network: { outbound: ['api.example.com'] } },
+      'an unchanged declaration must not drop the grant');
+    assert.equal(survived.approvals['fs.read'].approvedAt, granted.approvals['fs.read'].approvedAt,
+      'surviving grants keep their original approval timestamp');
+    assert.equal(survived.approvals['fs.read'].rationale, 'v1: mirrors your gallery.',
+      'the approval record keeps the rationale from approval time, not the new manifest rationale');
+
+    // Revoking prunes the approval metadata with the grant; re-granting
+    // records fresh metadata under the new rationale.
+    await expectOk(`/api/apps/${appId}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: {} }),
+    });
+    const revoked = await expectOk(`/api/apps/${appId}/permissions`, { headers: authHeaders(user.token) });
+    assert.deepEqual(revoked.granted, {});
+    assert.deepEqual(revoked.approvals, {}, 'a revoked grant must not keep approval metadata');
+
+    const regranted = await expectOk(`/api/apps/${appId}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { fs: { read: ['/Gallery/**'] } } }),
+    });
+    assert.ok(regranted.approvals['fs.read'].approvedAt >= granted.approvals['fs.read'].approvedAt,
+      'a re-grant records a fresh approval timestamp');
+    assert.equal(regranted.approvals['fs.read'].rationale, 'v2: totally different reason.',
+      'a re-grant snapshots the rationale as it reads at the new approval time');
+  });
+
+  it('treats legacy grants as approved with an unknown date, without weakening the broad-scope rule', async () => {
+    const user = await signupUser();
+    const deployed = await expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name: 'Legacy Install',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500 },
+          rationale: 'predates approval metadata',
+          permissions: { fs: { read: ['/**'] }, network: { outbound: ['api.example.com'] } },
+        },
+        files: { 'index.html': '<!doctype html><html><body>legacy</body></html>' },
+      }),
+    });
+    const appId = encodeURIComponent(deployed.appId);
+
+    // Grant through the current flow first (broad fs.read is ticked).
+    await expectOk(`/api/apps/${appId}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        granted: { fs: { read: ['/**'] }, network: { outbound: ['api.example.com'] } },
+        broadApprovals: ['fs.read'],
+      }),
+    });
+
+    // Craft the legacy shape exactly as pre-Phase-B installs look: grants
+    // stored (item + registry), no approval metadata on the item.
+    const desktop = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+    const appItem = desktop.items.find((item) => item.type === 'app' && item.appManifest?.appId === deployed.appId);
+    assert.ok(appItem, 'the installed app item exists');
+    await patchItems(user.token, [{ id: appItem.id, updates: { grantedPermissionApprovals: {} } }]);
+
+    // Lazy migration: the GET resolves those grants as approved with
+    // approvedAt unknown — the UI shows "Approved (date unknown)".
+    const migrated = await expectOk(`/api/apps/${appId}/permissions`, { headers: authHeaders(user.token) });
+    assert.deepEqual(migrated.granted, { fs: { read: ['/**'] }, network: { outbound: ['api.example.com'] } });
+    assert.deepEqual(migrated.approvals, {
+      'fs.read': {},
+      'network.outbound': {},
+    }, 'legacy grants read as approved with approvedAt unknown');
+    assert.equal(migrated.approvals['fs.read'].approvedAt, undefined);
+    assert.deepEqual(migrated.broad, ['fs.read'], 'the broad warning list is still served');
+
+    // Migration never weakens enforcement: re-requesting the broad grant
+    // still requires the explicit tick, even though it is already granted.
+    const retick = await fetchJson(`/api/apps/${appId}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { fs: { read: ['/**'] } } }),
+    });
+    assert.equal(retick.response.status, 400, 'an already-granted broad scope still needs its tick');
+    const reapproved = await expectOk(`/api/apps/${appId}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { fs: { read: ['/**'] }, network: { outbound: ['api.example.com'] } }, broadApprovals: ['fs.read'] }),
+    });
+    // Re-approval writes real metadata over the migrated placeholder.
+    assert.equal(typeof reapproved.approvals['fs.read'].approvedAt, 'number');
+    assert.equal(reapproved.approvals['fs.read'].approvedBy, user.user.uid);
   });
 
   it('isolates app storage between apps and rejects forged keys with 4xx', async () => {
