@@ -40,6 +40,11 @@
  *     `data: {"response": "..."}\n\n` frames, cf. the SSE shapes parsed in
  *     workers-ai-provider dist/index.js getMappedStream).
  *
+ * Naming: since agents 0.8.7, partyserver's getServerByName names the DO by
+ * calling the stub's setName(name) RPC method directly (older releases sent
+ * a /cdn-cgi/partyserver/set-name/ fetch request); the harness calls the
+ * same real method on the in-process instance (see buildAgent).
+ *
  * The wire frames mirror @cloudflare/ai-chat@0.2.6 exactly (file:line
  * citations below are from node_modules/@cloudflare/ai-chat/dist):
  *   - chat request:            dist/react.js:129-136 `{id, init: {method:
@@ -309,18 +314,20 @@ async function waitFor(predicate, { timeoutMs = 15_000, pollMs = 25 } = {}) {
 
 /**
  * Build a real OrchestratorAgent over a fresh fake state + scripted AI.
- * The agent is named exactly the way production does it
- * (buildThreadAgentName → getAgentByName → partyserver set-name request).
+ * The agent is named exactly the way production does it:
+ * buildThreadAgentName → getAgentByName → partyserver getServerByName —
+ * which, since partyserver 0.8.7 (agents 0.8.7), calls the stub's
+ * setName(name) RPC method directly instead of the old
+ * /cdn-cgi/partyserver/set-name/ fetch request, so the harness calls the
+ * same real method on the in-process instance.
  */
 async function buildAgent(threadId) {
   const uid = 'user-replay';
   const ctx = createFakeCtx();
   const ai = createSlowAiBinding();
   const agent = new OrchestratorAgent(ctx, createFakeEnv(ai));
-  const setNameResponse = await agent.fetch(new Request('http://test/cdn-cgi/partyserver/set-name/', {
-    headers: { 'x-partykit-room': `${uid}:${threadId}` },
-  }));
-  assert.equal(setNameResponse.status, 200);
+  await agent.setName(`${uid}:${threadId}`);
+  assert.equal(agent.name, `${uid}:${threadId}`);
   const connectRequest = () => new Request(`ws://test/api/agent/chat?threadId=${encodeURIComponent(threadId)}`);
   return { agent, ctx, ai, connectRequest };
 }
@@ -408,8 +415,18 @@ async function dropConnection(ctx, agent, socket) {
 // Tests
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-test timeout: the whole suite settles in ~4s (three scenarios, each a
+ * bounded 8×200ms generation). If the transport ever stalls (a protocol
+ * regression, an agents upgrade changing a handshake), the runner fails the
+ * test at 30s instead of hanging the whole `npm run test:worker` run; every
+ * timer the harness can leave behind is itself bounded (waitFor ≤15s, the
+ * scripted generation ≤8×200ms), so the file's process always drains.
+ */
+const TEST_TIMEOUT_MS = 30_000;
+
 describe('agent chat drop-and-replay transport', () => {
-  it('replays a still-running generation to a reconnecting client, exactly once, without cancelling it', async () => {
+  it('replays a still-running generation to a reconnecting client, exactly once, without cancelling it', { timeout: TEST_TIMEOUT_MS }, async () => {
     const threadId = 'replay-mid-stream';
     const requestId = 'req-replay-1';
     const { agent, ctx, ai, connectRequest } = await buildAgent(threadId);
@@ -507,7 +524,7 @@ describe('agent chat drop-and-replay transport', () => {
     assert.equal(assistants[0].parts.find((p) => p.type === 'text').text, FULL_TEXT);
   });
 
-  it('answers resume-none when the generation finished while the client was offline', async () => {
+  it('answers resume-none when the generation finished while the client was offline', { timeout: TEST_TIMEOUT_MS }, async () => {
     const threadId = 'replay-finished-offline';
     const requestId = 'req-replay-2';
     const { agent, ctx, connectRequest } = await buildAgent(threadId);
@@ -555,7 +572,7 @@ describe('agent chat drop-and-replay transport', () => {
     assert.equal(assistants[0].parts.find((p) => p.type === 'text').text, FULL_TEXT);
   });
 
-  it('truncates when a stale cancel for the live request reaches the server (why the client strips it)', async () => {
+  it('truncates when a stale cancel for the live request reaches the server (why the client strips it)', { timeout: TEST_TIMEOUT_MS }, async () => {
     const threadId = 'replay-stale-cancel';
     const requestId = 'req-replay-3';
     const { agent, ctx, ai, connectRequest } = await buildAgent(threadId);
