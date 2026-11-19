@@ -34,12 +34,16 @@ export interface ChatHistoryMessage {
  *   (the transport never hears a close), leaving the UI stuck on
  *   "Working..." with the composer disabled, and the server keeps the
  *   reconnecting connection excluded from stream broadcasts until a resume
- *   handshake completes. Aborting releases the request id, which lets the
- *   built-in resume machinery ACK the server's `cf_agent_stream_resuming`
- *   notification on reconnect and replay the still-running generation into
- *   the same message (replaced by id — no duplicate, no orphan). The
- *   cancel frame that the abort path queues is stripped locally (see
- *   abortChatRequestLocally) so the server never truncates that generation.
+ *   handshake completes. Aborting unsticks the local request; the cancel
+ *   frame that the abort path queues is stripped locally (see
+ *   abortChatRequestLocally) so the server never truncates that
+ *   generation. Since @cloudflare/ai-chat 0.2.x the abort KEEPS the
+ *   request id in the transport's active-request set, so re-attaching to
+ *   the still-running server stream on reconnect is no longer automatic —
+ *   the caller must record that a request was dropped mid-flight and
+ *   drive `resumeStream()` on reconnect (see
+ *   shouldResumeStreamAfterReconnect, which replays the generation into
+ *   the same message — replaced by id, no duplicate, no orphan).
  * - `'none'`: nothing is in flight; leave the request state alone.
  *
  * In the chat pane this rule is enforced by abortChatRequestLocally on a
@@ -101,13 +105,15 @@ export function stripQueuedCancelFramesInPlace(queue: unknown): number {
  *
  * `stop()` (from useAgentChat) is the only way to clear the stuck request
  * locally: it synchronously aborts the transport's stream (abortController
- * abort listeners fire synchronously), which unblocks the pending request,
- * resets the status and releases the request id so the built-in resume
- * machinery can ACK the server's stream-resuming notification on reconnect.
- * But that abort path unconditionally sends a cancel frame, and since the
- * socket is down partysocket enqueues it and flushes it on the next open —
- * where it would cancel the very generation the resume path is meant to
- * replay (with abortSignal wired server-side, a truncated reply).
+ * abort listeners fire synchronously), which unblocks the pending request
+ * and resets the status. (@cloudflare/ai-chat 0.2.x keeps the aborted
+ * request id in the transport's active set, so re-attaching to the
+ * still-running server stream on reconnect is the caller's job — see
+ * shouldResumeStreamAfterReconnect.) But that abort path unconditionally
+ * sends a cancel frame, and since the socket is down partysocket enqueues
+ * it and flushes it on the next open — where it would cancel the very
+ * generation the resume path is meant to replay (with abortSignal wired
+ * server-side, a truncated reply).
  *
  * So: run the stop, then strip the cancel it just queued. A user-pressed
  * Stop is unaffected — on a live socket its cancel is sent immediately and
@@ -134,6 +140,43 @@ export function shouldReloadHistoryAfterReconnect(
   status: ChatRequestStatus,
 ): boolean {
   return hadDisconnect && resolveDisconnectAction(status) === 'none';
+}
+
+/**
+ * Whether a reconnect should attach to the server stream that was running
+ * when the socket dropped, via the chat's `resumeStream()`.
+ *
+ * Since @cloudflare/ai-chat 0.2.x, the abort that the disconnect recovery
+ * performs no longer releases the request id locally: `finish(action,
+ * keepId)` keeps aborted ids in the transport's active-request set
+ * (dist/react.js:78-86, onAbort passes keepId=true at :97). That set is the
+ * same `localRequestIdsRef` the reconnect handler consults, so the server's
+ * spontaneous `cf_agent_stream_resuming` notification for our own aborted
+ * request now falls through to the local-id skip and is never ACKed
+ * (dist/react.js:699) — the automatic replay-on-reconnect that 0.1.x
+ * performed (it deleted the id on abort) is gone. The 0.2.x-native way to
+ * re-attach is the resume handshake: `resumeStream()` ->
+ * `reconnectToStream` (dist/react.js:139-171) sends
+ * `cf_agent_stream_resume_request`, the server re-announces the active
+ * stream (worker dist/index.js:560-563), and the replay replaces the
+ * partial assistant message in place. The AI SDK only resumes by itself on
+ * MOUNT (@ai-sdk/react dist/index.js resume effect), so a mid-session
+ * reconnect must trigger it here.
+ *
+ * Preconditions mirror the close-handler side: only after a real drop,
+ * only when a request actually was in flight at the drop (recorded then —
+ * see resolveDisconnectAction), and only when nothing new is in flight at
+ * reconnect (a request sent while offline owns the pane; the server's
+ * resuming notice for the old stream is skipped locally for it anyway).
+ */
+export function shouldResumeStreamAfterReconnect(
+  hadDisconnect: boolean,
+  requestAbortedAtDrop: boolean,
+  status: ChatRequestStatus,
+): boolean {
+  return hadDisconnect
+    && requestAbortedAtDrop
+    && resolveDisconnectAction(status) === 'none';
 }
 
 /**

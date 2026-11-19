@@ -5,6 +5,7 @@ import {
   mergeChatHistory,
   resolveDisconnectAction,
   shouldReloadHistoryAfterReconnect,
+  shouldResumeStreamAfterReconnect,
   stripQueuedCancelFramesInPlace,
   type ChatHistoryMessage,
 } from './agentChatReconciliation';
@@ -39,6 +40,31 @@ test('reloads history after a reconnect only when a drop was seen and the chat i
   expect(shouldReloadHistoryAfterReconnect(true, 'streaming')).toBe(false);
   expect(shouldReloadHistoryAfterReconnect(true, 'submitted')).toBe(false);
   expect(shouldReloadHistoryAfterReconnect(false, 'streaming')).toBe(false);
+});
+
+// ── Reconnect after a mid-request drop (@cloudflare/ai-chat 0.2.x) ────
+// The drop-triggered abort keeps the request id in the transport's
+// active-request set (0.2.x finish(…, keepId=true)), so the server's
+// spontaneous stream-resuming notification for that id is skipped locally
+// and never ACKed. Re-attaching to the still-running server stream must be
+// driven explicitly through resumeStream() — and must not fire when the
+// drop never aborted a request, or when a NEW request is already in flight
+// at reconnect (e.g. sent while offline, queued in partysocket).
+
+test('resumes the dropped stream only after a real drop aborted a request and nothing new is in flight', () => {
+  expect(shouldResumeStreamAfterReconnect(true, true, 'ready')).toBe(true);
+  expect(shouldResumeStreamAfterReconnect(true, true, 'error')).toBe(true);
+});
+
+test('never resumes when the drop did not abort a request', () => {
+  expect(shouldResumeStreamAfterReconnect(true, false, 'ready')).toBe(false);
+  expect(shouldResumeStreamAfterReconnect(false, true, 'ready')).toBe(false);
+  expect(shouldResumeStreamAfterReconnect(false, false, 'ready')).toBe(false);
+});
+
+test('a request already in flight at reconnect owns the pane instead of a resume', () => {
+  expect(shouldResumeStreamAfterReconnect(true, true, 'submitted')).toBe(false);
+  expect(shouldResumeStreamAfterReconnect(true, true, 'streaming')).toBe(false);
 });
 
 // ── Drop-triggered abort must not cancel server-side ─────────────────
