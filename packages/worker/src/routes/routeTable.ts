@@ -45,10 +45,12 @@ import {
   handleAppFsList,
   handleAppFsRead,
   handleAppPermissions,
+  handleAppRevisionRestore,
   handleAppRollback,
   handleAppVersions,
   handleGetAppSourceRoute,
 } from './apps';
+import { handleAppRevisionGet, handleAppRevisionsList } from './appRevisions';
 import { handleServeApp, handleServeAppPreview } from './appServe';
 import {
   handleBazaarBrowse,
@@ -162,6 +164,30 @@ const manageAppVersion = async (c: RouteContext): Promise<RouteHandlerResult> =>
   }
   if (action === 'rollback' && c.request.method === 'POST') {
     return handleAppRollback(c.request, c.env, requireAuthContext(c), appId);
+  }
+  return ROUTE_FALLTHROUGH;
+};
+
+/**
+ * App source revisions: method-specific sub-routes, else fall through.
+ *   GET  /api/apps/:appId/revisions               list
+ *   GET  /api/apps/:appId/revisions/:revisionId   one revision (files, diagnostics)
+ *   POST /api/apps/:appId/revisions/:revisionId/restore
+ */
+const manageAppRevisions = async (c: RouteContext): Promise<RouteHandlerResult> => {
+  const rawAppId = c.params[0];
+  const revisionId = c.params[1] || '';
+  const action = c.params[2] || '';
+  if (!rawAppId) return ROUTE_FALLTHROUGH;
+  const appId = decodeURIComponent(rawAppId);
+  if (!revisionId && !action && c.request.method === 'GET') {
+    return handleAppRevisionsList(c.env, requireAuthContext(c), appId);
+  }
+  if (revisionId && !action && c.request.method === 'GET') {
+    return handleAppRevisionGet(c.env, requireAuthContext(c), appId, decodeURIComponent(revisionId));
+  }
+  if (revisionId && action === 'restore' && c.request.method === 'POST') {
+    return handleAppRevisionRestore(c.env, requireAuthContext(c), appId, decodeURIComponent(revisionId));
   }
   return ROUTE_FALLTHROUGH;
 };
@@ -466,6 +492,15 @@ export const ROUTES: RouteDefinition[] = [
     match: regex(/^\/api\/apps\/([^/]+)\/(versions|rollback)$/),
     policy: { auth: 'required', rateLimit: null },
     handler: manageAppVersion,
+  },
+  // App source revisions (list / get one / restore) — same owner-only auth
+  // and "not rate limited" decision as every other app-management route.
+  {
+    name: 'app-revisions',
+    method: '*',
+    match: regex(/^\/api\/apps\/([^/]+)\/revisions(?:\/([^/]+)(?:\/(restore))?)?$/),
+    policy: { auth: 'required', rateLimit: null },
+    handler: manageAppRevisions,
   },
   {
     name: 'app-delete',
