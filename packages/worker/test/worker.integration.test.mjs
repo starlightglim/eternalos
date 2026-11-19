@@ -3037,6 +3037,106 @@ describe('worker integration', () => {
     assert.equal(renamed[0].name, 'Renamed Anyway');
   });
 
+  it('applies item writes all-or-nothing: a bad entry rejects the batch and applies nothing', async () => {
+    const user = await signupUser();
+
+    // Two target items. The 1st entry of every rejected batch below tries to
+    // rename `first` — with the old mid-loop validation that rename was
+    // already applied to the DO's in-memory map when a later entry threw, so
+    // GET showed a change storage never saw (and the client got a 500 for
+    // bad input). The harness keeps the DO instance alive for the worker's
+    // lifetime with no restart API, so a forced fresh storage read isn't
+    // reachable; the GET assertions below are the observable half — they
+    // fail on the old code precisely because memory and storage disagreed.
+    const first = await createDesktopItem(user.token, {
+      type: 'folder', name: 'First', position: { x: 0, y: 0 },
+    });
+    const second = await createDesktopItem(user.token, {
+      type: 'link', name: 'Second', url: 'https://example.com/', position: { x: 1, y: 0 },
+    });
+
+    // An unsafe URL in the 2nd entry rejects the whole batch: a 400 naming
+    // the entry, and the 1st entry is not applied.
+    const badUrl = await fetchJson('/api/desktop/items', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify([
+        { id: first.id, updates: { name: 'Should Not Apply' } },
+        { id: second.id, updates: { url: 'javascript:alert(1)' } },
+      ]),
+    });
+    assert.equal(badUrl.response.status, 400, `unsafe URL must be a 400, got ${badUrl.response.status}`);
+    assert.match(badUrl.body.error, /Patch entry 1/, 'the rejection names the offending entry index');
+    assert.match(badUrl.body.error, /URL/, 'the rejection names the reason');
+    let desktop = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+    assert.equal(desktop.items.find((item) => item.id === first.id).name, 'First',
+      'the 1st entry of a rejected batch is not applied');
+
+    // Every malformed entry shape gets the same all-or-nothing treatment
+    // (a null entry used to 500 mid-batch, a shapeless entry was a 500 or a
+    // silent no-op depending on whether its id resolved).
+    const badEntries = [
+      ['a null entry', null],
+      ['a non-object entry', 42],
+      ['an entry without a string id', { updates: { name: 'Nope' } }],
+      ['an entry with a non-string id', { id: 42, updates: { name: 'Nope' } }],
+      ['an entry without updates', { id: first.id }],
+      ['an entry with null updates', { id: first.id, updates: null }],
+      ['an entry with non-object updates', { id: first.id, updates: 'junk' }],
+    ];
+    for (const [label, entry] of badEntries) {
+      const res = await fetchJson('/api/desktop/items', {
+        method: 'PATCH',
+        headers: authHeaders(user.token, JSON_HEADERS),
+        body: JSON.stringify([
+          { id: first.id, updates: { name: 'Should Not Apply' } },
+          entry,
+        ]),
+      });
+      assert.equal(res.response.status, 400, `${label} must be a 400, got ${res.response.status}`);
+      assert.match(res.body.error, /Patch entry 1/, `${label}: the rejection names the offending entry`);
+      desktop = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+      assert.equal(desktop.items.find((item) => item.id === first.id).name, 'First',
+        `${label}: the batch applied nothing`);
+    }
+
+    // POST with valid JSON that isn't an object is a 400 and creates
+    // nothing (it used to spread into the defaults and silently create a
+    // default "Untitled" folder).
+    const idsBefore = new Set(
+      (await expectOk('/api/desktop', { headers: authHeaders(user.token) })).items.map((item) => item.id)
+    );
+    for (const body of ['42', '"x"', '[]', 'null', 'true']) {
+      const res = await fetchJson('/api/desktop/items', {
+        method: 'POST',
+        headers: authHeaders(user.token, JSON_HEADERS),
+        body,
+      });
+      assert.equal(res.response.status, 400, `POST ${body} must be a 400, got ${res.response.status}`);
+      assert.match(res.body.error, /JSON object/, `POST ${body} names the reason`);
+    }
+    desktop = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+    assert.deepEqual(
+      new Set(desktop.items.map((item) => item.id)),
+      idsBefore,
+      'no phantom item was created by the refused creates',
+    );
+
+    // Valid batches are unchanged: a well-formed two-entry batch applies
+    // both entries and returns them in order.
+    const both = await patchItems(user.token, [
+      { id: first.id, updates: { name: 'First Renamed' } },
+      { id: second.id, updates: { url: 'https://example.org/' } },
+    ]);
+    assert.equal(both.length, 2);
+    assert.equal(both[0].name, 'First Renamed');
+    assert.equal(both[1].url, 'https://example.org/');
+
+    // Unknown ids keep their silent-skip semantics inside a valid batch.
+    const skipped = await patchItems(user.token, [{ id: 'does-not-exist', updates: { name: 'X' } }]);
+    assert.deepEqual(skipped, []);
+  });
+
   it('exports account data without leaking password-equivalent secrets', async () => {
     const user = await signupUser();
     const exportRes = await worker.fetch(`${BASE_URL}/api/auth/export-data`, {

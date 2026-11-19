@@ -218,7 +218,8 @@ export class UserDesktop {
         });
       }
 
-      // POST /items - Create new item (client-facing, strips r2Key/fileSize/mimeType)
+      // POST /items - Create new item (client-facing, strips r2Key/fileSize/mimeType;
+      // a body that isn't a JSON object is rejected with a 400 by createItem)
       if (path === '/items' && method === 'POST') {
         const item = await request.json() as Partial<DesktopItem>;
         const newItem = await this.createItem(item);
@@ -235,7 +236,11 @@ export class UserDesktop {
 
       // PATCH /items - Batch update items
       if (path === '/items' && method === 'PATCH') {
-        const patches = await request.json() as Array<{ id: string; updates: Partial<DesktopItem> }>;
+        // The body is untrusted (the public route forwards it verbatim):
+        // updateItems validates every entry — shape, id, field validators —
+        // before mutating anything, and answers bad input with a 400 that
+        // names the offending entry.
+        const patches = await request.json();
         const updated = await this.updateItems(patches);
         return Response.json(updated);
       }
@@ -471,6 +476,14 @@ export class UserDesktop {
    * Item IDs are always generated server-side to prevent overwrite attacks.
    */
   private async createItem(partial: Partial<DesktopItem>): Promise<DesktopItem> {
+    // The client-facing create must be a JSON object: a primitive, array, or
+    // null would spread into nothing below and silently create a default
+    // "Untitled" folder (POST /api/desktop/items with `42`, `[]`, or `"x"`).
+    // Trusted internal creates go through createItemInternal and are
+    // unaffected.
+    if (typeof partial !== 'object' || partial === null || Array.isArray(partial)) {
+      throw new HttpError(400, 'Item body must be a JSON object');
+    }
     return this.createItemInternal({
       ...partial,
       // Strip server-controlled fields — these are only set by upload handlers
@@ -491,20 +504,23 @@ export class UserDesktop {
    * website viewer. An unvalidated `javascript:` (or other non-web) scheme on a
    * PUBLIC item is stored XSS against any visitor who clicks it. Restrict item
    * URLs to http(s), the same rule profileLinks already enforce.
+   *
+   * A bad URL is client-supplied bad input, so it rejects with HttpError(400)
+   * — never a plain Error that the fetch catch-all would answer with a 500.
    */
   private assertSafeItemUrl(url: unknown): void {
     if (url === undefined || url === null || url === '') return;
     if (typeof url !== 'string' || url.length > 2048) {
-      throw new Error('Invalid item URL');
+      throw new HttpError(400, 'Invalid item URL');
     }
     let parsed: URL;
     try {
       parsed = new URL(url);
     } catch {
-      throw new Error('Invalid item URL');
+      throw new HttpError(400, 'Invalid item URL');
     }
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      throw new Error('Item URL must use http(s)');
+      throw new HttpError(400, 'Item URL must use http(s)');
     }
   }
 
@@ -631,10 +647,24 @@ export class UserDesktop {
    * Batch update items (positions, names, visibility, etc.)
    * Only allows updating safe fields — prevents IDOR attacks that could
    * overwrite r2Key, fileSize, id, or other sensitive fields.
+   *
+   * All-or-nothing: the whole batch is validated (entry shape, string id,
+   * and every field validator — type transitions, stickerConfig, URL
+   * safety) before the first item is touched, then all surviving entries
+   * are applied and persisted together. A rejected batch answers 400 naming
+   * the entry index and reason and applies nothing, so the in-memory map
+   * can never disagree with storage through a half-applied batch (the old
+   * mid-loop URL check applied earlier entries in memory, answered 500,
+   * and never persisted them). Unknown IDs keep today's skip semantics:
+   * their entries are silently ignored.
    */
-  private async updateItems(
-    patches: Array<{ id: string; updates: Partial<DesktopItem> }>
-  ): Promise<DesktopItem[]> {
+  private async updateItems(patches: unknown): Promise<DesktopItem[]> {
+    // The public route already refuses non-array patch bodies; this also
+    // guards the DO's own endpoint for any other caller.
+    if (!Array.isArray(patches)) {
+      throw new HttpError(400, 'Patch body must be a JSON array of { id, updates } entries');
+    }
+
     // Only these fields can be updated via the PATCH endpoint
     const ALLOWED_UPDATE_FIELDS: (keyof DesktopItem)[] = [
       'name',
@@ -658,83 +688,118 @@ export class UserDesktop {
       'originalParentId',
     ];
 
-    // Validate the whole batch before mutating anything: a rejected batch
-    // applies none of its entries (the same all-or-nothing contract the
-    // route-level server-managed-fields gate upholds), so a refused type
-    // transition can never leave a half-applied patch behind.
-    for (const { id, updates } of patches) {
-      const item = this.items.get(id);
-      // Unknown IDs keep today's skip semantics (silently ignored below).
-      if (!item) continue;
-      this.assertValidTypeTransition(item, updates?.type);
-      if (updates?.stickerConfig !== undefined) {
-        this.assertValidStickerConfig(updates.stickerConfig);
+    // Validation pass: shape-check every entry, filter its updates to the
+    // allowlist, and run every field validator BEFORE any mutation. Only
+    // entries that pass (and target an existing item) are planned for the
+    // apply pass below — the same all-or-nothing contract the route-level
+    // server-managed-fields gate upholds.
+    const planned: Array<{ id: string; updates: Partial<DesktopItem> }> = [];
+    for (let index = 0; index < patches.length; index++) {
+      const entry: unknown = patches[index];
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+        throw new HttpError(
+          400,
+          `Patch entry ${index}: expected an object with "id" and "updates" fields`,
+        );
       }
+      const record = entry as Record<string, unknown>;
+      const { id, updates } = record;
+      if (typeof id !== 'string') {
+        throw new HttpError(400, `Patch entry ${index}: "id" must be a string`);
+      }
+      if (typeof updates !== 'object' || updates === null || Array.isArray(updates)) {
+        throw new HttpError(400, `Patch entry ${index}: "updates" must be an object`);
+      }
+      const updatesRecord = updates as Record<string, unknown>;
+
+      // Unknown IDs keep today's skip semantics (silently ignored below).
+      const item = this.items.get(id);
+      if (!item) continue;
+
+      // Filter updates to only allowed fields — the exact values the apply
+      // pass will store, so the validators below see precisely what would
+      // be persisted.
+      const filteredUpdates: Partial<DesktopItem> = {};
+      for (const field of ALLOWED_UPDATE_FIELDS) {
+        if (updatesRecord[field] !== undefined) {
+          (filteredUpdates as Record<string, unknown>)[field] =
+            field === 'userTags'
+              ? this.normalizeUserTags(updatesRecord[field])
+              : updatesRecord[field];
+        }
+      }
+
+      // `type` is deliberately not in ALLOWED_UPDATE_FIELDS: the validator
+      // below only admits re-assertions of the current type or the
+      // image -> sticker transition, so applying it cannot smuggle in any
+      // other type change.
+      if (updatesRecord.type !== undefined) {
+        (filteredUpdates as Record<string, unknown>).type = updatesRecord.type;
+      }
+
+      try {
+        this.assertValidTypeTransition(item, updatesRecord.type);
+        if (updatesRecord.stickerConfig !== undefined) {
+          this.assertValidStickerConfig(updatesRecord.stickerConfig);
+        }
+        // SECURITY: reject dangerous link URLs on edit too (see
+        // createItemInternal).
+        this.assertSafeItemUrl(filteredUpdates.url);
+      } catch (error) {
+        // The field validators reject with HttpError(400) — re-throw with
+        // the entry index so the client knows which entry to fix. Anything
+        // else is a genuine server fault and stays a 500.
+        if (error instanceof HttpError) {
+          throw new HttpError(400, `Patch entry ${index}: ${error.message}`);
+        }
+        throw error;
+      }
+
+      planned.push({ id, updates: filteredUpdates });
     }
 
+    // Apply pass: every client-input validator has already run, so nothing
+    // below can throw between the first and last mutation.
     const updated: DesktopItem[] = [];
 
-    for (const { id, updates } of patches) {
+    for (const { id, updates: filteredUpdates } of planned) {
       const item = this.items.get(id);
-      if (item) {
-        // Filter updates to only allowed fields
-        const filteredUpdates: Partial<DesktopItem> = {};
-        for (const field of ALLOWED_UPDATE_FIELDS) {
-          if (updates[field] !== undefined) {
-            if (field === 'userTags') {
-              (filteredUpdates as Record<string, unknown>)[field] = this.normalizeUserTags(updates[field]);
-            } else {
-              (filteredUpdates as Record<string, unknown>)[field] = updates[field];
-            }
+      if (!item) continue;
+
+      // Prevent circular folder references: if parentId is being changed,
+      // walk up the target parent's ancestor chain and ensure this item
+      // doesn't appear (which would create a cycle).
+      if (
+        filteredUpdates.parentId !== undefined &&
+        filteredUpdates.parentId !== null &&
+        item.type === 'folder'
+      ) {
+        let ancestor: string | null | undefined = filteredUpdates.parentId as string;
+        let isCycle = false;
+        const visited = new Set<string>();
+        while (ancestor) {
+          if (ancestor === id) {
+            isCycle = true;
+            break;
           }
+          if (visited.has(ancestor)) break; // safety against existing cycles
+          visited.add(ancestor);
+          const parentItem = this.items.get(ancestor);
+          ancestor = parentItem?.parentId;
         }
-
-        // `type` is deliberately not in ALLOWED_UPDATE_FIELDS: the
-        // pre-validation pass above only admits re-assertions of the
-        // current type or the image -> sticker transition, so applying it
-        // here cannot smuggle in any other type change.
-        if (updates.type !== undefined) {
-          (filteredUpdates as Record<string, unknown>).type = updates.type;
+        if (isCycle) {
+          // Skip this update — moving a folder into its own descendant
+          continue;
         }
-
-        // SECURITY: reject dangerous link URLs on edit too (see createItemInternal).
-        this.assertSafeItemUrl(filteredUpdates.url);
-
-        // Prevent circular folder references: if parentId is being changed,
-        // walk up the target parent's ancestor chain and ensure this item
-        // doesn't appear (which would create a cycle).
-        if (
-          filteredUpdates.parentId !== undefined &&
-          filteredUpdates.parentId !== null &&
-          item.type === 'folder'
-        ) {
-          let ancestor: string | null | undefined = filteredUpdates.parentId as string;
-          let isCycle = false;
-          const visited = new Set<string>();
-          while (ancestor) {
-            if (ancestor === id) {
-              isCycle = true;
-              break;
-            }
-            if (visited.has(ancestor)) break; // safety against existing cycles
-            visited.add(ancestor);
-            const parentItem = this.items.get(ancestor);
-            ancestor = parentItem?.parentId;
-          }
-          if (isCycle) {
-            // Skip this update — moving a folder into its own descendant
-            continue;
-          }
-        }
-
-        const updatedItem = {
-          ...item,
-          ...filteredUpdates,
-          updatedAt: Date.now(),
-        };
-        this.items.set(id, updatedItem);
-        updated.push(updatedItem);
       }
+
+      const updatedItem = {
+        ...item,
+        ...filteredUpdates,
+        updatedAt: Date.now(),
+      };
+      this.items.set(id, updatedItem);
+      updated.push(updatedItem);
     }
 
     if (updated.length > 0) {
