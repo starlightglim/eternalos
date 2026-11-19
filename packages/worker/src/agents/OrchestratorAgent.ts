@@ -16,9 +16,18 @@ import {
   stepCountIs,
   streamText,
   UI_MESSAGE_STREAM_HEADERS,
+  type LanguageModelUsage,
 } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import type { Env } from '../index';
+import {
+  acquireAiRequest,
+  aiGuardUnavailableMessage,
+  legibleAiErrorMessage,
+  recordAiUsageTokens,
+  releaseAiTurnSlot,
+  type AiTurnGrant,
+} from '../middleware/aiUsage';
 import type { OrchestratorState } from './state';
 import { createDesktopTools } from './tools/desktopTools';
 import { createAppTools, initAppRegistry } from './tools/appTools';
@@ -287,122 +296,224 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
     return extractOwnerUid(this.name);
   }
 
-  async onChatMessage(_onFinish?: Parameters<AIChatAgent<Env, OrchestratorState>['onChatMessage']>[0], options?: { body?: Record<string, unknown> }) {
-    const lastUserMessage = [...this.messages].reverse().find((message) => message.role === 'user');
-    const lastUserText = extractMessageText(lastUserMessage);
-    const ownerUid = this.getOwnerUid();
-    const threadId = normalizeThreadId(
-      typeof options?.body?.threadId === 'string' ? options.body.threadId : this.name.split(':')[1],
-    );
-    const existingThread = await upsertThread(this.env, ownerUid, threadId, { updatedAt: Date.now() });
-    if (lastUserText && shouldReplaceThreadTitle(existingThread.title)) {
-      await upsertThread(this.env, ownerUid, threadId, {
-        title: deriveThreadTitleFromMessage(lastUserText),
-        updatedAt: Date.now(),
-      });
+  /**
+   * Settle a finished turn: record any provider-reported tokens against the
+   * account's daily budget and release the in-flight slot. Safe to call more
+   * than once per turn (token recording only happens with a usage value,
+   * slot release is idempotent), and never throws — a settlement failure
+   * must not corrupt the chat stream.
+   */
+  private async settleTurnUsage(
+    ownerUid: string,
+    grant: AiTurnGrant,
+    usage: LanguageModelUsage | null,
+  ): Promise<void> {
+    if (usage) {
+      const tokens = (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
+      if (tokens > 0) {
+        try {
+          await recordAiUsageTokens(this.env, ownerUid, tokens);
+        } catch (error) {
+          console.error('AI usage: failed to record turn tokens:', error);
+        }
+      }
     }
+    if (grant.slotId) {
+      try {
+        await releaseAiTurnSlot(this.env, ownerUid, grant.slotId);
+      } catch (error) {
+        console.error('AI usage: failed to release turn slot:', error);
+      }
+    }
+  }
 
-    const route = classifyRoute(lastUserText);
-    const memoryTools = createMemoryTools({
-      setState: (state) => this.setState(state),
-      getState: () => this.state,
-    });
-
-    // Direct desktop tools (fast path, no sandbox)
-    const allDesktopTools = createDesktopTools({
-      getUserDesktopStub: () => this.getUserDesktopStub(),
-      setState: (state) => this.setState(state),
-      getState: () => this.state,
-    });
-    const desktopReadTools = {
-      getDesktopOverview: allDesktopTools.getDesktopOverview,
-      searchDesktop: allDesktopTools.searchDesktop,
-      readTextFile: allDesktopTools.readTextFile,
-    };
-    const desktopWriteTools = {
-      ...desktopReadTools,
-      createFolder: allDesktopTools.createFolder,
-      moveItems: allDesktopTools.moveItems,
-      createTextNote: allDesktopTools.createTextNote,
-    };
-
-    // Stage emitter: set inside createUIMessageStream.execute before any tool runs.
-    const stageEmitter: { write: ((chunk: object) => void) | null } = { write: null };
-
-    const appTools = createAppTools({
-      env: this.env,
-      sql: this.ctx.storage.sql,
-      agentName: ownerUid,
-      onBuildStage: (toolCallId, stage, label) => {
-        stageEmitter.write?.({
-          type: 'data-build-stage',
-          id: toolCallId,
-          data: { stage, label },
-        });
-      },
-    });
-    const appReadTools = {
-      listApps: appTools.listApps,
-      getAppSource: appTools.getAppSource,
-    };
-    const appBuildTools = {
-      previewAppFromPrompt: appTools.previewAppFromPrompt,
-      installAppPreview: appTools.installAppPreview,
-      buildAppFromPrompt: appTools.buildAppFromPrompt,
-      createApp: appTools.createApp,
-      updateApp: appTools.updateApp,
-      deleteApp: appTools.deleteApp,
-      ...appReadTools,
-    };
-    const sharedTools = {
-      rememberMemory: memoryTools.rememberMemory,
-      listMemories: memoryTools.listMemories,
-      forgetMemory: memoryTools.forgetMemory,
-    };
-
-    const routeTools = {
-      chat: sharedTools,
-      'desktop-read': { ...desktopReadTools, ...sharedTools },
-      'desktop-write': { ...desktopWriteTools, ...sharedTools },
-      'app-read': { ...appReadTools, ...sharedTools },
-      'app-install-preview': { installAppPreview: appTools.installAppPreview, ...sharedTools },
-      'app-build': { ...appBuildTools, ...sharedTools },
-    } as const;
-    const activeRouteTools = routeTools[route];
-    const activeToolNames = Object.keys(activeRouteTools) as string[];
-    const shouldForceFirstToolCall = route === 'app-build';
-
+  /**
+   * A stream that carries exactly one legible error part — how every
+   * degraded turn (refusal, provider failure) reaches the client. The chat
+   * transport is a WebSocket, so the HTTP status never surfaces to the UI;
+   * the error part closes the stream cleanly (no stuck spinner) and the
+   * message renders in the composer's error slot. The Response status is
+   * still set correctly for direct HTTP callers: 429 for usage refusals.
+   */
+  private degradedTurnResponse(message: string, status: number): Response {
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
-        stageEmitter.write = (chunk) => writer.write(chunk as any);
-        const result = streamText({
-          model: this.getModel(),
-          system: `${getSystemPrompt(route)}\n\n${formatMemoryContext(this.state)}`,
-          messages: pruneMessages({
-            messages: await convertToModelMessages(this.messages),
-            toolCalls: 'before-last-10-messages',
-          }),
-          tools: activeRouteTools as any,
-          prepareStep: async ({ stepNumber }) => {
-            if (activeToolNames.length === 0) {
-              return {
-                activeTools: [],
-                toolChoice: 'auto' as const,
-              };
-            }
-
-            return {
-              activeTools: activeToolNames,
-              toolChoice: shouldForceFirstToolCall && stepNumber === 0 ? 'required' as const : 'auto' as const,
-            };
-          },
-          stopWhen: stepCountIs(10),
-        });
-        writer.merge(result.toUIMessageStream() as any);
+        writer.write({ type: 'error', errorText: message });
       },
-      onError: (error) => (error instanceof Error ? error.message : String(error)),
     });
+    return createUIMessageStreamResponse({ stream, status, headers: UI_MESSAGE_STREAM_HEADERS });
+  }
 
-    return createUIMessageStreamResponse({ stream, headers: UI_MESSAGE_STREAM_HEADERS });
+  async onChatMessage(
+    _onFinish?: Parameters<AIChatAgent<Env, OrchestratorState>['onChatMessage']>[0],
+    options?: Parameters<AIChatAgent<Env, OrchestratorState>['onChatMessage']>[1],
+  ) {
+    const ownerUid = this.getOwnerUid();
+
+    // --- Per-account guard, before any other work: the daily AI budget and
+    // the in-flight turn cap. Deliberately the first await in the turn so
+    // pipelined turns contend on the guard deterministically, and so a
+    // refusal costs no bookkeeping. App builds ride inside turns (they run
+    // as tools within the turn), so the turn cap covers them.
+    let grant: AiTurnGrant;
+    try {
+      const decision = await acquireAiRequest(this.env, ownerUid, { slot: true });
+      if (!decision.allowed) {
+        // Clear 429 + friendly message when the budget (or cap) is hit.
+        return this.degradedTurnResponse(decision.message, 429);
+      }
+      grant = decision;
+    } catch (error) {
+      // Fail closed, like the per-IP limiter — but degrade legibly rather
+      // than leaving the client waiting on a stream that never arrives.
+      console.error('AI usage guard unavailable:', error);
+      return this.degradedTurnResponse(aiGuardUnavailableMessage(), 503);
+    }
+
+    try {
+      const lastUserMessage = [...this.messages].reverse().find((message) => message.role === 'user');
+      const lastUserText = extractMessageText(lastUserMessage);
+      const threadId = normalizeThreadId(
+        typeof options?.body?.threadId === 'string' ? options.body.threadId : this.name.split(':')[1],
+      );
+      const existingThread = await upsertThread(this.env, ownerUid, threadId, { updatedAt: Date.now() });
+      if (lastUserText && shouldReplaceThreadTitle(existingThread.title)) {
+        await upsertThread(this.env, ownerUid, threadId, {
+          title: deriveThreadTitleFromMessage(lastUserText),
+          updatedAt: Date.now(),
+        });
+      }
+
+      const route = classifyRoute(lastUserText);
+      const memoryTools = createMemoryTools({
+        setState: (state) => this.setState(state),
+        getState: () => this.state,
+      });
+
+      // Direct desktop tools (fast path, no sandbox)
+      const allDesktopTools = createDesktopTools({
+        getUserDesktopStub: () => this.getUserDesktopStub(),
+        setState: (state) => this.setState(state),
+        getState: () => this.state,
+      });
+      const desktopReadTools = {
+        getDesktopOverview: allDesktopTools.getDesktopOverview,
+        searchDesktop: allDesktopTools.searchDesktop,
+        readTextFile: allDesktopTools.readTextFile,
+      };
+      const desktopWriteTools = {
+        ...desktopReadTools,
+        createFolder: allDesktopTools.createFolder,
+        moveItems: allDesktopTools.moveItems,
+        createTextNote: allDesktopTools.createTextNote,
+      };
+
+      // Stage emitter: set inside createUIMessageStream.execute before any tool runs.
+      const stageEmitter: { write: ((chunk: object) => void) | null } = { write: null };
+
+      const appTools = createAppTools({
+        env: this.env,
+        sql: this.ctx.storage.sql,
+        agentName: ownerUid,
+        onBuildStage: (toolCallId, stage, label) => {
+          stageEmitter.write?.({
+            type: 'data-build-stage',
+            id: toolCallId,
+            data: { stage, label },
+          });
+        },
+      });
+      const appReadTools = {
+        listApps: appTools.listApps,
+        getAppSource: appTools.getAppSource,
+      };
+      const appBuildTools = {
+        previewAppFromPrompt: appTools.previewAppFromPrompt,
+        installAppPreview: appTools.installAppPreview,
+        buildAppFromPrompt: appTools.buildAppFromPrompt,
+        createApp: appTools.createApp,
+        updateApp: appTools.updateApp,
+        deleteApp: appTools.deleteApp,
+        ...appReadTools,
+      };
+      const sharedTools = {
+        rememberMemory: memoryTools.rememberMemory,
+        listMemories: memoryTools.listMemories,
+        forgetMemory: memoryTools.forgetMemory,
+      };
+
+      const routeTools = {
+        chat: sharedTools,
+        'desktop-read': { ...desktopReadTools, ...sharedTools },
+        'desktop-write': { ...desktopWriteTools, ...sharedTools },
+        'app-read': { ...appReadTools, ...sharedTools },
+        'app-install-preview': { installAppPreview: appTools.installAppPreview, ...sharedTools },
+        'app-build': { ...appBuildTools, ...sharedTools },
+      } as const;
+      const activeRouteTools = routeTools[route];
+      const activeToolNames = Object.keys(activeRouteTools) as string[];
+      const shouldForceFirstToolCall = route === 'app-build';
+
+      const stream = createUIMessageStream({
+        execute: async ({ writer }) => {
+          stageEmitter.write = (chunk) => writer.write(chunk as any);
+          let usage: LanguageModelUsage | null = null;
+          try {
+            const result = streamText({
+              model: this.getModel(),
+              system: `${getSystemPrompt(route)}\n\n${formatMemoryContext(this.state)}`,
+              messages: pruneMessages({
+                messages: await convertToModelMessages(this.messages),
+                toolCalls: 'before-last-10-messages',
+              }),
+              tools: activeRouteTools as any,
+              prepareStep: async ({ stepNumber }) => {
+                if (activeToolNames.length === 0) {
+                  return {
+                    activeTools: [],
+                    toolChoice: 'auto' as const,
+                  };
+                }
+
+                return {
+                  activeTools: activeToolNames,
+                  toolChoice: shouldForceFirstToolCall && stepNumber === 0 ? 'required' as const : 'auto' as const,
+                };
+              },
+              stopWhen: stepCountIs(10),
+              // Propagate client cancellation (the Stop button) so the
+              // upstream provider call is not left running.
+              abortSignal: options?.abortSignal,
+            });
+            writer.merge(result.toUIMessageStream({ onError: legibleAiErrorMessage }) as any);
+            // Await the turn's completion — success, provider error, or
+            // abort all settle this promise — so the slot is held for
+            // exactly the turn's lifetime.
+            usage = await Promise.resolve(result.usage).catch(() => null);
+          } finally {
+            // Always settle: record reported tokens, then release the slot.
+            // A hard crash before this runs (the DO evicted mid-turn) is
+            // backstopped by the slot's lease expiring in the guard.
+            await this.settleTurnUsage(ownerUid, grant, usage);
+          }
+        },
+        onError: (error) => {
+          // Provider failure (AI binding error/timeout) reaching this
+          // callback means the stream itself rejected — same legible
+          // mapping as the in-band error part above.
+          console.error('Agent chat turn error:', error);
+          return legibleAiErrorMessage(error);
+        },
+      });
+
+      return createUIMessageStreamResponse({ stream, headers: UI_MESSAGE_STREAM_HEADERS });
+    } catch (error) {
+      // The turn failed before any stream existed. Settle (release the
+      // slot; no tokens were produced) and degrade to the same legible
+      // in-stream error so the client never waits on nothing.
+      console.error('Agent chat turn failed before streaming:', error);
+      await this.settleTurnUsage(ownerUid, grant, null);
+      return this.degradedTurnResponse(legibleAiErrorMessage(error), 503);
+    }
   }
 }
