@@ -19,7 +19,7 @@ import {
   clearCompiledTokens,
   resolveTokensFromAppearance,
 } from '../tokens/tokenCompiler';
-import { TOKEN_REGISTRY } from '../tokens/tokenSchema';
+import { findTokenDefinition } from '../tokens/tokenSchema';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -150,16 +150,35 @@ export function clearAppearance() {
 }
 
 /**
+ * Apply the profile returned by a CSS-history revert
+ * (POST /api/css-history/:versionId/revert) to the appearance store.
+ *
+ * The revert endpoint responds with the FULL updated profile, not just the
+ * restored customCSS. The restore must therefore flow through
+ * profileToAppearance: a hand-rolled field list here previously dropped
+ * typography (systemFont/bodyFont/monoFont), windowOpacity, designTokens, and
+ * variants — wiping them from the session (and localStorage) until the next
+ * full desktop sync.
+ */
+export function applyCSSRevertProfile(profile: Record<string, unknown>): void {
+  useAppearanceStore.getState().loadAppearance(profileToAppearance(profile));
+}
+
+/**
  * Update a design token by its path. Routes to the correct storage location:
  * - Tokens with profileKey → flat fields on CustomAppearance
  * - Tokens without profileKey → designTokens blob
+ *
+ * Uses findTokenDefinition so variant-registered conditional tokens (the
+ * sprite/skin system — chrome.sprite.*, buttons.sprite.*, …) route through
+ * the same pipeline as registry tokens; unknown paths still no-op.
  */
 export function buildTokenUpdate(
   path: string,
   value: string | number | boolean | undefined,
   currentAppearance: CustomAppearance
 ): Partial<CustomAppearance> {
-  const token = TOKEN_REGISTRY.find((t) => t.path === path);
+  const token = findTokenDefinition(path);
   if (!token) return {};
 
   if (token.profileKey) {
@@ -184,7 +203,7 @@ export function getTokenValue(
   path: string,
   appearance: CustomAppearance
 ): string | number | boolean | undefined {
-  const token = TOKEN_REGISTRY.find((t) => t.path === path);
+  const token = findTokenDefinition(path);
   if (!token) return undefined;
 
   if (token.profileKey) {

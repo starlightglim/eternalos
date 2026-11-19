@@ -10,6 +10,12 @@
  *   - How it compiles to CSS (cssVars, cssRule, derivedVars)
  */
 
+// Variant-registered conditional tokens (the sprite/skin system) join the
+// token pipeline through this import. `variants/registry` has no runtime
+// dependency on this module (its `variants/types` import is type-only and
+// erased), so this edge cannot become a cycle.
+import { variantRegistry } from '../variants/registry';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -793,9 +799,31 @@ export const TOKEN_REGISTRY: TokenDefinition[] = [
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Conditional tokens registered by variants (the sprite/skin system).
+ * They are NOT in TOKEN_REGISTRY — the panel renders them through the
+ * variant registry — but every pipeline consumer (token routing in the
+ * appearance store, the compiler, var clearance) must see them, or writes
+ * from the SpriteEditor silently no-op.
+ */
+export function getConditionalTokens(): TokenDefinition[] {
+  return variantRegistry.getConditionalTokens() as TokenDefinition[];
+}
+
+/**
+ * Look up a token by dot-path across the static registry AND the
+ * variant-registered conditional tokens. Unknown paths return undefined —
+ * callers (buildTokenUpdate) rely on that to no-op safely.
+ */
+export function findTokenDefinition(path: string): TokenDefinition | undefined {
+  const direct = TOKEN_REGISTRY.find((t) => t.path === path);
+  if (direct) return direct;
+  return getConditionalTokens().find((t) => t.path === path);
+}
+
 /** Look up a token by its dot-path */
 export function getTokenByPath(path: string): TokenDefinition | undefined {
-  return TOKEN_REGISTRY.find((t) => t.path === path);
+  return findTokenDefinition(path);
 }
 
 /** All tokens for a given Appearance Panel tab, filtered by active variants */
@@ -836,7 +864,10 @@ export function getLegacyProfileKeys(): string[] {
 /** All CSS variables that the token system may set (for clearance) */
 export function getAllCSSVars(): string[] {
   const vars = new Set<string>();
-  for (const token of TOKEN_REGISTRY) {
+  // Conditional tokens define vars too (--eos-chrome-sprite-url, gradient
+  // stops, sprite button images). They must be tracked so switching a variant
+  // off — or resetting the appearance — actually clears them from the DOM.
+  for (const token of [...TOKEN_REGISTRY, ...getConditionalTokens()]) {
     if (token.cssVars) {
       for (const v of token.cssVars) vars.add(v);
     }

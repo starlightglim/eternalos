@@ -1850,6 +1850,93 @@ describe('worker integration', () => {
     assert.equal(reverted.versions[0].css, firstCSS);
   });
 
+  it('CSS history revert returns the whole appearance intact (round-trip the client restores from)', async () => {
+    // The client restores from the revert response's FULL profile
+    // (CSSEditor → profileToAppearance). If revert clobbered any non-CSS
+    // appearance field, restoring an old CSS version would silently wipe the
+    // user's fonts, opacity, design tokens, or variant selections.
+    const user = await signupUser();
+    const appearance = {
+      systemFont: 'chicago',
+      bodyFont: 'geneva',
+      monoFont: 'monaco',
+      fontSmoothing: true,
+      windowOpacity: 80,
+      accentColor: '#000080',
+      designTokens: {
+        'menuBar.background': '#222222',
+        'cursor.image.default': '/api/cursors/arrow.png|0|0',
+      },
+      variants: { 'window.titleBar': 'gradient' },
+    };
+    await patchProfile(user.token, appearance);
+    await patchProfile(user.token, { customCSS: '.a { color: red; }' });
+    await patchProfile(user.token, { customCSS: '.b { color: blue; }' });
+
+    const history = await getCSSHistory(user.token);
+    const reverted = await revertCSSHistoryVersion(user.token, history.versions[1].id);
+
+    // The CSS itself is the restored version...
+    assert.equal(reverted.profile.customCSS, '.a { color: red; }');
+    // ...and every other appearance field round-trips unchanged.
+    assert.equal(reverted.profile.systemFont, 'chicago');
+    assert.equal(reverted.profile.bodyFont, 'geneva');
+    assert.equal(reverted.profile.monoFont, 'monaco');
+    assert.equal(reverted.profile.fontSmoothing, true);
+    assert.equal(reverted.profile.windowOpacity, 80);
+    assert.equal(reverted.profile.accentColor, '#000080');
+    assert.deepEqual(reverted.profile.designTokens, appearance.designTokens);
+    assert.deepEqual(reverted.profile.variants, appearance.variants);
+
+    // The revert is recorded in history as its own version.
+    assert.equal(reverted.versions[0].source, 'revert');
+    assert.equal(reverted.versions[0].css, '.a { color: red; }');
+  });
+
+  it('rejects reverting an unknown CSS history version', async () => {
+    const user = await signupUser();
+    await patchProfile(user.token, { customCSS: '.a { color: red; }' });
+
+    const { response, body } = await fetchJson('/api/css-history/not-a-real-version/revert', {
+      method: 'POST',
+      headers: authHeaders(user.token),
+    });
+    assert.ok(
+      response.status >= 400,
+      `revert of unknown version should be rejected, got ${response.status}: ${JSON.stringify(body)}`
+    );
+    assert.equal(body.profile, undefined, 'a failed revert must not return a profile');
+
+    // And the live custom CSS was untouched.
+    const history = await getCSSHistory(user.token);
+    assert.equal(history.versions[0].css, '.a { color: red; }');
+  });
+
+  it('persists wallpaper and wallpaperMode so the picker survives reload', async () => {
+    // WallpaperPicker writes profile fields (not design tokens): the auth
+    // store PATCHes /api/profile and useDesktopSync reads them back on boot.
+    const user = await signupUser();
+    await patchProfile(user.token, { wallpaper: 'blue', wallpaperMode: 'tile' });
+
+    const { profile } = await expectOk('/api/profile', { headers: authHeaders(user.token) });
+    assert.equal(profile.wallpaper, 'blue');
+    assert.equal(profile.wallpaperMode, 'tile');
+
+    // SECURITY regression guard: a custom:<uid>/... wallpaper string is later
+    // parsed to derive the R2 key that the next wallpaper upload DELETES. A
+    // foreign uid must be rejected, or an attacker's upload could delete a
+    // victim's wallpaper object.
+    const { response } = await fetchJson('/api/profile', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ wallpaper: 'custom:victim-uid/w1/wallpaper.png' }),
+    });
+    assert.ok(
+      response.status >= 400,
+      `foreign custom: wallpaper must be rejected, got ${response.status}`
+    );
+  });
+
   it('allows customCSS url() to first-party bazaar assets but rejects cross-origin', async () => {
     const user = await signupUser();
 

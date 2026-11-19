@@ -17,7 +17,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { listCSSVersions, revertCSSVersion } from '../../services/api';
 import type { CustomCSSVersion } from '../../services/api';
-import { useAppearanceStore } from '../../stores/appearanceStore';
+import { useAppearanceStore, applyCSSRevertProfile } from '../../stores/appearanceStore';
 import { useCSSPickerStore } from '../../stores/cssPickerStore';
 import { normalizeCSSSelectorAliases } from '../../utils/cssSelectorAliases';
 import { CSSAssetPanel } from './CSSAssetPanel';
@@ -686,23 +686,10 @@ export function CSSEditor() {
         throw new Error('Profile response missing after restore');
       }
 
-      useAppearanceStore.getState().loadAppearance({
-        accentColor: response.profile.accentColor,
-        desktopColor: response.profile.desktopColor,
-        windowBgColor: response.profile.windowBgColor,
-        titleBarBgColor: response.profile.titleBarBgColor,
-        titleBarTextColor: response.profile.titleBarTextColor,
-        windowBorderColor: response.profile.windowBorderColor,
-        buttonBgColor: response.profile.buttonBgColor,
-        buttonTextColor: response.profile.buttonTextColor,
-        buttonBorderColor: response.profile.buttonBorderColor,
-        labelColor: response.profile.labelColor,
-        fontSmoothing: response.profile.fontSmoothing,
-        windowBorderRadius: response.profile.windowBorderRadius,
-        controlBorderRadius: response.profile.controlBorderRadius,
-        windowShadow: response.profile.windowShadow,
-        customCSS: response.profile.customCSS,
-      });
+      // The revert response carries the full updated profile — re-apply it
+      // through profileToAppearance so typography, windowOpacity,
+      // designTokens, and variants survive the restore (not just the CSS).
+      applyCSSRevertProfile(response.profile);
 
       setCssDraft(null);
       setValidationError(null);
