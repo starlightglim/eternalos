@@ -2332,7 +2332,7 @@ describe('worker integration', () => {
       'a re-grant snapshots the rationale as it reads at the new approval time');
   });
 
-  it('treats legacy grants as approved with an unknown date, without weakening the broad-scope rule', async () => {
+  it('still requires the broad-scope tick for already-granted scopes, and re-approval refreshes the record', async () => {
     const user = await signupUser();
     const deployed = await expectOk('/api/apps/dev-deploy', {
       method: 'POST',
@@ -2351,7 +2351,7 @@ describe('worker integration', () => {
     const appId = encodeURIComponent(deployed.appId);
 
     // Grant through the current flow first (broad fs.read is ticked).
-    await expectOk(`/api/apps/${appId}/permissions`, {
+    const granted = await expectOk(`/api/apps/${appId}/permissions`, {
       method: 'PATCH',
       headers: authHeaders(user.token, JSON_HEADERS),
       body: JSON.stringify({
@@ -2359,41 +2359,39 @@ describe('worker integration', () => {
         broadApprovals: ['fs.read'],
       }),
     });
+    assert.deepEqual(granted.broad, ['fs.read'], 'the broad warning list is served');
 
-    // Craft the legacy shape exactly as pre-Phase-B installs look: grants
-    // stored (item + registry), no approval metadata on the item.
-    const desktop = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
-    const appItem = desktop.items.find((item) => item.type === 'app' && item.appManifest?.appId === deployed.appId);
-    assert.ok(appItem, 'the installed app item exists');
-    await patchItems(user.token, [{ id: appItem.id, updates: { grantedPermissionApprovals: {} } }]);
+    // Pre-Phase-B items — grants stored without approval metadata — used to
+    // be crafted here by clearing grantedPermissionApprovals through the
+    // public item PATCH. That route now rejects writes to the grant fields
+    // (see the lockdown test), and every server-side writer records
+    // approvals in the same breath as grants, so the shape only exists in
+    // rows written before Phase B. Its read-side resolution ("approved
+    // with approvedAt unknown") stays pinned at the unit level
+    // (appScopes.test.mjs → resolveGrantApprovals). What must still hold
+    // at the route level:
 
-    // Lazy migration: the GET resolves those grants as approved with
-    // approvedAt unknown — the UI shows "Approved (date unknown)".
-    const migrated = await expectOk(`/api/apps/${appId}/permissions`, { headers: authHeaders(user.token) });
-    assert.deepEqual(migrated.granted, { fs: { read: ['/**'] }, network: { outbound: ['api.example.com'] } });
-    assert.deepEqual(migrated.approvals, {
-      'fs.read': {},
-      'network.outbound': {},
-    }, 'legacy grants read as approved with approvedAt unknown');
-    assert.equal(migrated.approvals['fs.read'].approvedAt, undefined);
-    assert.deepEqual(migrated.broad, ['fs.read'], 'the broad warning list is still served');
-
-    // Migration never weakens enforcement: re-requesting the broad grant
-    // still requires the explicit tick, even though it is already granted.
+    // Enforcement is per-request: re-requesting an already-granted broad
+    // scope still requires the explicit tick, even though it is granted.
     const retick = await fetchJson(`/api/apps/${appId}/permissions`, {
       method: 'PATCH',
       headers: authHeaders(user.token, JSON_HEADERS),
       body: JSON.stringify({ granted: { fs: { read: ['/**'] } } }),
     });
     assert.equal(retick.response.status, 400, 'an already-granted broad scope still needs its tick');
+    assert.deepEqual([...retick.body.broadScopes], ['fs.read']);
+
+    // Re-approval (with the tick) records fresh metadata over the stored
+    // record — the UI reads approvedBy/approvedAt from the new approval.
     const reapproved = await expectOk(`/api/apps/${appId}/permissions`, {
       method: 'PATCH',
       headers: authHeaders(user.token, JSON_HEADERS),
       body: JSON.stringify({ granted: { fs: { read: ['/**'] }, network: { outbound: ['api.example.com'] } }, broadApprovals: ['fs.read'] }),
     });
-    // Re-approval writes real metadata over the migrated placeholder.
     assert.equal(typeof reapproved.approvals['fs.read'].approvedAt, 'number');
     assert.equal(reapproved.approvals['fs.read'].approvedBy, user.user.uid);
+    assert.ok(reapproved.approvals['fs.read'].approvedAt >= granted.approvals['fs.read'].approvedAt,
+      'a re-approval records a fresh approval timestamp');
   });
 
   it('isolates app storage between apps and rejects forged keys with 4xx', async () => {
@@ -2870,6 +2868,126 @@ describe('worker integration', () => {
       body: JSON.stringify([{ id: good.id, updates: { url: 'javascript:alert(1)' } }]),
     });
     assert.ok(badPatch.response.status >= 400, `expected rejection, got ${badPatch.response.status}`);
+  });
+
+  it('rejects public item writes that set app manifests or grants (server-managed fields)', async () => {
+    const user = await signupUser();
+
+    // An honest install: dev-deploy declares the scopes, the permissions
+    // route grants them. Its item is the target of the forged writes below.
+    const deployed = await expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name: 'Grantlock Target',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500 },
+          rationale: 'reads the gallery',
+          permissions: { fs: { read: ['/Gallery/**'] }, network: { outbound: ['api.example.com'] } },
+        },
+        files: { 'index.html': '<!doctype html><html><body>target</body></html>' },
+      }),
+    });
+    const appId = encodeURIComponent(deployed.appId);
+    const granted = await expectOk(`/api/apps/${appId}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { fs: { read: ['/Gallery/**'] }, network: { outbound: ['api.example.com'] } } }),
+    });
+    const desktop = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+    const appItem = desktop.items.find((item) => item.type === 'app' && item.appManifest?.appId === deployed.appId);
+    assert.ok(appItem, 'the installed app item exists');
+
+    const forbiddenValues = {
+      appManifest: { ...appItem.appManifest, permissions: { fs: { read: ['/**'], write: ['/**'] } } },
+      grantedPermissions: { fs: { read: ['/**'], write: ['/**'] } },
+      permissionGrantedAt: Date.now(),
+      grantedPermissionApprovals: {},
+    };
+
+    // PATCH: each server-managed field alone is a 400 naming the field.
+    for (const [field, value] of Object.entries(forbiddenValues)) {
+      const res = await fetchJson('/api/desktop/items', {
+        method: 'PATCH',
+        headers: authHeaders(user.token, JSON_HEADERS),
+        body: JSON.stringify([{ id: appItem.id, updates: { [field]: value } }]),
+      });
+      assert.equal(res.response.status, 400, `patching ${field} must be rejected`);
+      assert.match(res.body.error, new RegExp(field), 'the rejection names the field');
+    }
+
+    // The rejection is atomic: a batch mixing a benign edit with a
+    // forbidden one applies neither.
+    const folder = await createDesktopItem(user.token, { type: 'folder', name: 'Keep', position: { x: 3, y: 3 } });
+    const mixed = await fetchJson('/api/desktop/items', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify([
+        { id: folder.id, updates: { name: 'Renamed' } },
+        { id: appItem.id, updates: { grantedPermissions: { fs: { read: ['/**'] } } } },
+      ]),
+    });
+    assert.equal(mixed.response.status, 400);
+    const afterMixed = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+    assert.equal(afterMixed.items.find((item) => item.id === folder.id).name, 'Keep',
+      'a rejected batch applies none of its entries');
+
+    // POST: creating an item that already carries a manifest or grants is
+    // the same forgery (app install goes through /api/apps, never here).
+    for (const [field, value] of Object.entries(forbiddenValues)) {
+      const res = await fetchJson('/api/desktop/items', {
+        method: 'POST',
+        headers: authHeaders(user.token, JSON_HEADERS),
+        body: JSON.stringify({ type: 'app', name: 'Forged', position: { x: 0, y: 0 }, [field]: value }),
+      });
+      assert.equal(res.response.status, 400, `creating with ${field} must be rejected`);
+      assert.match(res.body.error, new RegExp(field), 'the rejection names the field');
+    }
+
+    // Nothing changed: grants, approvals and the declared set are exactly
+    // what the honest flow wrote.
+    const after = await expectOk(`/api/apps/${appId}/permissions`, { headers: authHeaders(user.token) });
+    assert.deepEqual(after.granted, granted.granted);
+    assert.deepEqual(after.approvals, granted.approvals);
+    assert.deepEqual(after.requested, { fs: { read: ['/Gallery/**'] }, network: { outbound: ['api.example.com'] } });
+
+    // Ordinary item patches still apply through the public route.
+    const renamed = await patchItems(user.token, [{
+      id: appItem.id,
+      updates: { name: 'Grantlock Target 2', position: { x: 4, y: 4 } },
+    }]);
+    assert.equal(renamed[0].name, 'Grantlock Target 2');
+
+    // The server-side writers keep going through the DO's internal
+    // endpoints: a dev-deploy update rewrites manifest + grants, and the
+    // permissions route still grants.
+    await expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        appId: deployed.appId,
+        manifest: {
+          name: 'Grantlock Target',
+          version: '2.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500 },
+          rationale: 'v2: same scopes',
+          permissions: { fs: { read: ['/Gallery/**'] }, network: { outbound: ['api.example.com'] } },
+        },
+        files: { 'index.html': '<!doctype html><html><body>target v2</body></html>' },
+      }),
+    });
+    const redeployed = await expectOk(`/api/apps/${appId}/permissions`, { headers: authHeaders(user.token) });
+    assert.deepEqual(redeployed.granted, granted.granted, 'the deploy update keeps the grant');
+    assert.equal(redeployed.approvals['fs.read'].approvedAt, granted.approvals['fs.read'].approvedAt,
+      'the deploy update keeps the approval metadata');
+    const regranted = await expectOk(`/api/apps/${appId}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { fs: { read: ['/Gallery/**'] } } }),
+    });
+    assert.deepEqual(regranted.granted, { fs: { read: ['/Gallery/**'] } },
+      'the permissions route still writes grants');
   });
 
   it('exports account data without leaking password-equivalent secrets', async () => {
