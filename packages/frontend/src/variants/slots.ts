@@ -39,15 +39,27 @@ export interface TitleBarSlotProps {
   onDragStart: (e: React.PointerEvent) => void;
   onDragMove: (e: React.PointerEvent) => void;
   onDragEnd: (e: React.PointerEvent) => void;
+  /**
+   * Keyboard control of the window (arrow move/resize, Escape, close
+   * shortcut). The title bar is the keyboard surface: it is focusable and
+   * its keydown handler implements the window's keyboard contract.
+   */
+  onKeyDown: (e: React.KeyboardEvent) => void;
+  /** Raised when the title bar (or a control inside it) gains focus. */
+  onFocus: () => void;
   children: React.ReactNode;
 }
 
-/** Props for window button variants (close/zoom/collapse) */
+/**
+ * Props for window button variants (close/zoom/collapse).
+ * The actions accept any SyntheticEvent because they fire from both click
+ * (pointer) and Enter/Space keydown (keyboard activation).
+ */
 export interface WindowButtonsSlotProps {
   isActive: boolean;
-  onClose: (e: React.MouseEvent) => void;
-  onZoom: (e: React.MouseEvent) => void;
-  onCollapse: (e: React.MouseEvent) => void;
+  onClose: (e: React.SyntheticEvent) => void;
+  onZoom: (e: React.SyntheticEvent) => void;
+  onCollapse: (e: React.SyntheticEvent) => void;
 }
 
 /** Props for resize handle variants */
