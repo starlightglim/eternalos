@@ -4388,7 +4388,8 @@ describe('worker integration', () => {
   // -------------------------------------------------------------------------
   // App source revisions (design/13, first slice): every save records an
   // immutable revision; failed saves keep the installed bundle and record
-  // diagnostics; restore appends a new revision and never widens grants.
+  // diagnostics; restore appends a new revision and never widens grants;
+  // release rollback joins the same model (kind 'rollback', pointers move).
   // -------------------------------------------------------------------------
 
   it('records an immutable revision per dev-deploy and restores without rewriting history', async () => {
@@ -4626,6 +4627,112 @@ describe('worker integration', () => {
       'the declared set follows the restored revision');
     assert.deepEqual(afterRestore.granted, { fs: { read: ['/Gallery/**'] } },
       'restore must never re-grant a scope the current grant dropped');
+  });
+
+  it('rollback appends a rollback revision, moves the pointers, and never widens grants', async () => {
+    const user = await signupUser();
+    const deploy = (appId, marker, permissions) => expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        ...(appId ? { appId } : {}),
+        manifest: {
+          name: 'Rollback History App',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+          permissions,
+        },
+        files: {
+          'index.html': `<!doctype html><html><body><h1>${marker}</h1></body></html>`,
+          'app.js': `/* ${marker} */`,
+        },
+      }),
+    });
+
+    // v1 declares a narrow scope; the user grants it.
+    const v1 = await deploy(null, 'rollback-one', { fs: { read: ['/Gallery/**'] } });
+    const appIdEncoded = encodeURIComponent(v1.appId);
+    await expectOk(`/api/apps/${appIdEncoded}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { fs: { read: ['/Gallery/**'] } } }),
+    });
+
+    // v2 declares a second scope, and the user widens the grant to both
+    // through the honest permissions route (within v2's declaration).
+    const v2 = await deploy(v1.appId, 'rollback-two', { fs: { read: ['/Gallery/**', '/Notes/**'] } });
+    assert.equal(v2.version, 2);
+    await expectOk(`/api/apps/${appIdEncoded}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { fs: { read: ['/Gallery/**', '/Notes/**'] } } }),
+    });
+
+    // The rollback keeps its legacy request/response shape…
+    const rollback = await expectOk(`/api/apps/${appIdEncoded}/rollback`, {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ version: 1 }),
+    });
+    assert.equal(rollback.success, true);
+    assert.equal(rollback.version, 1);
+    assert.equal(rollback.appId, v1.appId);
+
+    // …appends a rollback revision whose parent is the revision the app
+    // rolled back FROM, and moves BOTH pointers so the registry's revision
+    // history can no longer disagree with the installed release.
+    const history = await expectOk(`/api/apps/${appIdEncoded}/revisions`, {
+      headers: authHeaders(user.token),
+    });
+    assert.equal(history.revisions.length, 3, 'deploy v1, deploy v2, rollback');
+    const rollbackRow = history.revisions.find((revision) => revision.kind === 'rollback');
+    assert.ok(rollbackRow, 'the rollback appends its revision');
+    assert.equal(rollbackRow.valid, true);
+    assert.equal(rollbackRow.author, 'human');
+    assert.equal(rollbackRow.appVersion, 1);
+    assert.equal(rollbackRow.parentRevision, v2.revision, 'the parent points at the revision rolled back from');
+    assert.equal(history.currentRevision, rollbackRow.id);
+    assert.equal(history.lastValidRevision, rollbackRow.id);
+
+    // The installed release is v1 again: registry and served bundle agree.
+    const versions = await expectOk(`/api/apps/${appIdEncoded}/versions`, {
+      headers: authHeaders(user.token),
+    });
+    assert.equal(versions.currentVersion, 1);
+    const served = await worker.fetch(`${BASE_URL}/api/apps/${appIdEncoded}/`);
+    assert.equal(served.status, 200);
+    assert.match(await served.text(), /rollback-one/);
+
+    // Grants never widen on rollback: the current grant (both scopes)
+    // intersects with v1's declaration and drops /Notes/**.
+    const afterRollback = await expectOk(`/api/apps/${appIdEncoded}/permissions`, {
+      headers: authHeaders(user.token),
+    });
+    assert.deepEqual(afterRollback.requested.fs.read, ['/Gallery/**'],
+      'the declared set follows the rolled-back release');
+    assert.deepEqual(afterRollback.granted, { fs: { read: ['/Gallery/**'] } });
+
+    // The rollback revision carries v1's saved source and validates clean.
+    const detail = await expectOk(
+      `/api/apps/${appIdEncoded}/revisions/${encodeURIComponent(rollbackRow.id)}`,
+      { headers: authHeaders(user.token) },
+    );
+    assert.match(detail.files['index.html'], /rollback-one/);
+    assert.deepEqual(detail.revision.diagnostics, { valid: true, issues: [] });
+
+    // Rolling back to the already-installed release stays a no-op: the
+    // legacy early return appends nothing and moves no pointer.
+    const noop = await expectOk(`/api/apps/${appIdEncoded}/rollback`, {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ version: 1 }),
+    });
+    assert.equal(noop.version, 1);
+    const historyAfterNoop = await expectOk(`/api/apps/${appIdEncoded}/revisions`, {
+      headers: authHeaders(user.token),
+    });
+    assert.equal(historyAfterNoop.revisions.length, 3, 'a no-op rollback appends no revision');
+    assert.equal(historyAfterNoop.currentRevision, rollbackRow.id);
   });
 
   it('gates the revision routes to the app owner and validates revision ids', async () => {
