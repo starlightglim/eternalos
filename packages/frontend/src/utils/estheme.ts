@@ -17,7 +17,7 @@ import { z } from 'zod';
 // Schema (mirror of worker/src/utils/estheme.ts)
 // ---------------------------------------------------------------------------
 
-const CURSOR_STATES = [
+export const CURSOR_STATES = [
   'default',
   'pointer',
   'grab',
@@ -28,7 +28,7 @@ const CURSOR_STATES = [
   'nwse-resize',
 ] as const;
 
-const SOUND_EVENTS = [
+export const SOUND_EVENTS = [
   'click',
   'windowOpen',
   'windowClose',
@@ -62,6 +62,26 @@ const bundlePathRegex = /^(?!\.\.\/)(?!\/)(?!.*\/\.\.\/)[A-Za-z0-9._\-/]+$/;
 
 const bundlePath = z.string().regex(bundlePathRegex, 'Invalid bundle path');
 const colorValue = z.string().max(200);
+
+/**
+ * True only for a zip-entry-safe bundle path: relative, forward slashes, no
+ * `.`/`..` segments, no backslashes or control characters, bounded length.
+ * The manifest schema's `bundlePath` regex rejects the dangerous *declared*
+ * shapes (`../`, leading `/`); this additionally rejects any entry whose
+ * *segments* are `.` or `..` (e.g. a file literally named `..` or
+ * `cursors/..`), and is applied to EVERY file in a parsed bundle, not just
+ * the ones the manifest references — a hostile zip must not carry traversal-
+ * shaped paths at all. (JSZip normalizes `../` segments itself on load; the
+ * backslash/control-character shapes it preserves are what this guard
+ * actually intercepts, and `isSafeBundlePath` is exported so the rule is
+ * pinned regardless of which loader sits in front of it.)
+ */
+export function isSafeBundlePath(path: string): boolean {
+  if (!path || path.length > 200) return false;
+  if (path.startsWith('/') || path.includes('\\')) return false;
+  if (!/^[A-Za-z0-9._\-/]+$/.test(path)) return false;
+  return path.split('/').every((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
+}
 
 export const tokensLayerSchema = z
   .object({
@@ -109,8 +129,33 @@ const wallpaperLayerSchema = z
 // theme supplying only some cursor/sound/icon slots would be wrongly rejected.
 // Themes declare only the slots they override, so these layers must be partial.
 // (The worker mirror is on zod 3, where plain `record` is already partial.)
+//
+// A cursor slot value is either a plain bundle path (the original v1 form) or
+// `{ file, hotspotX?, hotspotY? }`. The object form carries the authored
+// hotspot so exported cursor packs round-trip their click point instead of
+// silently degrading to 0,0; plain-string values keep old bundles importing.
+export interface EsthemeCursorSlot {
+  file: string;
+  hotspotX?: number;
+  hotspotY?: number;
+}
+export type EsthemeCursorLayerValue = string | EsthemeCursorSlot;
+
+/** The bundle path a cursor layer value refers to, in either form. */
+export function cursorSlotPath(value: EsthemeCursorLayerValue): string {
+  return typeof value === 'string' ? value : value.file;
+}
+
+const cursorSlotSchema = z
+  .object({
+    file: bundlePath,
+    hotspotX: z.number().int().min(0).max(64).optional(),
+    hotspotY: z.number().int().min(0).max(64).optional(),
+  })
+  .strict();
+
 const cursorsLayerSchema = z
-  .partialRecord(z.enum(CURSOR_STATES), bundlePath)
+  .partialRecord(z.enum(CURSOR_STATES), z.union([bundlePath, cursorSlotSchema]))
   .refine((value) => Object.keys(value).length > 0, {
     message: 'cursors layer declared but empty',
   });
@@ -158,6 +203,20 @@ const creditsEntrySchema = z
   })
   .strict();
 
+/**
+ * Fork lineage — recorded when a theme was exported from a rice that was
+ * itself installed from another `.estheme`. Optional in the manifest so
+ * formatVersion-1 bundles written before this field exist still import.
+ */
+export const forkedFromSchema = z
+  .object({
+    id: z.string().regex(slugRegex),
+    name: z.string().min(1).max(80).optional(),
+    author: z.string().regex(authorRegex),
+    version: z.string().regex(semverRegex).optional(),
+  })
+  .strict();
+
 export const esthemeManifestSchema = z
   .object({
     formatVersion: z.literal(1),
@@ -167,6 +226,8 @@ export const esthemeManifestSchema = z
     version: z.string().regex(semverRegex),
     author: z.string().regex(authorRegex),
     extends: z.string().max(128).optional(),
+    /** Fork lineage (optional — see forkedFromSchema). */
+    forkedFrom: forkedFromSchema.optional(),
     tags: z.array(z.string().min(1).max(32)).max(10).optional(),
     license: z.string().max(64).optional(),
     homepage: z.string().url().max(512).optional(),
@@ -179,9 +240,13 @@ export const esthemeManifestSchema = z
   .strict();
 
 export type EsthemeManifest = z.infer<typeof esthemeManifestSchema>;
+export type EsthemeForkedFrom = z.infer<typeof forkedFromSchema>;
 export type EsthemeTokens = z.infer<typeof tokensLayerSchema>;
 export type EsthemeVariants = z.infer<typeof variantsLayerSchema>;
 export type EsthemeTypography = z.infer<typeof typographyLayerSchema>;
+export type EsthemeCursorState = (typeof CURSOR_STATES)[number];
+export type EsthemeSoundEvent = (typeof SOUND_EVENTS)[number];
+export type EsthemeIconSlot = (typeof ICON_SLOTS)[number];
 
 // ---------------------------------------------------------------------------
 // Builder input types (what the caller hands us to pack)
@@ -205,8 +270,10 @@ export interface EsthemeBuildInput {
     mode?: 'cover' | 'tile' | 'center';
   };
 
-  /** Cursor slots → Blob + filename. */
-  cursors?: Partial<Record<(typeof CURSOR_STATES)[number], { blob: Blob; filename: string }>>;
+  /** Cursor slots → Blob + filename (+ authored hotspot, 0–64). */
+  cursors?: Partial<
+    Record<(typeof CURSOR_STATES)[number], { blob: Blob; filename: string; hotspotX?: number; hotspotY?: number }>
+  >;
 
   /** Sound slots → Blob + filename. */
   sounds?: Partial<Record<(typeof SOUND_EVENTS)[number], { blob: Blob; filename: string }>>;
@@ -273,7 +340,7 @@ export function validateManifestAgainstFiles(
     if (layers.wallpaper.mobileFile) check(layers.wallpaper.mobileFile, 'wallpaper.mobileFile');
   }
   for (const [slot, pathValue] of Object.entries(layers.cursors ?? {})) {
-    check(pathValue, `cursors.${slot}`);
+    check(cursorSlotPath(pathValue as EsthemeCursorLayerValue), `cursors.${slot}`);
   }
   for (const [slot, pathValue] of Object.entries(layers.sounds ?? {})) {
     check(pathValue, `sounds.${slot}`);
@@ -337,12 +404,22 @@ export async function buildEsthemeBundle(
   }
 
   if (input.cursors && Object.keys(input.cursors).length > 0) {
-    const cursorMap: Record<string, string> = {};
+    const cursorMap: Record<string, string | EsthemeCursorSlot> = {};
     for (const [slot, asset] of Object.entries(input.cursors)) {
       if (!asset) continue;
       const path = `cursors/${asset.filename}`;
       zip.file(path, asset.blob);
-      cursorMap[slot] = path;
+      // Object form whenever the author supplied a hotspot so the click
+      // point survives the round-trip; plain string otherwise (v1 form).
+      if (asset.hotspotX !== undefined || asset.hotspotY !== undefined) {
+        cursorMap[slot] = {
+          file: path,
+          hotspotX: asset.hotspotX ?? 0,
+          hotspotY: asset.hotspotY ?? 0,
+        };
+      } else {
+        cursorMap[slot] = path;
+      }
     }
     if (Object.keys(cursorMap).length > 0) {
       layers.cursors = cursorMap as EsthemeManifest['layers']['cursors'];
@@ -432,8 +509,36 @@ export interface ParsedBundle {
   files: Map<string, Blob>;
 }
 
+/** Hard ceiling on the files a bundle may declare (assets + layers + previews). */
+export const MAX_BUNDLE_FILES = 64;
+
+/**
+ * Total extracted (uncompressed) bytes a bundle may carry. Mirrors the build
+ * limit (`MAX_BUNDLE_SIZE_BYTES`): a hostile zip must not be able to expand
+ * past the size the builder would ever emit.
+ */
+export const MAX_BUNDLE_CONTENT_BYTES = 10 * 1024 * 1024;
+
 export async function parseEsthemeBundle(source: Blob | ArrayBuffer): Promise<ParsedBundle> {
   const zip = await JSZip.loadAsync(source);
+
+  // SECURITY: every entry path must be a safe bundle path — traversal-shaped
+  // entries are rejected outright, even when the manifest never references
+  // them. A bundle is a bag of paths we later hand to other systems; none of
+  // them may be `../`-shaped.
+  const entries: { path: string; entry: JSZip.JSZipObject }[] = [];
+  zip.forEach((relativePath, entry) => {
+    if (entry.dir) return;
+    if (relativePath !== 'manifest.json' && !isSafeBundlePath(relativePath)) {
+      throw new Error(`Invalid bundle: unsafe entry path "${relativePath}"`);
+    }
+    entries.push({ path: relativePath, entry });
+  });
+  if (entries.length > MAX_BUNDLE_FILES) {
+    throw new Error(
+      `Invalid bundle: ${entries.length} files exceeds limit ${MAX_BUNDLE_FILES}`,
+    );
+  }
 
   const manifestFile = zip.file('manifest.json');
   if (!manifestFile) {
@@ -448,9 +553,9 @@ export async function parseEsthemeBundle(source: Blob | ArrayBuffer): Promise<Pa
   }
 
   const fileIndex = new Set<string>();
-  zip.forEach((relativePath) => {
-    if (relativePath !== 'manifest.json') fileIndex.add(relativePath);
-  });
+  for (const { path } of entries) {
+    if (path !== 'manifest.json') fileIndex.add(path);
+  }
 
   const validation = validateManifestAgainstFiles(manifestJson, fileIndex);
   if (!validation.ok) {
@@ -459,20 +564,22 @@ export async function parseEsthemeBundle(source: Blob | ArrayBuffer): Promise<Pa
     );
   }
 
+  // SECURITY: extract sequentially and cap the running total so a crafted zip
+  // cannot materialize an unbounded amount of content in memory
+  // (Promise.all would hold every expansion at once).
+  let totalBytes = 0;
   const files = new Map<string, Blob>();
-  const entries: { path: string; entry: JSZip.JSZipObject }[] = [];
-  zip.forEach((relativePath, entry) => {
-    if (!entry.dir && relativePath !== 'manifest.json') {
-      entries.push({ path: relativePath, entry });
+  for (const { path, entry } of entries) {
+    if (path === 'manifest.json') continue;
+    const blob = await entry.async('blob');
+    totalBytes += blob.size;
+    if (totalBytes > MAX_BUNDLE_CONTENT_BYTES) {
+      throw new Error(
+        `Invalid bundle: expanded content exceeds ${Math.round(MAX_BUNDLE_CONTENT_BYTES / 1024 / 1024)}MB`,
+      );
     }
-  });
-
-  await Promise.all(
-    entries.map(async ({ path, entry }) => {
-      const blob = await entry.async('blob');
-      files.set(path, blob);
-    }),
-  );
+    files.set(path, blob);
+  }
 
   return { manifest: validation.manifest, files };
 }
