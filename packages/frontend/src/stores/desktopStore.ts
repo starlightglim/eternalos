@@ -38,6 +38,7 @@ import {
   bumpDesktopSession,
   currentDesktopSession,
   forgetAcknowledgedItems,
+  getAcknowledgedItem,
   noteAcknowledgedCreate,
   noteAcknowledgedWrite,
   noteServerItems,
@@ -51,6 +52,31 @@ import { createDesktopSelectionSlice, type DesktopSelectionSlice } from './deskt
 const showError = (message: string, title?: string) => {
   useAlertStore.getState().showError(message, title);
 };
+
+// Helper to show informational alerts via alertStore
+const showInfo = (message: string, title?: string) => {
+  useAlertStore.getState().showInfo(message, title);
+};
+
+// Item fields the public create route refuses on a client-supplied body (see
+// SERVER_MANAGED_ITEM_FIELDS in packages/worker/src/routes/desktop.ts): app
+// manifests and permission grants belong to the app install / permissions
+// flows. A duplicate must never carry them, or the create is rejected.
+const SERVER_MANAGED_APP_ITEM_FIELDS = [
+  'appManifest',
+  'grantedPermissions',
+  'permissionGrantedAt',
+  'grantedPermissionApprovals',
+] as const;
+
+/** A copy of `item` with any server-managed app fields removed. */
+function withoutServerManagedAppFields(item: DesktopItem): DesktopItem {
+  const copy = { ...item };
+  for (const field of SERVER_MANAGED_APP_ITEM_FIELDS) {
+    delete copy[field];
+  }
+  return copy;
+}
 
 // Helper to play sounds
 const playSound = (type: SoundType) => {
@@ -129,6 +155,9 @@ interface DesktopDataSlice {
   sortByName: (parentId?: string | null) => void;
   sortByDate: (parentId?: string | null) => void;
   sortByKind: (parentId?: string | null) => void;
+  // Duplicates the given items, skipping installed apps (they're created
+  // and managed by the app install flow — see duplicateItems). Returns the
+  // duplicates actually created.
   duplicateItems: (itemIds: string[], targetParentId: string | null) => Promise<DesktopItem[]>;
   pasteItems: (
     itemIds: string[],
@@ -354,6 +383,124 @@ export const useDesktopStore = create<DesktopStore>()((set, get, api) => {
     if (isApiConfigured) {
       cacheItems(next);
     }
+  };
+
+  // Arrange the un-trashed items of one parent into grid columns (max ~8
+  // per column) and persist the new positions. Shared by Clean Up and the
+  // three sort orders. The arrangement is ONE batched `apiUpdateItems`
+  // call (same request shape as the original fire-and-forget save — the
+  // API's 300 req/min limit means a per-item fan-out would self-throttle a
+  // large sort into 429s), but registered in EVERY affected item's write
+  // queue: the request fires exactly once, when the last affected item's
+  // queue turn comes — so it can never overtake an earlier in-flight save
+  // for any of its items, and any write those items queue later (a drag)
+  // lands behind it — and every queue entry awaits the same shared
+  // outcome, so that per-item ordering is real.
+  //
+  // Refusal is all-or-nothing: the server's PATCH handler applies the
+  // whole batch or (401/429/5xx/network) none of it, so a refused batch
+  // reverts every item to its acknowledged position — except items a
+  // newer interaction already re-touched — and surfaces one shared
+  // "Sync Failed"; a success advances every item's acknowledged snapshot.
+  const arrangeAndPersist = (
+    parentId: string | null,
+    compare: (a: DesktopItem, b: DesktopItem) => number,
+    sortOrder: SortOrder | null,
+    operation: string
+  ) => {
+    const itemsInParent = get().items.filter((item) => item.parentId === parentId && !item.isTrashed);
+    const otherItems = get().items.filter((item) => item.parentId !== parentId || item.isTrashed);
+
+    const sortedItems = [...itemsInParent].sort(compare);
+
+    const maxItemsPerColumn = 8;
+    const updatedItems = sortedItems.map((item, index) => ({
+      ...item,
+      position: {
+        x: Math.floor(index / maxItemsPerColumn),
+        y: index % maxItemsPerColumn,
+      },
+      updatedAt: Date.now(),
+    }));
+
+    const newItems = [...otherItems, ...updatedItems];
+    set({ items: newItems });
+
+    // Persist the sort preference (Clean Up does not set one).
+    if (sortOrder) {
+      setFolderSortOrder(parentId, sortOrder);
+    }
+
+    if (!isApiConfigured) return;
+    cacheItems(newItems);
+
+    const version = currentDesktopSession();
+    // The single batched request. `fireBatch` is called exactly once — by
+    // the queue entry whose turn comes last — and every entry (including
+    // that one) awaits the shared `batchSettled` promise, holding its
+    // item's queue slot open until the batch settles.
+    const updates = updatedItems.map((item) => ({
+      id: item.id,
+      updates: { position: item.position },
+    }));
+    let turnsLeft = updatedItems.length;
+    let fireBatch!: (request: Promise<unknown>) => void;
+    const batchSettled = new Promise<unknown>((resolve) => {
+      fireBatch = resolve;
+    });
+    let refused = false;
+
+    const writes = updatedItems.map((item) =>
+      persistItemMutation(item.id, () => {
+        turnsLeft -= 1;
+        if (turnsLeft === 0) {
+          // Every affected item's queue reached the batch: send it once.
+          fireBatch(apiUpdateItems(updates));
+        }
+        // Entries whose turn came earlier await the same request. If the
+        // session dies before the last turn, `turnsLeft` never reaches 0
+        // and this promise never settles — harmless: the dead session's
+        // queues are dropped whole (resetItemSync), and no snapshot or
+        // alert may advance for it anyway.
+        return batchSettled;
+      })
+        .then((savedInSession) => {
+          // The batch landed: the server now holds every arranged position.
+          if (savedInSession) {
+            noteAcknowledgedWrite(item.id, { position: item.position });
+          }
+          // `false` means the session changed under us (account switch);
+          // rehydration reconciles, so that is not a user-facing failure.
+          return false;
+        })
+        .catch((error) => {
+          // The whole batch was refused (offline/401/429/500): nothing was
+          // applied server-side. Revert this item to its acknowledged
+          // position — unless a newer interaction (a drag) already moved
+          // it after the sort — and remember the refusal so the batch
+          // surfaces one shared error.
+          refused = true;
+          console.error(`Failed to update positions during ${operation}:`, error);
+          if (version === currentDesktopSession()) {
+            const displayed = get().getItem(item.id);
+            const reverted = displayed
+              ? rollbackAttemptedFields(displayed, { position: item.position })
+              : null;
+            if (reverted) {
+              setDisplayedItems(
+                get().items.map((current) => (current.id === item.id ? reverted : current))
+              );
+            }
+          }
+          return true;
+        })
+    );
+    void Promise.all(writes).then(() => {
+      if (version !== currentDesktopSession()) return;
+      if (refused) {
+        showError('Could not save the new arrangement. It has been reverted.', 'Sync Failed');
+      }
+    });
   };
 
   return {
@@ -676,146 +823,31 @@ export const useDesktopStore = create<DesktopStore>()((set, get, api) => {
     },
 
     cleanUp: (parentId = null) => {
-      // Sort items by name and arrange in columns (exclude trashed items)
-      const itemsInParent = get().items.filter((item) => item.parentId === parentId && !item.isTrashed);
-      const otherItems = get().items.filter((item) => item.parentId !== parentId || item.isTrashed);
-
-      // Sort alphabetically by name
-      const sortedItems = [...itemsInParent].sort((a, b) =>
-        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+      // Clean Up arranges alphabetically by name but sets no sort preference.
+      arrangeAndPersist(
+        parentId,
+        (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+        null,
+        'clean up'
       );
-
-      // Arrange in columns (max ~8 items per column on typical desktop)
-      const maxItemsPerColumn = 8;
-      const updatedItems = sortedItems.map((item, index) => ({
-        ...item,
-        position: {
-          x: Math.floor(index / maxItemsPerColumn),
-          y: index % maxItemsPerColumn,
-        },
-        updatedAt: Date.now(),
-      }));
-
-      const newItems = [...otherItems, ...updatedItems];
-      set({ items: newItems });
-
-      // Cache and sync to API
-      if (isApiConfigured) {
-        cacheItems(newItems);
-        // Batch update all positions
-        const updates = updatedItems.map((item) => ({
-          id: item.id,
-          updates: { position: item.position },
-        }));
-        const version = currentDesktopSession();
-        apiUpdateItems(updates)
-          .then(() => {
-            // The server now holds the arranged positions.
-            if (version !== currentDesktopSession()) return;
-            updatedItems.forEach((item) =>
-              noteAcknowledgedWrite(item.id, { position: item.position })
-            );
-          })
-          .catch((error) => {
-            console.error('Failed to update positions during clean up:', error);
-          });
-      }
     },
 
     sortByName: (parentId = null) => {
-      // Sort items by name and arrange in columns (exclude trashed items)
-      const itemsInParent = get().items.filter((item) => item.parentId === parentId && !item.isTrashed);
-      const otherItems = get().items.filter((item) => item.parentId !== parentId || item.isTrashed);
-
-      const sortedItems = [...itemsInParent].sort((a, b) =>
-        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+      arrangeAndPersist(
+        parentId,
+        (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+        'name',
+        'sort by name'
       );
-
-      const maxItemsPerColumn = 8;
-      const updatedItems = sortedItems.map((item, index) => ({
-        ...item,
-        position: {
-          x: Math.floor(index / maxItemsPerColumn),
-          y: index % maxItemsPerColumn,
-        },
-        updatedAt: Date.now(),
-      }));
-
-      const newItems = [...otherItems, ...updatedItems];
-      set({ items: newItems });
-
-      // Persist the sort preference
-      setFolderSortOrder(parentId, 'name');
-
-      if (isApiConfigured) {
-        cacheItems(newItems);
-        const updates = updatedItems.map((item) => ({
-          id: item.id,
-          updates: { position: item.position },
-        }));
-        const version = currentDesktopSession();
-        apiUpdateItems(updates)
-          .then(() => {
-            if (version !== currentDesktopSession()) return;
-            updatedItems.forEach((item) =>
-              noteAcknowledgedWrite(item.id, { position: item.position })
-            );
-          })
-          .catch((error) => {
-            console.error('Failed to update positions during sort by name:', error);
-          });
-      }
     },
 
     sortByDate: (parentId = null) => {
-      // Sort items by date (newest first) and arrange in columns (exclude trashed items)
-      const itemsInParent = get().items.filter((item) => item.parentId === parentId && !item.isTrashed);
-      const otherItems = get().items.filter((item) => item.parentId !== parentId || item.isTrashed);
-
-      const sortedItems = [...itemsInParent].sort((a, b) => b.updatedAt - a.updatedAt);
-
-      const maxItemsPerColumn = 8;
-      const updatedItems = sortedItems.map((item, index) => ({
-        ...item,
-        position: {
-          x: Math.floor(index / maxItemsPerColumn),
-          y: index % maxItemsPerColumn,
-        },
-        updatedAt: Date.now(),
-      }));
-
-      const newItems = [...otherItems, ...updatedItems];
-      set({ items: newItems });
-
-      // Persist the sort preference
-      setFolderSortOrder(parentId, 'date');
-
-      if (isApiConfigured) {
-        cacheItems(newItems);
-        const updates = updatedItems.map((item) => ({
-          id: item.id,
-          updates: { position: item.position },
-        }));
-        const version = currentDesktopSession();
-        apiUpdateItems(updates)
-          .then(() => {
-            if (version !== currentDesktopSession()) return;
-            updatedItems.forEach((item) =>
-              noteAcknowledgedWrite(item.id, { position: item.position })
-            );
-          })
-          .catch((error) => {
-            console.error('Failed to update positions during sort by date:', error);
-          });
-      }
+      // Newest first.
+      arrangeAndPersist(parentId, (a, b) => b.updatedAt - a.updatedAt, 'date', 'sort by date');
     },
 
     sortByKind: (parentId = null) => {
-      // Sort items by type (folders first, then by type, then by name) and arrange in columns (exclude trashed items)
-      const itemsInParent = get().items.filter((item) => item.parentId === parentId && !item.isTrashed);
-      const otherItems = get().items.filter((item) => item.parentId !== parentId || item.isTrashed);
-
-      // Type order: all item types in logical grouping
+      // Folders first, then by type, then by name.
       const typeOrder: Record<string, number> = {
         folder: 0,
         text: 1,
@@ -826,47 +858,16 @@ export const useDesktopStore = create<DesktopStore>()((set, get, api) => {
         link: 6,
         widget: 7,
       };
-
-      const sortedItems = [...itemsInParent].sort((a, b) => {
-        const typeComparison = (typeOrder[a.type] ?? 99) - (typeOrder[b.type] ?? 99);
-        if (typeComparison !== 0) return typeComparison;
-        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
-      });
-
-      const maxItemsPerColumn = 8;
-      const updatedItems = sortedItems.map((item, index) => ({
-        ...item,
-        position: {
-          x: Math.floor(index / maxItemsPerColumn),
-          y: index % maxItemsPerColumn,
+      arrangeAndPersist(
+        parentId,
+        (a, b) => {
+          const typeComparison = (typeOrder[a.type] ?? 99) - (typeOrder[b.type] ?? 99);
+          if (typeComparison !== 0) return typeComparison;
+          return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
         },
-        updatedAt: Date.now(),
-      }));
-
-      const newItems = [...otherItems, ...updatedItems];
-      set({ items: newItems });
-
-      // Persist the sort preference
-      setFolderSortOrder(parentId, 'kind');
-
-      if (isApiConfigured) {
-        cacheItems(newItems);
-        const updates = updatedItems.map((item) => ({
-          id: item.id,
-          updates: { position: item.position },
-        }));
-        const version = currentDesktopSession();
-        apiUpdateItems(updates)
-          .then(() => {
-            if (version !== currentDesktopSession()) return;
-            updatedItems.forEach((item) =>
-              noteAcknowledgedWrite(item.id, { position: item.position })
-            );
-          })
-          .catch((error) => {
-            console.error('Failed to update positions during sort by kind:', error);
-          });
-      }
+        'kind',
+        'sort by kind'
+      );
     },
 
     duplicateItems: async (itemIds, targetParentId) => {
@@ -874,18 +875,39 @@ export const useDesktopStore = create<DesktopStore>()((set, get, api) => {
       const { items, getItem } = get();
       const duplicates: DesktopItem[] = [];
 
+      // Installed apps are created and managed by the app install /
+      // permissions routes, and the public item-create route rejects a body
+      // carrying their manifest or grant fields — a duplicate could never
+      // be saved. Skip app items and say so instead of surfacing a create
+      // failure.
+      const requested = itemIds
+        .map((id) => getItem(id))
+        .filter((item): item is DesktopItem => item !== undefined);
+      const skippedApps = requested.filter((item) => item.type === 'app');
+      const duplicatable = requested.filter((item) => item.type !== 'app');
+
+      if (skippedApps.length > 0) {
+        const skippedNames = skippedApps.map((item) => item.name).join(', ');
+        showInfo(
+          duplicatable.length === 0
+            ? "Apps can't be duplicated."
+            : `Apps can't be duplicated. Skipped: ${skippedNames}.`,
+          'Duplicate'
+        );
+      }
+      if (duplicatable.length === 0) return [];
+
       // Find positions in target folder
       const itemsInTarget = items.filter((item) => item.parentId === targetParentId);
       let nextY = itemsInTarget.length > 0
         ? Math.max(...itemsInTarget.map((i) => i.position.y)) + 1
         : 0;
 
-      for (const id of itemIds) {
-        const original = getItem(id);
-        if (!original) continue;
-
-        // Create duplicate with new id and position
-        const duplicate: DesktopItem = {
+      for (const original of duplicatable) {
+        // Create duplicate with new id and position. The server-managed
+        // app fields never ride along, so the create can't be rejected for
+        // carrying them.
+        const duplicate: DesktopItem = withoutServerManagedAppFields({
           ...original,
           id: crypto.randomUUID(),
           name: `${original.name} copy`,
@@ -893,7 +915,7 @@ export const useDesktopStore = create<DesktopStore>()((set, get, api) => {
           position: { x: 0, y: nextY++ },
           createdAt: Date.now(),
           updatedAt: Date.now(),
-        };
+        });
 
         // Create item via API
         if (isApiConfigured) {
@@ -1352,8 +1374,22 @@ export const useDesktopStore = create<DesktopStore>()((set, get, api) => {
           })
           .catch((error) => {
             console.error('Failed to empty trash:', error);
+            if (version !== currentDesktopSession()) return;
+            // The server refused the permanent delete, so it still holds
+            // every trashed item. Put back the ones this call removed,
+            // restored from the acknowledged snapshot (exactly what the
+            // server still knows — falling back to the removed values for
+            // items it never confirmed), so nothing looks destroyed when
+            // it isn't.
+            const present = new Set(get().items.map((item) => item.id));
+            const restored = trashedItems
+              .filter((item) => !present.has(item.id))
+              .map((item) => getAcknowledgedItem(item.id) ?? item);
+            if (restored.length > 0) {
+              setDisplayedItems([...get().items, ...restored]);
+            }
             showError(
-              'Failed to permanently delete some items. They may reappear on reload.',
+              'Failed to permanently delete the trash. Your trashed items have been restored.',
               'Empty Trash Failed'
             );
           });

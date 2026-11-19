@@ -14,7 +14,8 @@ import { useAuthStore } from '../../stores/authStore';
 import { useClipboardStore } from '../../stores/clipboardStore';
 import { useCSSPickerStore } from '../../stores/cssPickerStore';
 import { useDesktopSync } from '../../hooks/useDesktopSync';
-import { isApiConfigured, getWallpaperUrl, uploadFile as apiUploadFile } from '../../services/api';
+import { isApiConfigured, getWallpaperUrl } from '../../services/api';
+import { createStickerFromFile } from './stickerUpload';
 import { useEsthemePreviewStore } from '../../estheme/themePreviewStore';
 import { EsthemePreviewBanner } from '../appearance/EsthemePreviewBanner';
 import { getTextFileContentType, type DesktopItem, type WidgetType, type WidgetConfig } from '../../types';
@@ -1573,6 +1574,11 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
     if (contextMenu?.targetItem) {
       // Menu for a desktop item
       const item = contextMenu.targetItem;
+      // The selection duplicates as a unit when the right-clicked item is
+      // part of it; otherwise the command targets just this item.
+      const idsToDuplicate = selectedIds.size > 0 && selectedIds.has(item.id)
+        ? Array.from(selectedIds)
+        : [item.id];
       return [
         {
           id: 'open',
@@ -1619,11 +1625,13 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
           id: 'duplicate',
           label: 'Duplicate',
           shortcut: '⌘D',
+          // duplicateItems skips installed apps, so the command is disabled
+          // when the effective duplicate set is apps only.
+          disabled: idsToDuplicate.every(
+            (id) => items.find((entry) => entry.id === id)?.type === 'app'
+          ),
           action: () => {
             const { duplicateItems } = useDesktopStore.getState();
-            const idsToDuplicate = selectedIds.size > 0 && selectedIds.has(item.id)
-              ? Array.from(selectedIds)
-              : [item.id];
             duplicateItems(idsToDuplicate, item.parentId);
           },
         },
@@ -1761,20 +1769,15 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
             input.onchange = async () => {
               const file = input.files?.[0];
               if (!file || !isApiConfigured) return;
-              try {
-                // Upload via API with sticker override
-                const pixelX = contextMenu?.position.x || 100;
-                const pixelY = contextMenu?.position.y || 100;
-                const result = await apiUploadFile(file, null, { x: pixelX, y: pixelY });
-                // After upload, patch item to be a sticker with config
-                const { updateItem: patchItem } = useDesktopStore.getState();
-                patchItem(result.item.id, {
-                  type: 'sticker' as DesktopItem['type'],
-                  stickerConfig: { width: 120, height: 120, rotation: 0, opacity: 1 },
-                });
-              } catch (error) {
-                console.error('Failed to upload sticker:', error);
-              }
+              // Stickers are pixel-positioned, not grid-snapped.
+              const pixelX = contextMenu?.position.x || 100;
+              const pixelY = contextMenu?.position.y || 100;
+              // The upload and the sticker apply both go through the
+              // store's queued actions and roll themselves back with a
+              // surfaced error on refusal (Upload Failed / Sync Failed) —
+              // a refused upload or apply can never leave a sticker
+              // looking applied.
+              await createStickerFromFile(file, { x: pixelX, y: pixelY });
             };
             input.click();
           },
@@ -1813,7 +1816,7 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
         },
       ];
     }
-  }, [contextMenu, deselectAll, handleIconDoubleClick, openWindow, moveToTrash, selectedIds, findNearestAvailablePosition, cleanUp, selectAll, stickerItems]);
+  }, [contextMenu, deselectAll, handleIconDoubleClick, openWindow, moveToTrash, selectedIds, items, findNearestAvailablePosition, cleanUp, selectAll, stickerItems]);
 
   // Handle link creation from dialog
   const handleLinkCreate = useCallback((url: string, name: string) => {

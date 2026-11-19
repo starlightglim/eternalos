@@ -8,7 +8,7 @@ const api = vi.hoisted(() => ({
 vi.mock('../services/api', () => ({ isApiConfigured: true, ...api }));
 vi.mock('./soundStore', () => ({ useSoundStore: { getState: () => ({ playSound: vi.fn() }) } }));
 // One stable mock so tests can assert that failures are surfaced to the user.
-const alerts = vi.hoisted(() => ({ showError: vi.fn() }));
+const alerts = vi.hoisted(() => ({ showError: vi.fn(), showInfo: vi.fn() }));
 vi.mock('./alertStore', () => ({ useAlertStore: { getState: () => alerts } }));
 import { useDesktopStore } from './desktopStore';
 import { getAcknowledgedItem } from './desktopItemSync';
@@ -92,6 +92,88 @@ test('failed creates and duplicates do not leave phantom files', async () => {
   expect(useDesktopStore.getState().getItem('new-note')).toBeUndefined();
   expect(await useDesktopStore.getState().duplicateItems(['note'], null)).toEqual([]);
   expect(useDesktopStore.getState().items).toHaveLength(1);
+});
+
+// ---------------------------------------------------------------------------
+// Duplicate vs installed apps (grantlock): the public item-create route
+// rejects any body carrying the server-managed app fields, so duplicateItems
+// skips app items and says so instead of surfacing a create failure — and no
+// duplicate ever carries those fields.
+// ---------------------------------------------------------------------------
+
+const installedApp: DesktopItem = {
+  ...original,
+  id: 'app',
+  name: 'Installed App',
+  type: 'app',
+  appManifest: {
+    name: 'Installed App',
+    version: '1.0.0',
+    appId: 'app-1',
+    windowConfig: { defaultWidth: 400, defaultHeight: 300 },
+  },
+  grantedPermissions: { fs: { read: ['/Gallery/**'] } },
+  permissionGrantedAt: 123,
+  grantedPermissionApprovals: { 'fs.read': { approvedAt: 123, approvedBy: 'alice' } },
+};
+
+test('a normal duplicate still creates the copy', async () => {
+  api.createItem.mockResolvedValue(undefined);
+  const duplicates = await useDesktopStore.getState().duplicateItems(['note'], null);
+  expect(duplicates).toHaveLength(1);
+  expect(duplicates[0].name).toBe('Note.txt copy');
+  expect(duplicates[0].id).not.toBe('note');
+  expect(useDesktopStore.getState().items).toHaveLength(2);
+  expect(alerts.showError).not.toHaveBeenCalled();
+  expect(alerts.showInfo).not.toHaveBeenCalled();
+});
+
+test('an app-only selection is skipped with a clear message, never a create', async () => {
+  const store = useDesktopStore.getState();
+  store.setItems([{ ...installedApp }]);
+  const duplicates = await store.duplicateItems(['app'], null);
+  expect(duplicates).toEqual([]);
+  expect(useDesktopStore.getState().items).toHaveLength(1);
+  expect(api.createItem).not.toHaveBeenCalled();
+  // The skip is information, not a failure.
+  expect(alerts.showError).not.toHaveBeenCalled();
+  expect(alerts.showInfo).toHaveBeenCalledWith("Apps can't be duplicated.", 'Duplicate');
+});
+
+test('a mixed selection duplicates the non-app items and mentions the skipped apps', async () => {
+  api.createItem.mockResolvedValue(undefined);
+  const store = useDesktopStore.getState();
+  store.setItems([{ ...original }, { ...installedApp }]);
+  const duplicates = await store.duplicateItems(['note', 'app'], null);
+  expect(duplicates).toHaveLength(1);
+  expect(duplicates[0].name).toBe('Note.txt copy');
+  expect(useDesktopStore.getState().items).toHaveLength(3);
+  expect(alerts.showInfo).toHaveBeenCalledWith(
+    "Apps can't be duplicated. Skipped: Installed App.",
+    'Duplicate'
+  );
+  expect(alerts.showError).not.toHaveBeenCalled();
+});
+
+test('no duplicated item carries the server-managed app fields', async () => {
+  api.createItem.mockResolvedValue(undefined);
+  const store = useDesktopStore.getState();
+  // A stale local item carrying grant fields must not poison the create —
+  // the public route 400s any body with them.
+  store.setItems([{
+    ...original,
+    appManifest: installedApp.appManifest,
+    grantedPermissions: installedApp.grantedPermissions,
+    permissionGrantedAt: installedApp.permissionGrantedAt,
+    grantedPermissionApprovals: installedApp.grantedPermissionApprovals,
+  }]);
+  const duplicates = await store.duplicateItems(['note'], null);
+  expect(duplicates).toHaveLength(1);
+  const sent = api.createItem.mock.calls[0][0] as DesktopItem;
+  expect(sent.appManifest).toBeUndefined();
+  expect(sent.grantedPermissions).toBeUndefined();
+  expect(sent.permissionGrantedAt).toBeUndefined();
+  expect(sent.grantedPermissionApprovals).toBeUndefined();
 });
 
 test('failed deletes restore the removed item', async () => {
@@ -511,3 +593,203 @@ test('reset clears the interaction state with the session', () => {
   useDesktopStore.getState().reset();
   expect(useDesktopStore.getState().selectedIds.size).toBe(0);
 });
+
+// ---------------------------------------------------------------------------
+// Clean Up / sort (CORE-ROADMAP Workstream 1): the batch arrangement saves
+// now route through the per-item write queue, so a refused batch reverts
+// every failed item to its acknowledged position and surfaces the shared
+// "Sync Failed" error — no desktop left looking re-arranged when the
+// server never recorded it.
+// ---------------------------------------------------------------------------
+
+const sortSeed: DesktopItem[] = [
+  { ...original, id: 'note-c', name: 'C.txt', position: { x: 5, y: 0 }, updatedAt: 3 },
+  { ...original, id: 'note-a', name: 'A.txt', position: { x: 3, y: 1 }, updatedAt: 1 },
+  { ...original, id: 'note-b', name: 'B.txt', position: { x: 1, y: 2 }, updatedAt: 2 },
+];
+
+// [action, arranged position per id] — the arrangement each command produces.
+const arrangements: ReadonlyArray<
+  readonly [
+    'cleanUp' | 'sortByName' | 'sortByDate' | 'sortByKind',
+    ReadonlyArray<readonly [string, { x: number; y: number }]>
+  ]
+> = [
+  // Alphabetical: Clean Up and sort-by-name; sort-by-kind is alphabetical
+  // too because every item here is a text file.
+  ['cleanUp', [['note-a', { x: 0, y: 0 }], ['note-b', { x: 0, y: 1 }], ['note-c', { x: 0, y: 2 }]]],
+  ['sortByName', [['note-a', { x: 0, y: 0 }], ['note-b', { x: 0, y: 1 }], ['note-c', { x: 0, y: 2 }]]],
+  // Newest first: C (3), B (2), A (1).
+  ['sortByDate', [['note-c', { x: 0, y: 0 }], ['note-b', { x: 0, y: 1 }], ['note-a', { x: 0, y: 2 }]]],
+  ['sortByKind', [['note-a', { x: 0, y: 0 }], ['note-b', { x: 0, y: 1 }], ['note-c', { x: 0, y: 2 }]]],
+];
+
+test.each(arrangements)(
+  '%s: a forced failure reverts every item to its acknowledged position',
+  async (action, arranged) => {
+    api.updateItems.mockRejectedValue(new Error('Offline'));
+    const store = useDesktopStore.getState();
+    store.setItems(sortSeed.map((item) => ({ ...item })));
+    store[action](null);
+    // The optimistic arrangement shows immediately.
+    for (const [id, position] of arranged) {
+      expect(store.getItem(id)?.position).toEqual(position);
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    // The whole arrangement was one refused request: every item rolls back
+    // to its acknowledged position, and one shared error surfaces.
+    expect(api.updateItems).toHaveBeenCalledTimes(1);
+    expect(api.updateItems).toHaveBeenCalledWith(
+      arranged.map(([id, position]) => ({ id, updates: { position } }))
+    );
+    for (const item of sortSeed) {
+      expect(store.getItem(item.id)?.position).toEqual(item.position);
+    }
+    expect(alerts.showError).toHaveBeenCalledWith(
+      'Could not save the new arrangement. It has been reverted.',
+      'Sync Failed'
+    );
+  }
+);
+
+test.each(failures)('sort: a forced %s failure reverts the arrangement and surfaces the error', async (_label, fail) => {
+  api.updateItems.mockRejectedValue(fail());
+  const store = useDesktopStore.getState();
+  store.setItems(sortSeed.map((item) => ({ ...item })));
+  store.sortByName(null);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(api.updateItems).toHaveBeenCalledTimes(1);
+  for (const item of sortSeed) {
+    expect(store.getItem(item.id)?.position).toEqual(item.position);
+  }
+  expect(alerts.showError).toHaveBeenCalledWith(
+    'Could not save the new arrangement. It has been reverted.',
+    'Sync Failed'
+  );
+});
+
+test('a successful sort persists the whole arrangement as one batched, queued write', async () => {
+  api.updateItems.mockResolvedValue([]);
+  const store = useDesktopStore.getState();
+  store.setItems(sortSeed.map((item) => ({ ...item })));
+  store.sortByName(null);
+  await vi.advanceTimersByTimeAsync(0);
+  // One request carries the whole arrangement — a per-item fan-out would
+  // self-throttle a large sort into the API's 300 req/min limit…
+  expect(api.updateItems).toHaveBeenCalledTimes(1);
+  expect(api.updateItems).toHaveBeenCalledWith([
+    { id: 'note-a', updates: { position: { x: 0, y: 0 } } },
+    { id: 'note-b', updates: { position: { x: 0, y: 1 } } },
+    { id: 'note-c', updates: { position: { x: 0, y: 2 } } },
+  ]);
+  // …and the acknowledged snapshot holds every arranged position.
+  expect(getAcknowledgedItem('note-a')?.position).toEqual({ x: 0, y: 0 });
+  expect(getAcknowledgedItem('note-b')?.position).toEqual({ x: 0, y: 1 });
+  expect(getAcknowledgedItem('note-c')?.position).toEqual({ x: 0, y: 2 });
+  expect(store.getItem('note-c')?.position).toEqual({ x: 0, y: 2 });
+});
+
+test('a sort waits for an earlier in-flight save on the same item', async () => {
+  let acknowledge!: () => void;
+  api.updateItems.mockImplementationOnce(() => new Promise<void>((resolve) => { acknowledge = resolve; }));
+  api.updateItems.mockResolvedValue([]);
+  const store = useDesktopStore.getState();
+  store.setItems(sortSeed.map((item) => ({ ...item })));
+  // The user drags note-c; its position save is still in flight when the
+  // sort runs.
+  store.moveItem('note-c', { x: 9, y: 9 });
+  await vi.advanceTimersByTimeAsync(600); // the drag save fires, still pending
+  store.sortByName(null);
+  await vi.advanceTimersByTimeAsync(0);
+  // The batch is registered in every item's write queue and fires only
+  // when each item's turn comes, so it cannot overtake note-c's in-flight
+  // drag save: nothing but that save has been sent.
+  expect(api.updateItems).toHaveBeenCalledTimes(1);
+  acknowledge();
+  await vi.advanceTimersByTimeAsync(0);
+  // The drag save settles first, then the whole arrangement follows as
+  // one batched write — the stale drag position can never clobber it.
+  expect(api.updateItems).toHaveBeenCalledTimes(2);
+  expect(api.updateItems).toHaveBeenLastCalledWith([
+    { id: 'note-a', updates: { position: { x: 0, y: 0 } } },
+    { id: 'note-b', updates: { position: { x: 0, y: 1 } } },
+    { id: 'note-c', updates: { position: { x: 0, y: 2 } } },
+  ]);
+  expect(store.getItem('note-c')?.position).toEqual({ x: 0, y: 2 });
+});
+
+test('a drag issued while a sort is pending lands after the arrangement', async () => {
+  // note-c's earlier save hangs, so the arranged batch is still waiting for
+  // its queue turn when the user drags note-b elsewhere.
+  let acknowledge!: () => void;
+  api.updateItems.mockImplementationOnce(() => new Promise<void>((resolve) => { acknowledge = resolve; }));
+  api.updateItems.mockResolvedValue([]);
+  const store = useDesktopStore.getState();
+  store.setItems(sortSeed.map((item) => ({ ...item })));
+  store.moveItem('note-c', { x: 9, y: 9 });
+  await vi.advanceTimersByTimeAsync(600); // note-c's save is in flight
+  store.sortByName(null);
+  // The user drags note-b away while the batch waits for note-c's save.
+  store.moveItem('note-b', { x: 8, y: 8 });
+  await vi.advanceTimersByTimeAsync(600); // note-b's save queues behind the batch
+  acknowledge(); // note-c's in-flight save settles -> the batch fires
+  await vi.advanceTimersByTimeAsync(0);
+  // The arrangement landed as one write, and note-b's queued drag save
+  // landed after it — the batch never clobbers a newer interaction.
+  expect(api.updateItems).toHaveBeenCalledTimes(3);
+  expect(api.updateItems).toHaveBeenNthCalledWith(2, [
+    { id: 'note-a', updates: { position: { x: 0, y: 0 } } },
+    { id: 'note-b', updates: { position: { x: 0, y: 1 } } },
+    { id: 'note-c', updates: { position: { x: 0, y: 2 } } },
+  ]);
+  expect(api.updateItems).toHaveBeenNthCalledWith(3, [
+    { id: 'note-b', updates: { position: { x: 8, y: 8 } } },
+  ]);
+  // note-b shows the user's newer drag, and the server ends there too.
+  expect(store.getItem('note-b')?.position).toEqual({ x: 8, y: 8 });
+  expect(getAcknowledgedItem('note-b')?.position).toEqual({ x: 8, y: 8 });
+});
+
+// ---------------------------------------------------------------------------
+// Empty trash (CORE-ROADMAP Workstream 1): a refused permanent delete must
+// restore the trashed items from the acknowledged snapshot — the server still
+// holds them, so they must not stay gone locally.
+// ---------------------------------------------------------------------------
+
+test('a failed empty-trash restores the trashed items from the acknowledged snapshot', async () => {
+  const store = useDesktopStore.getState();
+  const second = { ...original, id: 'memo', name: 'Memo.txt', position: { x: 1, y: 0 } };
+  store.setItems([{ ...original }, second]);
+  // Both items are trashed with the server's blessing first.
+  api.updateItems.mockResolvedValue([]);
+  store.moveToTrash(['note', 'memo']);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(useDesktopStore.getState().getTrashCount()).toBe(2);
+
+  // The server refuses the permanent delete.
+  api.emptyTrashApi.mockRejectedValue(new Error('500 Internal Server Error'));
+  useDesktopStore.getState().emptyTrash();
+  expect(useDesktopStore.getState().getTrashCount()).toBe(0); // optimistic removal
+  await vi.advanceTimersByTimeAsync(0);
+  // Rolled back: both items are back, exactly as the server still knows
+  // them, and the failure says so instead of "they may reappear on reload".
+  expect(useDesktopStore.getState().getTrashCount()).toBe(2);
+  expect(useDesktopStore.getState().getItem('note')).toEqual(getAcknowledgedItem('note'));
+  expect(useDesktopStore.getState().getItem('memo')).toEqual(getAcknowledgedItem('memo'));
+  expect(alerts.showError).toHaveBeenCalledWith(
+    'Failed to permanently delete the trash. Your trashed items have been restored.',
+    'Empty Trash Failed'
+  );
+});
+
+test('a successful empty-trash forgets the acknowledged items', async () => {
+  api.updateItems.mockResolvedValue([]);
+  useDesktopStore.getState().moveToTrash(['note']);
+  await vi.advanceTimersByTimeAsync(0);
+  api.emptyTrashApi.mockResolvedValue({ success: true });
+  useDesktopStore.getState().emptyTrash();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(useDesktopStore.getState().items).toHaveLength(0);
+  expect(getAcknowledgedItem('note')).toBeUndefined();
+});
+

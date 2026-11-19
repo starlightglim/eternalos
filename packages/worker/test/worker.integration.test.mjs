@@ -3028,6 +3028,53 @@ describe('worker integration', () => {
       'the permissions route still writes grants');
   });
 
+  it('answers malformed item-write bodies with 400s, never 500s', async () => {
+    const user = await signupUser();
+
+    // A non-JSON body is a client error on create and patch alike — the DO's
+    // /items endpoints parse bodies verbatim (request.json()) and used to
+    // turn these into 500s.
+    for (const body of ['not json at all', '']) {
+      for (const method of ['POST', 'PATCH']) {
+        const res = await fetchJson('/api/desktop/items', {
+          method,
+          headers: authHeaders(user.token, JSON_HEADERS),
+          body,
+        });
+        assert.equal(res.response.status, 400,
+          `${method} with a non-JSON body must be a 400, got ${res.response.status}`);
+        assert.match(res.body.error, /valid JSON/);
+      }
+    }
+
+    // A patch body that isn't a JSON array (the DO iterates it as one) is a
+    // 400 for every client-sendable shape.
+    for (const body of ['{}', 'null', '42', '"entries"', 'true']) {
+      const res = await fetchJson('/api/desktop/items', {
+        method: 'PATCH',
+        headers: authHeaders(user.token, JSON_HEADERS),
+        body,
+      });
+      assert.equal(res.response.status, 400, `PATCH ${body} must be a 400, got ${res.response.status}`);
+    }
+
+    // Valid requests are unchanged: an honest create still works…
+    const created = await createDesktopItem(user.token, {
+      type: 'folder', name: 'Malformed Body Target', position: { x: 0, y: 0 },
+    });
+    assert.ok(created.id);
+    // …an empty patch array is a 200 no-op…
+    const empty = await fetchJson('/api/desktop/items', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: '[]',
+    });
+    assert.equal(empty.response.status, 200, `an empty patch array forwards as before, got ${empty.response.status}`);
+    // …and a well-formed patch still applies.
+    const renamed = await patchItems(user.token, [{ id: created.id, updates: { name: 'Renamed Anyway' } }]);
+    assert.equal(renamed[0].name, 'Renamed Anyway');
+  });
+
   it('exports account data without leaking password-equivalent secrets', async () => {
     const user = await signupUser();
     const exportRes = await worker.fetch(`${BASE_URL}/api/auth/export-data`, {
@@ -3742,6 +3789,172 @@ describe('worker integration', () => {
     ]);
 
     assert.deepEqual(updatedItems[0].userTags, ['street', 'night', 'city walk']);
+  });
+
+  it('lets an uploaded image become a sticker on the server, and the sticker survives reload', async () => {
+    const user = await signupUser();
+
+    // The Add Sticker flow, exactly as the frontend performs it
+    // (stickerUpload.ts): upload an image, then PATCH it into a sticker
+    // with the default config. The DO used to strip `type` from the patch,
+    // so the sticker silently reverted to a plain image on the next
+    // reconcile.
+    const uploadForm = new UndiciFormData();
+    uploadForm.set('file', createPngFile('cat.png'));
+    const upload = await expectOk('/api/upload', {
+      method: 'POST',
+      headers: authHeaders(user.token),
+      body: uploadForm,
+    });
+    assert.equal(upload.item.type, 'image');
+
+    const stickerConfig = { width: 120, height: 120, rotation: 0, opacity: 1 };
+    const applied = await patchItems(user.token, [{
+      id: upload.item.id,
+      updates: { type: 'sticker', stickerConfig: { ...stickerConfig } },
+    }]);
+    assert.equal(applied[0].type, 'sticker', 'the apply response echoes the sticker type');
+    assert.deepEqual(applied[0].stickerConfig, stickerConfig);
+
+    // The reload path: a fresh GET still shows the sticker the server
+    // stored — type and config, not just optimistic local state.
+    const desktop = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+    const sticker = desktop.items.find((item) => item.id === upload.item.id);
+    assert.ok(sticker, 'the sticker item is still listed');
+    assert.equal(sticker.type, 'sticker');
+    assert.deepEqual(sticker.stickerConfig, stickerConfig);
+
+    // Ordinary patches on a sticker keep working: the context menu's
+    // rotate/opacity commands and the resize handle only PATCH
+    // stickerConfig (no `type` in the payload).
+    const rotated = await patchItems(user.token, [{
+      id: upload.item.id,
+      updates: { stickerConfig: { ...stickerConfig, rotation: 15, opacity: 0.5 } },
+    }]);
+    assert.deepEqual(rotated[0].stickerConfig, { ...stickerConfig, rotation: 15, opacity: 0.5 });
+  });
+
+  it('rejects every other item type transition with a 400 naming it, changing nothing', async () => {
+    const user = await signupUser();
+
+    // One item per type the forbidden matrix crosses. A bare app item is
+    // enough — the DO judges a transition by the stored `type` alone. The
+    // first upload becomes a real sticker (the reverse transition must be
+    // refused too: the frontend's "Remove Sticker" trashes the item, there
+    // is no convert-back action); the second stays a plain image.
+    const note = await createDesktopItem(user.token, {
+      type: 'text', name: 'Note.txt', position: { x: 0, y: 0 }, textContent: 'note',
+    });
+    const folder = await createDesktopItem(user.token, {
+      type: 'folder', name: 'Folder', position: { x: 1, y: 0 },
+    });
+    const app = await createDesktopItem(user.token, {
+      type: 'app', name: 'Standalone App', position: { x: 2, y: 0 },
+    });
+    const firstForm = new UndiciFormData();
+    firstForm.set('file', createPngFile('to-sticker.png'));
+    const first = await expectOk('/api/upload', {
+      method: 'POST', headers: authHeaders(user.token), body: firstForm,
+    });
+    const secondForm = new UndiciFormData();
+    secondForm.set('file', createPngFile('stays-image.png'));
+    const second = await expectOk('/api/upload', {
+      method: 'POST', headers: authHeaders(user.token), body: secondForm,
+    });
+    await patchItems(user.token, [{
+      id: first.item.id,
+      updates: { type: 'sticker', stickerConfig: { width: 120, height: 120, rotation: 0, opacity: 1 } },
+    }]);
+
+    const desktopBefore = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+    const snapshot = (item) => ({ type: item.type, name: item.name, stickerConfig: item.stickerConfig ?? null });
+    const beforeById = new Map(desktopBefore.items.map((item) => [item.id, snapshot(item)]));
+
+    // Each refused patch also tries to rename the item: with the old
+    // silent strip these returned 200 and applied the rename, leaving a
+    // successful-looking half-applied write. Now they must 400 naming the
+    // transition — non-string type values included.
+    const forbidden = [
+      { id: note.id, from: 'text', requested: 'sticker' },
+      { id: second.item.id, from: 'image', requested: 'app' },
+      { id: app.id, from: 'app', requested: 'image' },
+      { id: folder.id, from: 'folder', requested: 'sticker' },
+      { id: first.item.id, from: 'sticker', requested: 'image' },
+      { id: second.item.id, from: 'image', requested: 42 },
+    ];
+    for (const { id, from, requested } of forbidden) {
+      const res = await fetchJson('/api/desktop/items', {
+        method: 'PATCH',
+        headers: authHeaders(user.token, JSON_HEADERS),
+        body: JSON.stringify([{ id, updates: { type: requested, name: 'Should Not Stick' } }]),
+      });
+      assert.equal(res.response.status, 400, `${from} -> ${String(requested)} must be rejected`);
+      assert.match(
+        res.body.error,
+        new RegExp(`from '${from}' to '${String(requested)}'`),
+        'the rejection names the transition'
+      );
+    }
+
+    // Nothing changed: every item is exactly what it was before the
+    // refused patches — type, name, and sticker config all untouched.
+    const desktopAfter = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+    assert.equal(desktopAfter.items.length, desktopBefore.items.length);
+    for (const item of desktopAfter.items) {
+      assert.deepEqual(snapshot(item), beforeById.get(item.id), `item ${item.id} unchanged`);
+    }
+
+    // The rejection is atomic across a batch: a benign rename mixed with
+    // a forbidden transition applies neither.
+    const mixed = await fetchJson('/api/desktop/items', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify([
+        { id: folder.id, updates: { name: 'Renamed' } },
+        { id: note.id, updates: { type: 'sticker' } },
+      ]),
+    });
+    assert.equal(mixed.response.status, 400);
+    const afterMixed = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+    assert.equal(afterMixed.items.find((item) => item.id === folder.id).name, 'Folder',
+      'a rejected batch applies none of its entries');
+
+    // Re-asserting an item's current type is not a transition: it stays a
+    // harmless no-op, so a client echoing a full item back is not broken.
+    const reasserted = await patchItems(user.token, [{ id: note.id, updates: { type: 'text' } }]);
+    assert.equal(reasserted[0].type, 'text');
+
+    // stickerConfig is shape-validated on both write paths: junk is a 400,
+    // never stored state (there was no validation before this).
+    const junkConfigs = [
+      'wide',
+      { width: 120 },
+      { width: 120, height: 120, rotation: 0, opacity: 2 },
+      { width: 120, height: 120, rotation: 0, opacity: 1, sparkles: true },
+    ];
+    for (const junk of junkConfigs) {
+      const res = await fetchJson('/api/desktop/items', {
+        method: 'PATCH',
+        headers: authHeaders(user.token, JSON_HEADERS),
+        body: JSON.stringify([{ id: second.item.id, updates: { stickerConfig: junk } }]),
+      });
+      assert.equal(res.response.status, 400, `junk stickerConfig ${JSON.stringify(junk)} must be rejected`);
+    }
+    const badCreate = await fetchJson('/api/desktop/items', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        type: 'sticker', name: 'Bad', position: { x: 3, y: 0 }, stickerConfig: 'wide',
+      }),
+    });
+    assert.equal(badCreate.response.status, 400, 'create must refuse a malformed stickerConfig too');
+
+    // A well-formed config still round-trips through create unchanged.
+    const goodCreate = await createDesktopItem(user.token, {
+      type: 'sticker', name: 'Direct', position: { x: 4, y: 0 },
+      stickerConfig: { width: 80, height: 80, rotation: 45, opacity: 0.9 },
+    });
+    assert.deepEqual(goodCreate.stickerConfig, { width: 80, height: 80, rotation: 45, opacity: 0.9 });
   });
 
   it('counts wallpaper, icon, css asset, and file uploads toward quota usage', async () => {
