@@ -1540,6 +1540,61 @@ describe('appTools', () => {
     });
   });
 
+  it('a todo-app request goes through the spec stage, not a curated template', async () => {
+    // Regression (CORE-ROADMAP Workstream 3, Phase A): the curated-template
+    // tool used to hand the todo template straight to createAndRegisterApp,
+    // bypassing the spec stage entirely. Curated templates are demoted to
+    // test fixtures (test/fixtures/apps/templates/) — the production tool
+    // factory must no longer offer the tool at all, so a "build me a todo
+    // app" request can only be served by buildAppFromPrompt, which runs
+    // buildSpecFromPrompt first.
+    const h = createAppToolsHarness();
+    assert.equal(
+      'createCuratedApp' in h.tools, false,
+      'the curated-template tool must not exist on the production tool factory',
+    );
+
+    h.ai.script.push(
+      // 1st model call: the spec stage — where the todo request now lands.
+      {
+        response: JSON.stringify({
+          name: 'Tasks',
+          purpose: 'A focused task list with filters and quick keyboard actions.',
+          screens: [
+            {
+              name: 'Tasks',
+              summary: 'The task list with filters and a composer.',
+              emptyState: 'An invitation to add the first task.',
+            },
+          ],
+          storageKeys: ['tasks.items'],
+        }),
+      },
+      // 2nd model call: file generation, driven by the spec.
+      { response: JSON.stringify({ files: { ...MINIMAL_APP_FILES } }) },
+    );
+
+    const result = await h.tools.buildAppFromPrompt.execute(
+      { prompt: 'build me a todo list app' },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(result.status, 'created');
+    assert.equal(h.desktop.itemsOf('app').length, 1);
+
+    // The request went through the spec stage first (its prompt carries the
+    // user's todo request), then file generation (its prompt carries the spec).
+    assert.equal(h.ai.calls.length, 2);
+    assert.match(h.ai.calls[0].inputs.messages.at(-1).content, /todo list app/);
+    const filesPrompt = h.ai.calls[1].inputs.messages.at(-1).content;
+    assert.match(filesPrompt, /Tasks/, 'the files stage receives the spec');
+    assert.match(filesPrompt, /tasks\.items/, 'the files stage receives the spec storage keys');
+
+    // The spec drives the installed app.
+    const appItem = h.desktop.itemsOf('app')[0];
+    assert.equal(appItem.appManifest.name, 'Tasks');
+    assert.equal(appItem.appManifest.description, 'A focused task list with filters and quick keyboard actions.');
+  });
+
   it('buildAppFromPrompt repairs an invalid spec through the validation loop before any file is generated', async () => {
     const h = createAppToolsHarness();
     h.ai.script.push(
