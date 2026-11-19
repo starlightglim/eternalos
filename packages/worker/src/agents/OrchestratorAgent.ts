@@ -19,6 +19,8 @@ import {
 } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import type { Env } from '../index';
+import { classifyRoute } from './intent';
+import type { ChatRoute } from './intent';
 import type { OrchestratorState } from './state';
 import { createDesktopTools } from './tools/desktopTools';
 import { createAppTools, initAppRegistry } from './tools/appTools';
@@ -30,8 +32,6 @@ import {
   shouldReplaceThreadTitle,
   upsertThread,
 } from './threadRegistry';
-
-type ChatRoute = 'chat' | 'desktop-read' | 'desktop-write' | 'app-read' | 'app-build' | 'app-install-preview';
 
 const BASE_PROMPT = `You are Eternal, the assistant for EternalOS.
 
@@ -178,41 +178,8 @@ function extractMessageText(message: { parts?: Array<{ type?: string; text?: unk
     .trim();
 }
 
-function classifyRoute(text: string): ChatRoute {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) return 'chat';
-
-  const greetingPattern = /^(hi|hello|hey|yo|sup|hiya|good morning|good afternoon|good evening|howdy)([!. ]+.*)?$/i;
-  if (normalized.length <= 40 && greetingPattern.test(normalized)) {
-    return 'chat';
-  }
-
-  const appNouns = /\b(app|application|widget|game|timer|calculator|kanban|pomodoro|paint|canvas|editor|tracker|todo|to-do|to do list|sticky note|whiteboard|notepad)\b/i;
-  const appReadPattern = /\b(list|show|which|what|inspect|review|open|read)\b.*\bapp(s)?\b|\bapp source\b|\bsource code\b.*\bapp\b/i;
-  const previewInstallPattern = /\binstall\b.*\bpreview\b|\bpreview\b.*\binstall\b|\binstall app preview\b/i;
-  if (previewInstallPattern.test(normalized)) {
-    return 'app-install-preview';
-  }
-  const appBuildPattern = /\b(build|create|make|generate|code|ship|implement|update|modify|edit|fix|delete|remove|install)\b.*\b(app|application|widget|preview|game|timer|calculator|kanban|pomodoro|paint|canvas|editor|tracker|todo|to-do|to do list|sticky note|whiteboard|notepad)\b|\b(update|modify|edit|fix|delete|remove|install)\b.*\bmy app\b/i;
-  if (appBuildPattern.test(normalized)) {
-    return 'app-build';
-  }
-  if (appReadPattern.test(normalized) || (appNouns.test(normalized) && /\bwhat|which|show|list|inspect|review|source\b/i.test(normalized))) {
-    return 'app-read';
-  }
-
-  const desktopWritePattern = /\b(organize|group|move|sort|tidy|clean up|create folder|put .* into|file away)\b|\b(folder|folders)\b.*\b(create|make|new)\b|\b(write|save|jot|draft|create|make)\b.*\b(note|memo|text file)\b/i;
-  if (desktopWritePattern.test(normalized)) {
-    return 'desktop-write';
-  }
-
-  const desktopReadPattern = /\b(desktop|file|files|folder|folders|image|images|photo|photos|video|videos|audio|pdf|search|find|tag|tags|ocr|upload|overview|recent|note|notes|memo|what's on my desktop|what is on my desktop)\b/i;
-  if (desktopReadPattern.test(normalized)) {
-    return 'desktop-read';
-  }
-
-  return 'chat';
-}
+// Intent routing (chat vs. desktop vs. app read/build/preview-install) lives in
+// ./intent — a pure, table-driven module covered by test/intent.test.mjs.
 
 function getSystemPrompt(route: ChatRoute): string {
   const prompt = (() => {
