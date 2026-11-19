@@ -150,6 +150,21 @@ export function clearAppearance() {
 }
 
 /**
+ * Apply the profile returned by a CSS-history revert
+ * (POST /api/css-history/:versionId/revert) to the appearance store.
+ *
+ * The revert endpoint responds with the FULL updated profile, not just the
+ * restored customCSS. The restore must therefore flow through
+ * profileToAppearance: a hand-rolled field list here previously dropped
+ * typography (systemFont/bodyFont/monoFont), windowOpacity, designTokens, and
+ * variants — wiping them from the session (and localStorage) until the next
+ * full desktop sync.
+ */
+export function applyCSSRevertProfile(profile: Record<string, unknown>): void {
+  useAppearanceStore.getState().loadAppearance(profileToAppearance(profile));
+}
+
+/**
  * Update a design token by its path. Routes to the correct storage location:
  * - Tokens with profileKey → flat fields on CustomAppearance
  * - Tokens without profileKey → designTokens blob
