@@ -1,0 +1,8 @@
+{
+  "name": "Photo Grid",
+  "description": "Reference acceptance app: lists and displays the user's images through the window.eternal fs bridge.",
+  "version": "1.0.0",
+  "windowConfig": { "defaultWidth": 880, "defaultHeight": 620, "resizable": true },
+  "permissions": { "fs": { "read": ["/**"], "mimeTypes": ["image/*"] } },
+  "rationale": "Read-only access to the user's images so the grid can display them."
+}

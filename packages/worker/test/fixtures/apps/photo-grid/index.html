@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Photo Grid</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="bar">
+      <div>
+        <h1>Photo Grid</h1>
+        <p id="summary" class="summary">Loading your photos…</p>
+      </div>
+      <div class="controls" role="group" aria-label="Tile size">
+        <button type="button" class="size-button" data-size="small" aria-pressed="false">S</button>
+        <button type="button" class="size-button" data-size="medium" aria-pressed="true">M</button>
+        <button type="button" class="size-button" data-size="large" aria-pressed="false">L</button>
+      </div>
+    </header>
+
+    <div class="stage" aria-live="polite">
+      <div id="loading" class="state">
+        <div class="spinner" aria-hidden="true"></div>
+        <p>Loading your photos…</p>
+      </div>
+      <div id="empty" class="state is-hidden">
+        <p class="big">No photos yet</p>
+        <p>Upload images to your desktop and they will appear here.</p>
+      </div>
+      <div id="error" class="state is-hidden">
+        <p class="big">Couldn't load your photos</p>
+        <p id="errorDetail"></p>
+      </div>
+      <div id="grid" class="grid is-hidden"></div>
+    </div>
+  </main>
+
+  <div id="lightbox" class="lightbox is-hidden" role="dialog" aria-modal="true" aria-label="Photo viewer">
+    <button type="button" id="lightboxClose" class="lightbox-close" aria-label="Close">&times;</button>
+    <img id="lightboxImage" alt="">
+    <p id="lightboxCaption" class="lightbox-caption"></p>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

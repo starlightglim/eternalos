@@ -1,0 +1,7 @@
+{
+  "name": "Scoped Notes Browser",
+  "description": "Declares a /Photos-only read grant but lists a path outside it.",
+  "version": "1.0.0",
+  "windowConfig": { "defaultWidth": 600, "defaultHeight": 500 },
+  "permissions": { "fs": { "read": ["/Photos/**"] } }
+}

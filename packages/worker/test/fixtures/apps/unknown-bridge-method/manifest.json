@@ -1,0 +1,6 @@
+{
+  "name": "Bridge Caller",
+  "description": "Calls a window.eternal method that does not exist.",
+  "version": "1.0.0",
+  "windowConfig": { "defaultWidth": 600, "defaultHeight": 500 }
+}
