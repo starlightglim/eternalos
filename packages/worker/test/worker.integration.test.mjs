@@ -1081,6 +1081,148 @@ describe('worker integration', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // Sandbox adversarial suite (roadmap Workstream 3 item 5): a generated or
+  // edited app cannot escape its declared scope. Every attempt below must be
+  // denied with a 4xx — never a 500, which would make a denial look like a
+  // platform fault (and trip 5xx alarms).
+  // -------------------------------------------------------------------------
+
+  it('blocks app fs scope escapes: traversal, foreign ids, symlink-like names', async () => {
+    const user = await signupUser();
+    const stranger = await signupUser();
+
+    // Owner desktop: /Gallery (the granted scope), a root-level private file,
+    // and /Vault/../secrets.txt — a ".."-named folder whose child paths LOOK
+    // traversal-like even though they are ordinary items out of scope.
+    const gallery = await createDesktopItem(user.token, {
+      type: 'folder', name: 'Gallery', parentId: null, position: { x: 0, y: 0 }, isPublic: false,
+    });
+    const inScope = await createDesktopItem(user.token, {
+      type: 'text', name: 'pic.txt', parentId: gallery.id, position: { x: 0, y: 1 },
+      isPublic: false, textContent: 'inside gallery',
+    });
+    const privateRoot = await createDesktopItem(user.token, {
+      type: 'text', name: 'private.txt', parentId: null, position: { x: 1, y: 0 },
+      isPublic: false, textContent: 'top secret',
+    });
+    const vault = await createDesktopItem(user.token, {
+      type: 'folder', name: 'Vault', parentId: null, position: { x: 2, y: 0 }, isPublic: false,
+    });
+    const dotDotFolder = await createDesktopItem(user.token, {
+      type: 'folder', name: '..', parentId: vault.id, position: { x: 0, y: 0 }, isPublic: false,
+    });
+    const vaultSecret = await createDesktopItem(user.token, {
+      type: 'text', name: 'secrets.txt', parentId: dotDotFolder.id, position: { x: 0, y: 1 },
+      isPublic: false, textContent: 'vault secret',
+    });
+    // A second user's private file whose id the app will try to read.
+    const strangerFile = await createDesktopItem(stranger.token, {
+      type: 'text', name: 'stranger.txt', parentId: null, position: { x: 0, y: 0 },
+      isPublic: false, textContent: 'stranger secret',
+    });
+
+    const app = await expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name: 'Traversal Gallery',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+          permissions: { fs: { read: ['/Gallery/**'] } },
+        },
+        files: { 'index.html': '<!doctype html><html><body>gallery</body></html>' },
+      }),
+    });
+    await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { fs: { read: ['/Gallery/**'] } } }),
+    });
+    const capability = await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/capability`, {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: '{}',
+    });
+    const bearer = { Authorization: `Bearer ${capability.token}` };
+    const appId = encodeURIComponent(app.appId);
+
+    // fs.list (REST + in-app bridge): the path filter may narrow within the
+    // grant but must never widen it. Plain, dot-dot, URL-encoded, and
+    // absolute-path forms all stay free of out-of-scope names.
+    const leakyFilters = [
+      '/Gallery/../Vault',
+      '/Gallery/../../',
+      '../',
+      '/..',
+      '%2e%2e/Vault',
+      `/api/files/${stranger.user.uid}/${strangerFile.id}/stranger.txt`,
+      `/${stranger.user.uid}/stranger.txt`,
+    ];
+    for (const surface of ['/fs/list', '/_eternal/fs/list']) {
+      for (const filter of leakyFilters) {
+        const response = await worker.fetch(
+          `${BASE_URL}/api/apps/${appId}${surface}?path=${filter}`,
+          { headers: bearer },
+        );
+        assert.equal(response.status, 200, `${surface}?path=${filter} should not error`);
+        const body = await readJson(response);
+        const names = body.items.map((item) => item.name);
+        assert.ok(!names.includes('secrets.txt'), `${surface}?path=${filter} leaked the Vault secret`);
+        assert.ok(!names.includes('private.txt'), `${surface}?path=${filter} leaked the root private file`);
+        assert.ok(!names.includes('stranger.txt'), `${surface}?path=${filter} leaked another user's file`);
+      }
+    }
+
+    // fs.read by id (both surfaces): out-of-scope ids are denied even when a
+    // ".."-named ancestor makes the item's path look traversal-like, and a
+    // foreign user's ids never resolve in the app owner's desktop.
+    const readRest = (rawId) => worker.fetch(
+      `${BASE_URL}/api/apps/${appId}/fs/read/${rawId}`,
+      { headers: bearer },
+    );
+    const readBridge = (rawId) => worker.fetch(
+      `${BASE_URL}/api/apps/${appId}/_eternal/fs/read/${rawId}`,
+      { headers: bearer },
+    );
+    for (const [surface, read] of [['rest', readRest], ['bridge', readBridge]]) {
+      assert.equal(
+        (await read(encodeURIComponent(vaultSecret.id))).status, 403,
+        `${surface}: the ".."-path item must be denied`,
+      );
+      assert.equal(
+        (await read(encodeURIComponent(privateRoot.id))).status, 403,
+        `${surface}: an out-of-scope root file must be denied`,
+      );
+      assert.equal(
+        (await read(encodeURIComponent(strangerFile.id))).status, 404,
+        `${surface}: another user's item id must not resolve`,
+      );
+      const allowed = await read(encodeURIComponent(inScope.id));
+      assert.equal(allowed.status, 200, `${surface}: the in-scope read must keep working`);
+      assert.match(await allowed.text(), /inside gallery/);
+    }
+
+    // fs.read with traversal-shaped ids: literal dot-segments are normalized
+    // away by URL parsing, URL-encoded traversal resolves to no item, and an
+    // id carrying literal ".." is rejected by the id validator. None may
+    // resolve to a blob or leak content.
+    for (const [surface, read] of [['rest', readRest], ['bridge', readBridge]]) {
+      for (const rawId of ['..', '%2e%2e', '.%2e', '..%2f..%2fprivate.txt']) {
+        const response = await read(rawId);
+        assert.ok(
+          response.status >= 400 && response.status < 500,
+          `${surface}: traversal id "${rawId}" must be a 4xx, got ${response.status}`,
+        );
+        const text = await response.text();
+        for (const secret of ['top secret', 'vault secret', 'stranger secret']) {
+          assert.ok(!text.includes(secret), `${surface}: traversal id "${rawId}" leaked "${secret}"`);
+        }
+      }
+    }
+  });
+
   it('denies profile.get without the profile grant and leaks no profile fields', async () => {
     const user = await signupUser();
     // Give the account real profile data so an accidental leak is observable.
@@ -1145,6 +1287,441 @@ describe('worker integration', () => {
     const wideResult = await profileVia(declared.appId, wideCap.token);
     assert.equal(wideResult.response.status, 200);
     assert.equal(wideResult.body.bio, undefined, 'a self-minted wide token must not widen the profile grant');
+  });
+
+  it('denies undeclared outbound network requests with 4xx, not 500', async () => {
+    const user = await signupUser();
+    const deploy = (name, permissions) => expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name,
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+          ...(permissions ? { permissions } : {}),
+        },
+        files: { 'index.html': '<!doctype html><html><body>net</body></html>' },
+      }),
+    });
+    const mint = (appId, body = '{}') => expectOk(`/api/apps/${encodeURIComponent(appId)}/capability`, {
+      method: 'POST', headers: authHeaders(user.token, JSON_HEADERS), body,
+    });
+    const fetchVia = (appId, token, url) => fetchJson(`/api/apps/${encodeURIComponent(appId)}/_eternal/fetch`, {
+      method: 'POST',
+      headers: authHeaders(token, JSON_HEADERS),
+      body: JSON.stringify({ url }),
+    });
+
+    // An app that declared no network permission at all.
+    const hermetic = await deploy('Net Hermetic App');
+    const hermeticCap = await mint(hermetic.appId);
+    const ungranted = await fetchVia(hermetic.appId, hermeticCap.token, 'https://evil.example.com/steal');
+    assert.equal(ungranted.response.status, 403, 'ungranted network use must be a 4xx denial');
+    assert.match(ungranted.body.error, /outbound network access not granted/);
+
+    // Declared + granted a single host: every other target class is denied —
+    // foreign hosts, private-IP/SSRF targets, non-http(s) schemes, and URLs
+    // with userinfo credentials.
+    const net = await deploy('Net Narrow App', { network: { outbound: ['api.example.com'] } });
+    await expectOk(`/api/apps/${encodeURIComponent(net.appId)}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { network: { outbound: ['api.example.com'] } } }),
+    });
+    const netCap = await mint(net.appId);
+    for (const [url, pattern] of [
+      ['https://evil.example.com/x', /outbound access to evil\.example\.com is not allowed/],
+      ['http://127.0.0.1/', /Network URL is not allowed/],
+      ['http://[fd00::1]/', /Network URL is not allowed/],
+      ['file:///etc/passwd', /Network URL is not allowed/],
+      ['https://user:pass@api.example.com/', /Network URL is not allowed/],
+    ]) {
+      const result = await fetchVia(net.appId, netCap.token, url);
+      assert.equal(result.response.status, 403, `fetch to ${url} must be denied, got ${result.response.status}`);
+      assert.match(result.body.error, pattern);
+    }
+
+    // A capability mint that requests a wildcard cannot smuggle it past the
+    // stored grant: the literal intersection keeps the granted host and
+    // drops the '*'.
+    const wideCap = await mint(net.appId, JSON.stringify({
+      granted: { network: { outbound: ['*', 'api.example.com'] } },
+    }));
+    assert.deepEqual(wideCap.granted, { network: { outbound: ['api.example.com'] } });
+    const starAttempt = await fetchVia(net.appId, wideCap.token, 'https://evil.example.com/x');
+    assert.equal(starAttempt.response.status, 403);
+  });
+
+  it('scopes file tokens and urlFor results to their owner and app', async () => {
+    const user = await signupUser();
+    const stranger = await signupUser();
+
+    const ownForm = new UndiciFormData();
+    ownForm.set('file', new File(['owner file'], 'own.txt', { type: 'text/plain' }));
+    const own = await expectOk('/api/upload', {
+      method: 'POST', headers: authHeaders(user.token), body: ownForm,
+    });
+
+    const strangerForm = new UndiciFormData();
+    strangerForm.set('file', new File(['stranger file'], 'stranger.txt', { type: 'text/plain' }));
+    const strangerUpload = await expectOk('/api/upload', {
+      method: 'POST', headers: authHeaders(stranger.token), body: strangerForm,
+    });
+
+    // Owner items: one inside the app's granted scope, one outside it.
+    const gallery = await createDesktopItem(user.token, {
+      type: 'folder', name: 'Gallery', parentId: null, position: { x: 0, y: 0 }, isPublic: false,
+    });
+    const inScope = await createDesktopItem(user.token, {
+      type: 'text', name: 'pic.txt', parentId: gallery.id, position: { x: 0, y: 1 },
+      isPublic: false, textContent: 'inside gallery',
+    });
+    const outOfScope = await createDesktopItem(user.token, {
+      type: 'text', name: 'outside.txt', parentId: null, position: { x: 1, y: 0 },
+      isPublic: false, textContent: 'outside scope',
+    });
+
+    const deploy = (name, permissions) => expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name,
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+          ...(permissions ? { permissions } : {}),
+        },
+        files: { 'index.html': '<!doctype html><html><body>scoped</body></html>' },
+      }),
+    });
+    const galleryApp = await deploy('UrlFor Gallery App', { fs: { read: ['/Gallery/**'] } });
+    const vaultApp = await deploy('UrlFor Vault App', { fs: { read: ['/Vault/**'] } });
+    for (const appId of [galleryApp.appId, vaultApp.appId]) {
+      await expectOk(`/api/apps/${encodeURIComponent(appId)}/permissions`, {
+        method: 'PATCH',
+        headers: authHeaders(user.token, JSON_HEADERS),
+        body: JSON.stringify({ granted: { fs: { read: [appId === galleryApp.appId ? '/Gallery/**' : '/Vault/**'] } } }),
+      });
+    }
+    const galleryCap = await expectOk(`/api/apps/${encodeURIComponent(galleryApp.appId)}/capability`, {
+      method: 'POST', headers: authHeaders(user.token, JSON_HEADERS), body: '{}',
+    });
+    const galleryAppId = encodeURIComponent(galleryApp.appId);
+    const vaultAppId = encodeURIComponent(vaultApp.appId);
+    const bearer = { Authorization: `Bearer ${galleryCap.token}` };
+
+    // A file token is bound to the account that minted it: the owner's token
+    // reads the owner's own file...
+    const { ft } = await expectOk('/api/file-token', {
+      method: 'POST', headers: authHeaders(user.token),
+    });
+    const ownUrl = `${BASE_URL}/api/files/${user.user.uid}/${own.item.id}/${encodeURIComponent(own.item.name)}?ft=${encodeURIComponent(ft)}`;
+    const ownRes = await worker.fetch(ownUrl);
+    assert.equal(ownRes.status, 200, 'the owner ft must read the owner own file');
+    assert.equal(await ownRes.text(), 'owner file');
+
+    // ...but is rejected for another user's private file, even knowing the
+    // exact uid/itemId/filename path.
+    const strangerUrl = `${BASE_URL}/api/files/${stranger.user.uid}/${strangerUpload.item.id}/${encodeURIComponent(strangerUpload.item.name)}?ft=${encodeURIComponent(ft)}`;
+    assert.equal((await worker.fetch(strangerUrl)).status, 403, 'an ft must not cross users');
+
+    // A file token is not a session credential: it cannot approve grants,
+    // mint capabilities, or renew itself.
+    assert.equal((await fetchJson(`/api/apps/${galleryAppId}/permissions`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${ft}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ granted: { fs: { read: ['/**'] } } }),
+    })).response.status, 401, 'an ft must not authorize permission changes');
+    assert.equal((await fetchJson(`/api/apps/${galleryAppId}/capability`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ft}`, 'Content-Type': 'application/json' },
+      body: '{}',
+    })).response.status, 401, 'an ft must not mint capabilities');
+    assert.equal((await fetchJson('/api/file-token', {
+      method: 'POST', headers: { Authorization: `Bearer ${ft}` },
+    })).response.status, 401, 'an ft must not renew itself');
+
+    // The sandboxed app cannot mint a file token at all — it holds neither a
+    // session nor a file token, and its capability is not one.
+    assert.equal((await fetchJson('/api/file-token', { method: 'POST' })).response.status, 401);
+    assert.equal((await fetchJson('/api/file-token', {
+      method: 'POST', headers: { Authorization: `Bearer ${galleryCap.token}` },
+    })).response.status, 401, 'an app capability must not mint file tokens');
+
+    // urlFor results (same-origin /_eternal/fs/read URLs) are appId- and
+    // scope-bound. Without any credential — exactly how an <img src> fetches
+    // one — the bridge answers 401 before any scope check.
+    assert.equal(
+      (await worker.fetch(`${BASE_URL}/api/apps/${galleryAppId}/_eternal/fs/read/${encodeURIComponent(inScope.id)}`)).status, 401,
+      'a urlFor result must not resolve without the capability',
+    );
+    // With the app's own capability: another user's item id never resolves.
+    assert.equal(
+      (await worker.fetch(`${BASE_URL}/api/apps/${galleryAppId}/_eternal/fs/read/${encodeURIComponent(strangerUpload.item.id)}`, { headers: bearer })).status, 404,
+      'another user\'s item id must not resolve through the bridge',
+    );
+    // An out-of-scope item in the same desktop is denied.
+    assert.equal(
+      (await worker.fetch(`${BASE_URL}/api/apps/${galleryAppId}/_eternal/fs/read/${encodeURIComponent(outOfScope.id)}`, { headers: bearer })).status, 403,
+      'an out-of-scope item must be denied through the bridge',
+    );
+    // A capability is appId-bound: it does not authenticate on another app's mount.
+    assert.equal(
+      (await worker.fetch(`${BASE_URL}/api/apps/${vaultAppId}/_eternal/fs/read/${encodeURIComponent(outOfScope.id)}`, { headers: bearer })).status, 401,
+      'a capability must not authenticate on another app\'s mount',
+    );
+    // Positive control: the in-scope read through the app's own mount works.
+    const okRead = await worker.fetch(
+      `${BASE_URL}/api/apps/${galleryAppId}/_eternal/fs/read/${encodeURIComponent(inScope.id)}`,
+      { headers: bearer },
+    );
+    assert.equal(okRead.status, 200);
+    assert.match(await okRead.text(), /inside gallery/);
+  });
+
+  it('requires explicit re-approval to expand app permissions (no self-escalation)', async () => {
+    const user = await signupUser();
+    const rival = await signupUser();
+
+    const gallery = await createDesktopItem(user.token, {
+      type: 'folder', name: 'Gallery', parentId: null, position: { x: 0, y: 0 }, isPublic: false,
+    });
+    const inScope = await createDesktopItem(user.token, {
+      type: 'text', name: 'pic.txt', parentId: gallery.id, position: { x: 0, y: 1 },
+      isPublic: false, textContent: 'inside gallery',
+    });
+    const privateRoot = await createDesktopItem(user.token, {
+      type: 'text', name: 'private.txt', parentId: null, position: { x: 1, y: 0 },
+      isPublic: false, textContent: 'top secret',
+    });
+
+    const deploy = (appId, name, permissions, files) => expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        ...(appId ? { appId } : {}),
+        manifest: {
+          name,
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+          ...(permissions ? { permissions } : {}),
+        },
+        files,
+      }),
+    });
+    const html = (body) => ({ 'index.html': `<!doctype html><html><body>${body}</body></html>` });
+
+    // v1: narrow, approved scope.
+    const app = await deploy(null, 'Escalation Guard', { fs: { read: ['/Gallery/**'] } }, html('v1'));
+    await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { fs: { read: ['/Gallery/**'] } } }),
+    });
+    const mint = (body = '{}') => expectOk(`/api/apps/${encodeURIComponent(app.appId)}/capability`, {
+      method: 'POST', headers: authHeaders(user.token, JSON_HEADERS), body,
+    });
+    const bridge = (path, token, method, body) => worker.fetch(
+      `${BASE_URL}/api/apps/${encodeURIComponent(app.appId)}/_eternal${path}`,
+      {
+        method,
+        headers: authHeaders(token, JSON_HEADERS),
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      },
+    );
+    const appId = encodeURIComponent(app.appId);
+
+    // v2: the app "edits its own manifest" (dev-deploy update) to declare a
+    // much broader scope — keeping the old declaration alongside the new one,
+    // as a realistic additive update would. The requested set grows, but the
+    // grant must not.
+    const updated = await deploy(app.appId, 'Escalation Guard', {
+      fs: { read: ['/Gallery/**', '/**'], write: ['/**'] },
+      profile: { read: ['username', 'bio'] },
+      network: { outbound: ['*'] },
+    }, html('v2'));
+    assert.equal(updated.version, 2);
+    const afterUpdate = await expectOk(`/api/apps/${appId}/permissions`, {
+      headers: authHeaders(user.token),
+    });
+    assert.deepEqual(afterUpdate.requested.fs.read, ['/Gallery/**', '/**'], 'the request may grow');
+    assert.deepEqual(afterUpdate.granted, { fs: { read: ['/Gallery/**'] } },
+      'the grant must not grow with the request');
+
+    // The bridge still denies everything the update tried to claim.
+    const cap = await mint();
+    assert.equal((await bridge(`/fs/read/${encodeURIComponent(privateRoot.id)}`, cap.token, 'GET')).status, 403);
+    assert.equal((await bridge('/profile', cap.token, 'GET')).status, 403);
+    assert.equal((await bridge('/fetch', cap.token, 'POST', { url: 'https://evil.example.com/x' })).status, 403);
+
+    // A capability minted with an inflated `granted` body is intersected down
+    // to nothing new, and the inflated token gains nothing.
+    const wideCap = await mint(JSON.stringify({
+      granted: { fs: { read: ['/**'] }, profile: { read: ['username'] }, network: { outbound: ['*'] } },
+    }));
+    assert.deepEqual(wideCap.granted, {}, 'an inflated mint must be intersected to the stored grant');
+    assert.equal((await bridge(`/fs/read/${encodeURIComponent(privateRoot.id)}`, wideCap.token, 'GET')).status, 403);
+
+    // Only the explicit approval route can widen the grant — and it can only
+    // grant within what the current manifest requests.
+    await expectOk(`/api/apps/${appId}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { fs: { read: ['/**'], write: ['/**'] } } }),
+    });
+    const approved = await mint();
+    const openedRead = await bridge(`/fs/read/${encodeURIComponent(privateRoot.id)}`, approved.token, 'GET');
+    assert.equal(openedRead.status, 200, 'after explicit approval the widened scope must work');
+    assert.match(await openedRead.text(), /top secret/);
+    // The manifest never declared ipc. The approval route mirrors the real
+    // client (which sends the full selection), so include the current grant
+    // alongside the undeclared domain: fs survives, ipc is discarded.
+    const ipcApprove = await expectOk(`/api/apps/${appId}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        granted: { fs: { read: ['/**'], write: ['/**'] }, ipc: { emit: ['*'] } },
+      }),
+    });
+    assert.deepEqual(ipcApprove.granted, { fs: { read: ['/**'], write: ['/**'] } },
+      'approving an undeclared domain must not grant it');
+
+    // With the approved write scope the app can see its own desktop item —
+    // but patching itself to add permissions is filtered to benign fields.
+    const list = await expectOk(`/api/apps/${appId}/fs/list`, {
+      headers: { Authorization: `Bearer ${approved.token}` },
+    });
+    const selfItem = list.items.find((item) => item.type === 'app' && item.name === 'Escalation Guard');
+    assert.ok(selfItem, 'the app item should be visible under a full read grant');
+
+    const selfPatch = await fetchJson(
+      `/api/apps/${appId}/_eternal/fs/patch/${encodeURIComponent(selfItem.id)}`,
+      {
+        method: 'POST',
+        headers: authHeaders(approved.token, JSON_HEADERS),
+        body: JSON.stringify({
+          grantedPermissions: { profile: { read: ['username'] } },
+          appManifest: {
+            name: 'Escalation Guard', appId: app.appId,
+            windowConfig: { defaultWidth: 600, defaultHeight: 500 },
+            permissions: { profile: { read: ['username'] } },
+          },
+          permissionGrantedAt: Date.now(),
+        }),
+      },
+    );
+    assert.equal(selfPatch.response.status, 403, 'a self-escalation patch must be denied');
+    assert.match(selfPatch.body.error, /No permitted fields to update/);
+
+    // A mixed patch applies only the benign field; grants are untouched.
+    const mixed = await fetchJson(
+      `/api/apps/${appId}/_eternal/fs/patch/${encodeURIComponent(selfItem.id)}`,
+      {
+        method: 'POST',
+        headers: authHeaders(approved.token, JSON_HEADERS),
+        body: JSON.stringify({
+          name: 'Escalation Guard Renamed',
+          grantedPermissions: { profile: { read: ['username'] } },
+        }),
+      },
+    );
+    assert.equal(mixed.response.status, 200);
+    assert.equal(mixed.body.name, 'Escalation Guard Renamed', 'the benign field applies');
+    const permsAfter = await expectOk(`/api/apps/${appId}/permissions`, {
+      headers: authHeaders(user.token),
+    });
+    assert.deepEqual(permsAfter.granted, { fs: { read: ['/**'], write: ['/**'] } },
+      'a mixed patch must not change grants');
+    assert.deepEqual(permsAfter.requested.profile, { read: ['username', 'bio'] },
+      'a mixed patch must not rewrite the manifest');
+
+    // The app's own capability is not a session credential: it cannot mint
+    // capabilities or approve permissions on the REST surface.
+    assert.equal((await fetchJson(`/api/apps/${appId}/capability`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${approved.token}`, 'Content-Type': 'application/json' },
+      body: '{}',
+    })).response.status, 401, 'a capability must not mint capabilities');
+    assert.equal((await fetchJson(`/api/apps/${appId}/permissions`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${approved.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ granted: { fs: { read: ['/**'] } } }),
+    })).response.status, 401, 'a capability must not approve permissions');
+
+    // A different account cannot edit someone else's app into more permissions.
+    const foreignUpdate = await fetchJson('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(rival.token, JSON_HEADERS),
+      body: JSON.stringify({
+        appId: app.appId,
+        manifest: {
+          name: 'Hijacked App',
+          version: '9.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500 },
+          permissions: { fs: { read: ['/**'] } },
+        },
+        files: html('hijack'),
+      }),
+    });
+    assert.equal(foreignUpdate.response.status, 403, 'a non-owner update must be denied');
+
+    // In-scope reads keep working throughout (positive control at the end).
+    const still = await bridge(`/fs/read/${encodeURIComponent(inScope.id)}`, approved.token, 'GET');
+    assert.equal(still.status, 200);
+    assert.match(await still.text(), /inside gallery/);
+  });
+
+  it('isolates app storage between apps and rejects forged keys with 4xx', async () => {
+    const user = await signupUser();
+    const deploy = (name) => expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name,
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+        },
+        files: { 'index.html': '<!doctype html><html><body>storage</body></html>' },
+      }),
+    });
+    const appA = await deploy('Storage App A');
+    const appB = await deploy('Storage App B');
+    const mint = (appId) => expectOk(`/api/apps/${encodeURIComponent(appId)}/capability`, {
+      method: 'POST', headers: authHeaders(user.token, JSON_HEADERS), body: '{}',
+    });
+    const capA = await mint(appA.appId);
+    const capB = await mint(appB.appId);
+    const storage = (appId, token, method, path, body) => fetchJson(
+      `/api/apps/${encodeURIComponent(appId)}/_eternal${path}`,
+      {
+        method,
+        headers: authHeaders(token, JSON_HEADERS),
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      },
+    );
+
+    const written = await storage(appA.appId, capA.token, 'POST', '/storage/private-note', { value: 'A secret' });
+    assert.equal(written.response.status, 200);
+
+    // A reads its own key back; B cannot see it (per-app KV namespace).
+    const readA = await storage(appA.appId, capA.token, 'GET', '/storage/private-note');
+    assert.equal(readA.response.status, 200);
+    assert.equal(readA.body.value, 'A secret');
+    const readB = await storage(appB.appId, capB.token, 'GET', '/storage/private-note');
+    assert.equal(readB.response.status, 404, "app B must not read app A's storage");
+
+    // B's key list shows nothing from A's namespace.
+    const listB = await storage(appB.appId, capB.token, 'GET', '/storage');
+    assert.equal(listB.response.status, 200);
+    assert.deepEqual(listB.body.keys, [], "app B's key list must not include app A's keys");
+
+    // A key cannot forge another app's namespace: ':' is the namespace
+    // separator and is rejected by the validator with a 4xx, not a 500.
+    const forged = await storage(appA.appId, capA.token, 'POST', '/storage/x:y', { value: 1 });
+    assert.equal(forged.response.status, 400, 'a forged storage key must be a 4xx');
+    assert.match(forged.body.error, /Invalid storage key/);
   });
 
   it('allows only one concurrent refresh-token rotation', async () => {
