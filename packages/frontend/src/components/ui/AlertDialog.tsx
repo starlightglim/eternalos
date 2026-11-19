@@ -25,13 +25,12 @@ interface AlertDialogProps {
   onClose?: () => void;
 }
 
-/** Focusable elements inside the dialog, in DOM order. */
-function getFocusableElements(root: HTMLElement): HTMLElement[] {
-  return Array.from(
-    root.querySelectorAll<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-    )
-  ).filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
+/** Focusable, mounted button elements in render order. */
+function getFocusableElements(els: readonly (HTMLElement | null)[]): HTMLElement[] {
+  return els.filter(
+    (el): el is HTMLElement =>
+      el !== null && el.tabIndex !== -1 && !el.hasAttribute('disabled')
+  );
 }
 
 /**
@@ -49,6 +48,11 @@ export function AlertDialog({
   onClose,
 }: AlertDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  // The dialog's focusables are exactly the buttons it renders; keep
+  // their element handles by index instead of scraping the DOM (which the
+  // repo's node-env test DOM does not support, and which is over-general
+  // anyway — no other focusable element is ever rendered here).
+  const buttonEls = useRef<(HTMLButtonElement | null)[]>([]);
   const titleId = useId();
   const messageId = useId();
 
@@ -85,10 +89,11 @@ export function AlertDialog({
     const root = dialogRef.current;
     if (!root) return;
     const active = document.activeElement;
-    if (active instanceof HTMLElement && root.contains(active)) return;
-    const focusables = getFocusableElements(root);
+    if (active && root.contains(active)) return;
+    const focusables = getFocusableElements(buttonEls.current);
     if (focusables.length === 0) return;
-    (root.querySelector<HTMLElement>('[data-primary]') ?? focusables[0]).focus();
+    const primaryIndex = defaultButtons.findIndex((button) => button.primary);
+    (buttonEls.current[primaryIndex] ?? focusables[0]).focus();
   }, [defaultButtons]);
 
   // Escape closes; Tab is trapped inside the dialog.
@@ -106,14 +111,12 @@ export function AlertDialog({
         return;
       }
       if (e.key === 'Tab') {
-        const root = dialogRef.current;
-        if (!root) return;
-        const focusables = getFocusableElements(root);
+        const focusables = getFocusableElements(buttonEls.current);
         if (focusables.length === 0) return;
         const first = focusables[0];
         const last = focusables[focusables.length - 1];
         const active = document.activeElement as HTMLElement | null;
-        const inside = root.contains(active);
+        const inside = active !== null && (dialogRef.current?.contains(active) ?? false);
         if (e.shiftKey && (active === first || !inside)) {
           e.preventDefault();
           last.focus();
@@ -172,7 +175,7 @@ export function AlertDialog({
               className={`${styles.button} ${button.primary ? styles.primaryButton : ''}`}
               onClick={button.onClick}
               autoFocus={button.primary}
-              data-primary={button.primary || undefined}
+              ref={(el) => { buttonEls.current[index] = el; }}
             >
               {button.label}
             </button>
