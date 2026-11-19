@@ -1,5 +1,23 @@
 // Desktop state store for EternalOS
 // Uses Cloudflare Workers API (or mock mode when API not configured)
+//
+// State model (CORE-ROADMAP Workstream 1, item 4): the store separates
+// server-synced state from interaction state.
+//
+//   * The data slice (items, uid, loading, uploads, serverWindows) mirrors —
+//     or is en route to — server state. `items` holds the *displayed*
+//     (optimistic) values, applied immediately so the UI stays responsive.
+//     The last server-confirmed value per item lives in the acknowledged
+//     snapshot (./desktopItemSync) together with all pending-mutation
+//     bookkeeping; every failed write rolls the displayed item back to that
+//     snapshot, so nothing ever looks saved when the server never recorded
+//     it. `setItems`/`loadDesktop` are the reconcile paths and refresh the
+//     displayed items and the snapshot together.
+//   * The selection slice (./desktopSelectionSlice) is interaction-only
+//     state. Sync/reconcile code never writes it: a server snapshot or a
+//     rollback leaves the selection untouched, and only the slice's own
+//     actions change it (plus `dropFromSelection` when items are
+//     deleted/trashed).
 
 import { create } from 'zustand';
 import type { DesktopItem } from '../types';
@@ -16,6 +34,18 @@ import {
 } from '../services/api';
 import { useAlertStore } from './alertStore';
 import { useSoundStore, type SoundType } from './soundStore';
+import {
+  bumpDesktopSession,
+  currentDesktopSession,
+  forgetAcknowledgedItems,
+  noteAcknowledgedCreate,
+  noteAcknowledgedWrite,
+  noteServerItems,
+  persistItemMutation,
+  resetItemSync,
+  rollbackAttemptedFields,
+} from './desktopItemSync';
+import { createDesktopSelectionSlice, type DesktopSelectionSlice } from './desktopSelectionSlice';
 
 // Helper to show errors via alertStore
 const showError = (message: string, title?: string) => {
@@ -69,9 +99,10 @@ interface UploadProgress {
   error?: string;
 }
 
-interface DesktopStore {
+// The server-synced data slice. Selection (interaction state) lives in
+// DesktopSelectionSlice; DesktopStore extends both.
+interface DesktopDataSlice {
   items: DesktopItem[];
-  selectedIds: Set<string>;
   uid: string | null; // Current user's uid
   loading: boolean;
   uploads: UploadProgress[]; // Active upload progress
@@ -85,12 +116,6 @@ interface DesktopStore {
   updateItem: (id: string, updates: Partial<DesktopItem>) => Promise<boolean>;
   moveItem: (id: string, position: { x: number; y: number }) => void;
   requestImageAnalysis: (id: string) => Promise<void>;
-
-  // Selection
-  selectItem: (id: string, addToSelection?: boolean) => void;
-  selectAll: (parentId?: string | null) => void;
-  deselectAll: () => void;
-  isSelected: (id: string) => boolean;
 
   // Helpers
   getItemsByParent: (parentId: string | null) => DesktopItem[];
@@ -135,6 +160,8 @@ interface DesktopStore {
   getTrashedItems: () => DesktopItem[];
   getTrashCount: () => number;
 }
+
+export interface DesktopStore extends DesktopDataSlice, DesktopSelectionSlice {}
 
 // Mock data for demo mode (when API not configured)
 const mockItems: DesktopItem[] = [
@@ -207,28 +234,6 @@ const mockItems: DesktopItem[] = [
 
 // Debounce timers for position updates
 const positionUpdateTimers = new Map<string, ReturnType<typeof setTimeout>>();
-// The position to roll back to if a debounced position save fails. Captured
-// once at the start of a save cycle (the last server-known position), so a
-// failed save during a rapid drag reverts to where the server actually is,
-// not to an intermediate optimistic position.
-const positionRollback = new Map<string, { x: number; y: number }>();
-const itemWriteQueues = new Map<string, Promise<boolean>>();
-let desktopSessionVersion = 0;
-
-async function persistItemMutation(id: string, operation: () => Promise<unknown>): Promise<boolean> {
-  const version = desktopSessionVersion;
-  const previous = itemWriteQueues.get(id) ?? Promise.resolve(true);
-  const pending = previous.catch(() => false).then(async () => {
-    if (version !== desktopSessionVersion) return false;
-    await operation();
-    return version === desktopSessionVersion;
-  });
-  itemWriteQueues.set(id, pending);
-  try { return await pending; }
-  finally {
-    if (itemWriteQueues.get(id) === pending) itemWriteQueues.delete(id);
-  }
-}
 
 // Local cache key for instant load.
 // Cache is namespaced by uid so one user's items can never surface under
@@ -329,246 +334,262 @@ function purgeDesktopCache() {
   }
 }
 
-export const useDesktopStore = create<DesktopStore>((set, get) => ({
-  // Use cached items on initial load for instant display (if API mode)
-  // Falls back to mock items in demo mode
-  items: isApiConfigured ? (loadCachedItems() || []) : mockItems,
-  selectedIds: new Set<string>(),
-  uid: null,
-  loading: false,
-  uploads: [],
-  serverWindows: [],
+// The localStorage cache holds the last server-known desktop from a previous
+// session, so it seeds both the displayed items and the acknowledged
+// snapshot until the next server reconcile replaces both.
+const initialItems: DesktopItem[] = isApiConfigured
+  ? (loadCachedItems() || [])
+  : mockItems;
+if (isApiConfigured) {
+  noteServerItems(initialItems);
+}
 
-  setItems: (items) => {
-    set({ items });
+export const useDesktopStore = create<DesktopStore>()((set, get, api) => {
+  // Update only the displayed (optimistic) items, and keep the local cache
+  // in step. Rollback paths use this so reverting a failed write can never
+  // launder an optimistic value into the server-acknowledged snapshot;
+  // server snapshots go through `setItems`, which refreshes both.
+  const setDisplayedItems = (next: DesktopItem[]) => {
+    set({ items: next });
     if (isApiConfigured) {
-      cacheItems(items);
+      cacheItems(next);
     }
-  },
+  };
 
-  setUid: (uid) => {
-    if (get().uid !== uid) desktopSessionVersion += 1;
-    set({ uid });
-  },
+  return {
+    // ---- Interaction slice: selection (never touched by sync code) ----
+    ...createDesktopSelectionSlice(set, get, api),
 
-  setLoading: (loading) => set({ loading }),
+    // ---- Server-synced data slice ----
+    // Use cached items on initial load for instant display (if API mode)
+    // Falls back to mock items in demo mode
+    items: initialItems,
+    uid: null,
+    loading: false,
+    uploads: [],
+    serverWindows: [],
 
-  reset: () => {
-    desktopSessionVersion += 1;
-    itemWriteQueues.clear();
-    // Cancel any pending position/cache writes so they can't resurrect
-    // the previous user's data after we clear.
-    positionUpdateTimers.forEach((t) => clearTimeout(t));
-    positionUpdateTimers.clear();
-    positionRollback.clear();
-    purgeDesktopCache();
-    set({
-      items: [],
-      selectedIds: new Set<string>(),
-      uid: null,
-      loading: false,
-      uploads: [],
-      serverWindows: [],
-    });
-  },
-
-  addItem: (item) => {
-    const version = desktopSessionVersion;
-    // Update local state
-    set((state) => {
-      const newItems = [...state.items, item];
+    setItems: (items) => {
+      // A server snapshot: the displayed items and the acknowledged state
+      // move to it together. (useDesktopSync + tests use this as the
+      // reconcile entry point.)
+      noteServerItems(items);
+      set({ items });
       if (isApiConfigured) {
-        cacheItems(newItems);
+        cacheItems(items);
       }
-      return { items: newItems };
-    });
+    },
 
-    // Sync to API if configured
-    if (isApiConfigured) {
-      persistItemMutation(item.id, () => apiCreateItem(item)).catch((error) => {
-        if (version !== desktopSessionVersion) return;
-        get().setItems(get().items.filter((current) => current.id !== item.id));
-        console.error('Failed to create item:', error);
-        showError(
-          `Could not create "${item.name}". ${error instanceof Error ? error.message : 'Please try again.'}`,
-          'Create Failed'
-        );
+    setUid: (uid) => {
+      if (get().uid !== uid) bumpDesktopSession();
+      set({ uid });
+    },
+
+    setLoading: (loading) => set({ loading }),
+
+    reset: () => {
+      bumpDesktopSession();
+      // Cancel any pending position/cache writes so they can't resurrect
+      // the previous user's data after we clear.
+      positionUpdateTimers.forEach((t) => clearTimeout(t));
+      positionUpdateTimers.clear();
+      // Drop the acknowledged snapshot + queued writes of the old session.
+      resetItemSync();
+      purgeDesktopCache();
+      // Selection is interaction state; clear it through its slice action.
+      get().deselectAll();
+      set({
+        items: [],
+        uid: null,
+        loading: false,
+        uploads: [],
+        serverWindows: [],
       });
-    }
-  },
+    },
 
-  removeItem: (id) => {
-    const version = desktopSessionVersion;
-    const original = get().getItem(id);
-    // Update local state
-    set((state) => {
-      const newItems = state.items.filter((item) => item.id !== id);
-      if (isApiConfigured) {
-        cacheItems(newItems);
-      }
-      return {
-        items: newItems,
-        selectedIds: new Set([...state.selectedIds].filter((sid) => sid !== id)),
-      };
-    });
-
-    // Sync to API if configured
-    if (isApiConfigured) {
-      persistItemMutation(id, () => apiDeleteItem(id)).catch((error) => {
-        if (version !== desktopSessionVersion) return;
-        if (original && !get().getItem(id)) get().setItems([...get().items, original]);
-        console.error('Failed to delete item:', error);
-        showError(
-          `Could not delete item. ${error instanceof Error ? error.message : 'Please try again.'}`,
-          'Delete Failed'
-        );
-      });
-    }
-  },
-
-  updateItem: async (id, updates) => {
-    const version = desktopSessionVersion;
-    const original = get().getItem(id);
-    if (!original) return false;
-    // Privacy and document content only become authoritative after a server
-    // acknowledgement. Editors retain their own draft while the save is pending.
-    const requiresAcknowledgement = 'isPublic' in updates || 'textContent' in updates;
-    const apply = () => set((state) => {
-      const newItems = state.items.map((item) =>
-        item.id === id ? { ...item, ...updates, updatedAt: Date.now() } : item
-      );
-      if (isApiConfigured) {
-        cacheItems(newItems);
-      }
-      return { items: newItems };
-    });
-    if (!isApiConfigured || !requiresAcknowledgement) apply();
-
-    if (isApiConfigured) {
-      const optimisticItem = get().getItem(id);
-      try {
-        const currentSession = await persistItemMutation(id, () => apiUpdateItems([{ id, updates }]));
-        if (!currentSession) return false;
-        if (requiresAcknowledgement) apply();
-      } catch (error) {
-        if (version !== desktopSessionVersion) return false;
-        if (!requiresAcknowledgement && get().getItem(id) === optimisticItem) {
-          get().setItems(get().items.map((item) => item.id === id ? original : item));
+    addItem: (item) => {
+      const version = currentDesktopSession();
+      // Update local state
+      set((state) => {
+        const newItems = [...state.items, item];
+        if (isApiConfigured) {
+          cacheItems(newItems);
         }
-        console.error('Failed to update item:', error);
-        showError(
-          'Could not save your changes. Please try again.',
-          'Sync Failed'
-        );
-        return false;
-      }
-    }
-    return true;
-  },
+        return { items: newItems };
+      });
 
-  moveItem: (id, position) => {
-    // Play drop sound
-    playSound('drop');
-
-    // Capture the rollback target once per save cycle: the last server-known
-    // position, i.e. the position before the first move since the last save.
-    // While a save is pending (timer set) we keep the original target so a
-    // mid-drag chain still reverts to where the server actually is.
-    if (!positionUpdateTimers.has(id)) {
-      const current = get().getItem(id);
-      if (current) positionRollback.set(id, current.position);
-    }
-
-    // Update local state immediately for responsive UI
-    set((state) => {
-      const newItems = state.items.map((item) =>
-        item.id === id ? { ...item, position, updatedAt: Date.now() } : item
-      );
-      // Note: caching is handled by the debounced API sync below
-      return { items: newItems };
-    });
-
-    // Debounced sync to API (avoid excessive writes during drag)
-    if (isApiConfigured) {
-      const version = desktopSessionVersion;
-      // Clear any existing timer for this item
-      const existingTimer = positionUpdateTimers.get(id);
-      if (existingTimer) {
-        clearTimeout(existingTimer);
-      }
-
-      // Set a new timer
-      const timer = setTimeout(() => {
-        positionUpdateTimers.delete(id);
-        const rollbackTo = positionRollback.get(id);
-        // Serialize through the per-item write queue (same as other mutations)
-        // so a failed position save rolls back instead of silently leaving an
-        // unsaved position that looks persisted.
-        persistItemMutation(id, () => apiUpdateItems([{ id, updates: { position } }]))
+      // Sync to API if configured
+      if (isApiConfigured) {
+        persistItemMutation(item.id, () => apiCreateItem(item))
           .then((savedInSession) => {
-            if (savedInSession) {
-              positionRollback.delete(id);
-              cacheItems(get().items);
-            }
-            // savedInSession === false means the session changed under us
-            // (account switch); rehydration reconciles, so leave state alone.
+            // The server now knows the item exactly as created.
+            if (savedInSession) noteAcknowledgedCreate(item);
           })
-          .catch(() => {
-            // The session is unchanged but the save failed (offline/4xx/5xx).
-            // Revert to the last server-known position, but only if the user
-            // hasn't moved this item again since this save was queued.
-            if (version !== desktopSessionVersion) return;
-            const current = get().getItem(id);
-            const unchangedSinceSave = current
-              && current.position.x === position.x
-              && current.position.y === position.y;
-            if (unchangedSinceSave && rollbackTo) {
-              set((state) => ({
-                items: state.items.map((item) =>
-                  item.id === id ? { ...item, position: rollbackTo } : item
-                ),
-              }));
-              cacheItems(get().items);
-            }
-            positionRollback.delete(id);
+          .catch((error) => {
+            if (version !== currentDesktopSession()) return;
+            // The create failed: no phantom item, and nothing acknowledged.
+            forgetAcknowledgedItems([item.id]);
+            setDisplayedItems(get().items.filter((current) => current.id !== item.id));
+            console.error('Failed to create item:', error);
             showError(
-              'Could not save the new position. It has been reverted.',
-              'Sync Failed'
+              `Could not create "${item.name}". ${error instanceof Error ? error.message : 'Please try again.'}`,
+              'Create Failed'
             );
           });
-      }, 500);
+      }
+    },
 
-      positionUpdateTimers.set(id, timer);
-    }
-  },
+    removeItem: (id) => {
+      const version = currentDesktopSession();
+      const original = get().getItem(id);
+      // Update local state
+      set((state) => {
+        const newItems = state.items.filter((item) => item.id !== id);
+        if (isApiConfigured) {
+          cacheItems(newItems);
+        }
+        return { items: newItems };
+      });
+      // A deleted item cannot stay selected (interaction slice action).
+      get().dropFromSelection([id]);
 
-  requestImageAnalysis: async (id) => {
-    const item = get().getItem(id);
-    if (!item || item.type !== 'image' || !isApiConfigured) return;
-
-    set((state) => {
-      const newItems: DesktopItem[] = state.items.map((currentItem) =>
-        currentItem.id === id
-          ? {
-              ...currentItem,
-              imageAnalysis: {
-                ...(currentItem.imageAnalysis || {}),
-                status: 'pending' as const,
-                error: undefined,
-              },
-              updatedAt: Date.now(),
+      // Sync to API if configured
+      if (isApiConfigured) {
+        persistItemMutation(id, () => apiDeleteItem(id))
+          .then((deletedInSession) => {
+            // The server forgot the item; so does the acknowledged snapshot.
+            if (deletedInSession) forgetAcknowledgedItems([id]);
+          })
+          .catch((error) => {
+            if (version !== currentDesktopSession()) return;
+            // The delete never happened server-side: put the item back
+            // exactly as it was. The failed write left the acknowledged
+            // snapshot untouched, so re-adding the displayed original keeps
+            // the two in sync.
+            if (original && !get().getItem(id)) {
+              setDisplayedItems([...get().items, original]);
             }
-          : currentItem
-      );
+            console.error('Failed to delete item:', error);
+            showError(
+              `Could not delete item. ${error instanceof Error ? error.message : 'Please try again.'}`,
+              'Delete Failed'
+            );
+          });
+      }
+    },
 
-      cacheItems(newItems);
-      return { items: newItems };
-    });
+    updateItem: async (id, updates) => {
+      const version = currentDesktopSession();
+      if (!get().getItem(id)) return false;
+      // Privacy and document content only become authoritative after a server
+      // acknowledgement. Editors retain their own draft while the save is pending.
+      const requiresAcknowledgement = 'isPublic' in updates || 'textContent' in updates;
+      const apply = () => set((state) => {
+        const newItems = state.items.map((item) =>
+          item.id === id ? { ...item, ...updates, updatedAt: Date.now() } : item
+        );
+        if (isApiConfigured) {
+          cacheItems(newItems);
+        }
+        return { items: newItems };
+      });
+      if (!isApiConfigured || !requiresAcknowledgement) apply();
 
-    try {
-      await apiAnalyzeImageItem(id);
-    } catch (error) {
-      console.error('Failed to start image analysis:', error);
+      if (isApiConfigured) {
+        try {
+          const currentSession = await persistItemMutation(id, () => apiUpdateItems([{ id, updates }]));
+          if (!currentSession) return false;
+          if (requiresAcknowledgement) apply();
+          // The server has now recorded exactly these fields.
+          noteAcknowledgedWrite(id, updates);
+        } catch (error) {
+          if (version !== currentDesktopSession()) return false;
+          // Roll the fields this write attempted back to the last
+          // server-acknowledged snapshot — never to an intermediate
+          // optimistic value (e.g. the first of two chained renames), and
+          // never clobbering a newer interaction (a second rename, a drag)
+          // that changed them in the meantime.
+          const displayed = get().getItem(id);
+          const reverted = displayed ? rollbackAttemptedFields(displayed, updates) : null;
+          if (reverted) {
+            setDisplayedItems(get().items.map((item) => (item.id === id ? reverted : item)));
+          }
+          console.error('Failed to update item:', error);
+          showError(
+            'Could not save your changes. Please try again.',
+            'Sync Failed'
+          );
+          return false;
+        }
+      }
+      return true;
+    },
+
+    moveItem: (id, position) => {
+      // Play drop sound
+      playSound('drop');
+
+      // Update local state immediately for responsive UI
+      set((state) => {
+        const newItems = state.items.map((item) =>
+          item.id === id ? { ...item, position, updatedAt: Date.now() } : item
+        );
+        // Note: caching is handled by the debounced API sync below
+        return { items: newItems };
+      });
+
+      // Debounced sync to API (avoid excessive writes during drag)
+      if (isApiConfigured) {
+        const version = currentDesktopSession();
+        // Clear any existing timer for this item
+        const existingTimer = positionUpdateTimers.get(id);
+        if (existingTimer) {
+          clearTimeout(existingTimer);
+        }
+
+        // Set a new timer
+        const timer = setTimeout(() => {
+          positionUpdateTimers.delete(id);
+          // Serialize through the per-item write queue (same as other
+          // mutations) so a failed position save rolls back instead of
+          // silently leaving an unsaved position that looks persisted. The
+          // rollback target is the last server-acknowledged position, so a
+          // whole chain of drags reverts to where the server actually is.
+          persistItemMutation(id, () => apiUpdateItems([{ id, updates: { position } }]))
+            .then((savedInSession) => {
+              if (savedInSession) {
+                noteAcknowledgedWrite(id, { position });
+                cacheItems(get().items);
+              }
+              // savedInSession === false means the session changed under us
+              // (account switch); rehydration reconciles, so leave state alone.
+            })
+            .catch(() => {
+              // The session is unchanged but the save failed (offline/4xx/5xx).
+              // Revert to the acknowledged position, but only if the user
+              // hasn't moved this item again since this save was queued.
+              if (version !== currentDesktopSession()) return;
+              const displayed = get().getItem(id);
+              const reverted = displayed ? rollbackAttemptedFields(displayed, { position }) : null;
+              if (reverted) {
+                setDisplayedItems(get().items.map((item) => (item.id === id ? reverted : item)));
+                cacheItems(get().items);
+              }
+              showError(
+                'Could not save the new position. It has been reverted.',
+                'Sync Failed'
+              );
+            });
+        }, 500);
+
+        positionUpdateTimers.set(id, timer);
+      }
+    },
+
+    requestImageAnalysis: async (id) => {
+      const item = get().getItem(id);
+      if (!item || item.type !== 'image' || !isApiConfigured) return;
+
       set((state) => {
         const newItems: DesktopItem[] = state.items.map((currentItem) =>
           currentItem.id === id
@@ -576,8 +597,8 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
                 ...currentItem,
                 imageAnalysis: {
                   ...(currentItem.imageAnalysis || {}),
-                  status: 'failed' as const,
-                  error: error instanceof Error ? error.message : 'Failed to start image analysis',
+                  status: 'pending' as const,
+                  error: undefined,
                 },
                 updatedAt: Date.now(),
               }
@@ -587,677 +608,764 @@ export const useDesktopStore = create<DesktopStore>((set, get) => ({
         cacheItems(newItems);
         return { items: newItems };
       });
-    }
-  },
 
-  selectItem: (id, addToSelection = false) => {
-    set((state) => {
-      const newSelectedIds = addToSelection
-        ? new Set([...state.selectedIds, id])
-        : new Set([id]);
-      return { selectedIds: newSelectedIds };
-    });
-  },
+      try {
+        await apiAnalyzeImageItem(id);
+      } catch (error) {
+        console.error('Failed to start image analysis:', error);
+        set((state) => {
+          const newItems: DesktopItem[] = state.items.map((currentItem) =>
+            currentItem.id === id
+              ? {
+                  ...currentItem,
+                  imageAnalysis: {
+                    ...(currentItem.imageAnalysis || {}),
+                    status: 'failed' as const,
+                    error: error instanceof Error ? error.message : 'Failed to start image analysis',
+                  },
+                  updatedAt: Date.now(),
+                }
+              : currentItem
+        );
 
-  selectAll: (parentId = null) => {
-    set((state) => {
-      // Select all items in the specified parent (null = desktop root)
-      const itemsInParent = state.items.filter((item) => item.parentId === parentId);
-      return { selectedIds: new Set(itemsInParent.map((item) => item.id)) };
-    });
-  },
-
-  deselectAll: () => set({ selectedIds: new Set() }),
-
-  isSelected: (id) => get().selectedIds.has(id),
-
-  getItemsByParent: (parentId) =>
-    get().items.filter((item) => item.parentId === parentId),
-
-  getItem: (id) => get().items.find((item) => item.id === id),
-
-  getNextAvailablePositionsInFolder: (folderId, count, excludeIds = []) => {
-    // Get items already in the target folder, excluding the ones being moved
-    const existingItems = get().items.filter(
-      (item) =>
-        item.parentId === folderId &&
-        !item.isTrashed &&
-        !excludeIds.includes(item.id)
-    );
-
-    // Build a set of occupied positions
-    const occupiedPositions = new Set(
-      existingItems.map((item) => `${item.position.x},${item.position.y}`)
-    );
-
-    // Find available positions using an 8-column grid layout
-    const positions: Array<{ x: number; y: number }> = [];
-    let x = 0;
-    let y = 0;
-
-    while (positions.length < count) {
-      const key = `${x},${y}`;
-      if (!occupiedPositions.has(key)) {
-        positions.push({ x, y });
-        occupiedPositions.add(key); // Mark as occupied for subsequent items
+          cacheItems(newItems);
+          return { items: newItems };
+        });
       }
-      // Move to next position in 8-column grid
-      x++;
-      if (x >= 8) {
-        x = 0;
-        y++;
-      }
-    }
+    },
 
-    return positions;
-  },
+    getItemsByParent: (parentId) =>
+      get().items.filter((item) => item.parentId === parentId),
 
-  cleanUp: (parentId = null) => {
-    // Sort items by name and arrange in columns (exclude trashed items)
-    const itemsInParent = get().items.filter((item) => item.parentId === parentId && !item.isTrashed);
-    const otherItems = get().items.filter((item) => item.parentId !== parentId || item.isTrashed);
+    getItem: (id) => get().items.find((item) => item.id === id),
 
-    // Sort alphabetically by name
-    const sortedItems = [...itemsInParent].sort((a, b) =>
-      a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-    );
-
-    // Arrange in columns (max ~8 items per column on typical desktop)
-    const maxItemsPerColumn = 8;
-    const updatedItems = sortedItems.map((item, index) => ({
-      ...item,
-      position: {
-        x: Math.floor(index / maxItemsPerColumn),
-        y: index % maxItemsPerColumn,
-      },
-      updatedAt: Date.now(),
-    }));
-
-    const newItems = [...otherItems, ...updatedItems];
-    set({ items: newItems });
-
-    // Cache and sync to API
-    if (isApiConfigured) {
-      cacheItems(newItems);
-      // Batch update all positions
-      const updates = updatedItems.map((item) => ({
-        id: item.id,
-        updates: { position: item.position },
-      }));
-      apiUpdateItems(updates).catch((error) => {
-        console.error('Failed to update positions during clean up:', error);
-      });
-    }
-  },
-
-  sortByName: (parentId = null) => {
-    // Sort items by name and arrange in columns (exclude trashed items)
-    const itemsInParent = get().items.filter((item) => item.parentId === parentId && !item.isTrashed);
-    const otherItems = get().items.filter((item) => item.parentId !== parentId || item.isTrashed);
-
-    const sortedItems = [...itemsInParent].sort((a, b) =>
-      a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-    );
-
-    const maxItemsPerColumn = 8;
-    const updatedItems = sortedItems.map((item, index) => ({
-      ...item,
-      position: {
-        x: Math.floor(index / maxItemsPerColumn),
-        y: index % maxItemsPerColumn,
-      },
-      updatedAt: Date.now(),
-    }));
-
-    const newItems = [...otherItems, ...updatedItems];
-    set({ items: newItems });
-
-    // Persist the sort preference
-    setFolderSortOrder(parentId, 'name');
-
-    if (isApiConfigured) {
-      cacheItems(newItems);
-      const updates = updatedItems.map((item) => ({
-        id: item.id,
-        updates: { position: item.position },
-      }));
-      apiUpdateItems(updates).catch((error) => {
-        console.error('Failed to update positions during sort by name:', error);
-      });
-    }
-  },
-
-  sortByDate: (parentId = null) => {
-    // Sort items by date (newest first) and arrange in columns (exclude trashed items)
-    const itemsInParent = get().items.filter((item) => item.parentId === parentId && !item.isTrashed);
-    const otherItems = get().items.filter((item) => item.parentId !== parentId || item.isTrashed);
-
-    const sortedItems = [...itemsInParent].sort((a, b) => b.updatedAt - a.updatedAt);
-
-    const maxItemsPerColumn = 8;
-    const updatedItems = sortedItems.map((item, index) => ({
-      ...item,
-      position: {
-        x: Math.floor(index / maxItemsPerColumn),
-        y: index % maxItemsPerColumn,
-      },
-      updatedAt: Date.now(),
-    }));
-
-    const newItems = [...otherItems, ...updatedItems];
-    set({ items: newItems });
-
-    // Persist the sort preference
-    setFolderSortOrder(parentId, 'date');
-
-    if (isApiConfigured) {
-      cacheItems(newItems);
-      const updates = updatedItems.map((item) => ({
-        id: item.id,
-        updates: { position: item.position },
-      }));
-      apiUpdateItems(updates).catch((error) => {
-        console.error('Failed to update positions during sort by date:', error);
-      });
-    }
-  },
-
-  sortByKind: (parentId = null) => {
-    // Sort items by type (folders first, then by type, then by name) and arrange in columns (exclude trashed items)
-    const itemsInParent = get().items.filter((item) => item.parentId === parentId && !item.isTrashed);
-    const otherItems = get().items.filter((item) => item.parentId !== parentId || item.isTrashed);
-
-    // Type order: all item types in logical grouping
-    const typeOrder: Record<string, number> = {
-      folder: 0,
-      text: 1,
-      image: 2,
-      video: 3,
-      audio: 4,
-      pdf: 5,
-      link: 6,
-      widget: 7,
-    };
-
-    const sortedItems = [...itemsInParent].sort((a, b) => {
-      const typeComparison = (typeOrder[a.type] ?? 99) - (typeOrder[b.type] ?? 99);
-      if (typeComparison !== 0) return typeComparison;
-      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
-    });
-
-    const maxItemsPerColumn = 8;
-    const updatedItems = sortedItems.map((item, index) => ({
-      ...item,
-      position: {
-        x: Math.floor(index / maxItemsPerColumn),
-        y: index % maxItemsPerColumn,
-      },
-      updatedAt: Date.now(),
-    }));
-
-    const newItems = [...otherItems, ...updatedItems];
-    set({ items: newItems });
-
-    // Persist the sort preference
-    setFolderSortOrder(parentId, 'kind');
-
-    if (isApiConfigured) {
-      cacheItems(newItems);
-      const updates = updatedItems.map((item) => ({
-        id: item.id,
-        updates: { position: item.position },
-      }));
-      apiUpdateItems(updates).catch((error) => {
-        console.error('Failed to update positions during sort by kind:', error);
-      });
-    }
-  },
-
-  duplicateItems: async (itemIds, targetParentId) => {
-    const version = desktopSessionVersion;
-    const { items, getItem } = get();
-    const duplicates: DesktopItem[] = [];
-
-    // Find positions in target folder
-    const itemsInTarget = items.filter((item) => item.parentId === targetParentId);
-    let nextY = itemsInTarget.length > 0
-      ? Math.max(...itemsInTarget.map((i) => i.position.y)) + 1
-      : 0;
-
-    for (const id of itemIds) {
-      const original = getItem(id);
-      if (!original) continue;
-
-      // Create duplicate with new id and position
-      const duplicate: DesktopItem = {
-        ...original,
-        id: crypto.randomUUID(),
-        name: `${original.name} copy`,
-        parentId: targetParentId,
-        position: { x: 0, y: nextY++ },
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
-
-      // Create item via API
-      if (isApiConfigured) {
-        try {
-          if (!await persistItemMutation(duplicate.id, () => apiCreateItem(duplicate))) return [];
-        } catch (error) {
-          if (version !== desktopSessionVersion) return [];
-          console.error('Failed to create duplicate item:', error);
-          showError(`Could not duplicate "${original.name}". Please try again.`, 'Duplicate Failed');
-          continue;
-        }
-      }
-      duplicates.push(duplicate);
-    }
-
-    // Add all duplicates to state
-    if (duplicates.length > 0) {
-      const newItems = [...get().items, ...duplicates];
-      set({ items: newItems });
-      if (isApiConfigured) {
-        cacheItems(newItems);
-      }
-    }
-
-    return duplicates;
-  },
-
-  pasteItems: async (itemIds, isCut, targetParentId) => {
-    const { items, duplicateItems } = get();
-
-    if (isCut) {
-      // Snapshot the pre-move state of the pasted items so a failed move can be
-      // rolled back instead of leaving them looking moved when the server never
-      // recorded it.
-      const originals = new Map(
-        items.filter((item) => itemIds.includes(item.id)).map((item) => [item.id, { ...item }])
+    getNextAvailablePositionsInFolder: (folderId, count, excludeIds = []) => {
+      // Get items already in the target folder, excluding the ones being moved
+      const existingItems = get().items.filter(
+        (item) =>
+          item.parentId === folderId &&
+          !item.isTrashed &&
+          !excludeIds.includes(item.id)
       );
 
-      // Move items to target folder
-      const updates: { id: string; updates: Partial<DesktopItem> }[] = [];
+      // Build a set of occupied positions
+      const occupiedPositions = new Set(
+        existingItems.map((item) => `${item.position.x},${item.position.y}`)
+      );
+
+      // Find available positions using an 8-column grid layout
+      const positions: Array<{ x: number; y: number }> = [];
+      let x = 0;
+      let y = 0;
+
+      while (positions.length < count) {
+        const key = `${x},${y}`;
+        if (!occupiedPositions.has(key)) {
+          positions.push({ x, y });
+          occupiedPositions.add(key); // Mark as occupied for subsequent items
+        }
+        // Move to next position in 8-column grid
+        x++;
+        if (x >= 8) {
+          x = 0;
+          y++;
+        }
+      }
+
+      return positions;
+    },
+
+    cleanUp: (parentId = null) => {
+      // Sort items by name and arrange in columns (exclude trashed items)
+      const itemsInParent = get().items.filter((item) => item.parentId === parentId && !item.isTrashed);
+      const otherItems = get().items.filter((item) => item.parentId !== parentId || item.isTrashed);
+
+      // Sort alphabetically by name
+      const sortedItems = [...itemsInParent].sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+      );
+
+      // Arrange in columns (max ~8 items per column on typical desktop)
+      const maxItemsPerColumn = 8;
+      const updatedItems = sortedItems.map((item, index) => ({
+        ...item,
+        position: {
+          x: Math.floor(index / maxItemsPerColumn),
+          y: index % maxItemsPerColumn,
+        },
+        updatedAt: Date.now(),
+      }));
+
+      const newItems = [...otherItems, ...updatedItems];
+      set({ items: newItems });
+
+      // Cache and sync to API
+      if (isApiConfigured) {
+        cacheItems(newItems);
+        // Batch update all positions
+        const updates = updatedItems.map((item) => ({
+          id: item.id,
+          updates: { position: item.position },
+        }));
+        const version = currentDesktopSession();
+        apiUpdateItems(updates)
+          .then(() => {
+            // The server now holds the arranged positions.
+            if (version !== currentDesktopSession()) return;
+            updatedItems.forEach((item) =>
+              noteAcknowledgedWrite(item.id, { position: item.position })
+            );
+          })
+          .catch((error) => {
+            console.error('Failed to update positions during clean up:', error);
+          });
+      }
+    },
+
+    sortByName: (parentId = null) => {
+      // Sort items by name and arrange in columns (exclude trashed items)
+      const itemsInParent = get().items.filter((item) => item.parentId === parentId && !item.isTrashed);
+      const otherItems = get().items.filter((item) => item.parentId !== parentId || item.isTrashed);
+
+      const sortedItems = [...itemsInParent].sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+      );
+
+      const maxItemsPerColumn = 8;
+      const updatedItems = sortedItems.map((item, index) => ({
+        ...item,
+        position: {
+          x: Math.floor(index / maxItemsPerColumn),
+          y: index % maxItemsPerColumn,
+        },
+        updatedAt: Date.now(),
+      }));
+
+      const newItems = [...otherItems, ...updatedItems];
+      set({ items: newItems });
+
+      // Persist the sort preference
+      setFolderSortOrder(parentId, 'name');
+
+      if (isApiConfigured) {
+        cacheItems(newItems);
+        const updates = updatedItems.map((item) => ({
+          id: item.id,
+          updates: { position: item.position },
+        }));
+        const version = currentDesktopSession();
+        apiUpdateItems(updates)
+          .then(() => {
+            if (version !== currentDesktopSession()) return;
+            updatedItems.forEach((item) =>
+              noteAcknowledgedWrite(item.id, { position: item.position })
+            );
+          })
+          .catch((error) => {
+            console.error('Failed to update positions during sort by name:', error);
+          });
+      }
+    },
+
+    sortByDate: (parentId = null) => {
+      // Sort items by date (newest first) and arrange in columns (exclude trashed items)
+      const itemsInParent = get().items.filter((item) => item.parentId === parentId && !item.isTrashed);
+      const otherItems = get().items.filter((item) => item.parentId !== parentId || item.isTrashed);
+
+      const sortedItems = [...itemsInParent].sort((a, b) => b.updatedAt - a.updatedAt);
+
+      const maxItemsPerColumn = 8;
+      const updatedItems = sortedItems.map((item, index) => ({
+        ...item,
+        position: {
+          x: Math.floor(index / maxItemsPerColumn),
+          y: index % maxItemsPerColumn,
+        },
+        updatedAt: Date.now(),
+      }));
+
+      const newItems = [...otherItems, ...updatedItems];
+      set({ items: newItems });
+
+      // Persist the sort preference
+      setFolderSortOrder(parentId, 'date');
+
+      if (isApiConfigured) {
+        cacheItems(newItems);
+        const updates = updatedItems.map((item) => ({
+          id: item.id,
+          updates: { position: item.position },
+        }));
+        const version = currentDesktopSession();
+        apiUpdateItems(updates)
+          .then(() => {
+            if (version !== currentDesktopSession()) return;
+            updatedItems.forEach((item) =>
+              noteAcknowledgedWrite(item.id, { position: item.position })
+            );
+          })
+          .catch((error) => {
+            console.error('Failed to update positions during sort by date:', error);
+          });
+      }
+    },
+
+    sortByKind: (parentId = null) => {
+      // Sort items by type (folders first, then by type, then by name) and arrange in columns (exclude trashed items)
+      const itemsInParent = get().items.filter((item) => item.parentId === parentId && !item.isTrashed);
+      const otherItems = get().items.filter((item) => item.parentId !== parentId || item.isTrashed);
+
+      // Type order: all item types in logical grouping
+      const typeOrder: Record<string, number> = {
+        folder: 0,
+        text: 1,
+        image: 2,
+        video: 3,
+        audio: 4,
+        pdf: 5,
+        link: 6,
+        widget: 7,
+      };
+
+      const sortedItems = [...itemsInParent].sort((a, b) => {
+        const typeComparison = (typeOrder[a.type] ?? 99) - (typeOrder[b.type] ?? 99);
+        if (typeComparison !== 0) return typeComparison;
+        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      });
+
+      const maxItemsPerColumn = 8;
+      const updatedItems = sortedItems.map((item, index) => ({
+        ...item,
+        position: {
+          x: Math.floor(index / maxItemsPerColumn),
+          y: index % maxItemsPerColumn,
+        },
+        updatedAt: Date.now(),
+      }));
+
+      const newItems = [...otherItems, ...updatedItems];
+      set({ items: newItems });
+
+      // Persist the sort preference
+      setFolderSortOrder(parentId, 'kind');
+
+      if (isApiConfigured) {
+        cacheItems(newItems);
+        const updates = updatedItems.map((item) => ({
+          id: item.id,
+          updates: { position: item.position },
+        }));
+        const version = currentDesktopSession();
+        apiUpdateItems(updates)
+          .then(() => {
+            if (version !== currentDesktopSession()) return;
+            updatedItems.forEach((item) =>
+              noteAcknowledgedWrite(item.id, { position: item.position })
+            );
+          })
+          .catch((error) => {
+            console.error('Failed to update positions during sort by kind:', error);
+          });
+      }
+    },
+
+    duplicateItems: async (itemIds, targetParentId) => {
+      const version = currentDesktopSession();
+      const { items, getItem } = get();
+      const duplicates: DesktopItem[] = [];
+
+      // Find positions in target folder
       const itemsInTarget = items.filter((item) => item.parentId === targetParentId);
       let nextY = itemsInTarget.length > 0
         ? Math.max(...itemsInTarget.map((i) => i.position.y)) + 1
         : 0;
 
-      const movedItems = items.map((item) => {
-        if (itemIds.includes(item.id)) {
-          const newPos = { x: 0, y: nextY++ };
-          updates.push({
-            id: item.id,
-            updates: { parentId: targetParentId, position: newPos },
-          });
-          return {
-            ...item,
-            parentId: targetParentId,
-            position: newPos,
-            updatedAt: Date.now(),
-          };
-        }
-        return item;
-      });
+      for (const id of itemIds) {
+        const original = getItem(id);
+        if (!original) continue;
 
-      set({ items: movedItems });
-
-      // Sync to API
-      if (isApiConfigured && updates.length > 0) {
-        const version = desktopSessionVersion;
-        cacheItems(movedItems);
-        apiUpdateItems(updates).catch((error) => {
-          console.error('Failed to move items:', error);
-          // Roll back items still sitting in the move target (not re-touched)
-          // within the same session, so nothing looks moved when it wasn't.
-          if (version === desktopSessionVersion) {
-            set((state) => ({
-              items: state.items.map((item) => {
-                if (!originals.has(item.id) || item.parentId !== targetParentId) return item;
-                return { ...originals.get(item.id)! };
-              }),
-            }));
-            cacheItems(get().items);
-          }
-          showError(
-            'Failed to move items. They have been returned to their original location.',
-            'Move Failed'
-          );
-        });
-      }
-    } else {
-      // Copy items (create duplicates)
-      await duplicateItems(itemIds, targetParentId);
-    }
-  },
-
-  uploadFile: async (file, parentId, position) => {
-    const version = desktopSessionVersion;
-    if (!isApiConfigured) {
-      console.warn('Upload not available in demo mode');
-      return null;
-    }
-
-    // Create upload progress entry
-    const uploadId = crypto.randomUUID();
-    set((state) => ({
-      uploads: [
-        ...state.uploads,
-        {
-          id: uploadId,
-          filename: file.name,
-          progress: 0,
-          status: 'uploading' as const,
-        },
-      ],
-    }));
-
-    try {
-      // Upload file to API
-      const result = await apiUploadFile(
-        file,
-        parentId,
-        position,
-        (progress) => {
-          set((state) => ({
-            uploads: state.uploads.map((u) =>
-              u.id === uploadId ? { ...u, progress } : u
-            ),
-          }));
-        }
-      );
-      if (version !== desktopSessionVersion) return null;
-
-      // Mark upload complete
-      set((state) => {
-        const newItems = [...state.items, result.item];
-        cacheItems(newItems);
-        return {
-          uploads: state.uploads.map((u) =>
-            u.id === uploadId ? { ...u, progress: 100, status: 'complete' as const } : u
-          ),
-          // Add the uploaded item to local state
-          items: newItems,
-        };
-      });
-
-      // Auto-clear completed uploads after 3 seconds
-      setTimeout(() => {
-        get().clearUpload(uploadId);
-      }, 3000);
-
-      return result.item;
-    } catch (error) {
-      if (version !== desktopSessionVersion) return null;
-      const errorMessage = error instanceof Error ? error.message : 'Upload failed';
-      // Mark upload as failed
-      set((state) => ({
-        uploads: state.uploads.map((u) =>
-          u.id === uploadId
-            ? {
-                ...u,
-                status: 'error' as const,
-                error: errorMessage,
-              }
-            : u
-        ),
-      }));
-      showError(
-        `Could not upload "${file.name}". ${errorMessage}`,
-        'Upload Failed'
-      );
-      return null;
-    }
-  },
-
-  clearUpload: (id) => {
-    set((state) => ({
-      uploads: state.uploads.filter((u) => u.id !== id),
-    }));
-  },
-
-  loadDesktop: async () => {
-    const version = desktopSessionVersion;
-    if (!isApiConfigured) {
-      // In demo mode, items are already set from mockItems
-      return;
-    }
-
-    // If we have cached items, show them immediately (already loaded in initial state)
-    const cachedItems = get().items;
-    const hasCache = cachedItems.length > 0;
-
-    // Only show loading if no cache
-    if (!hasCache) {
-      set({ loading: true });
-    }
-
-    try {
-      const response = await apiFetchDesktop();
-      if (version !== desktopSessionVersion) return;
-      set({
-        items: response.items,
-        loading: false,
-      });
-      // Cache the fresh items
-      cacheItems(response.items);
-    } catch (error) {
-      if (version !== desktopSessionVersion) return;
-      console.error('Failed to load desktop:', error);
-      set({ loading: false });
-      // Only show error if we don't have a cache to fall back on
-      if (!hasCache) {
-        showError(
-          `Could not load your desktop. ${error instanceof Error ? error.message : 'Please try again.'}`,
-          'Loading Failed'
-        );
-      }
-    }
-  },
-
-  // ============================================
-  // TRASH OPERATIONS
-  // ============================================
-
-  moveToTrash: (ids) => {
-    const now = Date.now();
-
-    // Cascade: collect all descendant items of any trashed folders
-    const { items } = get();
-    const allIdsToTrash = new Set(ids);
-    const collectChildren = (parentId: string) => {
-      for (const item of items) {
-        if (item.parentId === parentId && !allIdsToTrash.has(item.id)) {
-          allIdsToTrash.add(item.id);
-          if (item.type === 'folder') {
-            collectChildren(item.id);
-          }
-        }
-      }
-    };
-    for (const id of ids) {
-      const item = items.find((i) => i.id === id);
-      if (item?.type === 'folder') {
-        collectChildren(id);
-      }
-    }
-
-    const idsArray = Array.from(allIdsToTrash);
-
-    set((state) => {
-      const newItems = state.items.map((item) =>
-        allIdsToTrash.has(item.id)
-          ? {
-              ...item,
-              isTrashed: true,
-              trashedAt: now,
-              updatedAt: now,
-              // Save original parent so restore can put it back
-              originalParentId: item.parentId,
-            }
-          : item
-      );
-      if (isApiConfigured) {
-        cacheItems(newItems);
-      }
-      return {
-        items: newItems,
-        selectedIds: new Set([...state.selectedIds].filter((id) => !allIdsToTrash.has(id))),
-      };
-    });
-
-    // Play trash sound
-    playSound('trash');
-
-    // Sync to API if configured
-    if (isApiConfigured) {
-      const version = desktopSessionVersion;
-      const updates = idsArray.map((id) => {
-        const item = items.find((i) => i.id === id);
-        return {
-          id,
-          updates: { isTrashed: true, trashedAt: now, originalParentId: item?.parentId ?? null },
-        };
-      });
-      apiUpdateItems(updates).catch((error) => {
-        console.error('Failed to move items to trash:', error);
-        // Roll back the optimistic trash so items don't look trashed when the
-        // server never recorded it. Only revert items still in the exact state
-        // we set (not re-touched since) and only within the same session.
-        if (version === desktopSessionVersion) {
-          set((state) => ({
-            items: state.items.map((item) => {
-              if (!allIdsToTrash.has(item.id)) return item;
-              if (!(item.isTrashed && item.trashedAt === now)) return item;
-              const original = items.find((o) => o.id === item.id);
-              return original ? { ...original } : item;
-            }),
-          }));
-          cacheItems(get().items);
-        }
-        showError(
-          'Failed to move items to trash. They have been restored.',
-          'Trash Failed'
-        );
-      });
-    }
-  },
-
-  restoreFromTrash: (ids) => {
-    const { items } = get();
-
-    set((state) => {
-      const newItems = state.items.map((item) => {
-        if (!ids.includes(item.id)) return item;
-
-        // Restore to original parent if it still exists and isn't trashed
-        let restoreParentId: string | null = null;
-        if (item.originalParentId) {
-          const parent = state.items.find(
-            (p) => p.id === item.originalParentId && !p.isTrashed
-          );
-          if (parent) {
-            restoreParentId = item.originalParentId;
-          }
-          // If parent is missing or also trashed, restore to desktop root (null)
-        }
-
-        return {
-          ...item,
-          isTrashed: false,
-          trashedAt: undefined,
-          originalParentId: undefined,
-          parentId: restoreParentId,
+        // Create duplicate with new id and position
+        const duplicate: DesktopItem = {
+          ...original,
+          id: crypto.randomUUID(),
+          name: `${original.name} copy`,
+          parentId: targetParentId,
+          position: { x: 0, y: nextY++ },
+          createdAt: Date.now(),
           updatedAt: Date.now(),
         };
-      });
-      if (isApiConfigured) {
-        cacheItems(newItems);
-      }
-      return { items: newItems };
-    });
 
-    // Sync to API if configured
-    if (isApiConfigured) {
-      const version = desktopSessionVersion;
-      const restoreIds = new Set(ids);
-      const updates = ids.map((id) => {
-        const item = items.find((i) => i.id === id);
-        // Compute restore parentId same as above
-        let restoreParentId: string | null = null;
-        if (item?.originalParentId) {
-          const parent = items.find(
-            (p) => p.id === item.originalParentId && !p.isTrashed
-          );
-          if (parent) restoreParentId = item.originalParentId;
+        // Create item via API
+        if (isApiConfigured) {
+          try {
+            if (!await persistItemMutation(duplicate.id, () => apiCreateItem(duplicate))) return [];
+            // The server knows the duplicate exactly as created.
+            noteAcknowledgedCreate(duplicate);
+          } catch (error) {
+            if (version !== currentDesktopSession()) return [];
+            console.error('Failed to create duplicate item:', error);
+            showError(`Could not duplicate "${original.name}". Please try again.`, 'Duplicate Failed');
+            continue;
+          }
         }
-        return {
-          id,
-          updates: {
+        duplicates.push(duplicate);
+      }
+
+      // Add all duplicates to state
+      if (duplicates.length > 0) {
+        const newItems = [...get().items, ...duplicates];
+        set({ items: newItems });
+        if (isApiConfigured) {
+          cacheItems(newItems);
+        }
+      }
+
+      return duplicates;
+    },
+
+    pasteItems: async (itemIds, isCut, targetParentId) => {
+      const { items, duplicateItems } = get();
+
+      if (isCut) {
+        // Roll back a failed move to the acknowledged snapshot (the last
+        // server-confirmed parenting/position) instead of leaving items
+        // looking moved when the server never recorded it.
+        const originals = new Map(
+          items.filter((item) => itemIds.includes(item.id)).map((item) => [item.id, { ...item }])
+        );
+
+        // Move items to target folder
+        const updates: { id: string; updates: Partial<DesktopItem> }[] = [];
+        const itemsInTarget = items.filter((item) => item.parentId === targetParentId);
+        let nextY = itemsInTarget.length > 0
+          ? Math.max(...itemsInTarget.map((i) => i.position.y)) + 1
+          : 0;
+
+        const movedItems = items.map((item) => {
+          if (itemIds.includes(item.id)) {
+            const newPos = { x: 0, y: nextY++ };
+            updates.push({
+              id: item.id,
+              updates: { parentId: targetParentId, position: newPos },
+            });
+            return {
+              ...item,
+              parentId: targetParentId,
+              position: newPos,
+              updatedAt: Date.now(),
+            };
+          }
+          return item;
+        });
+
+        set({ items: movedItems });
+
+        // Sync to API
+        if (isApiConfigured && updates.length > 0) {
+          const version = currentDesktopSession();
+          cacheItems(movedItems);
+          apiUpdateItems(updates)
+            .then(() => {
+              if (version !== currentDesktopSession()) return;
+              for (const { id, updates: attempted } of updates) {
+                noteAcknowledgedWrite(id, attempted);
+              }
+            })
+            .catch((error) => {
+              console.error('Failed to move items:', error);
+              // Roll back items still sitting in the move target (not
+              // re-touched) within the same session, so nothing looks moved
+              // when it wasn't. The paste reverts as one unit per item,
+              // guarded on the parenting.
+              if (version === currentDesktopSession()) {
+                set((state) => ({
+                  items: state.items.map((item) => {
+                    if (!originals.has(item.id)) return item;
+                    const attempted = updates.find((u) => u.id === item.id)?.updates;
+                    const reverted = attempted
+                      ? rollbackAttemptedFields(item, attempted, ['parentId'])
+                      : null;
+                    return reverted ?? item;
+                  }),
+                }));
+                cacheItems(get().items);
+              }
+              showError(
+                'Failed to move items. They have been returned to their original location.',
+                'Move Failed'
+              );
+            });
+        }
+      } else {
+        // Copy items (create duplicates)
+        await duplicateItems(itemIds, targetParentId);
+      }
+    },
+
+    uploadFile: async (file, parentId, position) => {
+      const version = currentDesktopSession();
+      if (!isApiConfigured) {
+        console.warn('Upload not available in demo mode');
+        return null;
+      }
+
+      // Create upload progress entry
+      const uploadId = crypto.randomUUID();
+      set((state) => ({
+        uploads: [
+          ...state.uploads,
+          {
+            id: uploadId,
+            filename: file.name,
+            progress: 0,
+            status: 'uploading' as const,
+          },
+        ],
+      }));
+
+      try {
+        // Upload file to API
+        const result = await apiUploadFile(
+          file,
+          parentId,
+          position,
+          (progress) => {
+            set((state) => ({
+              uploads: state.uploads.map((u) =>
+                u.id === uploadId ? { ...u, progress } : u
+              ),
+            }));
+          }
+        );
+        if (version !== currentDesktopSession()) return null;
+
+        // Mark upload complete
+        set((state) => {
+          const newItems = [...state.items, result.item];
+          cacheItems(newItems);
+          return {
+            uploads: state.uploads.map((u) =>
+              u.id === uploadId ? { ...u, progress: 100, status: 'complete' as const } : u
+            ),
+            // Add the uploaded item to local state
+            items: newItems,
+          };
+        });
+        // The item came from the server: it is the acknowledged value.
+        noteAcknowledgedCreate(result.item);
+
+        // Auto-clear completed uploads after 3 seconds
+        setTimeout(() => {
+          get().clearUpload(uploadId);
+        }, 3000);
+
+        return result.item;
+      } catch (error) {
+        if (version !== currentDesktopSession()) return null;
+        const errorMessage = error instanceof Error ? error.message : 'Upload failed';
+        // Mark upload as failed
+        set((state) => ({
+          uploads: state.uploads.map((u) =>
+            u.id === uploadId
+              ? {
+                  ...u,
+                  status: 'error' as const,
+                  error: errorMessage,
+                }
+              : u
+          ),
+        }));
+        showError(
+          `Could not upload "${file.name}". ${errorMessage}`,
+          'Upload Failed'
+        );
+        return null;
+      }
+    },
+
+    clearUpload: (id) => {
+      set((state) => ({
+        uploads: state.uploads.filter((u) => u.id !== id),
+      }));
+    },
+
+    loadDesktop: async () => {
+      const version = currentDesktopSession();
+      if (!isApiConfigured) {
+        // In demo mode, items are already set from mockItems
+        return;
+      }
+
+      // If we have cached items, show them immediately (already loaded in initial state)
+      const cachedItems = get().items;
+      const hasCache = cachedItems.length > 0;
+
+      // Only show loading if no cache
+      if (!hasCache) {
+        set({ loading: true });
+      }
+
+      try {
+        const response = await apiFetchDesktop();
+        if (version !== currentDesktopSession()) return;
+        // Server reconcile: the response is the source of truth for both
+        // the displayed items and the acknowledged snapshot. An optimistic
+        // item the server echoes back converges to the one server copy —
+        // no duplicates.
+        noteServerItems(response.items);
+        set({
+          items: response.items,
+          loading: false,
+        });
+        // Cache the fresh items
+        cacheItems(response.items);
+      } catch (error) {
+        if (version !== currentDesktopSession()) return;
+        console.error('Failed to load desktop:', error);
+        set({ loading: false });
+        // Only show error if we don't have a cache to fall back on
+        if (!hasCache) {
+          showError(
+            `Could not load your desktop. ${error instanceof Error ? error.message : 'Please try again.'}`,
+            'Loading Failed'
+          );
+        }
+      }
+    },
+
+    // ============================================
+    // TRASH OPERATIONS
+    // ============================================
+
+    moveToTrash: (ids) => {
+      const now = Date.now();
+
+      // Cascade: collect all descendant items of any trashed folders
+      const { items } = get();
+      const allIdsToTrash = new Set(ids);
+      const collectChildren = (parentId: string) => {
+        for (const item of items) {
+          if (item.parentId === parentId && !allIdsToTrash.has(item.id)) {
+            allIdsToTrash.add(item.id);
+            if (item.type === 'folder') {
+              collectChildren(item.id);
+            }
+          }
+        }
+      };
+      for (const id of ids) {
+        const item = items.find((i) => i.id === id);
+        if (item?.type === 'folder') {
+          collectChildren(id);
+        }
+      }
+
+      const idsArray = Array.from(allIdsToTrash);
+
+      set((state) => {
+        const newItems = state.items.map((item) =>
+          allIdsToTrash.has(item.id)
+            ? {
+                ...item,
+                isTrashed: true,
+                trashedAt: now,
+                updatedAt: now,
+                // Save original parent so restore can put it back
+                originalParentId: item.parentId,
+              }
+            : item
+        );
+        if (isApiConfigured) {
+          cacheItems(newItems);
+        }
+        return { items: newItems };
+      });
+      // Trashed items cannot stay selected (interaction slice action).
+      get().dropFromSelection(allIdsToTrash);
+
+      // Play trash sound
+      playSound('trash');
+
+      // Sync to API if configured
+      if (isApiConfigured) {
+        const version = currentDesktopSession();
+        const updates = idsArray.map((id) => {
+          const item = items.find((i) => i.id === id);
+          return {
+            id,
+            updates: { isTrashed: true, trashedAt: now, originalParentId: item?.parentId ?? null },
+          };
+        });
+        apiUpdateItems(updates)
+          .then(() => {
+            if (version !== currentDesktopSession()) return;
+            for (const { id, updates: attempted } of updates) {
+              noteAcknowledgedWrite(id, attempted);
+            }
+          })
+          .catch((error) => {
+            console.error('Failed to move items to trash:', error);
+            // Roll back the optimistic trash so items don't look trashed when
+            // the server never recorded it. Only fields still showing this
+            // write's attempted values are reverted (an item the user
+            // re-touched keeps its newer state) and only within the same
+            // session.
+            if (version === currentDesktopSession()) {
+              set((state) => ({
+                items: state.items.map((item) => {
+                  if (!allIdsToTrash.has(item.id)) return item;
+                  const attempted = updates.find((u) => u.id === item.id)?.updates;
+                  const reverted = attempted
+                    ? rollbackAttemptedFields(item, attempted)
+                    : null;
+                  return reverted ?? item;
+                }),
+              }));
+              cacheItems(get().items);
+            }
+            showError(
+              'Failed to move items to trash. They have been restored.',
+              'Trash Failed'
+            );
+          });
+      }
+    },
+
+    restoreFromTrash: (ids) => {
+      const { items } = get();
+
+      set((state) => {
+        const newItems = state.items.map((item) => {
+          if (!ids.includes(item.id)) return item;
+
+          // Restore to original parent if it still exists and isn't trashed
+          let restoreParentId: string | null = null;
+          if (item.originalParentId) {
+            const parent = state.items.find(
+              (p) => p.id === item.originalParentId && !p.isTrashed
+            );
+            if (parent) {
+              restoreParentId = item.originalParentId;
+            }
+            // If parent is missing or also trashed, restore to desktop root (null)
+          }
+
+          return {
+            ...item,
             isTrashed: false,
             trashedAt: undefined,
             originalParentId: undefined,
             parentId: restoreParentId,
-          },
-        };
-      });
-      apiUpdateItems(updates).catch((error) => {
-        console.error('Failed to restore items from trash:', error);
-        // Roll back the optimistic restore so an item doesn't look restored
-        // when the server never recorded it. Only revert items still showing
-        // as restored (not re-touched) within the same session.
-        if (version === desktopSessionVersion) {
-          set((state) => ({
-            items: state.items.map((item) => {
-              if (!restoreIds.has(item.id) || item.isTrashed) return item;
-              const original = items.find((o) => o.id === item.id);
-              return original ? { ...original } : item;
-            }),
-          }));
-          cacheItems(get().items);
+            updatedAt: Date.now(),
+          };
+        });
+        if (isApiConfigured) {
+          cacheItems(newItems);
         }
-        showError(
-          'Failed to restore items. They have been returned to the Trash.',
-          'Restore Failed'
-        );
+        return { items: newItems };
       });
-    }
-  },
 
-  emptyTrash: () => {
-    const trashedItems = get().items.filter((item) => item.isTrashed);
-
-    if (trashedItems.length === 0) return;
-
-    // Play empty trash sound
-    playSound('emptyTrash');
-
-    // Remove from local state
-    set((state) => {
-      const newItems = state.items.filter((item) => !item.isTrashed);
+      // Sync to API if configured
       if (isApiConfigured) {
-        cacheItems(newItems);
+        const version = currentDesktopSession();
+        const restoreIds = new Set(ids);
+        const updates = ids.map((id) => {
+          const item = items.find((i) => i.id === id);
+          // Compute restore parentId same as above
+          let restoreParentId: string | null = null;
+          if (item?.originalParentId) {
+            const parent = items.find(
+              (p) => p.id === item.originalParentId && !p.isTrashed
+            );
+            if (parent) restoreParentId = item.originalParentId;
+          }
+          return {
+            id,
+            updates: {
+              isTrashed: false,
+              trashedAt: undefined,
+              originalParentId: undefined,
+              parentId: restoreParentId,
+            },
+          };
+        });
+        apiUpdateItems(updates)
+          .then(() => {
+            if (version !== currentDesktopSession()) return;
+            for (const { id, updates: attempted } of updates) {
+              noteAcknowledgedWrite(id, attempted);
+            }
+          })
+          .catch((error) => {
+            console.error('Failed to restore items from trash:', error);
+            // Roll back the optimistic restore so an item doesn't look
+            // restored when the server never recorded it — back to the
+            // acknowledged (trashed) snapshot. Only items still showing as
+            // restored (not re-touched) within the same session.
+            if (version === currentDesktopSession()) {
+              set((state) => ({
+                items: state.items.map((item) => {
+                  if (!restoreIds.has(item.id)) return item;
+                  const attempted = updates.find((u) => u.id === item.id)?.updates;
+                  const reverted = attempted
+                    ? rollbackAttemptedFields(item, attempted)
+                    : null;
+                  return reverted ?? item;
+                }),
+              }));
+              cacheItems(get().items);
+            }
+            showError(
+              'Failed to restore items. They have been returned to the Trash.',
+              'Restore Failed'
+            );
+          });
       }
-      return { items: newItems };
-    });
+    },
 
-    // Use the server-side empty trash endpoint (atomic, handles R2 cleanup)
-    if (isApiConfigured) {
-      emptyTrashApi().catch((error) => {
-        console.error('Failed to empty trash:', error);
-        showError(
-          'Failed to permanently delete some items. They may reappear on reload.',
-          'Empty Trash Failed'
-        );
+    emptyTrash: () => {
+      const trashedItems = get().items.filter((item) => item.isTrashed);
+
+      if (trashedItems.length === 0) return;
+
+      // Play empty trash sound
+      playSound('emptyTrash');
+
+      // Remove from local state
+      set((state) => {
+        const newItems = state.items.filter((item) => !item.isTrashed);
+        if (isApiConfigured) {
+          cacheItems(newItems);
+        }
+        return { items: newItems };
       });
-    }
-  },
 
-  getTrashedItems: () => {
-    return get().items.filter((item) => item.isTrashed);
-  },
+      // Use the server-side empty trash endpoint (atomic, handles R2 cleanup)
+      if (isApiConfigured) {
+        const version = currentDesktopSession();
+        emptyTrashApi()
+          .then(() => {
+            // The server permanently deleted these; the acknowledged
+            // snapshot forgets them too.
+            if (version !== currentDesktopSession()) return;
+            forgetAcknowledgedItems(trashedItems.map((item) => item.id));
+          })
+          .catch((error) => {
+            console.error('Failed to empty trash:', error);
+            showError(
+              'Failed to permanently delete some items. They may reappear on reload.',
+              'Empty Trash Failed'
+            );
+          });
+      }
+    },
 
-  getTrashCount: () => {
-    return get().items.filter((item) => item.isTrashed).length;
-  },
-}));
+    getTrashedItems: () => {
+      return get().items.filter((item) => item.isTrashed);
+    },
+
+    getTrashCount: () => {
+      return get().items.filter((item) => item.isTrashed).length;
+    },
+  };
+});

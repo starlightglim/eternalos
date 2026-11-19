@@ -25,6 +25,14 @@ interface AlertDialogProps {
   onClose?: () => void;
 }
 
+/** Focusable, mounted button elements in render order. */
+function getFocusableElements(els: readonly (HTMLElement | null)[]): HTMLElement[] {
+  return els.filter(
+    (el): el is HTMLElement =>
+      el !== null && el.tabIndex !== -1 && !el.hasAttribute('disabled')
+  );
+}
+
 /**
  * Classic Mac OS Alert Dialog
  * - Error: Stop sign icon (⛔)
@@ -40,6 +48,11 @@ export function AlertDialog({
   onClose,
 }: AlertDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  // The dialog's focusables are exactly the buttons it renders; keep
+  // their element handles by index instead of scraping the DOM (which the
+  // repo's node-env test DOM does not support, and which is over-general
+  // anyway — no other focusable element is ever rendered here).
+  const buttonEls = useRef<(HTMLButtonElement | null)[]>([]);
   const titleId = useId();
   const messageId = useId();
 
@@ -63,6 +76,26 @@ export function AlertDialog({
     [buttons, type, onClose]
   );
 
+  // Initial focus: the primary action. That is the established pattern in
+  // this codebase — every call site marks its default action primary, and
+  // the autoFocus attribute focuses it on mount (classic Mac OS alerts
+  // focus the outlined default button too). This effect is the safety net
+  // for the shapes autoFocus cannot cover: button sets without a primary
+  // (fall back to the first — least destructive — action) and focus that
+  // escaped while the dialog stayed open (e.g. a new alert swapped the
+  // buttons out from under it). It only acts when focus is outside the
+  // dialog, so it never fights the Tab trap.
+  useEffect(() => {
+    const root = dialogRef.current;
+    if (!root) return;
+    const active = document.activeElement;
+    if (active && root.contains(active)) return;
+    const focusables = getFocusableElements(buttonEls.current);
+    if (focusables.length === 0) return;
+    const primaryIndex = defaultButtons.findIndex((button) => button.primary);
+    (buttonEls.current[primaryIndex] ?? focusables[0]).focus();
+  }, [defaultButtons]);
+
   // Escape closes; Tab is trapped inside the dialog.
   //
   // Enter is deliberately NOT handled here. A global Enter handler used to
@@ -78,18 +111,12 @@ export function AlertDialog({
         return;
       }
       if (e.key === 'Tab') {
-        const root = dialogRef.current;
-        if (!root) return;
-        const focusables = Array.from(
-          root.querySelectorAll<HTMLElement>(
-            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-          )
-        ).filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1);
+        const focusables = getFocusableElements(buttonEls.current);
         if (focusables.length === 0) return;
         const first = focusables[0];
         const last = focusables[focusables.length - 1];
         const active = document.activeElement as HTMLElement | null;
-        const inside = root.contains(active);
+        const inside = active !== null && (dialogRef.current?.contains(active) ?? false);
         if (e.shiftKey && (active === first || !inside)) {
           e.preventDefault();
           last.focus();
@@ -148,6 +175,7 @@ export function AlertDialog({
               className={`${styles.button} ${button.primary ? styles.primaryButton : ''}`}
               onClick={button.onClick}
               autoFocus={button.primary}
+              ref={(el) => { buttonEls.current[index] = el; }}
             >
               {button.label}
             </button>
