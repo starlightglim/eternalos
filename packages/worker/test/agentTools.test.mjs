@@ -44,6 +44,10 @@ const { createDesktopTools } = await import('../src/agents/tools/desktopTools.ts
 const { createMemoryTools } = await import('../src/agents/tools/memoryTools.ts');
 const { createAppTools, initAppRegistry } = await import('../src/agents/tools/appTools.ts');
 const {
+  listAppRevisionManifests,
+  readAppRevision,
+} = await import('../src/routes/appRevisions.ts');
+const {
   appSpecSchema,
   derivePermissionsFromSpec,
   validateAppSpec,
@@ -1324,7 +1328,7 @@ function createAppToolsHarness() {
   };
   initAppRegistry(sql);
   const tools = createAppTools({ env, sql, agentName: UID, onBuildStage: () => {} });
-  return { desktop, kv, r2, ai, sql, tools };
+  return { desktop, kv, r2, ai, sql, env, tools };
 }
 
 describe('appTools', () => {
@@ -1360,6 +1364,36 @@ describe('appTools', () => {
 
     // SQLite registry row was inserted.
     assert.ok(h.sql.statements.some((s) => s.query.startsWith('INSERT INTO apps')));
+  });
+
+  it('createApp records an agent-authored revision and pins the registry pointers', async () => {
+    const h = createAppToolsHarness();
+    const created = await h.tools.createApp.execute(
+      { name: 'Revised', files: { ...MINIMAL_APP_FILES }, width: 420, height: 320 },
+      { toolCallId: 'tc', messages: [] },
+    );
+
+    const manifests = await listAppRevisionManifests(h.env, UID, created.appId);
+    assert.equal(manifests.length, 1, 'one revision per install');
+    const [revision] = manifests;
+    assert.equal(revision.kind, 'deploy');
+    assert.equal(revision.author, 'agent');
+    assert.equal(revision.valid, true);
+    assert.equal(revision.appVersion, 1);
+    assert.equal(revision.name, 'Revised');
+    assert.equal(created.revision, revision.id, 'the tool result carries the revision id');
+
+    // Both registry pointers move to the agent revision.
+    const meta = await h.kv.get(`app:${created.appId}`, 'json');
+    assert.equal(meta.current_revision, revision.id);
+    assert.equal(meta.last_valid_revision, revision.id);
+
+    // The revision snapshots exactly the deployed source and validates clean.
+    const stored = await readAppRevision(h.env, UID, created.appId, revision.id);
+    assert.deepEqual(stored.files, MINIMAL_APP_FILES);
+    assert.deepEqual(stored.diagnostics, { valid: true, issues: [] });
+    assert.equal(stored.manifest.windowConfig.defaultWidth, 420);
+    assert.equal(stored.manifest.windowConfig.defaultHeight, 320);
   });
 
   it('createApp rejects bad bundles before writing anything', async () => {
@@ -1491,6 +1525,73 @@ describe('appTools', () => {
     assert.equal(h.r2.keys(`apps/${UID}/${created.appId}/v3/`).length, 0, 'the failed release must be cleaned up');
     assert.equal((await h.kv.get(`app:${created.appId}`, 'json')).version, 2, 'KV must keep the last good version');
     assert.equal(h.desktop.itemsOf('app')[0].appManifest.version, '2', 'desktop must keep the last good manifest');
+  });
+
+  it('updateApp appends agent revisions and records invalid ones without touching the installed bundle', async () => {
+    const h = createAppToolsHarness();
+    const created = await h.tools.createApp.execute(
+      { name: 'Revisions', files: { ...MINIMAL_APP_FILES } },
+      { toolCallId: 'tc', messages: [] },
+    );
+
+    // A successful update appends a valid agent revision and moves both
+    // registry pointers to it.
+    const updated = await h.tools.updateApp.execute(
+      { appId: created.appId, files: { ...MINIMAL_APP_FILES, 'app.js': 'console.log("v2");' }, name: 'Revisions v2' },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(updated.version, 2);
+    let manifests = await listAppRevisionManifests(h.env, UID, created.appId);
+    assert.equal(manifests.length, 2);
+    assert.deepEqual(manifests.map((m) => m.author), ['agent', 'agent']);
+    // Revision ids are Date.now()-based, so two saves inside one test can
+    // share a millisecond; identify revisions by content, not list order.
+    const updateRevision = manifests.find((m) => m.valid && m.appVersion === 2);
+    assert.ok(updateRevision, 'the update appends a valid v2 revision');
+    assert.equal(updated.revision, updateRevision.id, 'the tool result carries the revision id');
+    let meta = await h.kv.get(`app:${created.appId}`, 'json');
+    assert.equal(meta.current_revision, updateRevision.id);
+    assert.equal(meta.last_valid_revision, updateRevision.id);
+
+    // An update that fails deterministic validation records an INVALID
+    // revision carrying the diagnostics, moves only current_revision, and
+    // leaves the installed bundle (v2) untouched — the same contract as a
+    // failed dev-deploy save.
+    await assert.rejects(
+      h.tools.updateApp.execute(
+        {
+          appId: created.appId,
+          files: { ...MINIMAL_APP_FILES, 'index.html': '<script src="https://evil.example/x.js"></script>' },
+        },
+        { toolCallId: 'tc', messages: [] },
+      ),
+      /External script URLs are not allowed/,
+    );
+
+    manifests = await listAppRevisionManifests(h.env, UID, created.appId);
+    assert.equal(manifests.length, 3, 'the rejected attempt is part of the history');
+    const failedRevision = manifests.find((m) => !m.valid);
+    assert.ok(failedRevision, 'the failed save records an invalid revision');
+    assert.equal(failedRevision.author, 'agent');
+    assert.equal(failedRevision.kind, 'deploy');
+
+    meta = await h.kv.get(`app:${created.appId}`, 'json');
+    assert.equal(meta.version, 2, 'the installed version did not move');
+    assert.equal(meta.current_revision, failedRevision.id, 'current_revision follows the failed attempt');
+    assert.equal(meta.last_valid_revision, updateRevision.id, 'the last valid pointer did not move');
+
+    const stored = await readAppRevision(h.env, UID, created.appId, failedRevision.id);
+    assert.match(stored.files['index.html'], /evil\.example/, 'the attempted source is recorded');
+    assert.equal(stored.diagnostics.valid, false);
+    assert.ok(stored.diagnostics.issues.some((issue) => issue.code === 'source/external-script'));
+
+    // The installed bundle and the served source stay exactly v2.
+    const installedSource = await (await h.r2.get(`apps/${UID}/${created.appId}/v2/source.json`)).json();
+    assert.equal(installedSource['app.js'], 'console.log("v2");');
+    const appItem = h.desktop.itemsOf('app')[0];
+    assert.equal(appItem.appManifest.version, '2');
+    assert.equal(appItem.name, 'Revisions v2');
+    assert.equal(h.r2.keys(`apps/${UID}/${created.appId}/v3/`).length, 0, 'no v3 release may be written');
   });
 
   it('deleteApp removes the app from every store, trashing the icon before deleting data', async () => {
