@@ -21,7 +21,7 @@ This review does not certify production readiness. Code findings below are disti
 | R3 — Failed writes / false local state | ✅ Done | Position-save rollback + tests; status-UI nice-to-have remains |
 | R4 — Cross-tab session refresh | ✅ Done | Web Locks + storage-event propagation; full acceptance tested |
 | R5 — Reproducible verification | ✅ Done | Minor: no browser smoke step or clean-install gate |
-| R6 — Dependency advisory triage | 🟡 Partial | Critical + reachable sanitizer fixed (0 critical, 20 high); rest deferred behind `agents 0.8`/`zod 4` |
+| R6 — Dependency advisory triage | 🟡 Partial | 2026-11-19: agents 0.8 + zod 4 major landed, reachable zod high fixed (0 critical, 19 high); remaining reachable highs need the *next* majors (agents 0.33 / ai-chat 0.12) |
 
 Of six original blockers, two are fully open (R2, R6) and two are partially done (R3, R4). R1 and R5 are complete.
 
@@ -113,7 +113,7 @@ Remaining minor gaps (do not block, but close before calling the gate complete):
 
 Acceptance: largely met for a clean CI checkout; add the browser smoke step to fully satisfy it. A separate staging integration suite for external integrations is still required.
 
-### R6 — Dependency advisory triage — 🟡 Partial (2026-11-11)
+### R6 — Dependency advisory triage — 🟡 Partial (2026-11-11; updated 2026-11-19)
 
 Triaged and reduced from **33 (1 critical, 21 high)** to **31 (0 critical, 20 high)**:
 
@@ -127,6 +127,8 @@ Reachability triage of the remaining 20 highs:
 - **Blocked behind a major bump** — the remaining fixes want `agents 0.7 → 0.8`, which peer-requires `zod ^4` (a major bump). Deferred deliberately: the chat transport and app-builder ride on `agents`, and the roadmap forbids a blanket major-version update without a transport regression pass. Candidates here include `zod` (oversized-collection DoS), `@modelcontextprotocol/sdk`, `@cloudflare/ai-chat`, `nanoid` (negative-size loop — not called with negative size).
 
 Remaining work: schedule the `agents 0.8` + `zod 4` upgrade as its own task with a chat/app-builder regression pass, then re-audit. Acceptance (no unaddressed *reachable* high/critical) is met for everything except that deferred, non-reachable set.
+
+**Update (2026-11-19, R6 task `cursor/glm-r6deps`):** the deferred major landed. Frontend `agents` ^0.7.5 → ^0.8.5 and `@cloudflare/ai-chat` ^0.1.8 → ^0.2.5 (lockfile resolves 0.8.7 / 0.2.6, de-duplicated to single hoisted copies shared with the worker — one chat-protocol version on both sides); worker `zod` ^3.24.0 → ^4.6.6 (resolves 4.6.7, clearing the reachable oversized-collection DoS high that both workspaces hit via untrusted `.estheme` manifests and AI tool-call args). Worker schemas ported to zod 4 semantics: the `.estheme` cursors/sounds/icons layers moved to `z.partialRecord` (zod 4's `z.record(z.enum(...))` is exhaustive and would reject themes overriding only some slots — pinned by a new worker `estheme.test.mjs` verified to fail on the exhaustive spelling), the one-arg `z.record(z.string())` (removed in zod 4) became explicit two-arg records, and `z.ZodType<T, z.ZodTypeDef, unknown>` became the zod 4 `z.ZodType<T>`. The chat-transport risk was re-verified against the installed sources and the disconnect fix adapted — see CORE-ROADMAP Workstream 4's R6 note (0.2.x keeps aborted request ids, so the resume replay is now driven by `resumeStream()` on reconnect). Post-bump audit (`npm audit --omit=dev`): **30 advisories — 0 critical, 19 high, 4 moderate, 7 low**. New triage of the 19 highs: three *new* advisories published against the 0.8.x/0.2.x line itself (`agents` 0.2.34-0.28.0, `@cloudflare/ai-chat` 0.0.3-0.4.3, `@modelcontextprotocol/sdk` ≤1.31.0) whose fixes want the *next* majors (`agents 0.33.0`, `ai-chat 0.12.2`) — same deliberate transport-risk deferral, now re-recorded against the newer line; dev/build tooling (`vite`, `rollup`, `postcss`, `browserslist`, `source-map-js`, `js-yaml`, `smol-toml`); and triaged-unreachable (`react-router` data-router/RSC APIs still unused, the MCP/express subtree, `nanoid` — not imported anywhere in worker source, `ip-address`, `lodash`, `path-to-regexp`, `hono`).
 
 Acceptance: no unaddressed reachable high/critical issue, and sanitizer, app sandbox, and chat transport regressions pass after upgrades.
 
