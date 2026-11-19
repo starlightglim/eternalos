@@ -47,6 +47,14 @@ export interface Env {
   AGENT_CHAT_MODEL?: string; // Optional Workers AI model override for chat agent
   APP_BUILDER_MODEL?: string; // Optional Workers AI model override for structured app generation
 
+  // Per-account AI usage limit overrides (see middleware/aiUsage.ts for the
+  // defaults; the integration suite sets AI_REQUESTS_PER_DAY low to test
+  // budget exhaustion quickly). Values must be positive integers.
+  AI_REQUESTS_PER_DAY?: string;
+  AI_TOKENS_PER_DAY?: string;
+  AI_CONCURRENT_TURNS?: string;
+  AI_TURN_LEASE_MS?: string;
+
   // Cloudflare Email Service binding (preferred over Resend when configured).
   // Set up via wrangler.toml: send_email = [{ name = "SEND_EMAIL" }]
   // Sending domain must be verified in CF dashboard (Email Routing → Outbound).
