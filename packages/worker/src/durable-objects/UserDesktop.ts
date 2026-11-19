@@ -45,6 +45,41 @@ export interface SavedWindowState {
   contentId?: string;
 }
 
+/**
+ * Profile fields a PATCH may explicitly clear by sending `null`.
+ *
+ * Mirrors the frontend reset payload (APPEARANCE_PROFILE_KEYS plus the
+ * designTokens/variants blobs in packages/frontend/src/stores/appearanceStore.ts):
+ * exactly the appearance/customization fields the Appearance "Reset" is meant
+ * to clear. `null` for any other allowlisted field (username, wallpaper, bio,
+ * soundPack, …) is rejected with 400 — identity and account fields must never
+ * be clearable — and fields outside the allowlist entirely keep today's
+ * behavior (silently ignored, like any unknown field).
+ */
+const CLEARABLE_APPEARANCE_FIELDS: ReadonlySet<keyof UserProfile> = new Set([
+  'accentColor',
+  'desktopColor',
+  'windowBgColor',
+  'titleBarBgColor',
+  'titleBarTextColor',
+  'windowBorderColor',
+  'buttonBgColor',
+  'buttonTextColor',
+  'buttonBorderColor',
+  'labelColor',
+  'systemFont',
+  'bodyFont',
+  'monoFont',
+  'fontSmoothing',
+  'windowBorderRadius',
+  'controlBorderRadius',
+  'windowShadow',
+  'windowOpacity',
+  'customCSS',
+  'designTokens',
+  'variants',
+]);
+
 export class UserDesktop {
   private state: DurableObjectState;
   private env: Env;
@@ -752,6 +787,20 @@ export class UserDesktop {
       }
     }
 
+    // Explicit clear semantics: a field sent as `null` means "remove this
+    // saved field" — but ONLY for the appearance/customization fields the
+    // frontend reset is meant to clear (CLEARABLE_APPEARANCE_FIELDS). `null`
+    // for any other allowlisted field is a client error, so identity and
+    // account fields can never be cleared; fields that never passed the
+    // allowlist (uid, email, auth-related, unknown fields) keep today's
+    // behavior of being silently ignored.
+    for (const field of Object.keys(filteredUpdates) as (keyof UserProfile)[]) {
+      if ((filteredUpdates as Record<string, unknown>)[field] === null
+        && !CLEARABLE_APPEARANCE_FIELDS.has(field)) {
+        throw new HttpError(400, `Field "${field}" cannot be cleared (null is only allowed for appearance fields)`);
+      }
+    }
+
     // SECURITY: Validate the `wallpaper` field. The string is stored as-is and
     // later parsed by handleWallpaperUpload to derive an R2 key for cleanup.
     // If we allowed an attacker to store a custom:<victim-uid>/... value here,
@@ -847,7 +896,9 @@ export class UserDesktop {
 
     for (const [field, min, max] of numericFields) {
       const value = filteredUpdates[field];
-      if (value !== undefined) {
+      // `null` is the explicit clear semantic (gated above to clearable
+      // fields); every non-null value must still be a number in range.
+      if (value !== undefined && value !== null) {
         if (typeof value !== 'number' || Number.isNaN(value) || value < min || value > max) {
           throw new Error(`Invalid ${field} value`);
         }
@@ -865,8 +916,9 @@ export class UserDesktop {
       }
     }
 
-    // Server-side validation for designTokens blob
-    if (filteredUpdates.designTokens !== undefined) {
+    // Server-side validation for designTokens blob. `null` (the clear
+    // semantic) skips the shape checks below and removes the field.
+    if (filteredUpdates.designTokens !== undefined && filteredUpdates.designTokens !== null) {
       const dt = filteredUpdates.designTokens;
       if (typeof dt !== 'object' || dt === null || Array.isArray(dt)) {
         throw new Error('Invalid designTokens format');
@@ -943,8 +995,9 @@ export class UserDesktop {
     // Server-side validation for the variants blob. Variant selections pick
     // which conditional tokens apply (compiled client-side); the server only
     // stores and echoes them, so bound the shape to prevent an oversized or
-    // malformed blob from being persisted and served to visitors.
-    if (filteredUpdates.variants !== undefined) {
+    // malformed blob from being persisted and served to visitors. `null` (the
+    // clear semantic) skips the shape checks and removes the field.
+    if (filteredUpdates.variants !== undefined && filteredUpdates.variants !== null) {
       const v = filteredUpdates.variants;
       if (typeof v !== 'object' || v === null || Array.isArray(v)) {
         throw new Error('Invalid variants format');
@@ -1064,10 +1117,18 @@ export class UserDesktop {
       }
     }
 
-    this.profile = {
-      ...this.profile,
-      ...filteredUpdates,
-    };
+    // Apply the update. `null` values (gated above to the clearable
+    // appearance fields) REMOVE the field from the stored profile, so
+    // GET /profile reports it gone rather than echoing a stored null.
+    const nextProfile = { ...this.profile } as UserProfile & Record<string, unknown>;
+    for (const [field, value] of Object.entries(filteredUpdates)) {
+      if (value === null) {
+        delete nextProfile[field];
+      } else {
+        nextProfile[field] = value;
+      }
+    }
+    this.profile = nextProfile;
 
     await this.state.storage.put('profile', this.profile);
     if (typeof filteredUpdates.customCSS === 'string' && filteredUpdates.customCSS !== currentCustomCSS) {
