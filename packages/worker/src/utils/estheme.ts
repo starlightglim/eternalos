@@ -114,8 +114,33 @@ const wallpaperLayerSchema = z
 // The frontend mirror is on zod 4, where record(enum) is exhaustive, so it must
 // use `partialRecord` to get this same partial behavior. Keep the two in sync
 // in intent (partial slot maps), not necessarily in spelling.
+//
+// A cursor slot value is either a plain bundle path (the original v1 form) or
+// `{ file, hotspotX?, hotspotY? }` — the object form carries the authored
+// click point so exported cursor packs round-trip their hotspot. Plain-string
+// values keep old bundles importing.
+export interface EsthemeCursorSlot {
+  file: string;
+  hotspotX?: number;
+  hotspotY?: number;
+}
+export type EsthemeCursorLayerValue = string | EsthemeCursorSlot;
+
+/** The bundle path a cursor layer value refers to, in either form. */
+export function cursorSlotPath(value: EsthemeCursorLayerValue): string {
+  return typeof value === 'string' ? value : value.file;
+}
+
+const cursorSlotSchema = z
+  .object({
+    file: bundlePath,
+    hotspotX: z.number().int().min(0).max(64).optional(),
+    hotspotY: z.number().int().min(0).max(64).optional(),
+  })
+  .strict();
+
 const cursorsLayerSchema = z
-  .record(z.enum(CURSOR_STATES), bundlePath)
+  .record(z.enum(CURSOR_STATES), z.union([bundlePath, cursorSlotSchema]))
   .refine((value) => Object.keys(value).length > 0, {
     message: 'cursors layer declared but empty',
   });
@@ -163,6 +188,20 @@ const creditsEntrySchema = z
   })
   .strict();
 
+/**
+ * Fork lineage — recorded when a theme was exported from a rice that was
+ * itself installed from another `.estheme`. Optional in the manifest so
+ * formatVersion-1 bundles written before this field exists still import.
+ */
+export const forkedFromSchema = z
+  .object({
+    id: z.string().regex(slugRegex),
+    name: z.string().min(1).max(80).optional(),
+    author: z.string().regex(authorRegex),
+    version: z.string().regex(semverRegex).optional(),
+  })
+  .strict();
+
 // ---------------------------------------------------------------------------
 // Top-level manifest
 // ---------------------------------------------------------------------------
@@ -178,6 +217,9 @@ export const esthemeManifestSchema = z
     author: z.string().regex(authorRegex, 'author must be @username'),
 
     extends: z.string().max(128).optional(),
+
+    /** Fork lineage (optional — see forkedFromSchema). */
+    forkedFrom: forkedFromSchema.optional(),
 
     tags: z.array(z.string().min(1).max(32)).max(10).optional(),
 
@@ -195,6 +237,7 @@ export const esthemeManifestSchema = z
   .strict();
 
 export type EsthemeManifest = z.infer<typeof esthemeManifestSchema>;
+export type EsthemeForkedFrom = z.infer<typeof forkedFromSchema>;
 export type EsthemeTokens = z.infer<typeof tokensLayerSchema>;
 export type EsthemeVariants = z.infer<typeof variantsLayerSchema>;
 export type EsthemeTypography = z.infer<typeof typographyLayerSchema>;
@@ -269,7 +312,7 @@ export function validateManifestAgainstFiles(
   }
   if (layers.cursors) {
     for (const [slot, pathValue] of Object.entries(layers.cursors)) {
-      checkFile(pathValue, `cursors.${slot}`);
+      checkFile(cursorSlotPath(pathValue as EsthemeCursorLayerValue), `cursors.${slot}`);
     }
   }
   if (layers.sounds) {

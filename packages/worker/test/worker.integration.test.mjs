@@ -666,6 +666,44 @@ describe('worker integration', () => {
       method: 'POST', headers: authHeaders(user.token), body: badForm,
     });
     assert.equal(badAuthor.response.status, 403);
+
+    // Fork lineage + hotspot-object cursor slots (the v1.1 manifest additions)
+    // publish and read back; the schema additions are optional so this
+    // old-shape manifest above still validates too.
+    const forkedManifest = {
+      ...manifest,
+      id: 'retro-fork',
+      layers: {
+        tokens: 'tokens.json',
+        cursors: { default: { file: 'cursors/default.png', hotspotX: 3, hotspotY: 4 } },
+      },
+      forkedFrom: { id: 'retro-theme', name: 'Retro Theme', author, version: '1.0.0' },
+    };
+    const forkedForm = new UndiciFormData();
+    forkedForm.set('manifest', JSON.stringify(forkedManifest));
+    forkedForm.set('preview', createPngFile('preview.png'));
+    forkedForm.set('file_tokens.json', tokensFile());
+    forkedForm.set('file_cursors/default.png', createPngFile('default.png'));
+    const forked = await expectOk('/api/bazaar/publish-estheme', {
+      method: 'POST', headers: authHeaders(user.token), body: forkedForm,
+    });
+    assert.equal(forked.manifest.forkedFrom.id, 'retro-theme');
+    assert.deepEqual(forked.manifest.layers.cursors, {
+      default: { file: 'cursors/default.png', hotspotX: 3, hotspotY: 4 },
+    });
+
+    // Malformed lineage (bad author handle) is a 400, not a 500.
+    const badLineage = await fetchJson('/api/bazaar/publish-estheme', {
+      method: 'POST', headers: authHeaders(user.token), body: (() => {
+        const form = new UndiciFormData();
+        form.set('manifest', JSON.stringify({ ...forkedManifest, forkedFrom: { id: 'x', author: 'nope' } }));
+        form.set('preview', createPngFile('p.png'));
+        form.set('file_tokens.json', tokensFile());
+        form.set('file_cursors/default.png', createPngFile('d.png'));
+        return form;
+      })(),
+    });
+    assert.equal(badLineage.response.status, 400);
   });
 
   it('publishes and republishes a playable Bazaar game', async () => {
