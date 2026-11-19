@@ -94,19 +94,33 @@ export function profileToAppearance(profile: Record<string, unknown>): CustomApp
 
 /**
  * Convert a CustomAppearance into a flat object suitable for updateProfile().
+ *
+ * A key that is PRESENT with an `undefined` value is an explicit local clear
+ * (Appearance "Reset", a preset switch away from a themed rice, or a
+ * per-control reset button all set fields to undefined). It is sent as
+ * `null`, which the server treats as "remove this saved field" — otherwise
+ * previously saved fields would survive the reset and come back on reload.
+ * Keys that are simply absent are left out, as before.
  */
 export function appearanceToProfileFields(appearance: CustomAppearance): Record<string, unknown> {
   const fields: Record<string, unknown> = {};
   for (const key of APPEARANCE_PROFILE_KEYS) {
-    if (appearance[key] !== undefined) {
-      fields[key] = appearance[key];
+    const value = appearance[key];
+    if (value !== undefined) {
+      fields[key] = value;
+    } else if (key in appearance) {
+      fields[key] = null;
     }
   }
   if (appearance.designTokens && Object.keys(appearance.designTokens).length > 0) {
     fields['designTokens'] = appearance.designTokens;
+  } else if ('designTokens' in appearance && appearance.designTokens === undefined) {
+    fields['designTokens'] = null;
   }
   if (appearance.variants && Object.keys(appearance.variants).length > 0) {
     fields['variants'] = appearance.variants;
+  } else if ('variants' in appearance && appearance.variants === undefined) {
+    fields['variants'] = null;
   }
   return fields;
 }
@@ -348,8 +362,19 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => {
 
     resetAppearance: () => {
       clearAppearance();
+      // Mark every resettable field as explicitly cleared (present but
+      // undefined). The next save turns these into `null` tombstones in the
+      // PATCH payload (see appearanceToProfileFields), so the server REMOVES
+      // the saved fields instead of keeping them around to resurface on the
+      // next reload.
+      const cleared: Record<string, unknown> = {};
+      for (const key of APPEARANCE_PROFILE_KEYS) {
+        cleared[key] = undefined;
+      }
+      cleared['designTokens'] = undefined;
+      cleared['variants'] = undefined;
       set({
-        appearance: {},
+        appearance: cleared as CustomAppearance,
         customCSSPreview: undefined,
         customCSSPreviewSummary: undefined,
         hasUnsavedChanges: true,
