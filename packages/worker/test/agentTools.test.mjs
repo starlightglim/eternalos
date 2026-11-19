@@ -117,8 +117,16 @@ function createFakeDesktop({ items = [], profile = null } = {}) {
       const method = request.method;
       requests.push({ method, path: url.pathname });
 
-      if (state.fail[method.toLowerCase()] && url.pathname === '/items') {
-        return new Response('injected failure', { status: state.fail[method.toLowerCase()] });
+      // `state.fail.{get,post,patch}` injects failures: a number fails
+      // every matching request; a function is consulted per request and
+      // fails only while it returns a status (lets a test fail one PATCH —
+      // e.g. the createFolder move — but not the cleanup that follows).
+      if (url.pathname === '/items') {
+        const injected = state.fail[method.toLowerCase()];
+        const status = typeof injected === 'function' ? injected() : injected;
+        if (status) {
+          return new Response('injected failure', { status });
+        }
       }
 
       if (url.pathname === '/items' && method === 'GET') {
@@ -163,6 +171,16 @@ function createFakeDesktop({ items = [], profile = null } = {}) {
     get: (id) => state.items.get(id),
   };
 }
+
+/** Failure injector for the fake desktop: fails only the first matching request. */
+const failOnce = (status) => {
+  let pending = true;
+  return () => {
+    if (!pending) return 0;
+    pending = false;
+    return status;
+  };
+};
 
 /** Workers AI binding stub: scripted model responses, recording every call. */
 function createFakeAiBinding() {
@@ -747,15 +765,47 @@ describe('desktopTools', () => {
     );
 
     // Move fails after the folder was created: the tool reports the failure
-    // clearly (nothing is silently half-moved; the empty folder remains, which
-    // the agent can see and mention).
-    desktop.state.fail.patch = 500;
+    // as before (nothing is silently half-moved) AND no longer leaves the
+    // empty folder behind — the folder it just created is trashed. Only
+    // the move PATCH fails, so the cleanup can run.
+    desktop.state.fail.patch = failOnce(500);
     await assert.rejects(
       tools.createFolder.execute({ folderName: 'Y', itemIds: ['i1'] }, { toolCallId: 'tc', messages: [] }),
       /Failed to move items \(500\)/,
     );
     assert.equal(desktop.get('i1').parentId, null, 'the failed move must not have moved anything');
-    assert.equal(desktop.itemsOf('folder').length, 1, 'the created folder remains, nothing moved');
+    assert.equal(desktop.itemsOf('folder').length, 0, 'the created folder must not be left behind');
+    const createdFolder = [...desktop.state.items.values()].find((i) => i.type === 'folder');
+    assert.equal(
+      createdFolder.isTrashed, true,
+      'the folder is trashed — the reversible removal the tools use, not a hard delete',
+    );
+  });
+
+  it('createFolder reports both errors when the move and the cleanup fail', async () => {
+    const desktop = createFakeDesktop({
+      items: [{ id: 'i1', type: 'image', name: 'a.png', parentId: null, isPublic: false, updatedAt: 1 }],
+    });
+    const tools = createDesktopTools({
+      getUserDesktopStub: () => desktop.stub,
+      setState: () => {},
+      getState: () => ({ lastMatchedItemIds: [], lastQuery: null, memories: [] }),
+    });
+
+    // Every PATCH fails: the move fails AND the cleanup of the just-created
+    // folder fails. Both errors must be reported in one clear message — the
+    // folder remains on the desktop, but visibly so, never silently.
+    desktop.state.fail.patch = 500;
+    await assert.rejects(
+      tools.createFolder.execute({ folderName: 'Y', itemIds: ['i1'] }, { toolCallId: 'tc', messages: [] }),
+      (error) => {
+        assert.match(error.message, /Failed to move items \(500\)/);
+        assert.match(error.message, /failed to remove the created folder \(500\)/);
+        return true;
+      },
+    );
+    assert.equal(desktop.get('i1').parentId, null, 'nothing may be moved');
+    assert.equal(desktop.itemsOf('folder').length, 1, 'the cleanup failed, so the folder remains — but the error says so');
   });
 
   it('moveItems moves items and reports clearly when the backend fails', async () => {
@@ -1439,6 +1489,9 @@ describe('OrchestratorAgent approval flow', () => {
     const part = h.findToolPart('call_1');
     assert.equal(part.state, 'output-error', 'the failed mutation is recorded as a tool error');
     assert.match(part.errorText, /Failed to move items \(500\)/);
+    // Every PATCH fails, so the cleanup of the just-created folder failed
+    // too — the recorded error reports both.
+    assert.match(part.errorText, /failed to remove the created folder \(500\)/);
     assert.equal(part.approval.approved, true, 'the approval decision stays recorded');
 
     // Nothing was moved, and the thread ends coherent.
