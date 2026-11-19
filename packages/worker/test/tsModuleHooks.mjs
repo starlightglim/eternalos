@@ -28,7 +28,16 @@ import { fileURLToPath } from 'node:url';
 
 const CLOUDFLARE_MODULE_STUBS = {
   'cloudflare:workers': `
-export class DurableObject {}
+// The real workerd DurableObject base class exposes the state and env as
+// instance properties; agent SDK subclasses (Agent extends Server extends
+// DurableObject) read this.ctx from their constructors, so the stub must
+// store them the same way for in-process construction to work.
+export class DurableObject {
+  constructor(ctx, env) {
+    this.ctx = ctx;
+    this.env = env;
+  }
+}
 export class WorkflowEntrypoint {}
 export const env = new Proxy({}, { get: () => undefined });
 `,
