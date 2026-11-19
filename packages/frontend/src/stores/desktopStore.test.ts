@@ -511,3 +511,115 @@ test('reset clears the interaction state with the session', () => {
   useDesktopStore.getState().reset();
   expect(useDesktopStore.getState().selectedIds.size).toBe(0);
 });
+
+// ---------------------------------------------------------------------------
+// Clean Up / sort (CORE-ROADMAP Workstream 1): the batch arrangement saves
+// now route through the per-item write queue, so a refused batch reverts
+// every failed item to its acknowledged position and surfaces the shared
+// "Sync Failed" error — no desktop left looking re-arranged when the
+// server never recorded it.
+// ---------------------------------------------------------------------------
+
+const sortSeed: DesktopItem[] = [
+  { ...original, id: 'note-c', name: 'C.txt', position: { x: 5, y: 0 }, updatedAt: 3 },
+  { ...original, id: 'note-a', name: 'A.txt', position: { x: 3, y: 1 }, updatedAt: 1 },
+  { ...original, id: 'note-b', name: 'B.txt', position: { x: 1, y: 2 }, updatedAt: 2 },
+];
+
+// [action, arranged position per id] — the arrangement each command produces.
+const arrangements: ReadonlyArray<
+  readonly [
+    'cleanUp' | 'sortByName' | 'sortByDate' | 'sortByKind',
+    ReadonlyArray<readonly [string, { x: number; y: number }]>
+  ]
+> = [
+  // Alphabetical: Clean Up and sort-by-name; sort-by-kind is alphabetical
+  // too because every item here is a text file.
+  ['cleanUp', [['note-a', { x: 0, y: 0 }], ['note-b', { x: 0, y: 1 }], ['note-c', { x: 0, y: 2 }]]],
+  ['sortByName', [['note-a', { x: 0, y: 0 }], ['note-b', { x: 0, y: 1 }], ['note-c', { x: 0, y: 2 }]]],
+  // Newest first: C (3), B (2), A (1).
+  ['sortByDate', [['note-c', { x: 0, y: 0 }], ['note-b', { x: 0, y: 1 }], ['note-a', { x: 0, y: 2 }]]],
+  ['sortByKind', [['note-a', { x: 0, y: 0 }], ['note-b', { x: 0, y: 1 }], ['note-c', { x: 0, y: 2 }]]],
+];
+
+test.each(arrangements)(
+  '%s: a forced failure reverts every item to its acknowledged position',
+  async (action, arranged) => {
+    api.updateItems.mockRejectedValue(new Error('Offline'));
+    const store = useDesktopStore.getState();
+    store.setItems(sortSeed.map((item) => ({ ...item })));
+    store[action](null);
+    // The optimistic arrangement shows immediately.
+    for (const [id, position] of arranged) {
+      expect(store.getItem(id)?.position).toEqual(position);
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    // Every write was refused: each item rolls back to its acknowledged
+    // position, and one shared error surfaces for the batch.
+    for (const item of sortSeed) {
+      expect(store.getItem(item.id)?.position).toEqual(item.position);
+    }
+    expect(alerts.showError).toHaveBeenCalledWith(
+      'Could not save the new arrangement. It has been reverted.',
+      'Sync Failed'
+    );
+  }
+);
+
+test.each(failures)('sort: a forced %s failure reverts the arrangement and surfaces the error', async (_label, fail) => {
+  api.updateItems.mockRejectedValue(fail());
+  const store = useDesktopStore.getState();
+  store.setItems(sortSeed.map((item) => ({ ...item })));
+  store.sortByName(null);
+  await vi.advanceTimersByTimeAsync(0);
+  for (const item of sortSeed) {
+    expect(store.getItem(item.id)?.position).toEqual(item.position);
+  }
+  expect(alerts.showError).toHaveBeenCalledWith(
+    'Could not save the new arrangement. It has been reverted.',
+    'Sync Failed'
+  );
+});
+
+test('a successful sort persists each arranged position through the item write queue', async () => {
+  api.updateItems.mockResolvedValue([]);
+  const store = useDesktopStore.getState();
+  store.setItems(sortSeed.map((item) => ({ ...item })));
+  store.sortByName(null);
+  await vi.advanceTimersByTimeAsync(0);
+  // Each item's position reached the server as its own queued write,
+  // keeping per-item write order — not one fire-and-forget batch.
+  expect(api.updateItems).toHaveBeenCalledWith([{ id: 'note-a', updates: { position: { x: 0, y: 0 } } }]);
+  expect(api.updateItems).toHaveBeenCalledWith([{ id: 'note-b', updates: { position: { x: 0, y: 1 } } }]);
+  expect(api.updateItems).toHaveBeenCalledWith([{ id: 'note-c', updates: { position: { x: 0, y: 2 } } }]);
+  // And the acknowledged snapshot holds the arranged positions.
+  expect(getAcknowledgedItem('note-a')?.position).toEqual({ x: 0, y: 0 });
+  expect(store.getItem('note-c')?.position).toEqual({ x: 0, y: 2 });
+});
+
+test('a sort waits for an earlier in-flight save on the same item', async () => {
+  let acknowledge!: () => void;
+  api.updateItems.mockImplementationOnce(() => new Promise<void>((resolve) => { acknowledge = resolve; }));
+  api.updateItems.mockResolvedValue([]);
+  const store = useDesktopStore.getState();
+  store.setItems(sortSeed.map((item) => ({ ...item })));
+  // The user drags note-c; its position save is still in flight when the
+  // sort runs.
+  store.moveItem('note-c', { x: 9, y: 9 });
+  await vi.advanceTimersByTimeAsync(600); // the drag save fires, still pending
+  store.sortByName(null);
+  await vi.advanceTimersByTimeAsync(0);
+  // note-a's and note-b's writes ran (nothing queued ahead of them);
+  // note-c's arranged write waits behind its in-flight drag save instead
+  // of overtaking it — the old fire-and-forget batch could land before the
+  // drag, letting the stale drag position clobber the arrangement.
+  expect(api.updateItems).toHaveBeenCalledTimes(3);
+  expect(api.updateItems).not.toHaveBeenCalledWith([{ id: 'note-c', updates: { position: { x: 0, y: 2 } } }]);
+  acknowledge();
+  await vi.advanceTimersByTimeAsync(0);
+  // Now the arranged write for note-c lands — after the drag save settled.
+  expect(api.updateItems).toHaveBeenCalledWith([{ id: 'note-c', updates: { position: { x: 0, y: 2 } } }]);
+  expect(api.updateItems).toHaveBeenCalledTimes(4);
+  expect(store.getItem('note-c')?.position).toEqual({ x: 0, y: 2 });
+});
+
