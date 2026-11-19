@@ -109,25 +109,25 @@ const wallpaperLayerSchema = z
   })
   .strict();
 
-// NOTE: this worker mirror is on zod 3, where `z.record(z.enum(...), v)` is
-// already PARTIAL (missing keys allowed) and `partialRecord` does not exist.
-// The frontend mirror is on zod 4, where record(enum) is exhaustive, so it must
-// use `partialRecord` to get this same partial behavior. Keep the two in sync
-// in intent (partial slot maps), not necessarily in spelling.
+// NOTE: both mirrors (frontend and worker) are on zod 4, where
+// `z.record(z.enum(...), v)` is EXHAUSTIVE (every enum key required) — so
+// partial slot maps MUST use `z.partialRecord`, which keeps zod 3's
+// record(enum) behavior of allowing missing keys. Keep the two mirrors in
+// sync in spelling as well as intent.
 const cursorsLayerSchema = z
-  .record(z.enum(CURSOR_STATES), bundlePath)
+  .partialRecord(z.enum(CURSOR_STATES), bundlePath)
   .refine((value) => Object.keys(value).length > 0, {
     message: 'cursors layer declared but empty',
   });
 
 const soundsLayerSchema = z
-  .record(z.enum(SOUND_EVENTS), bundlePath)
+  .partialRecord(z.enum(SOUND_EVENTS), bundlePath)
   .refine((value) => Object.keys(value).length > 0, {
     message: 'sounds layer declared but empty',
   });
 
 const iconsLayerSchema = z
-  .record(z.enum(ICON_SLOTS), bundlePath)
+  .partialRecord(z.enum(ICON_SLOTS), bundlePath)
   .refine((value) => Object.keys(value).length > 0, {
     message: 'icons layer declared but empty',
   });

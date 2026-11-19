@@ -164,7 +164,7 @@ const permissionsSchema = z.object({
 }).optional();
 
 const generatedAppFilesSchema = z.object({
-  files: z.record(z.string()).refine(
+  files: z.record(z.string(), z.string()).refine(
     (files) => Object.keys(files).length > 0,
     'At least one source file is required',
   ),
@@ -265,7 +265,7 @@ function parseGeneratedJson(text: string): unknown {
 
 async function generateStructuredObject<T>(
   env: Env,
-  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  schema: z.ZodType<T>,
   system: string,
   prompt: string,
   step: string,
@@ -2262,7 +2262,7 @@ export function createAppTools(ctx: AppToolsContext) {
       inputSchema: z.object({
         name: z.string().min(1).max(80).describe('App name'),
         description: z.string().max(500).optional().describe('Short description'),
-        files: z.record(z.string()).describe('App source files: { "index.html": "...", "styles.css": "...", "app.js": "..." }'),
+        files: z.record(z.string(), z.string()).describe('App source files: { "index.html": "...", "styles.css": "...", "app.js": "..." }'),
         width: z.number().int().min(360).max(1600).optional().default(600).describe('Default window width'),
         height: z.number().int().min(320).max(1200).optional().default(500).describe('Default window height'),
         permissions: permissionsSchema,
@@ -2284,7 +2284,7 @@ export function createAppTools(ctx: AppToolsContext) {
       description: 'Update an existing app\'s code. Provide the full updated files.',
       inputSchema: z.object({
         appId: z.string().describe('The app ID to update'),
-        files: z.record(z.string()).describe('Updated source files'),
+        files: z.record(z.string(), z.string()).describe('Updated source files'),
         name: z.string().optional().describe('Updated name'),
         description: z.string().max(500).optional().describe('Updated description'),
         width: z.number().int().min(360).max(1600).optional().describe('Updated default window width'),
