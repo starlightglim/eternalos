@@ -11,8 +11,11 @@
  * before passing it on: the DO's internal /items endpoints are trusted by
  * server-side app flows, and the public routes must not hand that trust to
  * a client session (see rejectInvalidItemBody — it refuses server-managed
- * app fields, and answers malformed bodies with a 400 instead of letting
- * the DO's verbatim request.json() turn them into a 500).
+ * app fields, create bodies that aren't JSON objects, and patch bodies
+ * that aren't JSON arrays, answering malformed input with a 400 instead of
+ * letting the DO's verbatim request.json() turn it into a 500 — or, for a
+ * non-object create body, into a silently created default "Untitled"
+ * folder).
  */
 
 import type { Env } from '../index';
@@ -70,6 +73,9 @@ function serverManagedItemFieldsIn(payload: unknown): string[] {
  *  - non-JSON bodies — the DO's /items endpoints parse the body verbatim
  *    (request.json()) and would turn a malformed one into a 500, but
  *    client-supplied bad input is a client error;
+ *  - a create body that isn't a JSON object — the DO spreads the parsed
+ *    body into its item defaults, so `42`, `"x"`, `[]`, or `null` would
+ *    silently create a default "Untitled" folder;
  *  - a patch body that isn't a JSON array — the DO applies patches by
  *    iterating the parsed value, and a non-iterable one is another 500;
  *  - any body setting the server-managed app fields, naming them (a create
@@ -93,6 +99,9 @@ function rejectInvalidItemBody(body: string, patch: boolean): Response | null {
       { status: 400 },
     );
   }
+  if (!patch && (typeof payload !== 'object' || payload === null || Array.isArray(payload))) {
+    return Response.json({ error: 'Item body must be a JSON object' }, { status: 400 });
+  }
   const fields = serverManagedItemFieldsIn(payload);
   if (fields.length === 0) return null;
   return Response.json(
@@ -115,7 +124,10 @@ export async function handleCreateDesktopItems(c: RouteContext): Promise<Respons
   const body = await c.request.text();
   // App items are created by the install paths (which call the DO directly),
   // never by a client — a manifest or grants on a create body is a forgery.
-  // A non-JSON body is refused here too; the DO's request.json() would 500.
+  // Non-JSON bodies are refused here (the DO's request.json() would 500),
+  // and so is valid JSON that isn't an object — the DO would spread `42`,
+  // `[]`, or `"x"` into its defaults and silently create an "Untitled"
+  // folder.
   const rejection = rejectInvalidItemBody(body, false);
   if (rejection) return rejection;
   return userDesktopStub(c.env, auth.uid).fetch(new Request('http://internal/items', {
@@ -130,7 +142,10 @@ export async function handleUpdateDesktopItems(c: RouteContext): Promise<Respons
   const body = await c.request.text();
   // Ordinary item edits (name, position, isPublic, trash, ...) forward as
   // before; non-JSON bodies, non-array patch bodies, and the server-managed
-  // app fields are all refused with 400s before the DO sees them.
+  // app fields are all refused with 400s before the DO sees them. The DO
+  // validates each entry (shape, id, field validators) and applies the batch
+  // all-or-nothing, so a bad entry answers a 400 naming its index and
+  // nothing is applied.
   const rejection = rejectInvalidItemBody(body, true);
   if (rejection) return rejection;
   return userDesktopStub(c.env, auth.uid).fetch(new Request('http://internal/items', {
