@@ -354,17 +354,66 @@ async function parseSseChunks(response) {
     .map((line) => JSON.parse(line.slice(6)));
 }
 
+/**
+ * In-memory stand-in for the per-account AI usage guard Durable Object
+ * (RateLimiter's /ai/* endpoints, see src/middleware/aiUsage.ts). The real
+ * onChatMessage acquires a turn slot before streaming and releases it when
+ * the turn settles; the harness fake admits every request and tracks
+ * held/released slots so the lifecycle is observable if a test needs it.
+ */
+function createFakeAiUsageGuard() {
+  const heldSlots = new Set();
+  const releasedSlots = [];
+  const stub = {
+    // The real DurableObjectStub accepts either a Request or a (url, init)
+    // pair — the production middleware sends (url, init), so normalize both.
+    async fetch(input, init) {
+      const request = typeof input === 'string' ? new Request(input, init) : input;
+      const url = new URL(request.url);
+      if (url.pathname === '/ai/acquire') {
+        const slotId = `slot-${heldSlots.size + 1}`;
+        heldSlots.add(slotId);
+        return Response.json({
+          allowed: true,
+          slotId,
+          remainingRequests: 100,
+          remainingTokens: 1_000_000,
+          resetAt: Date.now() + 86_400_000,
+        });
+      }
+      if (url.pathname === '/ai/record') {
+        return Response.json({ ok: true });
+      }
+      if (url.pathname === '/ai/release') {
+        const body = await request.json().catch(() => ({}));
+        heldSlots.delete(body.slotId);
+        releasedSlots.push(body.slotId);
+        return Response.json({ ok: true });
+      }
+      return new Response('not found', { status: 404 });
+    },
+  };
+  return {
+    stub,
+    heldSlots,
+    releasedSlots,
+    binding: { idFromName: () => 'rate-limiter-do-id', get: () => stub },
+  };
+}
+
 function createAgentHarness({ items = [], profile = null } = {}) {
   const desktop = createFakeDesktop({ items, profile });
   const kv = createFakeKV();
   const r2 = createFakeR2();
   const ai = createFakeAiBinding();
   const sql = fakeSql();
+  const usageGuard = createFakeAiUsageGuard();
   const env = {
     AI: ai,
     USER_DESKTOP: { idFromName: () => 'desktop-do-id', get: () => desktop.stub },
     DESKTOP_KV: kv,
     ETERNALOS_FILES: r2,
+    RATE_LIMITER: usageGuard.binding,
   };
   const threadMessages = [];
   const agent = {
@@ -380,6 +429,8 @@ function createAgentHarness({ items = [], profile = null } = {}) {
     getOwnerUid: OrchestratorAgent.prototype.getOwnerUid,
     getUserDesktopStub: OrchestratorAgent.prototype.getUserDesktopStub,
     getModel: OrchestratorAgent.prototype.getModel,
+    settleTurnUsage: OrchestratorAgent.prototype.settleTurnUsage,
+    degradedTurnResponse: OrchestratorAgent.prototype.degradedTurnResponse,
   };
 
   /**
