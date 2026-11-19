@@ -46,9 +46,10 @@ Gotchas:
   not document their credentials here.
 - After restarting the Vite server, browser tabs can keep serving stale
   CSS/JS modules — hard reload (Cmd+Shift+R) before debugging "broken" UI.
-- Pre-existing lint failures (not ours): `Desktop.tsx` (react-compiler memo),
-  `AppViewer.tsx` (`any`), `DeveloperStudio.tsx` (unused `e`).
-  `npm run typecheck --workspace=@eternalos/frontend` should stay clean.
+- `npm run lint` and `npm run typecheck --workspace=@eternalos/frontend`
+  should both stay clean. (Earlier revisions listed pre-existing lint
+  failures in `Desktop.tsx`, `AppViewer.tsx`, and `DeveloperStudio.tsx`;
+  those no longer reproduce.)
 
 ## Theme / appearance system
 
@@ -136,8 +137,10 @@ truth for all tokens).
 ## Git / repo facts
 
 - This is a standalone npm-workspaces project. The workspaces are
-  `packages/frontend` (React 19 + Vite + CSS modules + Zustand) and
-  `packages/worker` (Workers + DO + KV + R2 + Workers AI).
+  `packages/frontend` (React 19 + Vite + CSS modules + Zustand),
+  `packages/worker` (Workers + DO + KV + R2 + Workers AI), and
+  `packages/contracts` (types-only shared domain models, re-exported by both
+  — see its README).
 - Branch naming: `cursor/<short-description>`.
 - Never commit: `wrangler.toml` AI-binding workaround, `package-lock.json`
   churn from local installs, `.dev.vars`, `.env.local`.

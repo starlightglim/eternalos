@@ -196,7 +196,10 @@ This repo is already past the "purely hermetic app" stage:
   granted } })`.
 - the app runtime injected in `appTools.ts` already exposes
   `window.eternal.fs.list()`, `read()`, `readText()`, `readJson()`, `urlFor()`,
-  and `profile.get()`.
+  and `profile.get()`. `urlFor()` is asynchronous in installed apps: it
+  fetches the bytes with the app's capability and resolves a cached blob
+  object URL (capability-free previews return the plain bridge URL
+  synchronously), so apps must always `await` it.
 
 That means the architectural question is no longer "should we add a bridge?"
 It is:
@@ -374,6 +377,16 @@ That means:
 - `createCuratedApp()` is acceptable as a short-term fixture surface,
 - but the real product path should be `buildAppFromPrompt()` and its eventual
   spec/validate/repair pipeline.
+
+Historical note, 2026-11-19: the short-term fixture surface described above
+no longer exists. The `createCuratedApp()` tool was removed from the
+production tool factory (a regression test in
+`packages/worker/test/agentTools.test.mjs` asserts it stays gone), and the
+curated templates now live only as test fixtures in
+`packages/worker/test/fixtures/apps/templates/` — outside `src/`, imported
+only by tests. The spec/validate/repair pipeline is no longer "eventual":
+`buildAppFromPrompt()` runs the spec stage (`buildSpecFromPrompt`) ahead of
+file generation, and it is the only product path.
 
 ### Decision 7: Persistence should split into local-first and facet-backed
 
