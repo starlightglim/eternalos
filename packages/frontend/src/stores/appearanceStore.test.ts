@@ -347,6 +347,63 @@ describe('appearanceStore CSS + reset actions', () => {
     expect(Object.keys(fields)).not.toContain('desktopColor');
     expect(Object.keys(fields)).not.toContain('designTokens');
   });
+
+  // The Workstream 1 "Good when" acceptance: forced offline, 401, 429, and
+  // 500 never leave a successful-looking unsaved appearance. The store keeps
+  // the edit painted but unsaved (the caller surfaces the error — the
+  // AppearancePanel/CSSEditor UX is "your preview is still active"), and
+  // localStorage must not mirror the refused rice as if it were saved.
+  describe('saveAppearance failure matrix (offline / 401 / 429 / 500)', () => {
+    const FAILURES = [
+      ['offline', () => Promise.reject(new TypeError('Failed to fetch'))],
+      ['401', () => Promise.reject(new Error('401 Session expired. Please log in again.'))],
+      ['429', () => Promise.reject(new Error('429 Too many requests'))],
+      ['500', () => Promise.reject(new Error('500 Internal server error'))],
+    ] as const;
+
+    const SAVED_RICE: CustomAppearance = { accentColor: '#123456', customCSS: '.a { color: red; }' };
+
+    beforeEach(() => {
+      storageBacking.clear();
+      updateProfileMock.mockClear();
+      // A previously SAVED (server-acknowledged) rice sits in localStorage.
+      storageBacking.set(APPEARANCE_STORAGE_KEY, JSON.stringify(SAVED_RICE));
+      useAppearanceStore.setState({
+        appearance: { ...SAVED_RICE },
+        originalAppearance: { ...SAVED_RICE },
+        customCSSPreview: undefined,
+        customCSSPreviewSummary: undefined,
+        hasUnsavedChanges: false,
+        isLoading: false,
+      });
+    });
+
+    test.each(FAILURES)('%s: the save rejects, stays unsaved, and persists nothing to localStorage', async (_label, fail) => {
+      updateProfileMock.mockImplementationOnce(fail);
+
+      useAppearanceStore.getState().updateAppearance({ accentColor: '#ff0000' });
+      await expect(useAppearanceStore.getState().saveAppearance()).rejects.toThrow();
+
+      const s = useAppearanceStore.getState();
+      // The edit stays painted but clearly unsaved; nothing was committed.
+      expect(s.hasUnsavedChanges).toBe(true);
+      expect(s.isLoading).toBe(false);
+      expect(s.originalAppearance).toEqual(SAVED_RICE);
+      // localStorage still holds the last server-acknowledged rice — a
+      // reload must not paint the rice the server refused.
+      expect(JSON.parse(storageBacking.get(APPEARANCE_STORAGE_KEY) ?? '{}')).toEqual(SAVED_RICE);
+    });
+
+    test('an acknowledged save still mirrors to localStorage so reload paints it', async () => {
+      updateProfileMock.mockResolvedValueOnce({ success: true, profile: {} });
+
+      useAppearanceStore.getState().updateAppearance({ accentColor: '#ff0000' });
+      await useAppearanceStore.getState().saveAppearance();
+
+      expect(useAppearanceStore.getState().hasUnsavedChanges).toBe(false);
+      expect(JSON.parse(storageBacking.get(APPEARANCE_STORAGE_KEY) ?? '{}')).toEqual({ ...SAVED_RICE, accentColor: '#ff0000' });
+    });
+  });
 });
 
 describe('CSS history restore (applyCSSRevertProfile)', () => {
