@@ -1,5 +1,5 @@
-import { expect, test, describe, beforeAll } from 'vitest';
-import { resolveTokensFromAppearance, compileTokensToCSS } from './tokenCompiler';
+import { expect, test, describe, beforeAll, vi, beforeEach, afterEach } from 'vitest';
+import { resolveTokensFromAppearance, compileTokensToCSS, isFirstPartyAssetUrl } from './tokenCompiler';
 import { getContrastingTextColor, getSecondaryTextColor } from '../utils/colorUtils';
 import { registerBuiltinVariants } from '../variants/registerBuiltins';
 
@@ -142,6 +142,131 @@ describe('compileTokensToCSS — custom cursor image (security)', () => {
       'cursor.image.default': "/api/cursors/x.png'); body{display:none}",
     });
     expect(rules.join('\n')).not.toContain('display:none');
+  });
+});
+
+describe('isFirstPartyAssetUrl — origin-aware allowlist', () => {
+  const ORIGIN = 'https://api.test';
+
+  test('accepts relative first-party asset paths', () => {
+    expect(isFirstPartyAssetUrl('/api/cursors/arrow.png', ORIGIN)).toBe(true);
+    expect(isFirstPartyAssetUrl('/api/bazaar/assets/pack1/sky.png', ORIGIN)).toBe(true);
+  });
+
+  test('accepts absolute URLs on the API origin (CursorEditor stores those)', () => {
+    expect(isFirstPartyAssetUrl('https://api.test/api/cursors/arrow.png', ORIGIN)).toBe(true);
+    expect(isFirstPartyAssetUrl('https://api.test:443/api/cursors/arrow.png', ORIGIN)).toBe(true);
+  });
+
+  test('rejects cross-origin URLs even with allowlisted-looking paths', () => {
+    // The old check compared only the parsed pathname, so this passed.
+    expect(isFirstPartyAssetUrl('https://evil.example/api/cursors/beacon.png', ORIGIN)).toBe(false);
+    expect(isFirstPartyAssetUrl('https://api.test.evil.example/api/cursors/beacon.png', ORIGIN)).toBe(false);
+  });
+
+  test('rejects protocol-relative and backslash variants', () => {
+    expect(isFirstPartyAssetUrl('//evil.example/api/cursors/beacon.png', ORIGIN)).toBe(false);
+    expect(isFirstPartyAssetUrl('/\\api/cursors/beacon.png', ORIGIN)).toBe(false);
+    expect(isFirstPartyAssetUrl('https:\\\\evil.example\\api\\cursors\\beacon.png', ORIGIN)).toBe(false);
+  });
+
+  test('rejects userinfo URLs', () => {
+    // https://api@evil has origin https://evil — not the API origin.
+    expect(isFirstPartyAssetUrl('https://api.test@evil.example/api/cursors/beacon.png', ORIGIN)).toBe(false);
+    // Credentials in front of the real API host are never legitimate either.
+    expect(isFirstPartyAssetUrl('https://user@api.test/api/cursors/beacon.png', ORIGIN)).toBe(false);
+  });
+
+  test('rejects raw and percent-encoded traversal', () => {
+    expect(isFirstPartyAssetUrl('/api/cursors/../../secret.png', ORIGIN)).toBe(false);
+    expect(isFirstPartyAssetUrl('/api/cursors/%2e%2e/%2e%2e/secret.png', ORIGIN)).toBe(false);
+    expect(isFirstPartyAssetUrl('https://api.test/api/cursors/%2e%2e/%2e%2e/secret.png', ORIGIN)).toBe(false);
+    // Encoded slashes must not decode into a protocol-relative authority.
+    expect(isFirstPartyAssetUrl('%2F%2Fevil.example/api/cursors/beacon.png', ORIGIN)).toBe(false);
+  });
+
+  test('rejects data:, javascript:, and other non-http(s) schemes', () => {
+    expect(isFirstPartyAssetUrl('data:image/png;base64,AAAA', ORIGIN)).toBe(false);
+    expect(isFirstPartyAssetUrl('javascript:alert(1)', ORIGIN)).toBe(false);
+    expect(isFirstPartyAssetUrl('file:///etc/passwd', ORIGIN)).toBe(false);
+  });
+
+  test('rejects first-party routes outside the asset allowlist', () => {
+    expect(isFirstPartyAssetUrl('/api/files/x/y.png', ORIGIN)).toBe(false);
+    expect(isFirstPartyAssetUrl('https://api.test/api/files/x/y.png', ORIGIN)).toBe(false);
+  });
+
+  test('fails closed without a known API origin (relative paths only)', () => {
+    expect(isFirstPartyAssetUrl('https://api.test/api/cursors/arrow.png', null)).toBe(false);
+    expect(isFirstPartyAssetUrl('/api/cursors/arrow.png', null)).toBe(true);
+  });
+
+  test('rejects empty and whitespace-only values', () => {
+    expect(isFirstPartyAssetUrl('', ORIGIN)).toBe(false);
+    expect(isFirstPartyAssetUrl('   ', ORIGIN)).toBe(false);
+  });
+});
+
+describe('compileTokensToCSS — cursor URL origin allowlist (VITE_API_URL)', () => {
+  beforeEach(() => {
+    vi.stubEnv('VITE_API_URL', 'https://api.test');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  // Fresh import so the module picks up the stubbed VITE_API_URL (read at
+  // module top level). Same pattern as services/api.test.ts.
+  async function loadCompiler() {
+    vi.resetModules();
+    return await import('./tokenCompiler');
+  }
+
+  test('an absolute cursor URL on the configured API origin compiles (CursorEditor format)', async () => {
+    const { compileTokensToCSS } = await loadCompiler();
+    const { rules } = compileTokensToCSS({
+      'cursor.image.default': 'https://api.test/api/cursors/arrow.png|4|2',
+    });
+    expect(rules.join('\n')).toMatch(
+      /cursor:\s*url\('https:\/\/api\.test\/api\/cursors\/arrow\.png'\) 4 2/
+    );
+  });
+
+  test('a cross-origin cursor URL with an allowlisted-looking path is rejected', async () => {
+    // Regression: the old pathname-only check compiled this into a cursor
+    // rule, so every visitor's browser fetched the attacker's URL.
+    const { compileTokensToCSS } = await loadCompiler();
+    const { rules } = compileTokensToCSS({
+      'cursor.image.default': 'https://evil.example/api/cursors/beacon.png|0|0',
+    });
+    expect(rules.join('\n')).not.toContain('evil.example');
+  });
+
+  test('protocol-relative, backslash, userinfo, encoded, and data: cursor URLs are rejected', async () => {
+    const { compileTokensToCSS } = await loadCompiler();
+    const hostile = [
+      '//evil.example/api/cursors/beacon.png',
+      'https:\\evil.example\\api\\cursors\\beacon.png',
+      'https://api.test@evil.example/api/cursors/beacon.png',
+      'https://user@api.test/api/cursors/beacon.png',
+      '/api/cursors/%2e%2e/%2e%2e/beacon.png',
+      'data:image/png;base64,AAAA',
+    ];
+    for (const value of hostile) {
+      const { rules } = compileTokensToCSS({ 'cursor.image.default': value });
+      expect(rules.join('\n'), `expected rejection for ${value}`).not.toContain('cursor: url(');
+    }
+  });
+
+  test('without VITE_API_URL, absolute URLs are rejected and relative paths still compile', async () => {
+    // Unstubbed module: no configured origin → fail closed for absolute URLs.
+    vi.unstubAllEnvs();
+    const { compileTokensToCSS } = await loadCompiler();
+    const bad = compileTokensToCSS({ 'cursor.image.default': 'https://api.test/api/cursors/arrow.png' });
+    expect(bad.rules.join('\n')).not.toContain('cursor: url(');
+    const good = compileTokensToCSS({ 'cursor.image.default': '/api/cursors/arrow.png' });
+    expect(good.rules.join('\n')).toMatch(/cursor:\s*url\('/);
   });
 });
 

@@ -18,7 +18,8 @@ import type {
   CursorAssetMeta,
 } from '../types';
 import type { CSSAssetMeta } from '../routes/upload';
-import { sanitizeText } from '../utils/sanitize';
+import { sanitizeText, isFirstPartyAssetUrl } from '../utils/sanitize';
+import { HttpError } from '../utils/httpError';
 
 // Default storage quota: 100MB per user
 export const DEFAULT_QUOTA_BYTES = 100 * 1024 * 1024;
@@ -208,7 +209,11 @@ export class UserDesktop {
       // PATCH /profile - Partial update profile
       if (path === '/profile' && method === 'PATCH') {
         const updates = await request.json() as Partial<UserProfile>;
-        const updatedProfile = await this.updateProfile(updates);
+        // The DO never sees the real request; callers proxying a client
+        // request pass the API's own origin so appearance URL validation
+        // can accept same-origin absolute URLs (CursorEditor stores those).
+        // Without the header only relative /api/... paths are accepted.
+        const updatedProfile = await this.updateProfile(updates, request.headers.get('X-API-Origin'));
         return Response.json({ success: true, profile: updatedProfile });
       }
 
@@ -362,7 +367,8 @@ export class UserDesktop {
         const updatedProfile = await this.saveCustomCSSVersion(
           payload.css ?? '',
           payload.source ?? 'assistant',
-          payload.summary
+          payload.summary,
+          request.headers.get('X-API-Origin')
         );
         return Response.json({ success: true, profile: updatedProfile, versions: this.cssHistory });
       }
@@ -370,7 +376,10 @@ export class UserDesktop {
       // POST /css-history/:versionId/revert - Restore a previous CSS version
       if (path.startsWith('/css-history/') && path.endsWith('/revert') && method === 'POST') {
         const versionId = path.slice('/css-history/'.length, -'/revert'.length);
-        const updatedProfile = await this.restoreCustomCSSVersion(versionId);
+        const updatedProfile = await this.restoreCustomCSSVersion(
+          versionId,
+          request.headers.get('X-API-Origin')
+        );
         return Response.json({ success: true, profile: updatedProfile, versions: this.cssHistory });
       }
 
@@ -389,9 +398,12 @@ export class UserDesktop {
 
     } catch (error) {
       console.error('UserDesktop error:', error);
+      // Validation/not-found failures carry their own status; anything else
+      // is a genuine server fault and stays a 500.
+      const status = error instanceof HttpError ? error.status : 500;
       return Response.json(
         { error: error instanceof Error ? error.message : 'Internal error' },
-        { status: 500 }
+        { status }
       );
     }
   }
@@ -681,8 +693,16 @@ export class UserDesktop {
 
   /**
    * Update user profile (partial update)
+   *
+   * `apiOrigin` is the API's own origin, forwarded by routes that proxy a
+   * client request (see the fetch handler). Appearance URL validation uses
+   * it to accept same-origin absolute URLs (CursorEditor stores those);
+   * without it only relative /api/... paths are accepted.
    */
-  private async updateProfile(updates: Partial<UserProfile>): Promise<UserProfile | null> {
+  private async updateProfile(
+    updates: Partial<UserProfile>,
+    apiOrigin?: string | null
+  ): Promise<UserProfile | null> {
     if (!this.profile) {
       return null;
     }
@@ -864,22 +884,10 @@ export class UserDesktop {
         /<script/i,
         /@import/i,
       ];
-      // SECURITY: Same url() allowlist used for customCSS — prevents external
-      // resource loading (tracking pixels, data exfiltration) via design tokens
-      const tokenAllowedUrlPrefixes = ['/api/css-assets/', '/api/wallpaper/', '/api/icon/', '/api/sounds/', '/api/cursors/', '/api/bazaar/assets/'];
-      // Validate a bare URL (no url() wrapper) against the first-party
-      // allowlist. Used for keys whose compiler path wraps the value in
-      // url(...) client-side (cursor images).
-      const isFirstPartyAssetUrl = (raw: string): boolean => {
-        let decoded: string;
-        try { decoded = decodeURIComponent(raw); } catch { return false; }
-        decoded = decoded.replace(/\\/g, '/');
-        if (decoded.includes('..')) return false;
-        let pathname: string;
-        try { pathname = new URL(decoded, 'http://localhost').pathname; } catch { return false; }
-        if (pathname.includes('..')) return false;
-        return tokenAllowedUrlPrefixes.some((prefix) => pathname.startsWith(prefix));
-      };
+      // SECURITY: Same url() allowlist used for customCSS — only relative
+      // /api/... paths or absolute URLs on the API's own origin are
+      // accepted, preventing external resource loading (tracking pixels,
+      // data exfiltration) via design tokens. See isFirstPartyAssetUrl.
       for (const [key, value] of Object.entries(dt)) {
         // Keys must be dot-path identifiers (alphanumeric + dots + hyphens)
         if (!/^[a-zA-Z][a-zA-Z0-9.\-]*$/.test(key) || key.length > 100) {
@@ -914,23 +922,18 @@ export class UserDesktop {
           if (key.startsWith('cursor.image.') && value.trim().length > 0) {
             // Cursor values may carry a hotspot suffix: "url|hotX|hotY"
             const bareUrl = value.split('|')[0].trim();
-            if (!isFirstPartyAssetUrl(bareUrl)) {
-              throw new Error(`designToken ${key}: URL must reference first-party assets`);
+            if (!isFirstPartyAssetUrl(bareUrl, apiOrigin)) {
+              throw new HttpError(400, `designToken ${key}: URL must reference first-party assets`);
             }
           }
-          // Validate url() references — only allow first-party asset paths
+          // Validate url() references — only first-party asset paths or
+          // same-origin absolute URLs are accepted.
           const tokenUrlPattern = /url\s*\(\s*(['"]?)([^'")\s]+)\1\s*\)/gi;
           let tokenUrlMatch: RegExpExecArray | null;
           while ((tokenUrlMatch = tokenUrlPattern.exec(value)) !== null) {
             const rawUrl = tokenUrlMatch[2];
-            const decodedUrl = decodeURIComponent(rawUrl).replace(/\\/g, '/');
-            const isAllowed = tokenAllowedUrlPrefixes.some(prefix => decodedUrl.startsWith(prefix));
-            if (!isAllowed) {
-              throw new Error(`designToken url() must reference first-party assets for ${key}`);
-            }
-            // Block path traversal in allowed URLs
-            if (decodedUrl.includes('..')) {
-              throw new Error(`designToken url() contains path traversal for ${key}`);
+            if (!isFirstPartyAssetUrl(rawUrl, apiOrigin)) {
+              throw new HttpError(400, `designToken url() must reference first-party assets for ${key}`);
             }
           }
         }
@@ -985,31 +988,21 @@ export class UserDesktop {
         }
       }
 
-      // Validate url() references — only allow first-party asset paths
-      // Normalize (decode) paths before validation to prevent encoded bypasses.
-      // NOTE: must match the designTokens `tokenAllowedUrlPrefixes` above and
+      // Validate url() references — only relative first-party asset paths or
+      // absolute URLs on the API's own origin are allowed.
+      // NOTE: must stay in sync with the designTokens allowlist above and
       // the client sanitizer's ALLOWED_CSS_URL_PREFIXES — `/api/bazaar/assets/`
       // was previously missing here, so customCSS that referenced an installed
       // bazaar theme's assets passed the client but was rejected on save.
-      const allowedUrlPrefixes = ['/api/css-assets/', '/api/wallpaper/', '/api/icon/', '/api/sounds/', '/api/cursors/', '/api/bazaar/assets/'];
       const urlPattern = /url\s*\(\s*(['"]?)([^'")\s]+)\1\s*\)/gi;
       let urlMatch: RegExpExecArray | null;
       while ((urlMatch = urlPattern.exec(css)) !== null) {
-        let urlValue = urlMatch[2];
-        // Decode percent-encoded characters to prevent bypass via encoding
-        try { urlValue = decodeURIComponent(urlValue); } catch { /* use as-is */ }
-        // Block path traversal in url() values
-        if (urlValue.includes('..') || urlValue.includes('\\')) {
-          throw new Error('Custom CSS contains disallowed url() references');
-        }
-        // Normalize the URL path using URL parsing to resolve any remaining traversal segments
-        try {
-          const normalized = new URL(urlValue, 'http://localhost').pathname;
-          if (!allowedUrlPrefixes.some((prefix) => normalized.startsWith(prefix))) {
-            throw new Error('Custom CSS contains disallowed url() references');
-          }
-        } catch {
-          throw new Error('Custom CSS contains disallowed url() references');
+        // SECURITY: the old check compared only the base-parsed *pathname*
+        // against the allowlist, so a cross-origin URL with an allowlisted-
+        // path (https://evil.example/api/cursors/beacon.png) passed and was
+        // stored. isFirstPartyAssetUrl makes origin equality authoritative.
+        if (!isFirstPartyAssetUrl(urlMatch[2], apiOrigin)) {
+          throw new HttpError(400, 'Custom CSS contains disallowed url() references');
         }
       }
     }
@@ -1115,9 +1108,10 @@ export class UserDesktop {
   private async saveCustomCSSVersion(
     css: string,
     source: CustomCSSVersion['source'],
-    summary?: string
+    summary?: string,
+    apiOrigin?: string | null
   ): Promise<UserProfile | null> {
-    const updatedProfile = await this.updateProfile({ customCSS: css });
+    const updatedProfile = await this.updateProfile({ customCSS: css }, apiOrigin);
     if (!updatedProfile) {
       return null;
     }
@@ -1138,13 +1132,18 @@ export class UserDesktop {
     return updatedProfile;
   }
 
-  private async restoreCustomCSSVersion(versionId: string): Promise<UserProfile | null> {
+  private async restoreCustomCSSVersion(
+    versionId: string,
+    apiOrigin?: string | null
+  ): Promise<UserProfile | null> {
     const version = this.cssHistory.find((entry) => entry.id === versionId);
     if (!version) {
-      throw new Error('Custom CSS version not found');
+      // A missing version is a client error (bad/unknown ID), not a server
+      // fault — answer 404 instead of the old blanket 500.
+      throw new HttpError(404, 'Custom CSS version not found');
     }
 
-    const updatedProfile = await this.updateProfile({ customCSS: version.css });
+    const updatedProfile = await this.updateProfile({ customCSS: version.css }, apiOrigin);
     if (!updatedProfile) {
       return null;
     }

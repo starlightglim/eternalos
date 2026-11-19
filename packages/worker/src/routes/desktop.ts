@@ -80,8 +80,12 @@ export async function handleGetProfile(c: RouteContext): Promise<Response> {
 export async function handlePatchProfile(c: RouteContext): Promise<Response> {
   const auth = requireAuthContext(c);
   const body = await c.request.text();
+  // Forward the API's own origin so the DO's appearance URL validation can
+  // accept same-origin absolute URLs (CursorEditor stores those). The DO
+  // never sees the real request. See isFirstPartyAssetUrl in utils/sanitize.ts.
   return userDesktopStub(c.env, auth.uid).fetch(new Request('http://internal/profile', {
     method: 'PATCH',
+    headers: { 'X-API-Origin': new URL(c.request.url).origin },
     body,
   }));
 }
@@ -100,8 +104,14 @@ export async function handleRevertCssHistory(c: RouteContext): Promise<Response>
     return Response.json({ error: 'Version ID required' }, { status: 400 });
   }
 
+  // X-API-Origin: the revert re-validates the stored CSS through
+  // updateProfile, which needs the API origin to keep accepting legitimate
+  // same-origin absolute asset URLs.
   return userDesktopStub(c.env, auth.uid)
-    .fetch(new Request(`http://internal/css-history/${versionId}/revert`, { method: 'POST' }));
+    .fetch(new Request(`http://internal/css-history/${versionId}/revert`, {
+      method: 'POST',
+      headers: { 'X-API-Origin': new URL(c.request.url).origin },
+    }));
 }
 
 /** GET /api/quota — storage quota usage. */
