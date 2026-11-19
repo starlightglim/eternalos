@@ -1561,6 +1561,11 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
     if (contextMenu?.targetItem) {
       // Menu for a desktop item
       const item = contextMenu.targetItem;
+      // The selection duplicates as a unit when the right-clicked item is
+      // part of it; otherwise the command targets just this item.
+      const idsToDuplicate = selectedIds.size > 0 && selectedIds.has(item.id)
+        ? Array.from(selectedIds)
+        : [item.id];
       return [
         {
           id: 'open',
@@ -1607,11 +1612,13 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
           id: 'duplicate',
           label: 'Duplicate',
           shortcut: '⌘D',
+          // duplicateItems skips installed apps, so the command is disabled
+          // when the effective duplicate set is apps only.
+          disabled: idsToDuplicate.every(
+            (id) => items.find((entry) => entry.id === id)?.type === 'app'
+          ),
           action: () => {
             const { duplicateItems } = useDesktopStore.getState();
-            const idsToDuplicate = selectedIds.size > 0 && selectedIds.has(item.id)
-              ? Array.from(selectedIds)
-              : [item.id];
             duplicateItems(idsToDuplicate, item.parentId);
           },
         },
@@ -1796,7 +1803,7 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
         },
       ];
     }
-  }, [contextMenu, deselectAll, handleIconDoubleClick, openWindow, moveToTrash, selectedIds, findNearestAvailablePosition, cleanUp, selectAll, stickerItems]);
+  }, [contextMenu, deselectAll, handleIconDoubleClick, openWindow, moveToTrash, selectedIds, items, findNearestAvailablePosition, cleanUp, selectAll, stickerItems]);
 
   // Handle link creation from dialog
   const handleLinkCreate = useCallback((url: string, name: string) => {

@@ -8,7 +8,7 @@ const api = vi.hoisted(() => ({
 vi.mock('../services/api', () => ({ isApiConfigured: true, ...api }));
 vi.mock('./soundStore', () => ({ useSoundStore: { getState: () => ({ playSound: vi.fn() }) } }));
 // One stable mock so tests can assert that failures are surfaced to the user.
-const alerts = vi.hoisted(() => ({ showError: vi.fn() }));
+const alerts = vi.hoisted(() => ({ showError: vi.fn(), showInfo: vi.fn() }));
 vi.mock('./alertStore', () => ({ useAlertStore: { getState: () => alerts } }));
 import { useDesktopStore } from './desktopStore';
 import { getAcknowledgedItem } from './desktopItemSync';
@@ -92,6 +92,88 @@ test('failed creates and duplicates do not leave phantom files', async () => {
   expect(useDesktopStore.getState().getItem('new-note')).toBeUndefined();
   expect(await useDesktopStore.getState().duplicateItems(['note'], null)).toEqual([]);
   expect(useDesktopStore.getState().items).toHaveLength(1);
+});
+
+// ---------------------------------------------------------------------------
+// Duplicate vs installed apps (grantlock): the public item-create route
+// rejects any body carrying the server-managed app fields, so duplicateItems
+// skips app items and says so instead of surfacing a create failure — and no
+// duplicate ever carries those fields.
+// ---------------------------------------------------------------------------
+
+const installedApp: DesktopItem = {
+  ...original,
+  id: 'app',
+  name: 'Installed App',
+  type: 'app',
+  appManifest: {
+    name: 'Installed App',
+    version: '1.0.0',
+    appId: 'app-1',
+    windowConfig: { defaultWidth: 400, defaultHeight: 300 },
+  },
+  grantedPermissions: { fs: { read: ['/Gallery/**'] } },
+  permissionGrantedAt: 123,
+  grantedPermissionApprovals: { 'fs.read': { approvedAt: 123, approvedBy: 'alice' } },
+};
+
+test('a normal duplicate still creates the copy', async () => {
+  api.createItem.mockResolvedValue(undefined);
+  const duplicates = await useDesktopStore.getState().duplicateItems(['note'], null);
+  expect(duplicates).toHaveLength(1);
+  expect(duplicates[0].name).toBe('Note.txt copy');
+  expect(duplicates[0].id).not.toBe('note');
+  expect(useDesktopStore.getState().items).toHaveLength(2);
+  expect(alerts.showError).not.toHaveBeenCalled();
+  expect(alerts.showInfo).not.toHaveBeenCalled();
+});
+
+test('an app-only selection is skipped with a clear message, never a create', async () => {
+  const store = useDesktopStore.getState();
+  store.setItems([{ ...installedApp }]);
+  const duplicates = await store.duplicateItems(['app'], null);
+  expect(duplicates).toEqual([]);
+  expect(useDesktopStore.getState().items).toHaveLength(1);
+  expect(api.createItem).not.toHaveBeenCalled();
+  // The skip is information, not a failure.
+  expect(alerts.showError).not.toHaveBeenCalled();
+  expect(alerts.showInfo).toHaveBeenCalledWith("Apps can't be duplicated.", 'Duplicate');
+});
+
+test('a mixed selection duplicates the non-app items and mentions the skipped apps', async () => {
+  api.createItem.mockResolvedValue(undefined);
+  const store = useDesktopStore.getState();
+  store.setItems([{ ...original }, { ...installedApp }]);
+  const duplicates = await store.duplicateItems(['note', 'app'], null);
+  expect(duplicates).toHaveLength(1);
+  expect(duplicates[0].name).toBe('Note.txt copy');
+  expect(useDesktopStore.getState().items).toHaveLength(3);
+  expect(alerts.showInfo).toHaveBeenCalledWith(
+    "Apps can't be duplicated. Skipped: Installed App.",
+    'Duplicate'
+  );
+  expect(alerts.showError).not.toHaveBeenCalled();
+});
+
+test('no duplicated item carries the server-managed app fields', async () => {
+  api.createItem.mockResolvedValue(undefined);
+  const store = useDesktopStore.getState();
+  // A stale local item carrying grant fields must not poison the create —
+  // the public route 400s any body with them.
+  store.setItems([{
+    ...original,
+    appManifest: installedApp.appManifest,
+    grantedPermissions: installedApp.grantedPermissions,
+    permissionGrantedAt: installedApp.permissionGrantedAt,
+    grantedPermissionApprovals: installedApp.grantedPermissionApprovals,
+  }]);
+  const duplicates = await store.duplicateItems(['note'], null);
+  expect(duplicates).toHaveLength(1);
+  const sent = api.createItem.mock.calls[0][0] as DesktopItem;
+  expect(sent.appManifest).toBeUndefined();
+  expect(sent.grantedPermissions).toBeUndefined();
+  expect(sent.permissionGrantedAt).toBeUndefined();
+  expect(sent.grantedPermissionApprovals).toBeUndefined();
 });
 
 test('failed deletes restore the removed item', async () => {

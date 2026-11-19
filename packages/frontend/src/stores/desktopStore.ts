@@ -53,6 +53,31 @@ const showError = (message: string, title?: string) => {
   useAlertStore.getState().showError(message, title);
 };
 
+// Helper to show informational alerts via alertStore
+const showInfo = (message: string, title?: string) => {
+  useAlertStore.getState().showInfo(message, title);
+};
+
+// Item fields the public create route refuses on a client-supplied body (see
+// SERVER_MANAGED_ITEM_FIELDS in packages/worker/src/routes/desktop.ts): app
+// manifests and permission grants belong to the app install / permissions
+// flows. A duplicate must never carry them, or the create is rejected.
+const SERVER_MANAGED_APP_ITEM_FIELDS = [
+  'appManifest',
+  'grantedPermissions',
+  'permissionGrantedAt',
+  'grantedPermissionApprovals',
+] as const;
+
+/** A copy of `item` with any server-managed app fields removed. */
+function withoutServerManagedAppFields(item: DesktopItem): DesktopItem {
+  const copy = { ...item };
+  for (const field of SERVER_MANAGED_APP_ITEM_FIELDS) {
+    delete copy[field];
+  }
+  return copy;
+}
+
 // Helper to play sounds
 const playSound = (type: SoundType) => {
   useSoundStore.getState().playSound(type);
@@ -130,6 +155,9 @@ interface DesktopDataSlice {
   sortByName: (parentId?: string | null) => void;
   sortByDate: (parentId?: string | null) => void;
   sortByKind: (parentId?: string | null) => void;
+  // Duplicates the given items, skipping installed apps (they're created
+  // and managed by the app install flow — see duplicateItems). Returns the
+  // duplicates actually created.
   duplicateItems: (itemIds: string[], targetParentId: string | null) => Promise<DesktopItem[]>;
   pasteItems: (
     itemIds: string[],
@@ -847,18 +875,39 @@ export const useDesktopStore = create<DesktopStore>()((set, get, api) => {
       const { items, getItem } = get();
       const duplicates: DesktopItem[] = [];
 
+      // Installed apps are created and managed by the app install /
+      // permissions routes, and the public item-create route rejects a body
+      // carrying their manifest or grant fields — a duplicate could never
+      // be saved. Skip app items and say so instead of surfacing a create
+      // failure.
+      const requested = itemIds
+        .map((id) => getItem(id))
+        .filter((item): item is DesktopItem => item !== undefined);
+      const skippedApps = requested.filter((item) => item.type === 'app');
+      const duplicatable = requested.filter((item) => item.type !== 'app');
+
+      if (skippedApps.length > 0) {
+        const skippedNames = skippedApps.map((item) => item.name).join(', ');
+        showInfo(
+          duplicatable.length === 0
+            ? "Apps can't be duplicated."
+            : `Apps can't be duplicated. Skipped: ${skippedNames}.`,
+          'Duplicate'
+        );
+      }
+      if (duplicatable.length === 0) return [];
+
       // Find positions in target folder
       const itemsInTarget = items.filter((item) => item.parentId === targetParentId);
       let nextY = itemsInTarget.length > 0
         ? Math.max(...itemsInTarget.map((i) => i.position.y)) + 1
         : 0;
 
-      for (const id of itemIds) {
-        const original = getItem(id);
-        if (!original) continue;
-
-        // Create duplicate with new id and position
-        const duplicate: DesktopItem = {
+      for (const original of duplicatable) {
+        // Create duplicate with new id and position. The server-managed
+        // app fields never ride along, so the create can't be rejected for
+        // carrying them.
+        const duplicate: DesktopItem = withoutServerManagedAppFields({
           ...original,
           id: crypto.randomUUID(),
           name: `${original.name} copy`,
@@ -866,7 +915,7 @@ export const useDesktopStore = create<DesktopStore>()((set, get, api) => {
           position: { x: 0, y: nextY++ },
           createdAt: Date.now(),
           updatedAt: Date.now(),
-        };
+        });
 
         // Create item via API
         if (isApiConfigured) {

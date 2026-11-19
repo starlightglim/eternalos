@@ -637,6 +637,12 @@ export function MenuBar() {
     setActiveMenu(null);
   }, []);
 
+  // Duplicate skips installed apps (duplicateItems refuses them: they are
+  // created and managed by the app install flow), so the command only
+  // applies when the selection holds something duplicatable.
+  const selectionIsOnlyApps = selectedIds.size > 0 && Array.from(selectedIds)
+    .every((id) => items.find((item) => item.id === id)?.type === 'app');
+
   // ============================================
   // MENU DEFINITIONS
   // ============================================
@@ -662,7 +668,7 @@ export function MenuBar() {
       { label: 'Cut', shortcut: '⌘X', action: handleCut, disabled: selectedIds.size === 0 },
       { label: 'Copy', shortcut: '⌘C', action: handleCopy, disabled: selectedIds.size === 0 },
       { label: 'Paste', shortcut: '⌘V', action: handlePaste, disabled: !hasClipboardItems() },
-      { label: 'Duplicate', shortcut: '⌘D', action: handleDuplicate, disabled: selectedIds.size === 0 },
+      { label: 'Duplicate', shortcut: '⌘D', action: handleDuplicate, disabled: selectedIds.size === 0 || selectionIsOnlyApps },
       { divider: true, label: '' },
       { label: 'Select All', shortcut: '⌘A', action: handleSelectAll },
     ],
