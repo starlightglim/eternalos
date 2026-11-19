@@ -1,0 +1,6 @@
+{
+  "name": "Silent Reader",
+  "description": "Reads through window.eternal.fs without declaring fs read permissions.",
+  "version": "1.0.0",
+  "windowConfig": { "defaultWidth": 600, "defaultHeight": 500 }
+}

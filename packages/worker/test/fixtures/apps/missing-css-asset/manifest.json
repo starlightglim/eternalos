@@ -1,0 +1,6 @@
+{
+  "name": "Framed Notes",
+  "description": "CSS references a background image that is not in the bundle.",
+  "version": "1.0.0",
+  "windowConfig": { "defaultWidth": 600, "defaultHeight": 500 }
+}

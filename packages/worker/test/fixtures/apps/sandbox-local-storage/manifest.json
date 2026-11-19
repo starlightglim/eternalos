@@ -1,0 +1,6 @@
+{
+  "name": "Pinned Prefs",
+  "description": "Persists with localStorage, which throws in the opaque-origin app iframe.",
+  "version": "1.0.0",
+  "windowConfig": { "defaultWidth": 600, "defaultHeight": 500 }
+}

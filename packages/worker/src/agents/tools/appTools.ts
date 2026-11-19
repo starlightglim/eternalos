@@ -15,6 +15,13 @@ import { createWorkersAI } from 'workers-ai-provider';
 import type { Env } from '../../index';
 import type { AppManifest, AppPermissions, DesktopItem, UserProfile } from '../../types';
 import type { AppGrantedPermissions } from '../../utils/jwt';
+import {
+  AppValidationError,
+  assertAppBundleValid,
+  formatAppValidationIssues,
+  type AppValidationIssue,
+} from '../../utils/appBundleValidation';
+import { buildTodoTemplate } from './appTemplates';
 
 interface AppToolsContext {
   env: Env;
@@ -403,644 +410,6 @@ async function getRegisteredDesktopApp(
   return { item, metadata };
 }
 
-function buildTodoTemplate(name: string, description?: string): AppBundleInput {
-  const appName = name.trim() || 'Tasks';
-  const appDescription = description?.trim() || 'A focused task list with filters, persistence, and quick keyboard actions.';
-
-  return {
-    name: appName,
-    description: appDescription,
-    width: 720,
-    height: 560,
-    files: {
-      'index.html': `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${appName}</title>
-  <link rel="stylesheet" href="./styles.css">
-</head>
-<body>
-  <main class="app-shell">
-    <header class="hero">
-      <div>
-        <p class="eyebrow">Focused task manager</p>
-        <h1>${appName}</h1>
-        <p class="hero-copy">${appDescription}</p>
-      </div>
-      <section class="summary-card" aria-label="Task summary">
-        <div class="summary-label">Progress</div>
-        <div class="summary-value" id="progressValue">0%</div>
-        <div class="summary-subtle" id="summaryText">No tasks yet</div>
-      </section>
-    </header>
-
-    <section class="composer">
-      <form id="taskForm" class="task-form">
-        <label class="sr-only" for="taskInput">Add a task</label>
-        <input id="taskInput" name="task" type="text" maxlength="140" placeholder="What needs to get done?" autocomplete="off">
-        <button type="submit" class="primary-button">Add task</button>
-      </form>
-      <div class="toolbar">
-        <div class="filter-group" role="tablist" aria-label="Task filters">
-          <button type="button" class="filter-button is-active" data-filter="all">All</button>
-          <button type="button" class="filter-button" data-filter="active">Active</button>
-          <button type="button" class="filter-button" data-filter="completed">Completed</button>
-        </div>
-        <button type="button" class="ghost-button" id="clearCompletedButton">Clear completed</button>
-      </div>
-    </section>
-
-    <section class="task-panel">
-      <ul id="taskList" class="task-list" aria-live="polite"></ul>
-      <div id="emptyState" class="empty-state">
-        <div class="empty-icon">+</div>
-        <h2>No tasks yet</h2>
-        <p>Add your first task to get started.</p>
-      </div>
-    </section>
-
-    <footer class="status-bar">
-      <span id="itemsLeftText">0 items left</span>
-      <span id="storageText">Saved locally in this browser</span>
-    </footer>
-  </main>
-
-  <template id="taskTemplate">
-    <li class="task-item">
-      <label class="task-toggle">
-        <input type="checkbox" class="task-checkbox">
-        <span class="task-checkmark" aria-hidden="true"></span>
-      </label>
-      <button type="button" class="task-text"></button>
-      <button type="button" class="delete-button" aria-label="Delete task">Delete</button>
-    </li>
-  </template>
-
-  <script type="module" src="./app.js"></script>
-</body>
-</html>`,
-      'styles.css': `:root {
-  color-scheme: dark;
-  --bg: #12131d;
-  --panel: #1a1d2b;
-  --panel-2: #20253a;
-  --line: rgba(255, 255, 255, 0.08);
-  --line-strong: rgba(255, 255, 255, 0.16);
-  --text: #f7f4ea;
-  --muted: #b7bdd3;
-  --accent: #6ee7c8;
-  --accent-strong: #43d7b0;
-  --danger: #ff8a8a;
-  --shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
-  --radius: 18px;
-  --radius-sm: 12px;
-  --font-display: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
-  --font-body: "Avenir Next", "Segoe UI", sans-serif;
-}
-
-* {
-  box-sizing: border-box;
-}
-
-html,
-body {
-  margin: 0;
-  min-height: 100%;
-  background:
-    radial-gradient(circle at top right, rgba(110, 231, 200, 0.12), transparent 28%),
-    linear-gradient(180deg, #171a28 0%, #12131d 100%);
-  color: var(--text);
-  font-family: var(--font-body);
-}
-
-body {
-  min-height: 100vh;
-  padding: 18px;
-}
-
-.app-shell {
-  min-height: calc(100vh - 36px);
-  display: grid;
-  grid-template-rows: auto auto 1fr auto;
-  gap: 16px;
-}
-
-.hero,
-.composer,
-.task-panel,
-.status-bar {
-  border: 1px solid var(--line);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
-  backdrop-filter: blur(8px);
-  box-shadow: var(--shadow);
-}
-
-.hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 180px;
-  gap: 16px;
-  padding: 22px;
-  border-radius: calc(var(--radius) + 4px);
-}
-
-.eyebrow {
-  margin: 0 0 10px;
-  color: var(--accent);
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-h1 {
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: clamp(34px, 6vw, 44px);
-  line-height: 0.95;
-}
-
-.hero-copy {
-  margin: 12px 0 0;
-  max-width: 48ch;
-  color: var(--muted);
-  line-height: 1.45;
-}
-
-.summary-card {
-  border-radius: var(--radius);
-  padding: 18px;
-  background: linear-gradient(180deg, rgba(110, 231, 200, 0.12), rgba(67, 215, 176, 0.04));
-  border: 1px solid rgba(110, 231, 200, 0.2);
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-}
-
-.summary-label,
-.summary-subtle {
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.summary-value {
-  font-size: 42px;
-  font-weight: 800;
-  letter-spacing: -0.05em;
-}
-
-.composer {
-  border-radius: var(--radius);
-  padding: 16px;
-}
-
-.task-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-}
-
-input[type="text"] {
-  width: 100%;
-  min-width: 0;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--line-strong);
-  background: rgba(5, 7, 14, 0.45);
-  color: var(--text);
-  padding: 14px 16px;
-  font: inherit;
-  outline: none;
-}
-
-input[type="text"]::placeholder {
-  color: #8f96ad;
-}
-
-input[type="text"]:focus {
-  border-color: rgba(110, 231, 200, 0.6);
-  box-shadow: 0 0 0 3px rgba(110, 231, 200, 0.15);
-}
-
-button {
-  font: inherit;
-}
-
-.primary-button,
-.ghost-button,
-.filter-button,
-.delete-button,
-.task-text {
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--line-strong);
-}
-
-.primary-button,
-.ghost-button,
-.filter-button,
-.delete-button {
-  cursor: pointer;
-}
-
-.primary-button {
-  padding: 0 18px;
-  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
-  color: #0d1b17;
-  font-weight: 800;
-}
-
-.toolbar {
-  margin-top: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.filter-group {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.filter-button,
-.ghost-button {
-  padding: 10px 14px;
-  background: rgba(255, 255, 255, 0.03);
-  color: var(--text);
-}
-
-.filter-button.is-active {
-  background: rgba(110, 231, 200, 0.18);
-  border-color: rgba(110, 231, 200, 0.35);
-  color: var(--accent);
-}
-
-.task-panel {
-  position: relative;
-  border-radius: calc(var(--radius) + 2px);
-  overflow: hidden;
-  min-height: 220px;
-}
-
-.task-list {
-  list-style: none;
-  margin: 0;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.task-item {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  padding: 12px;
-  border-radius: 14px;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.03);
-  transition: transform 140ms ease, border-color 140ms ease, opacity 180ms ease;
-}
-
-.task-item:hover {
-  transform: translateY(-1px);
-  border-color: rgba(255, 255, 255, 0.16);
-}
-
-.task-item.is-completed .task-text {
-  color: #7f879e;
-  text-decoration: line-through;
-}
-
-.task-item.is-hidden {
-  display: none;
-}
-
-.task-toggle {
-  display: inline-flex;
-  position: relative;
-  align-items: center;
-  justify-content: center;
-}
-
-.task-checkbox {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.task-checkmark {
-  width: 22px;
-  height: 22px;
-  border-radius: 999px;
-  border: 1px solid var(--line-strong);
-  background: rgba(255, 255, 255, 0.04);
-  display: inline-block;
-  box-shadow: inset 0 0 0 4px transparent;
-  transition: all 140ms ease;
-}
-
-.task-checkbox:checked + .task-checkmark {
-  background: rgba(110, 231, 200, 0.18);
-  border-color: rgba(110, 231, 200, 0.5);
-  box-shadow: inset 0 0 0 6px var(--accent);
-}
-
-.task-text {
-  text-align: left;
-  padding: 0;
-  background: transparent;
-  border: none;
-  color: var(--text);
-  font-size: 15px;
-  line-height: 1.45;
-}
-
-.task-text:focus-visible,
-.delete-button:focus-visible,
-.filter-button:focus-visible,
-.primary-button:focus-visible,
-.ghost-button:focus-visible {
-  outline: 2px solid rgba(110, 231, 200, 0.7);
-  outline-offset: 2px;
-}
-
-.delete-button {
-  padding: 9px 12px;
-  background: rgba(255, 138, 138, 0.1);
-  color: var(--danger);
-}
-
-.empty-state {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  text-align: center;
-  padding: 24px;
-  color: var(--muted);
-}
-
-.empty-state.is-hidden {
-  display: none;
-}
-
-.empty-icon {
-  width: 52px;
-  height: 52px;
-  margin: 0 auto 12px;
-  border-radius: 16px;
-  background: rgba(110, 231, 200, 0.12);
-  border: 1px solid rgba(110, 231, 200, 0.28);
-  color: var(--accent);
-  display: grid;
-  place-items: center;
-  font-size: 34px;
-  font-weight: 300;
-}
-
-.status-bar {
-  border-radius: 16px;
-  padding: 12px 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
-@media (max-width: 640px) {
-  body {
-    padding: 12px;
-  }
-
-  .hero {
-    grid-template-columns: 1fr;
-  }
-
-  .task-form {
-    grid-template-columns: 1fr;
-  }
-
-  .primary-button,
-  .ghost-button,
-  .filter-button,
-  input[type="text"] {
-    width: 100%;
-  }
-
-  .status-bar {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-}`,
-      'app.js': `const STORAGE_KEY = 'eternalos.curated.todo.v1';
-
-const taskForm = document.getElementById('taskForm');
-const taskInput = document.getElementById('taskInput');
-const taskList = document.getElementById('taskList');
-const taskTemplate = document.getElementById('taskTemplate');
-const emptyState = document.getElementById('emptyState');
-const itemsLeftText = document.getElementById('itemsLeftText');
-const summaryText = document.getElementById('summaryText');
-const progressValue = document.getElementById('progressValue');
-const storageText = document.getElementById('storageText');
-const clearCompletedButton = document.getElementById('clearCompletedButton');
-const filterButtons = Array.from(document.querySelectorAll('[data-filter]'));
-
-let state = {
-  filter: 'all',
-  tasks: loadTasks(),
-};
-
-function loadTasks() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((task) => task && typeof task.id === 'string' && typeof task.text === 'string')
-      .map((task) => ({
-        id: task.id,
-        text: task.text.trim().slice(0, 140),
-        completed: Boolean(task.completed),
-        createdAt: Number(task.createdAt) || Date.now(),
-      }))
-      .filter((task) => task.text.length > 0);
-  } catch {
-    return [];
-  }
-}
-
-function saveTasks() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.tasks));
-  storageText.textContent = state.tasks.length > 0
-    ? 'Saved locally in this browser'
-    : 'Nothing saved yet';
-}
-
-function createTask(text) {
-  return {
-    id: crypto.randomUUID(),
-    text: text.trim(),
-    completed: false,
-    createdAt: Date.now(),
-  };
-}
-
-function addTask(text) {
-  const normalized = text.trim().replace(/\\s+/g, ' ');
-  if (!normalized) return;
-  state.tasks.unshift(createTask(normalized));
-  saveTasks();
-  render();
-}
-
-function toggleTask(taskId) {
-  state.tasks = state.tasks.map((task) =>
-    task.id === taskId ? { ...task, completed: !task.completed } : task
-  );
-  saveTasks();
-  render();
-}
-
-function deleteTask(taskId) {
-  state.tasks = state.tasks.filter((task) => task.id !== taskId);
-  saveTasks();
-  render();
-}
-
-function clearCompleted() {
-  state.tasks = state.tasks.filter((task) => !task.completed);
-  saveTasks();
-  render();
-}
-
-function setFilter(nextFilter) {
-  state.filter = nextFilter;
-  render();
-}
-
-function taskMatchesFilter(task) {
-  if (state.filter === 'active') return !task.completed;
-  if (state.filter === 'completed') return task.completed;
-  return true;
-}
-
-function renderTask(task) {
-  const fragment = taskTemplate.content.cloneNode(true);
-  const item = fragment.querySelector('.task-item');
-  const checkbox = fragment.querySelector('.task-checkbox');
-  const textButton = fragment.querySelector('.task-text');
-  const deleteButton = fragment.querySelector('.delete-button');
-
-  checkbox.checked = task.completed;
-  checkbox.addEventListener('change', () => toggleTask(task.id));
-
-  textButton.textContent = task.text;
-  textButton.title = task.text;
-  textButton.addEventListener('click', () => toggleTask(task.id));
-
-  deleteButton.addEventListener('click', () => deleteTask(task.id));
-
-  if (task.completed) {
-    item.classList.add('is-completed');
-  }
-  if (!taskMatchesFilter(task)) {
-    item.classList.add('is-hidden');
-  }
-
-  return fragment;
-}
-
-function renderSummary() {
-  const activeCount = state.tasks.filter((task) => !task.completed).length;
-  const completedCount = state.tasks.length - activeCount;
-  const progress = state.tasks.length === 0
-    ? 0
-    : Math.round((completedCount / state.tasks.length) * 100);
-
-  itemsLeftText.textContent = activeCount === 1 ? '1 item left' : activeCount + ' items left';
-  progressValue.textContent = progress + '%';
-
-  if (state.tasks.length === 0) {
-    summaryText.textContent = 'No tasks yet';
-  } else if (completedCount === 0) {
-    summaryText.textContent = 'Nothing completed yet';
-  } else if (completedCount === state.tasks.length) {
-    summaryText.textContent = 'Everything is done';
-  } else {
-    summaryText.textContent = completedCount + ' completed, ' + activeCount + ' active';
-  }
-
-  clearCompletedButton.disabled = completedCount === 0;
-}
-
-function renderFilters() {
-  filterButtons.forEach((button) => {
-    const isActive = button.dataset.filter === state.filter;
-    button.classList.toggle('is-active', isActive);
-    button.setAttribute('aria-pressed', String(isActive));
-  });
-}
-
-function render() {
-  taskList.innerHTML = '';
-  state.tasks
-    .slice()
-    .sort((a, b) => b.createdAt - a.createdAt)
-    .forEach((task) => {
-      taskList.appendChild(renderTask(task));
-    });
-
-  const visibleCount = state.tasks.filter(taskMatchesFilter).length;
-  emptyState.classList.toggle('is-hidden', visibleCount > 0);
-  renderSummary();
-  renderFilters();
-}
-
-taskForm.addEventListener('submit', (event) => {
-  event.preventDefault();
-  addTask(taskInput.value);
-  taskInput.value = '';
-  taskInput.focus();
-});
-
-clearCompletedButton.addEventListener('click', () => {
-  clearCompleted();
-});
-
-filterButtons.forEach((button) => {
-  button.addEventListener('click', () => {
-    const nextFilter = button.dataset.filter;
-    if (nextFilter === 'all' || nextFilter === 'active' || nextFilter === 'completed') {
-      setFilter(nextFilter);
-    }
-  });
-});
-
-render();`,
-    },
-  };
-}
-
 function getAppBuilderModel(env: Env) {
   const workersAI = createWorkersAI({ binding: env.AI });
   const modelId = env.APP_BUILDER_MODEL?.startsWith('@cf/')
@@ -1093,7 +462,13 @@ function wrapBuildError(error: unknown, tracker: ReturnType<typeof createBuildTr
   if (message.startsWith('Build failed during ')) {
     return error instanceof Error ? error : new Error(message);
   }
-  return new Error(`Build failed during ${tracker.currentStageLabel()}: ${message}`);
+  const wrapped = new Error(`Build failed during ${tracker.currentStageLabel()}: ${message}`);
+  // Preserve the structured issues so the repair loop can feed the full
+  // checklist back into the regeneration prompt.
+  if (error instanceof AppValidationError) {
+    return new AppValidationError(error.issues, wrapped.message);
+  }
+  return wrapped;
 }
 
 function selectHtmlEntry(files: Record<string, string>): string {
@@ -1135,7 +510,11 @@ function selectDefaultJsEntry(files: Record<string, string>): string | undefined
 export function createAppWorkspace(files: Record<string, string>): AppWorkspace {
   const entries = Object.entries(files);
   if (entries.length === 0 || entries.length > MAX_APP_FILES) {
-    throw new Error(`App source must contain between 1 and ${MAX_APP_FILES} files`);
+    throw new AppValidationError([{
+      code: 'source/file-count',
+      message: `App source must contain between 1 and ${MAX_APP_FILES} files`,
+      hint: `Send between 1 and ${MAX_APP_FILES} source files.`,
+    }]);
   }
 
   const normalizedFiles: Record<string, string> = {};
@@ -1145,32 +524,56 @@ export function createAppWorkspace(files: Record<string, string>): AppWorkspace 
     const content = String(rawContent);
     const segments = name.split('/');
     if (!name || name.length > MAX_APP_FILE_NAME_BYTES || segments.some((segment) => !segment || segment === '.' || segment === '..' || segment.includes('\\'))) {
-      throw new Error(`Invalid app source filename "${rawName}"`);
+      throw new AppValidationError([{
+        code: 'source/invalid-filename',
+        message: `Invalid app source filename "${rawName}"`,
+        hint: 'Use plain relative names such as "index.html", "styles.css", or "assets/logo.png".',
+      }]);
     }
     if (name in normalizedFiles) {
-      throw new Error(`Duplicate app source filename "${name}"`);
+      throw new AppValidationError([{
+        code: 'source/duplicate-filename',
+        message: `Duplicate app source filename "${name}"`,
+        hint: 'Send each file exactly once.',
+      }]);
     }
 
     const fileBytes = new TextEncoder().encode(content).byteLength;
     if (fileBytes > MAX_APP_FILE_BYTES) {
-      throw new Error(`App source file "${name}" exceeds the ${MAX_APP_FILE_BYTES / 1024}KB limit`);
+      throw new AppValidationError([{
+        code: 'source/file-too-large',
+        message: `App source file "${name}" exceeds the ${MAX_APP_FILE_BYTES / 1024}KB limit`,
+        hint: 'Split large data out of the bundle or shrink the file.',
+      }]);
     }
     totalBytes += fileBytes;
     if (totalBytes > MAX_APP_SOURCE_BYTES) {
-      throw new Error(`App source exceeds the ${MAX_APP_SOURCE_BYTES / 1024 / 1024}MB limit`);
+      throw new AppValidationError([{
+        code: 'source/source-too-large',
+        message: `App source exceeds the ${MAX_APP_SOURCE_BYTES / 1024 / 1024}MB limit`,
+        hint: 'Send fewer or smaller files.',
+      }]);
     }
     normalizedFiles[name] = content;
   }
 
   for (const reserved of RESERVED_APP_SOURCE_FILES) {
     if (reserved in normalizedFiles) {
-      throw new Error(`Source file name "${reserved}" is reserved by the app runtime`);
+      throw new AppValidationError([{
+        code: 'source/reserved-filename',
+        message: `Source file name "${reserved}" is reserved by the app runtime`,
+        hint: 'Remove the file — the platform injects its own runtime assets with those names.',
+      }]);
     }
   }
 
   const entryHtml = selectHtmlEntry(normalizedFiles);
   if (!(entryHtml in normalizedFiles)) {
-    throw new Error('App bundle must include at least one HTML entry file');
+    throw new AppValidationError([{
+      code: 'entry/no-html',
+      message: 'App bundle must include at least one HTML entry file',
+      hint: 'Include an index.html (or another *.html entry).',
+    }]);
   }
 
   return {
@@ -1228,11 +631,23 @@ function normalizeAppFromSpec(spec: AppSpec, files: Record<string, string>): App
   };
 }
 
+/**
+ * Pre-bundle source gate. Throws {@link AppValidationError} with one issue per
+ * rejection so every client-supplied bad bundle maps to HTTP 400
+ * deterministically (`instanceof` check in routes/apps.ts) and the repair
+ * loop can format the issue. The thrown `message` is unchanged from the
+ * historical strings — existing tests and the dev-deploy status mapping match
+ * on them.
+ */
 export function validateGeneratedApp(app: AppBundleInput): void {
   const files = app.files;
   const htmlFiles = Object.entries(files).filter(([name]) => name.endsWith('.html') || name === 'html');
   if (htmlFiles.length === 0) {
-    throw new Error('App bundle must include at least one HTML file');
+    throw new AppValidationError([{
+      code: 'entry/no-html',
+      message: 'App bundle must include at least one HTML file',
+      hint: 'Include an index.html (or another *.html entry).',
+    }]);
   }
 
   const fullSource = Object.values(files).join('\n');
@@ -1240,16 +655,36 @@ export function validateGeneratedApp(app: AppBundleInput): void {
   // just explicit http(s) — otherwise `<script src="//evil.com/app.js">` slips
   // past this check (the served CSP's `script-src 'self'` still blocks it at
   // runtime, so this is defense-in-depth, but the check should match its intent).
-  const forbiddenPatterns: Array<{ pattern: RegExp; message: string }> = [
-    { pattern: /<script[^>]+src=["'](?:https?:)?\/\//i, message: 'External script URLs are not allowed' },
-    { pattern: /<link[^>]+href=["'](?:https?:)?\/\//i, message: 'External stylesheet URLs are not allowed' },
-    { pattern: /\bimport\s*\(\s*["'`](?:https?:)?\/\//i, message: 'Dynamic imports from external URLs are not allowed' },
-    { pattern: /\bfrom\s+["'](?:https?:)?\/\//i, message: 'Imports from external URLs are not allowed' },
+  const forbiddenPatterns: Array<{ code: string; pattern: RegExp; message: string; hint?: string }> = [
+    {
+      code: 'source/external-script',
+      pattern: /<script[^>]+src=["'](?:https?:)?\/\//i,
+      message: 'External script URLs are not allowed',
+      hint: 'Bundle the script as a local file and reference it with a relative path.',
+    },
+    {
+      code: 'source/external-stylesheet',
+      pattern: /<link[^>]+href=["'](?:https?:)?\/\//i,
+      message: 'External stylesheet URLs are not allowed',
+      hint: 'Bundle the stylesheet as a local file and reference it with a relative path.',
+    },
+    {
+      code: 'source/external-dynamic-import',
+      pattern: /\bimport\s*\(\s*["'`](?:https?:)?\/\//i,
+      message: 'Dynamic imports from external URLs are not allowed',
+      hint: 'Bundle the module as a local file and import it with a relative path.',
+    },
+    {
+      code: 'source/external-import',
+      pattern: /\bfrom\s+["'](?:https?:)?\/\//i,
+      message: 'Imports from external URLs are not allowed',
+      hint: 'Bundle the module as a local file and import it with a relative path.',
+    },
   ];
 
-  for (const { pattern, message } of forbiddenPatterns) {
+  for (const { pattern, code, message, hint } of forbiddenPatterns) {
     if (pattern.test(fullSource)) {
-      throw new Error(message);
+      throw new AppValidationError([{ code, message, hint }]);
     }
   }
 
@@ -1262,25 +697,53 @@ export function validateGeneratedApp(app: AppBundleInput): void {
   const usesIpcListen = /\b(?:window\.)?eternal\.ipc\.on\s*\(/.test(fullSource);
 
   if (usesFsRead && !(app.permissions?.fs?.read?.length || app.permissions?.fs?.mimeTypes?.length)) {
-    throw new Error('App reads through window.eternal.fs but did not declare fs read permissions');
+    throw new AppValidationError([{
+      code: 'permission/undeclared-fs-read',
+      message: 'App reads through window.eternal.fs but did not declare fs read permissions',
+      hint: 'Declare fs: { read: [...] } or fs: { mimeTypes: [...] } in the manifest permissions.',
+    }]);
   }
   if (usesFsWrite && !app.permissions?.fs?.write?.length) {
-    throw new Error('App writes through window.eternal.fs but did not declare fs write permissions');
+    throw new AppValidationError([{
+      code: 'permission/undeclared-fs-write',
+      message: 'App writes through window.eternal.fs but did not declare fs write permissions',
+      hint: 'Declare fs: { write: [...] } in the manifest permissions.',
+    }]);
   }
   if (usesFsDelete && !app.permissions?.fs?.delete?.length) {
-    throw new Error('App deletes through window.eternal.fs but did not declare fs delete permissions');
+    throw new AppValidationError([{
+      code: 'permission/undeclared-fs-delete',
+      message: 'App deletes through window.eternal.fs but did not declare fs delete permissions',
+      hint: 'Declare fs: { delete: [...] } in the manifest permissions.',
+    }]);
   }
   if (usesProfile && !app.permissions?.profile?.read?.length) {
-    throw new Error('App uses window.eternal.profile but did not declare profile permissions');
+    throw new AppValidationError([{
+      code: 'permission/undeclared-profile',
+      message: 'App uses window.eternal.profile but did not declare profile permissions',
+      hint: "Declare profile: { read: ['username', 'displayName', …] } in the manifest permissions.",
+    }]);
   }
   if (usesNetwork && !app.permissions?.network?.outbound?.length) {
-    throw new Error('App uses window.eternal.fetch but did not declare network permissions');
+    throw new AppValidationError([{
+      code: 'permission/undeclared-network',
+      message: 'App uses window.eternal.fetch but did not declare network permissions',
+      hint: "Declare network: { outbound: ['api.example.com'] } in the manifest permissions.",
+    }]);
   }
   if (usesIpcEmit && !app.permissions?.ipc?.emit?.length) {
-    throw new Error('App emits IPC messages but did not declare ipc emit permissions');
+    throw new AppValidationError([{
+      code: 'permission/undeclared-ipc-emit',
+      message: 'App emits IPC messages but did not declare ipc emit permissions',
+      hint: 'Declare ipc: { emit: [topic] } in the manifest permissions.',
+    }]);
   }
   if (usesIpcListen && !app.permissions?.ipc?.listen?.length) {
-    throw new Error('App listens for IPC messages but did not declare ipc listen permissions');
+    throw new AppValidationError([{
+      code: 'permission/undeclared-ipc-listen',
+      message: 'App listens for IPC messages but did not declare ipc listen permissions',
+      hint: 'Declare ipc: { listen: [topic] } in the manifest permissions.',
+    }]);
   }
 
   const knownAssets = new Set([...Object.keys(files), APP_RUNTIME_ASSET_FILE]);
@@ -1304,7 +767,12 @@ export function validateGeneratedApp(app: AppBundleInput): void {
 
       const normalizedRef = ref.replace(/^\.\//, '').replace(/^\//, '');
       if (!knownAssets.has(normalizedRef)) {
-        throw new Error(`Missing local asset "${ref}" referenced from ${fileName}`);
+        throw new AppValidationError([{
+          code: 'asset/missing',
+          file: fileName,
+          message: `Missing local asset "${ref}" referenced from ${fileName}`,
+          hint: 'Add the file to the bundle or remove the reference.',
+        }]);
       }
     }
   }
@@ -1446,7 +914,10 @@ async function generateAppFromPrompt(
   previousError?: string,
 ): Promise<AppBundleInput> {
   const repairContext = previousError
-    ? `Previous attempt failed during validation or bundling with this error:\n${previousError}\n\nReturn a corrected app bundle.`
+    ? `Previous attempt failed deterministic app validation. Every problem below is exact — fix each one:
+${previousError}
+
+Return the corrected, complete app bundle. Keep everything that was already valid; change only what the problems call out.`
     : 'This is the first generation attempt.';
 
   const contextBlock = desktopSummary
@@ -1498,7 +969,16 @@ Rules for files:
 - Output production-ready HTML/CSS/JS. No markdown fences, no placeholder "// TODO" stubs
 - Handle the empty case gracefully: eternal.fs.list() returns [] until the user grants permission
 - Wrap fetches in try/catch so a permission denial or empty desktop doesn't crash the UI
-- Match the supplied app specification exactly for metadata and permissions`,
+- Match the supplied app specification exactly for metadata and permissions
+
+Runtime sandbox contract (violations are rejected by deterministic validation before install):
+- The app runs in a sandboxed iframe with an opaque origin. localStorage, sessionStorage, document.cookie, and indexedDB all throw SecurityError. Use window.eternal.storage.get/set/list/delete for persistent state, and plain variables for the rest.
+- geolocation, camera/microphone (getUserMedia), and Web Workers/service workers are unavailable — there is no bridge alternative; design around them.
+- Direct fetch/XHR/WebSocket/EventSource to absolute external URLs is blocked by the CSP. For external data, declare network.outbound and call window.eternal.fetch(url) (the allowlisted proxy). For bundled data, fetch a relative path like './data.json'.
+- Only the window.eternal APIs listed above exist. Calling any other namespace or method (e.g. eternal.fs.save, eternal.ai.chat) throws at runtime.
+- eternal.fs.list({ path }) must be inside a glob you declare under fs.read (or covered by fs.mimeTypes) — otherwise it silently returns nothing. Same for fs.write paths under fs.write.
+- CSS url() and HTML src/href references must point at files included in the bundle.
+- import statements must reference bundled local files ('./utils.js') and names those files actually export; bare specifiers like 'lodash' cannot resolve — there is no package manager.`,
     `Build a desktop web app for this request:
 
 ${prompt}
@@ -1522,6 +1002,18 @@ function emitStage(ctx: AppToolsContext, stage: keyof typeof REAL_BUILD_STAGES):
   if (ctx.toolCallId) {
     ctx.onBuildStage?.(ctx.toolCallId, stage, REAL_BUILD_STAGES[stage]);
   }
+}
+
+/**
+ * Repair-prompt context for a failed build: the full formatted issue
+ * checklist when the failure is deterministic validation (so one regeneration
+ * can fix every problem at once), the raw message otherwise.
+ */
+function buildRepairContext(error: unknown): string {
+  if (error instanceof AppValidationError) {
+    return formatAppValidationIssues(error.issues);
+  }
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function buildAppFromPromptWithRetries(
@@ -1563,7 +1055,7 @@ async function buildAppFromPromptWithRetries(
       const registered = await createAndRegisterApp(ctx, generatedApp);
       return { ...registered, permissions: generatedApp.permissions };
     } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
+      lastError = buildRepairContext(error);
       if (isCapacityExceededError(error) && attempt < 2) {
         await waitForCapacityRetry(attempt);
       }
@@ -1604,6 +1096,18 @@ async function writeAppArtifact(
     }),
   );
   tracker.markCompleted('bundle-worker');
+
+  // Deterministic post-bundle validation: the compiled artifact is checked
+  // against the runtime contract (bridge surface, declared-permission
+  // coverage, asset packaging, sandbox availability, compiled entrypoint)
+  // before anything is persisted or installed. Collects every issue at once
+  // so a failed build can be repaired in a single regeneration.
+  assertAppBundleValid({
+    files: workspace.files,
+    manifest: workspace.manifest,
+    permissions: input.permissions,
+    compiled: { mainModule, modules },
+  });
 
   const now = Date.now();
   const metadata: StoredAppMetadata = {
@@ -1863,7 +1367,7 @@ async function buildAppPreviewFromPromptWithRetries(
       );
       return createAppPreview(ctx, generatedApp);
     } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
+      lastError = buildRepairContext(error);
       if (isCapacityExceededError(error) && attempt < 2) {
         await waitForCapacityRetry(attempt);
       }
@@ -2639,6 +2143,14 @@ export function createAppTools(ctx: AppToolsContext) {
             }),
           );
           tracker.markCompleted('bundle-worker');
+
+          // Same deterministic post-bundle gate as every other install path.
+          assertAppBundleValid({
+            files: workspace.files,
+            manifest: workspace.manifest,
+            permissions: app.permissions,
+            compiled: { mainModule, modules },
+          });
 
           emitStage(tctx, 'storage');
           const bundle = JSON.stringify({ mainModule, modules });

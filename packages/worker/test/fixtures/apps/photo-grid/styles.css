@@ -1,0 +1,245 @@
+:root {
+  color-scheme: dark;
+  --bg: #101216;
+  --panel: #171a21;
+  --line: rgba(255, 255, 255, 0.08);
+  --text: #f2f0e9;
+  --muted: #9aa3b5;
+  --accent: #7cc6ff;
+  --radius: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: linear-gradient(180deg, #14171f 0%, var(--bg) 100%);
+  color: var(--text);
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 14px;
+  padding: 16px;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+h1 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.01em;
+}
+
+.summary {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.controls {
+  display: flex;
+  gap: 6px;
+}
+
+.size-button {
+  width: 34px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.size-button.is-active {
+  background: rgba(124, 198, 255, 0.18);
+  border-color: rgba(124, 198, 255, 0.45);
+  color: var(--accent);
+}
+
+.stage {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  min-height: 320px;
+  overflow: auto;
+}
+
+.state {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  text-align: center;
+  color: var(--muted);
+  padding: 24px;
+}
+
+.state .big {
+  margin: 0;
+  color: var(--text);
+  font-size: 20px;
+}
+
+.state p {
+  margin: 0;
+}
+
+.state.is-hidden,
+.grid.is-hidden,
+.lightbox.is-hidden {
+  display: none;
+}
+
+.spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.12);
+  border-top-color: var(--accent);
+  animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.grid {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(var(--tile, 150px), 1fr));
+}
+
+html[data-tile-size="small"] {
+  --tile: 104px;
+}
+
+html[data-tile-size="medium"] {
+  --tile: 150px;
+}
+
+html[data-tile-size="large"] {
+  --tile: 220px;
+}
+
+.tile {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #0c0e12;
+  cursor: pointer;
+  aspect-ratio: 1 / 1;
+  display: flex;
+  align-items: end;
+}
+
+.tile:hover {
+  border-color: rgba(124, 198, 255, 0.5);
+}
+
+.tile img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.tile-label {
+  position: relative;
+  max-width: 100%;
+  padding: 6px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text);
+  background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.72));
+}
+
+.tile.is-broken {
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 10px;
+  text-align: center;
+  word-break: break-word;
+}
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  background: rgba(6, 8, 11, 0.88);
+  padding: 34px;
+}
+
+.lightbox img {
+  max-width: 100%;
+  max-height: 84vh;
+  border-radius: 10px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+}
+
+.lightbox-caption {
+  position: absolute;
+  bottom: 18px;
+  left: 0;
+  right: 0;
+  margin: 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.lightbox-close {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.lightbox-close:focus-visible,
+.size-button:focus-visible,
+.tile:focus-visible {
+  outline: 2px solid rgba(124, 198, 255, 0.8);
+  outline-offset: 2px;
+}

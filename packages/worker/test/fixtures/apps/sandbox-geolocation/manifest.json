@@ -1,0 +1,6 @@
+{
+  "name": "Where Am I",
+  "description": "Uses geolocation, which the app sandbox denies.",
+  "version": "1.0.0",
+  "windowConfig": { "defaultWidth": 600, "defaultHeight": 500 }
+}

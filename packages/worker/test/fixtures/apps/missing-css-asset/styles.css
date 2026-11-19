@@ -1,0 +1,5 @@
+.frame {
+  padding: 24px;
+  background: url('./does-not-exist.png') no-repeat center;
+  border: 1px solid #ddd;
+}

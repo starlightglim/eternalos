@@ -230,6 +230,40 @@ function createPngFile(name = 'pixel.png') {
   return new File([PNG_BYTES], name, { type: 'image/png' });
 }
 
+// ---------------------------------------------------------------------------
+// Checked-in app fixtures (test/fixtures/apps) — the regression contract for
+// the deterministic post-bundle validation pass. `manifest.json` is the
+// dev-deploy manifest; `expect.json` (when present) is the issue code the
+// fixture must be rejected with.
+// ---------------------------------------------------------------------------
+
+const APP_FIXTURES_ROOT = path.join(PROJECT_ROOT, 'test', 'fixtures', 'apps');
+
+function loadAppFixture(name) {
+  const dir = path.join(APP_FIXTURES_ROOT, name);
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+  const files = {};
+  for (const entry of fs.readdirSync(dir)) {
+    if (entry === 'manifest.json' || entry === 'expect.json') continue;
+    files[entry] = fs.readFileSync(path.join(dir, entry), 'utf8');
+  }
+  return { name, manifest, files };
+}
+
+function devDeployBody(fixture) {
+  return {
+    manifest: {
+      name: fixture.manifest.name,
+      description: fixture.manifest.description,
+      version: fixture.manifest.version,
+      windowConfig: { ...fixture.manifest.windowConfig, resizable: fixture.manifest.windowConfig.resizable !== false },
+      ...(fixture.manifest.permissions ? { permissions: fixture.manifest.permissions } : {}),
+      ...(fixture.manifest.rationale ? { rationale: fixture.manifest.rationale } : {}),
+    },
+    files: fixture.files,
+  };
+}
+
 // Perform a real WebSocket upgrade handshake with custom headers and report
 // the HTTP status + body the worker answered with. The agent-chat gate
 // rejects these handshakes with 401/403 before any socket is established, so
@@ -903,6 +937,144 @@ describe('worker integration', () => {
     );
     assert.equal(allowed.response.status, 200);
     assert.ok(allowed.body.appId, 'declared-permission app should register');
+  });
+
+  it('rejects post-bundle contract violations with structured 400 errors, never 500', async () => {
+    // Every checked-in negative fixture under test/fixtures/apps must fail
+    // dev-deploy with its declared issue code. The fixture directories are
+    // the regression contract for the deterministic post-bundle validation
+    // pass (utils/appBundleValidation.ts).
+    const user = await signupUser();
+    const deployFixture = (name) =>
+      fetchJson('/api/apps/dev-deploy', {
+        method: 'POST',
+        headers: authHeaders(user.token, JSON_HEADERS),
+        body: JSON.stringify(devDeployBody(loadAppFixture(name))),
+      });
+
+    const negativeFixtures = fs.readdirSync(APP_FIXTURES_ROOT)
+      .filter((name) => fs.existsSync(path.join(APP_FIXTURES_ROOT, name, 'expect.json')));
+    assert.ok(negativeFixtures.length >= 8, 'expected at least eight negative app fixtures');
+
+    for (const name of negativeFixtures) {
+      const expect = JSON.parse(fs.readFileSync(path.join(APP_FIXTURES_ROOT, name, 'expect.json'), 'utf8'));
+      const { response, body } = await deployFixture(name);
+      assert.equal(
+        response.status,
+        400,
+        `${name}: expected 400, got ${response.status}: ${JSON.stringify(body)}`,
+      );
+      assert.ok(Array.isArray(body.issues) && body.issues.length > 0, `${name}: expected structured issues`);
+      assert.ok(
+        body.issues.some((issue) => issue.code === expect.code),
+        `${name}: expected issue ${expect.code}, got ${JSON.stringify(body.issues)}`,
+      );
+      for (const issue of body.issues) {
+        assert.equal(typeof issue.code, 'string');
+        assert.equal(typeof issue.message, 'string');
+        assert.ok(issue.message.length > 0);
+      }
+    }
+
+    // Regression: a client bundle shipping the reserved runtime filename is a
+    // client error — this previously fell through the status prefix map and
+    // returned 500 (server-fault alarm) instead of 400.
+    const reserved = await fetchJson('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name: 'Reserved Name App',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+        },
+        files: {
+          'index.html': '<!doctype html><body>x</body>',
+          'eternal-runtime.js': 'window.eternal = {};',
+        },
+      }),
+    });
+    assert.equal(reserved.response.status, 400);
+    assert.match(reserved.body.error, /reserved by the app runtime/);
+    assert.equal(reserved.body.issues[0].code, 'source/reserved-filename');
+  });
+
+  it('accepts guarded browser-storage idioms in dev-deploy', async () => {
+    // Positive control for the sandbox-storage guard rules: typeof probes,
+    // 'x' in window probes, and try/catch-wrapped access are standard
+    // survival idioms for the opaque-origin iframe and must deploy — only
+    // unguarded access is rejected (covered by the sandbox-local-storage
+    // negative fixture above).
+    const user = await signupUser();
+    const { response, body } = await fetchJson('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify(devDeployBody(loadAppFixture('guarded-storage'))),
+    });
+    assert.equal(response.status, 200, `guarded-storage fixture should deploy: ${JSON.stringify(body)}`);
+    assert.ok(body.appId);
+  });
+
+  it('deploys the Photo Grid reference app and reads real photos through the fs grant', async () => {
+    // The Workstream 3 acceptance story (design/12-orchestrator-v2.md):
+    // "Build me a gallery app for my photos" -> app installs -> reads the
+    // user's actual photos through window.eternal. The fixture must pass the
+    // full pipeline (pre-bundle source gate + deterministic post-bundle
+    // validation + Dynamic Worker compilation), and its fs grant must make a
+    // real uploaded image visible through the app bridge.
+    const user = await signupUser();
+
+    const uploadForm = new UndiciFormData();
+    uploadForm.set('file', createPngFile('sunset.png'));
+    const upload = await expectOk('/api/upload', {
+      method: 'POST',
+      headers: authHeaders(user.token),
+      body: uploadForm,
+    });
+    assert.equal(upload.item.type, 'image');
+
+    const photoGrid = loadAppFixture('photo-grid');
+    const app = await expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify(devDeployBody(photoGrid)),
+    });
+    assert.ok(app.appId, 'Photo Grid should deploy');
+
+    // The app's compiled Dynamic Worker serves the entry HTML with the
+    // platform runtime injected.
+    const htmlResponse = await worker.fetch(`${BASE_URL}/api/apps/${encodeURIComponent(app.appId)}/`);
+    assert.equal(htmlResponse.status, 200);
+    const html = await htmlResponse.text();
+    assert.match(html, /Photo Grid/);
+    assert.match(html, /eternal-runtime\.js/);
+
+    // Grant the declared fs read (the "fs read grant" from the fixture
+    // manifest), then verify the bridge the app calls at runtime exposes the
+    // uploaded photo: fs.list must include it and fs.read must stream the PNG.
+    await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: photoGrid.manifest.permissions }),
+    });
+    const capability = await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/capability`, {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: '{}',
+    });
+    const bearer = { Authorization: `Bearer ${capability.token}` };
+
+    const list = await expectOk(`/api/apps/${encodeURIComponent(app.appId)}/fs/list`, { headers: bearer });
+    const listed = list.items.filter((item) => item.id === upload.item.id);
+    assert.equal(listed.length, 1, 'the granted image should be listable through the app bridge');
+    assert.equal(listed[0].mimeType, 'image/png');
+
+    const readResponse = await worker.fetch(
+      `${BASE_URL}/api/apps/${encodeURIComponent(app.appId)}/fs/read/${upload.item.id}`,
+      { headers: bearer },
+    );
+    assert.equal(readResponse.status, 200);
+    assert.equal(readResponse.headers.get('content-type'), 'image/png');
   });
 
   it('scopes app fs reads to the granted path glob', async () => {

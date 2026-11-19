@@ -1,0 +1,6 @@
+{
+  "name": "Booted Dashboard",
+  "description": "Imports a name its local module does not export.",
+  "version": "1.0.0",
+  "windowConfig": { "defaultWidth": 600, "defaultHeight": 500 }
+}

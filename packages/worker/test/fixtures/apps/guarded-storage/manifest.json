@@ -1,0 +1,6 @@
+{
+  "name": "Careful Prefs",
+  "description": "Feature-detects and try-guards browser storage — the guarded forms must pass validation.",
+  "version": "1.0.0",
+  "windowConfig": { "defaultWidth": 600, "defaultHeight": 500 }
+}

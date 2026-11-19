@@ -1,0 +1,6 @@
+{
+  "name": "Headline Fetcher",
+  "description": "Fetches an external URL directly instead of through the eternal.fetch proxy.",
+  "version": "1.0.0",
+  "windowConfig": { "defaultWidth": 600, "defaultHeight": 500 }
+}
