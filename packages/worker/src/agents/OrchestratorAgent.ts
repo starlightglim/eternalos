@@ -28,6 +28,8 @@ import {
   releaseAiTurnSlot,
   type AiTurnGrant,
 } from '../middleware/aiUsage';
+import { classifyRoute } from './intent';
+import type { ChatRoute } from './intent';
 import type { OrchestratorState } from './state';
 import { createDesktopTools } from './tools/desktopTools';
 import { createAppTools, initAppRegistry } from './tools/appTools';
@@ -39,8 +41,6 @@ import {
   shouldReplaceThreadTitle,
   upsertThread,
 } from './threadRegistry';
-
-type ChatRoute = 'chat' | 'desktop-read' | 'desktop-write' | 'app-read' | 'app-build' | 'app-install-preview';
 
 const BASE_PROMPT = `You are Eternal, the assistant for EternalOS.
 
@@ -187,41 +187,8 @@ function extractMessageText(message: { parts?: Array<{ type?: string; text?: unk
     .trim();
 }
 
-function classifyRoute(text: string): ChatRoute {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) return 'chat';
-
-  const greetingPattern = /^(hi|hello|hey|yo|sup|hiya|good morning|good afternoon|good evening|howdy)([!. ]+.*)?$/i;
-  if (normalized.length <= 40 && greetingPattern.test(normalized)) {
-    return 'chat';
-  }
-
-  const appNouns = /\b(app|application|widget|game|timer|calculator|kanban|pomodoro|paint|canvas|editor|tracker|todo|to-do|to do list|sticky note|whiteboard|notepad)\b/i;
-  const appReadPattern = /\b(list|show|which|what|inspect|review|open|read)\b.*\bapp(s)?\b|\bapp source\b|\bsource code\b.*\bapp\b/i;
-  const previewInstallPattern = /\binstall\b.*\bpreview\b|\bpreview\b.*\binstall\b|\binstall app preview\b/i;
-  if (previewInstallPattern.test(normalized)) {
-    return 'app-install-preview';
-  }
-  const appBuildPattern = /\b(build|create|make|generate|code|ship|implement|update|modify|edit|fix|delete|remove|install)\b.*\b(app|application|widget|preview|game|timer|calculator|kanban|pomodoro|paint|canvas|editor|tracker|todo|to-do|to do list|sticky note|whiteboard|notepad)\b|\b(update|modify|edit|fix|delete|remove|install)\b.*\bmy app\b/i;
-  if (appBuildPattern.test(normalized)) {
-    return 'app-build';
-  }
-  if (appReadPattern.test(normalized) || (appNouns.test(normalized) && /\bwhat|which|show|list|inspect|review|source\b/i.test(normalized))) {
-    return 'app-read';
-  }
-
-  const desktopWritePattern = /\b(organize|group|move|sort|tidy|clean up|create folder|put .* into|file away)\b|\b(folder|folders)\b.*\b(create|make|new)\b|\b(write|save|jot|draft|create|make)\b.*\b(note|memo|text file)\b/i;
-  if (desktopWritePattern.test(normalized)) {
-    return 'desktop-write';
-  }
-
-  const desktopReadPattern = /\b(desktop|file|files|folder|folders|image|images|photo|photos|video|videos|audio|pdf|search|find|tag|tags|ocr|upload|overview|recent|note|notes|memo|what's on my desktop|what is on my desktop)\b/i;
-  if (desktopReadPattern.test(normalized)) {
-    return 'desktop-read';
-  }
-
-  return 'chat';
-}
+// Intent routing (chat vs. desktop vs. app read/build/preview-install) lives in
+// ./intent — a pure, table-driven module covered by test/intent.test.mjs.
 
 function getSystemPrompt(route: ChatRoute): string {
   const prompt = (() => {
@@ -376,12 +343,21 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
       const threadId = normalizeThreadId(
         typeof options?.body?.threadId === 'string' ? options.body.threadId : this.name.split(':')[1],
       );
-      const existingThread = await upsertThread(this.env, ownerUid, threadId, { updatedAt: Date.now() });
-      if (lastUserText && shouldReplaceThreadTitle(existingThread.title)) {
-        await upsertThread(this.env, ownerUid, threadId, {
-          title: deriveThreadTitleFromMessage(lastUserText),
-          updatedAt: Date.now(),
-        });
+      // The thread registry is bookkeeping, not a precondition for the reply:
+      // a transient KV failure here used to reject the whole WebSocket request
+      // handler, leaving the client with no response frame at all — a stuck
+      // "Working..." spinner. Log and continue; the chat itself still works and
+      // the title/updatedAt bump lands on the next successful message.
+      try {
+        const existingThread = await upsertThread(this.env, ownerUid, threadId, { updatedAt: Date.now() });
+        if (lastUserText && shouldReplaceThreadTitle(existingThread.title)) {
+          await upsertThread(this.env, ownerUid, threadId, {
+            title: deriveThreadTitleFromMessage(lastUserText),
+            updatedAt: Date.now(),
+          });
+        }
+      } catch (registryError) {
+        console.error('Failed to update agent thread registry entry:', registryError);
       }
 
       const route = classifyRoute(lastUserText);
@@ -481,11 +457,34 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
                 };
               },
               stopWhen: stepCountIs(10),
-              // Propagate client cancellation (the Stop button) so the
-              // upstream provider call is not left running.
+              // Cancel the upstream model call when the client stops or the
+              // request is cancelled — otherwise the DO keeps generating and
+              // paying for tokens nobody will see (the response reader is torn
+              // down on abort either way).
               abortSignal: options?.abortSignal,
             });
-            writer.merge(result.toUIMessageStream({ onError: legibleAiErrorMessage }) as any);
+            // Map ONLY the provider-level error part to the legible message —
+            // it flows through toUIMessageStream's default onError as raw
+            // text and is what the user sees when the AI binding fails.
+            // Tool errors (tool-output-error chunks) keep their specific,
+            // actionable text; the AI SDK keeps the turn alive after them.
+            const uiStream = result.toUIMessageStream() as ReadableStream<Record<string, unknown>>;
+            const legibleProviderErrors = uiStream.pipeThrough(
+              new TransformStream({
+                transform(chunk, controller) {
+                  if (chunk.type === 'error') {
+                    console.error('Agent chat provider error:', chunk.errorText);
+                    controller.enqueue({
+                      ...chunk,
+                      errorText: legibleAiErrorMessage(chunk.errorText),
+                    });
+                    return;
+                  }
+                  controller.enqueue(chunk);
+                },
+              }),
+            );
+            writer.merge(legibleProviderErrors as any);
             // Await the turn's completion — success, provider error, or
             // abort all settle this promise — so the slot is held for
             // exactly the turn's lifetime.
