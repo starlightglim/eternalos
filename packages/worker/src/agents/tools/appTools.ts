@@ -597,12 +597,27 @@ function normalizeAppFromSpec(spec: AppSpec, files: Record<string, string>): App
 }
 
 /**
+ * Attribute a full-source pattern match to the file that contains it (files
+ * walked in sorted order for determinism). Purely informational — the gate's
+ * accept/reject decision stays on the joined source, so a pattern that only
+ * matches across a file boundary still rejects, just without a file attached
+ * (and the repair loop then regenerates in full instead of patching).
+ */
+function findMatchingFile(files: Record<string, string>, pattern: RegExp): string | undefined {
+  for (const name of Object.keys(files).sort()) {
+    if (pattern.test(files[name])) return name;
+  }
+  return undefined;
+}
+
+/**
  * Pre-bundle source gate. Throws {@link AppValidationError} with one issue per
  * rejection so every client-supplied bad bundle maps to HTTP 400
  * deterministically (`instanceof` check in routes/apps.ts) and the repair
  * loop can format the issue. The thrown `message` is unchanged from the
  * historical strings — existing tests and the dev-deploy status mapping match
- * on them.
+ * on them. Pattern-matched issues carry the file that triggered them so the
+ * targeted repair pass can patch just that file.
  */
 export function validateGeneratedApp(app: AppBundleInput): void {
   const files = app.files;
@@ -649,23 +664,31 @@ export function validateGeneratedApp(app: AppBundleInput): void {
 
   for (const { pattern, code, message, hint } of forbiddenPatterns) {
     if (pattern.test(fullSource)) {
-      throw new AppValidationError([{ code, message, hint }]);
+      throw new AppValidationError([{ code, message, hint, file: findMatchingFile(files, pattern) }]);
     }
   }
 
-  const usesFsRead = /\b(?:window\.)?eternal\.fs\.(?:list|read|readText|readJson|urlFor)\s*\(/.test(fullSource);
-  const usesFsWrite = /\b(?:window\.)?eternal\.fs\.(?:write|patch)\s*\(/.test(fullSource);
-  const usesFsDelete = /\b(?:window\.)?eternal\.fs\.delete\s*\(/.test(fullSource);
-  const usesProfile = /\b(?:window\.)?eternal\.profile\./.test(fullSource);
-  const usesNetwork = /\b(?:window\.)?eternal\.fetch\s*\(/.test(fullSource);
-  const usesIpcEmit = /\b(?:window\.)?eternal\.ipc\.emit\s*\(/.test(fullSource);
-  const usesIpcListen = /\b(?:window\.)?eternal\.ipc\.on\s*\(/.test(fullSource);
+  const fsReadPattern = /\b(?:window\.)?eternal\.fs\.(?:list|read|readText|readJson|urlFor)\s*\(/;
+  const fsWritePattern = /\b(?:window\.)?eternal\.fs\.(?:write|patch)\s*\(/;
+  const fsDeletePattern = /\b(?:window\.)?eternal\.fs\.delete\s*\(/;
+  const profilePattern = /\b(?:window\.)?eternal\.profile\./;
+  const networkPattern = /\b(?:window\.)?eternal\.fetch\s*\(/;
+  const ipcEmitPattern = /\b(?:window\.)?eternal\.ipc\.emit\s*\(/;
+  const ipcListenPattern = /\b(?:window\.)?eternal\.ipc\.on\s*\(/;
+  const usesFsRead = fsReadPattern.test(fullSource);
+  const usesFsWrite = fsWritePattern.test(fullSource);
+  const usesFsDelete = fsDeletePattern.test(fullSource);
+  const usesProfile = profilePattern.test(fullSource);
+  const usesNetwork = networkPattern.test(fullSource);
+  const usesIpcEmit = ipcEmitPattern.test(fullSource);
+  const usesIpcListen = ipcListenPattern.test(fullSource);
 
   if (usesFsRead && !(app.permissions?.fs?.read?.length || app.permissions?.fs?.mimeTypes?.length)) {
     throw new AppValidationError([{
       code: 'permission/undeclared-fs-read',
       message: 'App reads through window.eternal.fs but did not declare fs read permissions',
       hint: 'Declare fs: { read: [...] } or fs: { mimeTypes: [...] } in the manifest permissions.',
+      file: findMatchingFile(files, fsReadPattern),
     }]);
   }
   if (usesFsWrite && !app.permissions?.fs?.write?.length) {
@@ -673,6 +696,7 @@ export function validateGeneratedApp(app: AppBundleInput): void {
       code: 'permission/undeclared-fs-write',
       message: 'App writes through window.eternal.fs but did not declare fs write permissions',
       hint: 'Declare fs: { write: [...] } in the manifest permissions.',
+      file: findMatchingFile(files, fsWritePattern),
     }]);
   }
   if (usesFsDelete && !app.permissions?.fs?.delete?.length) {
@@ -680,6 +704,7 @@ export function validateGeneratedApp(app: AppBundleInput): void {
       code: 'permission/undeclared-fs-delete',
       message: 'App deletes through window.eternal.fs but did not declare fs delete permissions',
       hint: 'Declare fs: { delete: [...] } in the manifest permissions.',
+      file: findMatchingFile(files, fsDeletePattern),
     }]);
   }
   if (usesProfile && !app.permissions?.profile?.read?.length) {
@@ -687,6 +712,7 @@ export function validateGeneratedApp(app: AppBundleInput): void {
       code: 'permission/undeclared-profile',
       message: 'App uses window.eternal.profile but did not declare profile permissions',
       hint: "Declare profile: { read: ['username', 'displayName', …] } in the manifest permissions.",
+      file: findMatchingFile(files, profilePattern),
     }]);
   }
   if (usesNetwork && !app.permissions?.network?.outbound?.length) {
@@ -694,6 +720,7 @@ export function validateGeneratedApp(app: AppBundleInput): void {
       code: 'permission/undeclared-network',
       message: 'App uses window.eternal.fetch but did not declare network permissions',
       hint: "Declare network: { outbound: ['api.example.com'] } in the manifest permissions.",
+      file: findMatchingFile(files, networkPattern),
     }]);
   }
   if (usesIpcEmit && !app.permissions?.ipc?.emit?.length) {
@@ -701,6 +728,7 @@ export function validateGeneratedApp(app: AppBundleInput): void {
       code: 'permission/undeclared-ipc-emit',
       message: 'App emits IPC messages but did not declare ipc emit permissions',
       hint: 'Declare ipc: { emit: [topic] } in the manifest permissions.',
+      file: findMatchingFile(files, ipcEmitPattern),
     }]);
   }
   if (usesIpcListen && !app.permissions?.ipc?.listen?.length) {
@@ -708,6 +736,7 @@ export function validateGeneratedApp(app: AppBundleInput): void {
       code: 'permission/undeclared-ipc-listen',
       message: 'App listens for IPC messages but did not declare ipc listen permissions',
       hint: 'Declare ipc: { listen: [topic] } in the manifest permissions.',
+      file: findMatchingFile(files, ipcListenPattern),
     }]);
   }
 
@@ -920,6 +949,43 @@ async function generateSpecWithRetries(
   throw new Error(`Failed to generate a valid app specification: ${lastError}`);
 }
 
+/**
+ * Bridge API surface shared by the generation and targeted-repair prompts.
+ * Kept verbatim-identical between the two so a repaired file is held to the
+ * same contract the generator was told about.
+ */
+const APP_BRIDGE_API_PROMPT = `Available in window.eternal (platform-injected — do not re-implement):
+  eternal.fs.list({ path?, mimeType?, limit? })   -> Item[]
+  eternal.fs.read(id)       -> Blob
+  eternal.fs.readText(id)   -> string
+  eternal.fs.readJson(id)   -> object
+  eternal.fs.urlFor(id)     -> Promise<string>, always await it, then assign the
+                              URL to <img src>/<audio src>/<video src> (a blob:
+                              object URL in installed apps, a plain URL in
+                              previews)
+  eternal.fs.write(options), fs.patch(id, updates), fs.delete(id)
+  eternal.profile.get()     -> { username?, displayName?, bio?, avatar? }
+  eternal.fetch(url, init?) -> allowlisted proxy response
+  eternal.ipc.emit(topic, payload), ipc.on(topic, callback)
+  eternal.window.setTitle(s), eternal.window.close(), eternal.window.requestFocus()
+
+Item shape: { id, name, type, path, mimeType?, fileSize?, updatedAt, isPublic, caption?, tags?, dominantColors?, url? }`;
+
+/**
+ * The runtime sandbox contract every generated file is held to. The
+ * deterministic post-bundle validator rejects violations of exactly these
+ * rules, so the generation and targeted-repair prompts must state them the
+ * same way.
+ */
+const APP_RUNTIME_CONTRACT_PROMPT = `Runtime sandbox contract (violations are rejected by deterministic validation before install):
+- The app runs in a sandboxed iframe with an opaque origin. localStorage, sessionStorage, document.cookie, and indexedDB all throw SecurityError. Use window.eternal.storage.get/set/list/delete for persistent state, and plain variables for the rest.
+- geolocation, camera/microphone (getUserMedia), and Web Workers/service workers are unavailable — there is no bridge alternative; design around them.
+- Direct fetch/XHR/WebSocket/EventSource to absolute external URLs is blocked by the CSP. For external data, call window.eternal.fetch(url) with a host in the derived network.outbound list (the allowlisted proxy). For bundled data, fetch a relative path like './data.json'.
+- Only the window.eternal APIs listed above exist. Calling any other namespace or method (e.g. eternal.fs.save, eternal.ai.chat) throws at runtime.
+- eternal.fs.urlFor(id) is asynchronous in installed apps. Always capture it with await first (const src = await eternal.fs.urlFor(id); img.src = src). Calling it without awaiting — or interpolating its result into a string or template literal — produces "[object Promise]", not a URL.
+- CSS url() and HTML src/href references must point at files included in the bundle.
+- import statements must reference bundled local files ('./utils.js') and names those files actually export; bare specifiers like 'lodash' cannot resolve — there is no package manager.`;
+
 async function generateAppFromPrompt(
   env: Env,
   prompt: string,
@@ -950,22 +1016,7 @@ user's desktop or an allowlisted network proxy if (and only if) the app's
 manifest grants it. Always prefer window.eternal APIs over asking the user
 to paste data.
 
-Available in window.eternal (platform-injected — do not re-implement):
-  eternal.fs.list({ path?, mimeType?, limit? })   -> Item[]
-  eternal.fs.read(id)       -> Blob
-  eternal.fs.readText(id)   -> string
-  eternal.fs.readJson(id)   -> object
-  eternal.fs.urlFor(id)     -> Promise<string>, always await it, then assign the
-                              URL to <img src>/<audio src>/<video src> (a blob:
-                              object URL in installed apps, a plain URL in
-                              previews)
-  eternal.fs.write(options), fs.patch(id, updates), fs.delete(id)
-  eternal.profile.get()     -> { username?, displayName?, bio?, avatar? }
-  eternal.fetch(url, init?) -> allowlisted proxy response
-  eternal.ipc.emit(topic, payload), ipc.on(topic, callback)
-  eternal.window.setTitle(s), eternal.window.close(), eternal.window.requestFocus()
-
-Item shape: { id, name, type, path, mimeType?, fileSize?, updatedAt, isPublic, caption?, tags?, dominantColors?, url? }
+${APP_BRIDGE_API_PROMPT}
 
 Permissions — DERIVED from the app specification by the platform, not declared by you:
   The manifest permissions supplied with the prompt are final. Do not add,
@@ -997,14 +1048,7 @@ Rules for files:
 - Wrap fetches in try/catch so a permission denial or empty desktop doesn't crash the UI
 - Match the supplied app specification exactly for name, purpose, screens, and window size
 
-Runtime sandbox contract (violations are rejected by deterministic validation before install):
-- The app runs in a sandboxed iframe with an opaque origin. localStorage, sessionStorage, document.cookie, and indexedDB all throw SecurityError. Use window.eternal.storage.get/set/list/delete for persistent state, and plain variables for the rest.
-- geolocation, camera/microphone (getUserMedia), and Web Workers/service workers are unavailable — there is no bridge alternative; design around them.
-- Direct fetch/XHR/WebSocket/EventSource to absolute external URLs is blocked by the CSP. For external data, call window.eternal.fetch(url) with a host in the derived network.outbound list (the allowlisted proxy). For bundled data, fetch a relative path like './data.json'.
-- Only the window.eternal APIs listed above exist. Calling any other namespace or method (e.g. eternal.fs.save, eternal.ai.chat) throws at runtime.
-- eternal.fs.urlFor(id) is asynchronous in installed apps. Always capture it with await first (const src = await eternal.fs.urlFor(id); img.src = src). Calling it without awaiting — or interpolating its result into a string or template literal — produces "[object Promise]", not a URL.
-- CSS url() and HTML src/href references must point at files included in the bundle.
-- import statements must reference bundled local files ('./utils.js') and names those files actually export; bare specifiers like 'lodash' cannot resolve — there is no package manager.`,
+${APP_RUNTIME_CONTRACT_PROMPT}`,
     `Build a desktop web app for this request:
 
 ${prompt}
@@ -1022,9 +1066,10 @@ ${repairContext}`,
     APP_BUILD_TIMEOUT_MS.fileGeneration,
   );
 
-  const app = normalizeAppFromSpec(spec, object.files);
-  validateGeneratedApp(app);
-  return app;
+  // Pre-bundle validation runs in the retry loop (generateAppWithRepairLoop),
+  // right after the generated files are captured, so a source-gate failure
+  // can be repaired by patching the files it names.
+  return normalizeAppFromSpec(spec, object.files);
 }
 
 function emitStage(ctx: AppToolsContext, stage: keyof typeof REAL_BUILD_STAGES): void {
@@ -1035,8 +1080,8 @@ function emitStage(ctx: AppToolsContext, stage: keyof typeof REAL_BUILD_STAGES):
 
 /**
  * Repair-prompt context for a failed build: the full formatted issue
- * checklist when the failure is deterministic validation (so one regeneration
- * can fix every problem at once), the raw message otherwise.
+ * checklist when the failure is deterministic validation (so one pass can
+ * fix every problem at once), the raw message otherwise.
  */
 function buildRepairContext(error: unknown): string {
   if (error instanceof AppValidationError) {
@@ -1049,28 +1094,158 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function buildAppFromPromptWithRetries(
+/**
+ * Files a targeted repair pass would have to patch: every validation issue
+ * must name a file that exists in the failed attempt's bundle. Returns null
+ * (and the loop regenerates in full) when any issue is file-less — those are
+ * either bundle-shape problems (no HTML, file limits, compiled-bundle
+ * contracts) or protocol failures a source patch cannot reach.
+ */
+function targetedRepairFiles(
+  issues: readonly AppValidationIssue[] | undefined,
+  files: Record<string, string> | undefined,
+): string[] | null {
+  if (!issues || issues.length === 0 || !files) return null;
+  const failing = new Set<string>();
+  for (const issue of issues) {
+    if (!issue.file || !(issue.file in files)) return null;
+    failing.add(issue.file);
+  }
+  return Array.from(failing).sort();
+}
+
+/**
+ * Targeted repair (CORE-ROADMAP Workstream 3, Phase C). A validation failure
+ * names concrete files, so the repair attempt is targeted: the model receives
+ * ONLY the failing files (full contents) plus the structured issues, and
+ * returns patched versions of exactly those files. The patches are merged
+ * into the previous bundle and revalidated through the same gates — no blind
+ * full regeneration, no re-derivation of what already validated clean.
+ */
+const APP_REPAIR_SYSTEM_PROMPT = `You repair EternalOS desktop apps by patching the exact source files named in the request.
+
+Hard rules:
+- Return ONLY complete patched versions of the files listed in the request — same names, full file contents, nothing else. The rest of the bundle is already valid and is kept exactly as-is.
+- Never add, rename, or drop files. If a fix seems to need a new file, restructure a listed file instead (remove the reference, inline the code, or fix the path).
+- Change only what the validation issues require; keep everything that already works.
+- The manifest permissions are DERIVED from the app specification and final — you cannot declare, add, or widen them. For permission issues, fix the code: call only the bridge APIs the derived permissions cover, or use eternal.storage (private per-app state, no permission needed).
+- No markdown fences, no placeholder stubs, no explanations — just the files.
+
+${APP_BRIDGE_API_PROMPT}
+
+${APP_RUNTIME_CONTRACT_PROMPT}`;
+
+async function generateTargetedAppRepair(
+  env: Env,
+  spec: AppSpec,
+  previousFiles: Record<string, string>,
+  failingFiles: string[],
+  issues: readonly AppValidationIssue[],
+): Promise<AppBundleInput> {
+  const fileBlocks = failingFiles
+    .map((name) => `--- ${name} (current content) ---\n${previousFiles[name]}`)
+    .join('\n\n');
+
+  const object = await generateStructuredObject(
+    env,
+    generatedAppFilesSchema,
+    APP_REPAIR_SYSTEM_PROMPT,
+    `Repair the app "${spec.name}" — it failed deterministic validation.
+
+App specification:
+${JSON.stringify(spec, null, 2)}
+
+Manifest permissions (derived from the specification by the platform — final; the patch must stay inside them):
+${JSON.stringify(derivePermissionsFromSpec(spec), null, 2)}
+
+Files to patch (current contents):
+${fileBlocks}
+
+Deterministic validation issues (every one is exact — fix each):
+${formatAppValidationIssues(issues)}
+
+Return { "files": { "<name>": "<full patched content>" } } with exactly the files listed under "Files to patch".`,
+    'Repairing app files',
+    APP_BUILD_TIMEOUT_MS.fileGeneration,
+  );
+
+  // A targeted patch may only rewrite the failing files. Anything else the
+  // model returns (a renamed file, a brand-new file) cannot be merged
+  // blindly — reject the patch and let the loop fall back to a full
+  // regeneration.
+  const patched = normalizeGeneratedFiles(object.files);
+  const requested = new Set(failingFiles);
+  const unrequested = Object.keys(patched).filter((name) => !requested.has(name));
+  if (unrequested.length > 0 || Object.keys(patched).length === 0) {
+    throw new AppValidationError([{
+      code: 'repair/invalid-patch',
+      file: unrequested[0],
+      message: unrequested.length > 0
+        ? `Targeted repair returned "${unrequested[0]}", which is not one of the failing files`
+        : 'Targeted repair returned no files',
+      hint: 'Return complete patched versions of only the failing files listed in the prompt; the rest of the bundle stays unchanged.',
+    }]);
+  }
+
+  return normalizeAppFromSpec(spec, { ...previousFiles, ...patched });
+}
+
+/**
+ * Generation + repair loop shared by the build and preview tools. The
+ * existing attempt budget is unchanged (3): the first attempt generates in
+ * full; the second attempt is a TARGETED repair pass when every issue of the
+ * first failure names a file (only the failing files plus the structured
+ * issues are fed back, and just those files are patched into the bundle);
+ * the final attempt falls back to today's full regeneration for anything a
+ * targeted patch cannot converge on.
+ */
+async function generateAppWithRepairLoop<T>(
   ctx: AppToolsContext,
   prompt: string,
-): Promise<{ appId: string; itemId: string; name: string; status: 'created'; permissions?: AppPermissions }> {
+  spec: AppSpec,
+  desktopSummary: DesktopSummary | null,
+  finalize: (app: AppBundleInput) => Promise<T>,
+  failureNoun: string,
+): Promise<{ app: AppBundleInput; result: T }> {
   let lastError = 'Unknown generation error';
-  const desktopSummary = await loadDesktopSummary(ctx);
-  const spec = await generateSpecWithRetries(ctx, prompt, desktopSummary);
+  let lastIssues: readonly AppValidationIssue[] | undefined;
+  let lastFiles: Record<string, string> | undefined;
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    let attemptFiles: Record<string, string> | undefined;
     try {
       emitStage(ctx, 'codegen');
-      const generatedApp = await generateAppFromPrompt(
-        ctx.env,
-        prompt,
-        spec,
-        desktopSummary,
-        attempt > 0 ? lastError : undefined,
-      );
-      const registered = await createAndRegisterApp(ctx, generatedApp);
-      return { ...registered, permissions: generatedApp.permissions };
+      const repairFiles = attempt === 1 ? targetedRepairFiles(lastIssues, lastFiles) : null;
+      const app = repairFiles
+        ? await generateTargetedAppRepair(ctx.env, spec, lastFiles!, repairFiles, lastIssues!)
+        : await generateAppFromPrompt(
+          ctx.env,
+          prompt,
+          spec,
+          desktopSummary,
+          attempt > 0 ? lastError : undefined,
+        );
+      attemptFiles = app.files;
+      // Pre-bundle source gate — runs with the generated files captured, so
+      // its failures can be repaired by patching the files they name.
+      validateGeneratedApp(app);
+      return { app, result: await finalize(app) };
     } catch (error) {
-      lastError = buildRepairContext(error);
+      const isBundleValidation = error instanceof AppValidationError
+        && error.issues.some((issue) => !issue.code.startsWith('repair/'));
+      if (isBundleValidation) {
+        lastError = buildRepairContext(error);
+        lastIssues = error.issues;
+        lastFiles = attemptFiles;
+      } else if (error instanceof AppValidationError && lastIssues !== undefined) {
+        // Targeted-patch protocol failure (repair/*): the underlying bundle
+        // issues stay the authoritative repair context — a bad patch says
+        // nothing about the app itself.
+      } else {
+        lastError = buildRepairContext(error);
+        lastIssues = undefined;
+        lastFiles = undefined;
+      }
       if (isCapacityExceededError(error) && attempt < 2) {
         await waitForCapacityRetry(attempt);
       }
@@ -1081,7 +1256,24 @@ async function buildAppFromPromptWithRetries(
     throw new Error('Cloudflare Workers AI is temporarily out of capacity for Kimi. Please retry in a minute.');
   }
 
-  throw new Error(`Failed to generate a working app after multiple attempts: ${lastError}`);
+  throw new Error(`Failed to generate a working ${failureNoun} after multiple attempts: ${lastError}`);
+}
+
+async function buildAppFromPromptWithRetries(
+  ctx: AppToolsContext,
+  prompt: string,
+): Promise<{ appId: string; itemId: string; name: string; status: 'created'; permissions?: AppPermissions }> {
+  const desktopSummary = await loadDesktopSummary(ctx);
+  const spec = await generateSpecWithRetries(ctx, prompt, desktopSummary);
+  const { app, result } = await generateAppWithRepairLoop(
+    ctx,
+    prompt,
+    spec,
+    desktopSummary,
+    (generated) => createAndRegisterApp(ctx, generated),
+    'app',
+  );
+  return { ...result, permissions: app.permissions };
 }
 
 async function writeAppArtifact(
@@ -1348,34 +1540,17 @@ async function buildAppPreviewFromPromptWithRetries(
   ctx: AppToolsContext,
   prompt: string,
 ): Promise<Awaited<ReturnType<typeof createAppPreview>>> {
-  let lastError = 'Unknown generation error';
   const desktopSummary = await loadDesktopSummary(ctx);
   const spec = await generateSpecWithRetries(ctx, prompt, desktopSummary);
-
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      emitStage(ctx, 'codegen');
-      const generatedApp = await generateAppFromPrompt(
-        ctx.env,
-        prompt,
-        spec,
-        desktopSummary,
-        attempt > 0 ? lastError : undefined,
-      );
-      return createAppPreview(ctx, generatedApp);
-    } catch (error) {
-      lastError = buildRepairContext(error);
-      if (isCapacityExceededError(error) && attempt < 2) {
-        await waitForCapacityRetry(attempt);
-      }
-    }
-  }
-
-  if (isCapacityExceededError(lastError)) {
-    throw new Error('Cloudflare Workers AI is temporarily out of capacity for Kimi. Please retry in a minute.');
-  }
-
-  throw new Error(`Failed to generate a working app preview after multiple attempts: ${lastError}`);
+  const { result } = await generateAppWithRepairLoop(
+    ctx,
+    prompt,
+    spec,
+    desktopSummary,
+    (generated) => createAppPreview(ctx, generated),
+    'app preview',
+  );
+  return result;
 }
 
 async function installAppPreview(

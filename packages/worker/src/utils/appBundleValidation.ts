@@ -117,7 +117,11 @@ export class AppValidationError extends Error {
   constructor(issues: readonly AppValidationIssue[], messageOverride?: string) {
     const list: readonly AppValidationIssue[] = issues.length > 0
       ? issues
-      : [{ code: 'validation/unknown', message: messageOverride ?? 'App validation failed' }];
+      : [{
+        code: 'validation/unknown',
+        message: messageOverride ?? 'App validation failed',
+        hint: 'Validation failed without reporting any structured issue. Regenerate the app from scratch; if this repeats, the validation pipeline is dropping its issues.',
+      }];
     super(messageOverride ?? buildValidationMessage(list));
     this.name = 'AppValidationError';
     this.issues = list;
@@ -1190,7 +1194,7 @@ function checkCompiledBundle(
     issues.push({
       code: 'bundle/entrypoint-missing',
       message: `The compiled app bundle is missing its entry module "${compiled.mainModule}"`,
-      hint: 'The Dynamic Worker cannot start without an entry module; rebuild the bundle.',
+      hint: 'Platform bundling failure, not an app-source problem. Regenerate (or re-deploy) the app so the bundler re-emits the entry module; editing source files cannot fix it.',
     });
     return;
   }
@@ -1205,7 +1209,7 @@ function checkCompiledBundle(
     issues.push({
       code: 'bundle/entrypoint-export-missing',
       message: `The compiled worker entrypoint "${compiled.mainModule}" does not export a default fetch handler`,
-      hint: 'The Worker Loader contract requires `export default { async fetch(request, env) { … } }`.',
+      hint: 'Platform bundling failure, not an app-source problem: the emitted entry lacks the Worker Loader contract (`export default { async fetch(request, env) { … } }`). Regenerate (or re-deploy) the app rather than editing source files.',
     });
   }
   for (const name of [...manifest.sourceFiles, manifest.runtimeAsset]) {
@@ -1214,7 +1218,7 @@ function checkCompiledBundle(
       issues.push({
         code: 'bundle/asset-not-packaged',
         message: `Source file "${name}" was not packaged into the compiled bundle`,
-        hint: 'Rebuild the bundle so every manifest-declared file is embedded as an asset.',
+        hint: 'Platform bundling failure, not an app-source problem: the bundler skipped a declared file. Regenerate (or re-deploy) the app so every declared file is re-embedded; editing source files cannot fix it.',
       });
     }
   }
