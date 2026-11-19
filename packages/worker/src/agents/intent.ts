@@ -1,0 +1,350 @@
+/**
+ * intent.ts — deterministic, single-message intent routing for Ask Eternal.
+ *
+ * The OrchestratorAgent (agents/OrchestratorAgent.ts) picks the system prompt
+ * and the tool subset it exposes from the route returned here, so this module
+ * decides what the agent is even *able* to do on each turn. It is a pure
+ * function over one user message: no LLM calls, no I/O, no shared state — the
+ * same input always yields the same route (which is what makes it testable).
+ *
+ * Routes (in the priority order they are checked):
+ *  1. `app-install-preview` — install an already-generated preview
+ *     ("install the preview", "looks great, install that preview").
+ *  2. `app-build`            — create a NEW app ("build me a todo app",
+ *                              "make a game", "I need a pomodoro app") OR
+ *                              change an EXISTING one ("edit my app", "change
+ *                              the color of my todo app", "fix it", "add dark
+ *                              mode"). Both map to the same route because the
+ *                              app-builder toolset (preview / install / build /
+ *                              update / delete + read tools) serves both; the
+ *                              split matters here only so neither class of
+ *                              phrasing falls through to chat.
+ *  3. `app-read`             — inspect the user's apps or app source ("what
+ *                              apps do I have?", "show me the source code of
+ *                              my gallery app").
+ *  4. `desktop-write`        — organize/mutate the desktop ("organize my
+ *                              desktop", "create a folder", "save a note").
+ *  5. `desktop-read`         — questions about desktop content ("what's on my
+ *                              desktop?", "find my boarding pass pdf").
+ *  6. `chat`                 — everything else, including questions about apps
+ *                              in general, negated commands, greetings, and
+ *                              any phrasing the tables below don't recognize.
+ *
+ * Documented boundaries (deliberate, not accidents):
+ *  - Single message. Context-dependent anaphora ("make it blue", "install it")
+ *    has no app noun to anchor on and lands in `chat`; the chat model will ask
+ *    or the user restates with a noun.
+ *  - "Install it" only routes to `app-install-preview` when the word "preview"
+ *    appears; we cannot see the previous turn.
+ *  - Negation is clause-scoped: a clause whose app command verb is governed by
+ *    a negator ("don't", "never", "stop", "no need", "not going to", "would
+ *    rather not", "quit") contributes no command signal. "Don't build the
+ *    timer app, build a calculator app" still routes to `app-build` because the
+ *    second clause survives.
+ *  - Questions about apps in general — capabilities ("what apps can you
+ *    build?"), recommendations ("what's the best note-taking app?") — are
+ *    chat, not app routes, unless the user also issues a command.
+ *  - Only imperative/base verb forms count as commands ("build", "make",
+ *    "change"). Past tense and progressives ("I built a game last summer",
+ *    "I'm making a game in Unity") are casual chat — they describe, they don't
+ *    request. Third-person "builds" would collide with the noun form and is
+ *    likewise out.
+ *  - Non-English messages don't match any command table and fall through to
+ *    `chat` on purpose (the chat model is still useful; the tables stay small
+ *    and auditable). Mixed-language phrasings that contain an English command
+ *    verb or noun still route normally.
+ *  - Typo tolerance is limited and explicit: repeated-letter collapsing
+ *    ("appp" → "app"), a small misspelling map ("buld" → "build",
+ *    "aplicacion" → "application"), and treating "an/the/my ap" as "app" only
+ *    when a command verb is present ("my AP homework" stays chat).
+ *
+ * To tune the router, edit the vocabulary tables below; every pattern is built
+ * from them. intent.test.mjs pins the behavior table-style — update it in the
+ * same commit as any change here.
+ */
+
+export type ChatRoute =
+  | 'chat'
+  | 'desktop-read'
+  | 'desktop-write'
+  | 'app-read'
+  | 'app-build'
+  | 'app-install-preview';
+
+export const CHAT_ROUTES: readonly ChatRoute[] = [
+  'chat',
+  'desktop-read',
+  'desktop-write',
+  'app-read',
+  'app-build',
+  'app-install-preview',
+];
+
+/* ------------------------------------------------------------------ *
+ * Vocabulary tables — the single place to tune matching.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Verbs that unambiguously command creating, mutating, installing, or removing
+ * apps. May pair with ANY app noun (strong or weak) as long as the verb or a
+ * form of address suggests a request. Morphology: base forms only.
+ */
+const HARD_APP_VERBS =
+  'build|create|make|generate|code|ship|implement|rebuild|install|uninstall|update|modify|edit|fix|delete|remove';
+
+/**
+ * Edit verbs whose signal is weaker ("add" and "change" collocate with too many
+ * non-app things — "add a note", "change my wallpaper"). They only count when
+ * an unambiguously app-shaped noun (app/application/widget) is also present,
+ * in any order: "add dark mode to my todo app", "my app's theme, change it".
+ */
+const SOFT_APP_VERBS = 'change|add|tweak|improve|rename|redesign|restyle|recolor';
+
+/**
+ * Nouns that always refer to an EternalOS app. Soft edit verbs require one of
+ * these; hard verbs accept them in any order ("my app is broken, fix it").
+ */
+const STRONG_APP_NOUNS = 'app|apps|application|applications|widget|widgets';
+
+/**
+ * Genre words that usually mean "an app" on EternalOS but can appear in casual
+ * chat ("what game should I buy my nephew?"). Hard verbs pair with them only
+ * in verb-before-noun order ("build a timer"), which keeps "what game should I
+ * make?" an app-read question rather than a build command.
+ */
+const WEAK_APP_NOUNS =
+  'game|timer|calculator|kanban|pomodoro|paint|canvas|editor|tracker|todo|todos|to-do|to do list|todo list|sticky note|sticky notes|whiteboard|notepad|notepads';
+
+/** Question/inspection words that make a mention of apps an app-read intent. */
+const APP_READ_WORDS =
+  'what|which|show|list|inspect|review|open|read|see|view|check|tell|where|how many|do i have|did i|source';
+
+/** Organize/tidy verbs for desktop writes. */
+const DESKTOP_WRITE_VERBS = 'organize|organise|group|move|sort|tidy|clean up|file away';
+
+/**
+ * Desktop-content topic words. Deliberately does NOT include "wallpaper" or
+ * appearance terms — "how do I change my wallpaper?" is a chat question.
+ */
+const DESKTOP_READ_WORDS =
+  "desktop|file|files|folder|folders|image|images|photo|photos|picture|pictures|video|videos|audio|pdf|search|find|tag|tags|ocr|upload|uploads|overview|recent|note|notes|memo|memos";
+
+/* ------------------------------------------------------------------ *
+ * Compiled patterns.
+ * ------------------------------------------------------------------ */
+
+function wordRe(words: string): RegExp {
+  return new RegExp(`\\b(?:${words})\\b`);
+}
+
+const GREETING_RE =
+  /^(?:hi|hiya|hello|hey|yo|sup|howdy|greetings|good (?:morning|afternoon|evening))(?:[!.,? ]*(?:there|you|eternal|everyone|everybody|friend|friends|buddy|pal|folks|world|again))*[!.,? ]*$/;
+
+const HARD_VERB_RE = wordRe(HARD_APP_VERBS);
+const SOFT_VERB_RE = wordRe(SOFT_APP_VERBS);
+const STRONG_NOUN_RE = wordRe(STRONG_APP_NOUNS);
+
+/** Command verb before an app noun ("build me a todo app"); strongest form. */
+const HARD_BEFORE_NOUN_RE = new RegExp(
+  `\\b(?:${HARD_APP_VERBS})\\b.{0,80}\\b(?:${STRONG_APP_NOUNS}|${WEAK_APP_NOUNS})\\b`,
+);
+
+/** App noun before a command verb — only for unambiguous nouns ("my app, fix it"). */
+const STRONG_BEFORE_HARD_RE = new RegExp(
+  `\\b(?:${STRONG_APP_NOUNS})\\b.{0,80}\\b(?:${HARD_APP_VERBS})\\b`,
+);
+
+/** "Install … preview" in either order; "uninstall" deliberately does not match. */
+const INSTALL_RE = /\binstall\w*\b/;
+const PREVIEW_RE = /\bpreview\w*\b/;
+
+/** "What apps can you build?" — a question about us, not an order. */
+const CAPABILITY_QUESTION_RE =
+  /\b(?:what|which)\b.{0,60}\b(?:can|could) you\b|\bhow (?:do|does|did|can|could) you\b|\b(?:can|could) you\b.{0,30}\b(?:build|make|create|generate|code|ship)\b.{0,30}\b(?:apps|applications|widgets|games)\b/;
+
+/** "What's the best note-taking app?" — a recommendation question, not a build order. */
+const RECOMMENDATION_QUESTION_RE =
+  /\b(?:best|good|great|cool|nice|popular|recommended|recommend|favorite|favourite)\b.{0,40}\b(?:app|apps|application|applications|widget|widgets|game|games)\b/;
+
+/** Folder creation in either order; checked before app routes so "create a folder called Games" is a desktop write. */
+const FOLDER_CREATE_RE =
+  /\b(?:create|make|add)\b.{0,60}\b(?:folder|folders)\b|\b(?:folder|folders)\b.{0,60}\b(?:create|make|new)\b/;
+
+/** Read/inspect words paired with an app noun, in either order. */
+const APP_READ_RE = new RegExp(
+  `\\b(?:${APP_READ_WORDS})\\b.{0,80}\\b(?:${STRONG_APP_NOUNS}|${WEAK_APP_NOUNS})\\b`,
+);
+const APP_NOUN_READ_RE = new RegExp(
+  `\\b(?:${STRONG_APP_NOUNS}|${WEAK_APP_NOUNS})\\b.{0,80}\\b(?:${APP_READ_WORDS})\\b`,
+);
+const APP_SOURCE_RE =
+  /\b(?:app|application)s? source\b|\bsourcecode\b.{0,80}\b(?:app|application)s?\b/;
+
+/** Desktop writes: organize/tidy verbs, folder creation, or note writing. */
+const DESKTOP_WRITE_RE = new RegExp(
+  `\\b(?:${DESKTOP_WRITE_VERBS})\\b` +
+    `|\\b(?:create|make|add)\\b.{0,60}\\b(?:folder|folders)\\b` +
+    `|\\b(?:folder|folders)\\b.{0,60}\\b(?:create|make|new)\\b` +
+    `|\\b(?:write|save|jot|draft|create|make|add|take)\\b.{0,60}\\b(?:note|notes|memo|text file)\\b`,
+);
+
+const DESKTOP_READ_RE = wordRe(DESKTOP_READ_WORDS);
+
+/** Want/need-style build requests: "I need a pomodoro app", "I'd like a notepad app". */
+const WANT_APP_RE =
+  /\b(?:want|need|wanna|looking for|could use|would like|would love|'d like|'d love)\b([^,.;]{0,25})\b(?:app|apps|application|applications|widget|widgets)\b/;
+
+/** "do I need an app for that?" — a question, not a request. */
+const DO_I_QUESTION_RE = /\b(?:do|should|must) i\b.{0,10}\b(?:need|want|get|have)\b/;
+
+/** A clause whose command verb is governed by a negator contributes no signal. */
+const NEGATED_CLAUSE_RE = new RegExp(
+  `\\b(?:do not|don'?t|dont|never|stop|no need|not going to|would rather not|quit)\\b.{0,40}\\b(?:${HARD_APP_VERBS}|${SOFT_APP_VERBS})\\b`,
+);
+
+/** Misspellings of router keywords seen in real input. */
+const TYPO_FIXES: Record<string, string> = {
+  buld: 'build',
+  bild: 'build',
+  bulld: 'build',
+  bulid: 'build',
+  buidl: 'build',
+  biuld: 'build',
+  creat: 'create',
+  aplication: 'application',
+  aplicacion: 'application',
+};
+
+const ANY_COMMAND_VERB_RE = new RegExp(`\\b(?:${HARD_APP_VERBS}|${SOFT_APP_VERBS})\\b`);
+
+/* ------------------------------------------------------------------ *
+ * Normalization.
+ * ------------------------------------------------------------------ */
+
+function normalizeText(raw: string): string {
+  let text = raw.trim().toLowerCase();
+  // Strip diacritics so "aplicación" hits the misspelling map ("créer" → "creer"
+  // is harmless — foreign verbs never match anyway).
+  text = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  // Typographic apostrophes/quotes → ASCII so "don’t" == "don't".
+  text = text.replace(/[\u2018\u2019\u02BC`´]/g, "'").replace(/[\u201C\u201D]/g, '"');
+  // Collapse 3+ repeated characters: "appp" → "app", "!!!!" → "!!".
+  text = text.replace(/(.)\1{2,}/g, '$1$1');
+  // Known misspellings of the keywords the router keys on.
+  text = text.replace(/\b[\w'-]+\b/g, (word) => TYPO_FIXES[word] ?? word);
+  // Fold "source code" into one token so the "code" BUILD verb does not fire
+  // on read requests ("show me the source code of my gallery app").
+  text = text.replace(/\bsource code\b/g, 'sourcecode');
+  // "ap" as a clipping of "app" is only trusted next to an article/possessive
+  // AND only when a command verb is present, so "my AP homework" stays chat.
+  if (ANY_COMMAND_VERB_RE.test(text)) {
+    text = text.replace(/\b((?:an?|the|my|this|that|new|his|her|our|their)\s+)ap\b/g, '$1app');
+  }
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/** Drop clauses whose command is negated: "don't build the app, explain it instead". */
+function stripNegatedClauses(text: string): string {
+  return text
+    .split(/[;,.!?]+/)
+    .filter((clause) => clause.trim().length > 0 && !NEGATED_CLAUSE_RE.test(clause))
+    .join(' ');
+}
+
+/** Want/need phrasing that is a genuine app request (not a question or musing). */
+function wantsNewApp(text: string): boolean {
+  const match = WANT_APP_RE.exec(text);
+  if (!match) return false;
+  // "I want to know/see/talk about what apps…" — mention, not request.
+  if (/\bto\b/.test(match[1])) return false;
+  // Brainstorming an idea is chat.
+  if (/\bideas?\b/.test(text)) return false;
+  // "Do I need an app for that?" is a question.
+  if (DO_I_QUESTION_RE.test(text)) return false;
+  return true;
+}
+
+/* ------------------------------------------------------------------ *
+ * The router.
+ * ------------------------------------------------------------------ */
+
+export function classifyRoute(rawText: string): ChatRoute {
+  const text = normalizeText(rawText);
+  if (!text) return 'chat';
+  // Pure greetings ask for nothing; a greeting followed by a command is NOT
+  // a greeting ("hi! build me a chess app" must reach the app rules below).
+  if (GREETING_RE.test(text)) return 'chat';
+
+  // Negated command clauses contribute nothing to any app/write route.
+  const actionText = stripNegatedClauses(text);
+
+  // 1) Install an already-generated preview. Checked first because "install"
+  //    is also a build verb ("install the app you just built").
+  if (INSTALL_RE.test(actionText) && PREVIEW_RE.test(actionText)) {
+    return 'app-install-preview';
+  }
+
+  // 2) Capability questions are chat even though they contain "build an app".
+  if (CAPABILITY_QUESTION_RE.test(actionText)) {
+    return 'chat';
+  }
+
+  const hardVerb = HARD_VERB_RE.test(actionText);
+  const softVerb = SOFT_VERB_RE.test(actionText);
+  const strongNoun = STRONG_NOUN_RE.test(actionText);
+
+  // 3) Recommendation questions are chat unless a real command is also present
+  //    ("build me the BEST todo app" still routes to app-build).
+  if (
+    !hardVerb &&
+    !(softVerb && strongNoun) &&
+    !wantsNewApp(actionText) &&
+    RECOMMENDATION_QUESTION_RE.test(actionText)
+  ) {
+    return 'chat';
+  }
+
+  // 4) Folder creation is a desktop write even when the folder NAME sounds like
+  //    an app ("create a folder called Games") — unless an actual app noun is
+  //    present ("make a folder app" is an app).
+  if (FOLDER_CREATE_RE.test(actionText) && !strongNoun) {
+    return 'desktop-write';
+  }
+
+  // 5) App create/edit commands, in decreasing strength:
+  //    "build me a todo app" (verb → noun, any noun)
+  //    "my app is broken, fix it" (strong noun → verb)
+  //    "change the color of my todo app" (soft verb + strong noun, any order)
+  //    "I need a pomodoro app" (want/need phrasing)
+  if (
+    HARD_BEFORE_NOUN_RE.test(actionText) ||
+    STRONG_BEFORE_HARD_RE.test(actionText) ||
+    (softVerb && strongNoun) ||
+    wantsNewApp(actionText)
+  ) {
+    return 'app-build';
+  }
+
+  // 6) Inspecting existing apps or app source.
+  if (
+    APP_READ_RE.test(actionText) ||
+    APP_NOUN_READ_RE.test(actionText) ||
+    APP_SOURCE_RE.test(actionText)
+  ) {
+    return 'app-read';
+  }
+
+  // 7) Desktop writes (organize, folder creation, note writing).
+  if (DESKTOP_WRITE_RE.test(actionText)) {
+    return 'desktop-write';
+  }
+
+  // 8) Desktop-content questions run on the full text (not the negation-
+  //    stripped one) so "don't delete my photos" still looks at desktop
+  //    context; the write tools are not exposed by this route either way.
+  if (DESKTOP_READ_RE.test(text)) {
+    return 'desktop-read';
+  }
+
+  return 'chat';
+}
