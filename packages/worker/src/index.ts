@@ -23,6 +23,7 @@ import { handleVisit } from './routes/visit';
 import { handleOgImage } from './routes/ogImage';
 import { trackVisitAnalytics, handleGetAnalytics } from './routes/analytics';
 import { requireAuth, authenticateAgentChatWebSocket, authenticateFileRequest, issueFileToken } from './middleware/auth';
+import { withCors, getCorsHeaders } from './middleware/http';
 import { getAgentByName } from 'agents';
 import { signChatWebSocketToken } from './utils/jwt';
 import { listDuePendingDeletions, purgeAccount } from './utils/accountPurge';
@@ -96,16 +97,6 @@ export interface Env {
 
 export { UserDesktop, RateLimiter, AuthCoordinator, BazaarCoordinator, OrchestratorAgent, EternalService };
 
-// Standard security headers applied to every response
-const SECURITY_HEADERS: Record<string, string> = {
-  'X-Content-Type-Options': 'nosniff',
-  'X-Frame-Options': 'DENY',
-  'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
-  'Referrer-Policy': 'strict-origin-when-cross-origin',
-  'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
-  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'",
-};
-
 // Short, stable hash of an app's grants object. Used to re-key the Dynamic
 // Worker isolate cache when permissions change — so revocation takes effect
 // on the next request without manually flushing anything. Not
@@ -129,64 +120,6 @@ async function hashGrants(granted: unknown): Promise<string> {
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
   return hex;
-}
-
-// Helper to add CORS + security headers to response
-function withCors(response: Response, corsHeaders: Record<string, string>): Response {
-  const newHeaders = new Headers(response.headers);
-  for (const [key, value] of Object.entries(corsHeaders)) {
-    newHeaders.set(key, value);
-  }
-  for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
-    newHeaders.set(key, value);
-  }
-  const websocket = (response as Response & { webSocket?: WebSocket }).webSocket;
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: newHeaders,
-    webSocket: websocket,
-  });
-}
-
-// Get CORS headers based on environment and request origin
-function getCorsHeaders(request: Request, env: Env): Record<string, string> {
-  const origin = request.headers.get('Origin') || '';
-  const isProduction = env.ENVIRONMENT === 'production';
-
-  // In development, allow known local origins instead of wildcard
-  if (!isProduction) {
-    const devOrigins = ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:8787', 'http://127.0.0.1:5173', 'http://127.0.0.1:5174'];
-    const isDevAllowed = !origin || devOrigins.includes(origin);
-    return {
-      'Access-Control-Allow-Origin': isDevAllowed ? (origin || '*') : '',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      'Access-Control-Allow-Credentials': 'true',
-      'Vary': 'Origin',
-    };
-  }
-
-  // In production, check against allowed origins
-  const allowedOrigins = env.ALLOWED_ORIGINS
-    ? env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
-    : [];
-
-  // Always allow the worker's own origin (for same-origin requests)
-  const requestUrl = new URL(request.url);
-  const selfOrigin = `${requestUrl.protocol}//${requestUrl.host}`;
-  allowedOrigins.push(selfOrigin);
-
-  // Check if the request origin is allowed
-  const isAllowed = allowedOrigins.includes(origin);
-
-  return {
-    'Access-Control-Allow-Origin': isAllowed ? origin : '',
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Allow-Credentials': 'true',
-    'Vary': 'Origin', // Important for caching with different origins
-  };
 }
 
 export default {
