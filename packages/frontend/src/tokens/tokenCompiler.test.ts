@@ -1,6 +1,7 @@
-import { expect, test, describe } from 'vitest';
+import { expect, test, describe, beforeAll } from 'vitest';
 import { resolveTokensFromAppearance, compileTokensToCSS } from './tokenCompiler';
 import { getContrastingTextColor, getSecondaryTextColor } from '../utils/colorUtils';
+import { registerBuiltinVariants } from '../variants/registerBuiltins';
 
 /**
  * Token compiler — the heart of the customization pipeline. These exercise the
@@ -130,5 +131,97 @@ describe('compileTokensToCSS — custom cursor image (security)', () => {
       'cursor.image.default': "/api/cursors/x.png'); body{display:none}",
     });
     expect(rules.join('\n')).not.toContain('display:none');
+  });
+});
+
+describe('compileTokensToCSS — conditional (variant-scoped) tokens', () => {
+  // Sprite/texture/gradient tokens are registered by variants (the skin
+  // system), not by TOKEN_REGISTRY. They used to be invisible to the compiler
+  // entirely — even with the token present in designTokens and the variant
+  // active, no CSS var was ever emitted. They must now compile exactly like
+  // registry tokens, but ONLY while their variant is active.
+  beforeAll(() => {
+    registerBuiltinVariants();
+  });
+
+  test('sprite frame tokens compile when the sprite chrome variant is active', () => {
+    const compiled = compileTokensToCSS(
+      {
+        'chrome.sprite.url': '/api/css-assets/u1/a1/frame.png',
+        'chrome.sprite.sliceTop': 12,
+      },
+      { 'window.chrome': 'sprite' }
+    );
+    // The URL is wrapped in url() for CSS consumption...
+    expect(compiled.cssVars.get('--eos-chrome-sprite-url')).toBe("url('/api/css-assets/u1/a1/frame.png')");
+    // ...and the 9-slice is assembled from the four edges (unset → default 20).
+    expect(compiled.cssVars.get('--eos-chrome-sprite-slice')).toBe('12 20 20 20');
+    expect(compiled.cssVars.get('--eos-chrome-sprite-border-width')).toBe('12px 20px 20px 20px');
+  });
+
+  test('sprite button images and dimensions compile under the sprite buttons variant', () => {
+    const compiled = compileTokensToCSS(
+      {
+        'buttons.sprite.close': '/api/css-assets/u1/a1/close.png',
+        'buttons.sprite.width': 18,
+      },
+      { 'window.buttons': 'sprite' }
+    );
+    expect(compiled.cssVars.get('--eos-sprite-btn-close')).toBe("url('/api/css-assets/u1/a1/close.png')");
+    expect(compiled.cssVars.get('--eos-sprite-button-width')).toBe('18px');
+  });
+
+  test('sprite title bar texture and resize handle compile under their variants', () => {
+    const titleBar = compileTokensToCSS(
+      { 'titlebar.sprite.url': '/api/css-assets/u1/a1/tb.png', 'titlebar.sprite.textColor': '#FFFFFF' },
+      { 'window.titleBar': 'sprite' }
+    );
+    expect(titleBar.cssVars.get('--eos-titlebar-sprite-url')).toBe("url('/api/css-assets/u1/a1/tb.png')");
+    expect(titleBar.cssVars.get('--eos-titlebar-sprite-text-color')).toBe('#FFFFFF');
+
+    const resize = compileTokensToCSS(
+      { 'resize.sprite.url': '/api/css-assets/u1/a1/grip.png' },
+      { 'window.resizeHandle': 'sprite' }
+    );
+    expect(resize.cssVars.get('--eos-sprite-resize-url')).toBe("url('/api/css-assets/u1/a1/grip.png')");
+  });
+
+  test('gradient title bar tokens compile under the gradient variant', () => {
+    const compiled = compileTokensToCSS(
+      { 'window.titleBar.gradientStart': '#4080C0', 'window.titleBar.gradientEnd': '#1A3050' },
+      { 'window.titleBar': 'gradient' }
+    );
+    expect(compiled.cssVars.get('--eos-titlebar-gradient-start')).toBe('#4080C0');
+    expect(compiled.cssVars.get('--eos-titlebar-gradient-end')).toBe('#1A3050');
+  });
+
+  test('conditional tokens are skipped when a different variant is active', () => {
+    const compiled = compileTokensToCSS(
+      { 'chrome.sprite.url': '/api/css-assets/u1/a1/frame.png', 'window.titleBar.gradientStart': '#4080C0' },
+      { 'window.chrome': 'beveled', 'window.titleBar': 'classic' }
+    );
+    expect(compiled.cssVars.has('--eos-chrome-sprite-url')).toBe(false);
+    expect(compiled.cssVars.has('--eos-titlebar-gradient-start')).toBe(false);
+  });
+
+  test('conditional tokens never compile when variants are unspecified', () => {
+    // No variants selected → sprite/gradient designTokens must not leak into
+    // the DOM; they only come alive with their variant.
+    const compiled = compileTokensToCSS({ 'chrome.sprite.url': '/api/css-assets/u1/a1/frame.png' });
+    expect(compiled.cssVars.has('--eos-chrome-sprite-url')).toBe(false);
+    const withEmptyMap = compileTokensToCSS({ 'chrome.sprite.url': '/api/css-assets/u1/a1/frame.png' }, {});
+    expect(withEmptyMap.cssVars.has('--eos-chrome-sprite-url')).toBe(false);
+  });
+
+  test('conditional tokens reach the compiler through resolveTokensFromAppearance', () => {
+    // Full pipeline: appearance (as persisted on the profile) → tokens → CSS.
+    const compiled = compileTokensToCSS(
+      resolveTokensFromAppearance({
+        designTokens: { 'chrome.sprite.url': '/api/css-assets/u1/a1/frame.png' },
+        variants: { 'window.chrome': 'sprite' },
+      }),
+      { 'window.chrome': 'sprite' }
+    );
+    expect(compiled.cssVars.get('--eos-chrome-sprite-url')).toBe("url('/api/css-assets/u1/a1/frame.png')");
   });
 });

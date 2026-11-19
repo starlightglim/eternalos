@@ -19,7 +19,7 @@ import {
   clearCompiledTokens,
   resolveTokensFromAppearance,
 } from '../tokens/tokenCompiler';
-import { TOKEN_REGISTRY } from '../tokens/tokenSchema';
+import { findTokenDefinition } from '../tokens/tokenSchema';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -168,13 +168,17 @@ export function applyCSSRevertProfile(profile: Record<string, unknown>): void {
  * Update a design token by its path. Routes to the correct storage location:
  * - Tokens with profileKey → flat fields on CustomAppearance
  * - Tokens without profileKey → designTokens blob
+ *
+ * Uses findTokenDefinition so variant-registered conditional tokens (the
+ * sprite/skin system — chrome.sprite.*, buttons.sprite.*, …) route through
+ * the same pipeline as registry tokens; unknown paths still no-op.
  */
 export function buildTokenUpdate(
   path: string,
   value: string | number | boolean | undefined,
   currentAppearance: CustomAppearance
 ): Partial<CustomAppearance> {
-  const token = TOKEN_REGISTRY.find((t) => t.path === path);
+  const token = findTokenDefinition(path);
   if (!token) return {};
 
   if (token.profileKey) {
@@ -199,7 +203,7 @@ export function getTokenValue(
   path: string,
   appearance: CustomAppearance
 ): string | number | boolean | undefined {
-  const token = TOKEN_REGISTRY.find((t) => t.path === path);
+  const token = findTokenDefinition(path);
   if (!token) return undefined;
 
   if (token.profileKey) {

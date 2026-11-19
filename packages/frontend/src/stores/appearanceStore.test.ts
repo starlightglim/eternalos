@@ -1,5 +1,6 @@
-import { beforeEach, expect, test, describe, vi } from 'vitest';
+import { beforeEach, beforeAll, expect, test, describe, vi } from 'vitest';
 import type { CustomAppearance } from './appearanceStore';
+import { registerBuiltinVariants } from '../variants/registerBuiltins';
 
 // appearanceStore reads localStorage at import time (loadSavedAppearance) and
 // pulls in the API client. Stub localStorage before import and mock the API so
@@ -142,6 +143,59 @@ describe('buildTokenUpdate token routing', () => {
 
   test('an unknown token path is a no-op', () => {
     expect(buildTokenUpdate('not.a.real.token', 'x', {})).toEqual({});
+  });
+});
+
+describe('conditional token routing (SpriteEditor write path)', () => {
+  // Sprite/skin tokens are registered by variants, outside TOKEN_REGISTRY.
+  // buildTokenUpdate used to look only at TOKEN_REGISTRY, so every
+  // SpriteEditor upload/remove/slice write was a silent no-op — the asset
+  // uploaded, but nothing applied, saved, or survived reload.
+  beforeAll(() => {
+    registerBuiltinVariants();
+  });
+
+  test('a sprite token write routes into the designTokens blob', () => {
+    const update = buildTokenUpdate('chrome.sprite.url', '/api/css-assets/u1/a1/frame.png', {});
+    expect(update).toEqual({ designTokens: { 'chrome.sprite.url': '/api/css-assets/u1/a1/frame.png' } });
+  });
+
+  test('sprite writes merge with — not clobber — the existing blob', () => {
+    const current: CustomAppearance = {
+      designTokens: { 'cursor.image.default': '/api/cursors/arrow.png|0|0' },
+    };
+    const update = buildTokenUpdate('buttons.sprite.close', '/api/css-assets/u1/a1/close.png', current);
+    expect(update).toEqual({
+      designTokens: {
+        'cursor.image.default': '/api/cursors/arrow.png|0|0',
+        'buttons.sprite.close': '/api/css-assets/u1/a1/close.png',
+      },
+    });
+  });
+
+  test('removing a sprite slot clears just that token', () => {
+    const current: CustomAppearance = {
+      designTokens: {
+        'chrome.sprite.url': '/api/css-assets/u1/a1/frame.png',
+        'buttons.sprite.close': '/api/css-assets/u1/a1/close.png',
+      },
+    };
+    const update = buildTokenUpdate('chrome.sprite.url', '', current);
+    expect(update).toEqual({ designTokens: { 'buttons.sprite.close': '/api/css-assets/u1/a1/close.png' } });
+  });
+
+  test('sprite slice values route through the blob and read back via getTokenValue', () => {
+    expect(buildTokenUpdate('chrome.sprite.sliceTop', 12, {})).toEqual({
+      designTokens: { 'chrome.sprite.sliceTop': 12 },
+    });
+    const appearance: CustomAppearance = { designTokens: { 'chrome.sprite.sliceTop': 12 } };
+    expect(getTokenValue('chrome.sprite.sliceTop', appearance)).toBe(12);
+    expect(getTokenValue('chrome.sprite.url', appearance)).toBeUndefined();
+  });
+
+  test('unknown paths still no-op (the conditional fallback is not a wildcard)', () => {
+    expect(buildTokenUpdate('totally.unknown.token', 'x', {})).toEqual({});
+    expect(getTokenValue('totally.unknown.token', {})).toBeUndefined();
   });
 });
 
