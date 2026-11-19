@@ -4246,4 +4246,292 @@ describe('worker integration', () => {
     const scheduledAgain = await worker.fetch(`${BASE_URL}/cdn-cgi/handler/scheduled`, { method: 'POST' });
     assert.ok(scheduledAgain.ok);
   });
+
+  // -------------------------------------------------------------------------
+  // App source revisions (design/13, first slice): every save records an
+  // immutable revision; failed saves keep the installed bundle and record
+  // diagnostics; restore appends a new revision and never widens grants.
+  // -------------------------------------------------------------------------
+
+  it('records an immutable revision per dev-deploy and restores without rewriting history', async () => {
+    const user = await signupUser();
+    const deploy = (appId, marker) => expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        ...(appId ? { appId } : {}),
+        manifest: {
+          name: 'Revision App',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+        },
+        files: {
+          'index.html': `<!doctype html><html><body><h1>${marker}</h1></body></html>`,
+          'app.js': `/* ${marker} */`,
+        },
+      }),
+    });
+    const revisionsList = () => expectOk(`/api/apps/${encodeURIComponent(appId)}/revisions`, {
+      headers: authHeaders(user.token),
+    });
+    const revisionDetail = (revisionId) => expectOk(
+      `/api/apps/${encodeURIComponent(appId)}/revisions/${encodeURIComponent(revisionId)}`,
+      { headers: authHeaders(user.token) },
+    );
+
+    const created = await deploy(null, 'rev-one');
+    const appId = created.appId;
+    assert.ok(created.revision, 'a successful create returns its revision id');
+
+    let history = await revisionsList();
+    assert.equal(history.revisions.length, 1);
+    const firstRevision = history.revisions[0];
+    assert.equal(firstRevision.kind, 'deploy');
+    assert.equal(firstRevision.author, 'human');
+    assert.equal(firstRevision.valid, true);
+    assert.equal(firstRevision.appVersion, 1);
+    assert.equal(history.currentRevision, firstRevision.id);
+    assert.equal(history.lastValidRevision, firstRevision.id);
+
+    const updated = await deploy(appId, 'rev-two');
+    assert.equal(updated.version, 2);
+    history = await revisionsList();
+    assert.deepEqual(
+      history.revisions.map((revision) => revision.appVersion),
+      [2, 1],
+      'revisions list newest-first',
+    );
+    assert.equal(history.currentRevision, updated.revision);
+    assert.equal(history.lastValidRevision, updated.revision);
+
+    // The old revision's files are intact and fetchable.
+    const firstFiles = await revisionDetail(firstRevision.id);
+    assert.match(firstFiles.files['index.html'], /rev-one/);
+    assert.deepEqual(firstFiles.revision.diagnostics, { valid: true, issues: [] });
+
+    // Restore appends: a NEW revision + a NEW release; nothing is rewritten.
+    const restored = await expectOk(
+      `/api/apps/${encodeURIComponent(appId)}/revisions/${encodeURIComponent(firstRevision.id)}/restore`,
+      { method: 'POST', headers: authHeaders(user.token) },
+    );
+    assert.equal(restored.version, 3, 'restore deploys the next release version');
+    assert.equal(restored.restoredFrom, firstRevision.id);
+    assert.notEqual(restored.revisionId, firstRevision.id);
+
+    const served = await worker.fetch(`${BASE_URL}/api/apps/${encodeURIComponent(appId)}/`);
+    assert.equal(served.status, 200);
+    assert.match(await served.text(), /rev-one/, 'the installed bundle is the restored source');
+
+    history = await revisionsList();
+    assert.equal(history.revisions.length, 3);
+    const restoreRow = history.revisions[0];
+    assert.equal(restoreRow.kind, 'restore');
+    assert.equal(restoreRow.parentRevision, firstRevision.id);
+    assert.equal(restoreRow.valid, true);
+    assert.equal(restoreRow.appVersion, 3);
+    assert.equal(history.currentRevision, restored.revisionId);
+    assert.equal(history.lastValidRevision, restored.revisionId);
+
+    // History stays immutable: the v2 revision still holds the v2 source.
+    const secondFiles = await revisionDetail(updated.revision);
+    assert.match(secondFiles.files['index.html'], /rev-two/);
+    const restoredFiles = await revisionDetail(firstRevision.id);
+    assert.match(restoredFiles.files['index.html'], /rev-one/);
+
+    const source = await expectOk(`/api/apps/${encodeURIComponent(appId)}/source`, {
+      headers: authHeaders(user.token),
+    });
+    assert.match(source.files['index.html'], /rev-one/);
+  });
+
+  it('keeps the installed bundle when a save fails and records diagnostics on the failed revision', async () => {
+    const user = await signupUser();
+    const deploy = (appId, files) => expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        ...(appId ? { appId } : {}),
+        manifest: {
+          name: 'Failed Save App',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+        },
+        files,
+      }),
+    });
+
+    const created = await deploy(null, {
+      'index.html': '<!doctype html><html><body><h1>still-installed</h1></body></html>',
+      'app.js': '/* ok */',
+    });
+    const appId = created.appId;
+    const installedRevision = created.revision;
+
+    // A rejected update: validation runs before any release write, so the
+    // installed bundle must survive — and the attempt must be recorded.
+    const rejected = await fetchJson('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        appId,
+        manifest: {
+          name: 'Failed Save App',
+          version: '2.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+        },
+        files: {
+          'index.html': '<!doctype html><html><body><script src="https://evil.example/x.js"></script></body></html>',
+          'app.js': '/* still ok */',
+        },
+      }),
+    });
+    assert.equal(rejected.response.status, 400);
+    assert.ok(Array.isArray(rejected.body.issues));
+    assert.equal(rejected.body.issues[0].code, 'source/external-script');
+    assert.ok(rejected.body.revision, 'a failed update records its revision id');
+
+    // The installed bundle and the served source are unchanged.
+    const served = await worker.fetch(`${BASE_URL}/api/apps/${encodeURIComponent(appId)}/`);
+    assert.match(await served.text(), /still-installed/);
+    const source = await expectOk(`/api/apps/${encodeURIComponent(appId)}/source`, {
+      headers: authHeaders(user.token),
+    });
+    assert.match(source.files['index.html'], /still-installed/);
+
+    const history = await expectOk(`/api/apps/${encodeURIComponent(appId)}/revisions`, {
+      headers: authHeaders(user.token),
+    });
+    assert.equal(history.revisions.length, 2, 'the failed attempt is part of the history');
+    const failed = history.revisions[0];
+    assert.equal(failed.valid, false);
+    assert.equal(failed.summary, 'Failed save — validation rejected');
+    assert.equal(history.currentRevision, rejected.body.revision);
+    assert.equal(history.lastValidRevision, installedRevision, 'the last valid pointer did not move');
+
+    const detail = await expectOk(
+      `/api/apps/${encodeURIComponent(appId)}/revisions/${encodeURIComponent(rejected.body.revision)}`,
+      { headers: authHeaders(user.token) },
+    );
+    assert.equal(detail.revision.valid, false);
+    assert.ok(detail.revision.diagnostics.issues.length >= 1);
+    assert.equal(detail.revision.diagnostics.issues[0].code, 'source/external-script');
+    assert.match(detail.files['index.html'], /evil\.example/, 'the attempted (rejected) source is recorded');
+  });
+
+  it('restore never widens grants beyond the current grant', async () => {
+    const user = await signupUser();
+    const html = (marker) => ({
+      'index.html': `<!doctype html><html><body><h1>${marker}</h1></body></html>`,
+    });
+
+    // v1 declares a narrow scope and a broad one; the user grants both.
+    const app = await expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name: 'Grant Restore App',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+          permissions: { fs: { read: ['/Gallery/**', '/**'] } },
+          rationale: 'Needs broad read.',
+        },
+        files: html('v1'),
+      }),
+    });
+    const appIdEncoded = encodeURIComponent(app.appId);
+    await expectOk(`/api/apps/${appIdEncoded}/permissions`, {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        granted: { fs: { read: ['/Gallery/**', '/**'] } },
+        broadApprovals: ['fs.read'],
+      }),
+    });
+
+    // v2 stops re-declaring the broad scope. Under dev-deploy's update rule
+    // (grants intersect with the declaration, never expand), the stored
+    // grant drops the scope that is no longer declared.
+    await expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        appId: app.appId,
+        manifest: {
+          name: 'Grant Restore App',
+          version: '2.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+          permissions: { fs: { read: ['/Gallery/**'] } },
+          rationale: 'Narrowed.',
+        },
+        files: html('v2'),
+      }),
+    });
+    const afterNarrow = await expectOk(`/api/apps/${appIdEncoded}/permissions`, {
+      headers: authHeaders(user.token),
+    });
+    assert.deepEqual(afterNarrow.granted, { fs: { read: ['/Gallery/**'] } });
+
+    // Restoring the broad v1 revision re-declares BOTH scopes, but the
+    // grant intersects with the current grant and must not re-open the
+    // broad one — restore follows the same never-expand rule as updates.
+    const restored = await expectOk(
+      `/api/apps/${appIdEncoded}/revisions/${encodeURIComponent(app.revision)}/restore`,
+      { method: 'POST', headers: authHeaders(user.token) },
+    );
+    assert.equal(restored.success, true);
+
+    const afterRestore = await expectOk(`/api/apps/${appIdEncoded}/permissions`, {
+      headers: authHeaders(user.token),
+    });
+    assert.deepEqual(afterRestore.requested.fs.read, ['/Gallery/**', '/**'],
+      'the declared set follows the restored revision');
+    assert.deepEqual(afterRestore.granted, { fs: { read: ['/Gallery/**'] } },
+      'restore must never re-grant a scope the current grant dropped');
+  });
+
+  it('gates the revision routes to the app owner and validates revision ids', async () => {
+    const owner = await signupUser();
+    const rival = await signupUser();
+    const app = await expectOk('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: authHeaders(owner.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name: 'Guarded History App',
+          version: '1.0.0',
+          windowConfig: { defaultWidth: 600, defaultHeight: 500, resizable: true },
+        },
+        files: { 'index.html': '<!doctype html><html><body>guarded</body></html>' },
+      }),
+    });
+    const appIdEncoded = encodeURIComponent(app.appId);
+    const ownerHeaders = authHeaders(owner.token);
+    const rivalHeaders = authHeaders(rival.token, JSON_HEADERS);
+
+    // Unauthenticated requests never reach the handler.
+    assert.equal((await fetchJson(`/api/apps/${appIdEncoded}/revisions`, {})).response.status, 401);
+
+    // The owner sees the history; nobody else does.
+    const ownerHistory = await expectOk(`/api/apps/${appIdEncoded}/revisions`, { headers: ownerHeaders });
+    assert.equal(ownerHistory.revisions.length, 1);
+    assert.equal((await fetchJson(`/api/apps/${appIdEncoded}/revisions`, { headers: rivalHeaders })).response.status, 403);
+    assert.equal((await fetchJson(`/api/apps/${appIdEncoded}/revisions/${encodeURIComponent(app.revision)}`, { headers: rivalHeaders })).response.status, 403);
+    assert.equal((await fetchJson(`/api/apps/${appIdEncoded}/revisions/${encodeURIComponent(app.revision)}/restore`, { method: 'POST', headers: rivalHeaders })).response.status, 403);
+
+    // Unknown app → 404 (not 403: existence is not leaked to a stranger).
+    assert.equal((await fetchJson('/api/apps/missing-app/revisions', { headers: ownerHeaders })).response.status, 404);
+
+    // Unknown but well-formed revision → 404; malformed revision id → 400.
+    assert.equal((await fetchJson(`/api/apps/${appIdEncoded}/revisions/1770000000000-zzzzzzzz`, { headers: ownerHeaders })).response.status, 404);
+    const malformed = await fetchJson(`/api/apps/${appIdEncoded}/revisions/${encodeURIComponent('../../v1')}`, { headers: ownerHeaders });
+    assert.equal(malformed.response.status, 400);
+
+    // The owner's own restore is allowed (positive control).
+    const restored = await expectOk(
+      `/api/apps/${appIdEncoded}/revisions/${encodeURIComponent(app.revision)}/restore`,
+      { method: 'POST', headers: ownerHeaders },
+    );
+    assert.equal(restored.restoredFrom, app.revision);
+  });
 });
