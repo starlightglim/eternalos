@@ -11,6 +11,19 @@ import { TOKEN_REGISTRY, getAllCSSVars, type DerivedTransform } from './tokenSch
 
 /** Resolve a relative /api/ path to a full URL using the configured API base */
 const API_BASE = import.meta.env.VITE_API_URL || '';
+/**
+ * The configured API's own origin (from VITE_API_URL), or null when unset —
+ * a same-origin deployment. Used to decide which absolute URLs count as
+ * first-party; null means "unknown", so only relative /api/... paths pass.
+ */
+const API_ORIGIN: string | null = (() => {
+  if (!API_BASE) return null;
+  try {
+    return new URL(API_BASE).origin;
+  } catch {
+    return null;
+  }
+})();
 function resolveAssetUrl(url: string): string {
   if (!API_BASE || url.startsWith('http://') || url.startsWith('https://')) return url;
   if (url.startsWith('/api/')) return `${API_BASE}${url}`;
@@ -19,8 +32,8 @@ function resolveAssetUrl(url: string): string {
 
 /**
  * First-party asset path allowlist for designToken URL values (cursor images,
- * sprite URLs, etc.). Must mirror the server-side `tokenAllowedUrlPrefixes`
- * check in `UserDesktop.updateProfile`.
+ * sprite URLs, etc.). Must mirror the server-side `FIRST_PARTY_ASSET_PREFIXES`
+ * check in `UserDesktop.updateProfile` / utils/sanitize.ts.
  *
  * SECURITY: returning `false` prevents the caller from emitting a CSS rule
  * that would cause the browser to fetch an attacker-controlled cross-origin
@@ -35,18 +48,104 @@ const TOKEN_ASSET_PATH_PREFIXES = [
   '/api/cursors/',
   '/api/bazaar/assets/',
 ];
-function isFirstPartyAssetUrl(rawUrl: string): boolean {
-  if (!rawUrl) return false;
-  let pathname: string;
+
+/** decodeURIComponent that keeps the input on malformed percent-encoding. */
+function decodeLoosely(value: string): string {
   try {
-    // URL parsing normalizes percent-encoded traversal. The base ensures
-    // relative `/api/...` paths resolve deterministically.
-    pathname = new URL(rawUrl, 'http://localhost').pathname;
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * True only for a first-party asset URL: a relative site-absolute
+ * `/api/...` path, or an absolute http(s) URL whose origin equals the
+ * configured API origin (CursorEditor legitimately stores those).
+ *
+ * SECURITY: the old check compared only `new URL(x, 'http://localhost')`'s
+ * *pathname* against the allowlist, so a cross-origin URL with an
+ * allowlisted-looking path (https://evil.example/api/cursors/beacon.png)
+ * passed — and a stored `cursor.image.*` would be fetched in every
+ * visitor's browser. Origin equality is now authoritative, and
+ * protocol-relative (`//evil`), backslash, userinfo (`https://api@evil`),
+ * percent-encoded, path-traversal, and `data:`/`javascript:` variants are
+ * all rejected.
+ *
+ * Exported for direct unit testing; the compiler path calls it with the
+ * module's configured API origin.
+ */
+export function isFirstPartyAssetUrl(rawUrl: string, apiOrigin: string | null = API_ORIGIN): boolean {
+  if (!rawUrl || typeof rawUrl !== 'string') return false;
+  const raw = rawUrl.trim();
+  if (!raw) return false;
+
+  // Backslashes and control characters are never legitimate in a stored
+  // asset URL. Browsers treat "\" as "/" inside special URLs
+  // (https:\evil.example parses as the host evil.example) and strip
+  // TAB/LF/CR before parsing, so both can smuggle a different URL past
+  // string checks — reject instead of trying to out-parse them. \p{Cc}
+  // covers C0 controls (U+0000–U+001F) and DEL/C1 (U+007F–U+009F).
+  if (raw.includes('\\') || /\p{Cc}/u.test(raw)) return false;
+
+  // Protocol-relative URLs resolve against the page's scheme with a
+  // cross-origin authority; they are never first-party.
+  if (raw.startsWith('//')) return false;
+
+  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw);
+
+  if (hasScheme) {
+    // Absolute URL: scheme, origin, and path must all check out.
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      return false;
+    }
+    // data:, javascript:, vbscript:, file:, and every other non-http(s)
+    // scheme is rejected here.
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    // No userinfo: "https://api@evil.example" has origin https://evil.example
+    // (caught by the origin check), but "https://user@api.example/…" would
+    // pass it — and no stored asset URL ever needs credentials.
+    if (parsed.username !== '' || parsed.password !== '') return false;
+    // The URL must point at the API's own origin; without a configured
+    // origin, or with an unparseable one, absolute URLs are rejected (fail
+    // closed).
+    if (!apiOrigin) return false;
+    let expectedOrigin: string;
+    try {
+      expectedOrigin = new URL(apiOrigin).origin;
+    } catch {
+      return false;
+    }
+    if (parsed.origin !== expectedOrigin) return false;
+    // Still an allowlisted first-party route…
+    if (!TOKEN_ASSET_PATH_PREFIXES.some((prefix) => parsed.pathname.startsWith(prefix))) {
+      return false;
+    }
+    // …and the decoded path must not smuggle traversal.
+    return !decodeLoosely(parsed.pathname).includes('..');
+  }
+
+  // Relative reference: must be a site-absolute path (leading "/") onto an
+  // allowlisted route. Checked on the RAW value so percent-decoding cannot
+  // change the shape afterwards ("%2F%2Fevil.example/…" stays a path).
+  if (!TOKEN_ASSET_PATH_PREFIXES.some((prefix) => raw.startsWith(prefix))) return false;
+
+  // Decode (falling back to the raw value when it isn't valid percent-
+  // encoding, e.g. a literal "%" in a filename) and re-verify the normalized
+  // form: no traversal, and the parsed path stays on an allowlisted route.
+  const decoded = decodeLoosely(raw);
+  if (decoded.includes('..')) return false;
+  let normalized: URL;
+  try {
+    normalized = new URL(decoded, 'http://internal.invalid');
   } catch {
     return false;
   }
-  if (pathname.includes('..')) return false;
-  return TOKEN_ASSET_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+  if (normalized.host !== 'internal.invalid') return false;
+  return TOKEN_ASSET_PATH_PREFIXES.some((prefix) => normalized.pathname.startsWith(prefix));
 }
 
 // ---------------------------------------------------------------------------
