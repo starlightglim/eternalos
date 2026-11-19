@@ -45,6 +45,8 @@ function kindLabel(kind: AppRevisionSummary['kind']): string {
       return 'Deploy';
     case 'restore':
       return 'Restore';
+    case 'rollback':
+      return 'Rollback';
     case 'backfill':
       return 'Imported';
   }

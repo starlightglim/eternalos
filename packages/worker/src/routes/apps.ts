@@ -1127,9 +1127,16 @@ export async function handleAppRollback(
   auth: AuthContext,
   appId: string,
 ): Promise<Response> {
-  const appMeta = await env.DESKTOP_KV.get<AppRegistryMetadata>(`app:${appId}`, 'json');
+  let appMeta = await env.DESKTOP_KV.get<AppRegistryMetadata>(`app:${appId}`, 'json');
   if (!appMeta) return Response.json({ error: 'App not found' }, { status: 404 });
   if (appMeta.uid !== auth.uid) return Response.json({ error: 'Not authorized' }, { status: 403 });
+
+  // Lazy migration: apps deployed before revisions existed get their current
+  // source snapshotted as revision #0 on this first touch (same as the
+  // dev-deploy update flow), so the rollback below appends to a real history
+  // instead of starting one. Re-read so the record carries the pointers.
+  await ensureRevisionBaseline(env, auth.uid, appId, appMeta);
+  appMeta = (await env.DESKTOP_KV.get<AppRegistryMetadata>(`app:${appId}`, 'json')) ?? appMeta;
 
   let body: { version?: number };
   try {
@@ -1150,6 +1157,14 @@ export async function handleAppRollback(
   const bundle = await env.ETERNALOS_FILES.get(`${release.r2Prefix}/bundle.json`);
   if (!bundle) return Response.json({ error: 'Release bundle not found' }, { status: 409 });
 
+  // The rollback revision snapshots the release's saved source, so it needs
+  // the same source.json the release writes always carry.
+  const sourceObj = await env.ETERNALOS_FILES.get(`${release.r2Prefix}/source.json`);
+  const files = sourceObj
+    ? await sourceObj.json<Record<string, string>>().catch(() => null)
+    : null;
+  if (!files) return Response.json({ error: 'Release source not found' }, { status: 409 });
+
   const doId = env.USER_DESKTOP.idFromName(auth.uid);
   const stub = env.USER_DESKTOP.get(doId);
   const itemsResponse = await stub.fetch(new Request('http://internal/items'));
@@ -1162,11 +1177,40 @@ export async function handleAppRollback(
   const nextGranted = release.permissions
     ? intersectGranted(release.permissions, appMeta.granted ?? {})
     : (appMeta.granted ?? {});
+  // The rollback appends a revision (kind 'rollback') so the registry's
+  // revision pointers can no longer disagree with the installed release:
+  // the release being reinstated was validated when it was deployed, so
+  // the revision is valid and both pointers move to it. Its parent is the
+  // revision the app rolled back FROM — the registry's current_revision at
+  // rollback time (the rolled-back-to side is a release, recorded as
+  // appVersion). Install = freeze a validated revision.
+  const rollbackRevision = await writeAppRevision(env, auth.uid, appId, {
+    kind: 'rollback',
+    author: 'human',
+    valid: true,
+    files,
+    name: release.name,
+    description: release.description,
+    permissions: release.permissions,
+    rationale: release.rationale,
+    ...(appItem.appManifest.windowConfig ? {
+      windowConfig: {
+        defaultWidth: appItem.appManifest.windowConfig.defaultWidth,
+        defaultHeight: appItem.appManifest.windowConfig.defaultHeight,
+        resizable: appItem.appManifest.windowConfig.resizable !== false,
+      },
+    } : {}),
+    appVersion: release.version,
+    parentRevision: appMeta.current_revision,
+    summary: `Rolled back to v${release.version}`,
+  });
   const nextMeta: AppRegistryMetadata = {
     ...appMeta,
     version: release.version,
     r2Prefix: release.r2Prefix,
     granted: nextGranted,
+    current_revision: rollbackRevision.revisionId,
+    last_valid_revision: rollbackRevision.revisionId,
   };
   await env.DESKTOP_KV.put(`app:${appId}`, JSON.stringify(nextMeta));
 
@@ -1197,8 +1241,16 @@ export async function handleAppRollback(
 
   if (!updateResponse.ok) {
     await env.DESKTOP_KV.put(`app:${appId}`, JSON.stringify(previousMeta));
+    // Infra failure mid-flight: the revision never became a rollback.
+    await Promise.allSettled(rollbackRevision.keys.map((key) => env.ETERNALOS_FILES.delete(key)));
     return Response.json({ error: 'Failed to update app desktop item' }, { status: 500 });
   }
+
+  // Cap the revision history with the new revision pinned (same as
+  // dev-deploy).
+  await pruneAppRevisions(env, auth.uid, appId, new Set([rollbackRevision.revisionId])).catch((error) => {
+    console.error('App revision cleanup failed:', error);
+  });
 
   return Response.json({ success: true, version: release.version, appId });
 }
