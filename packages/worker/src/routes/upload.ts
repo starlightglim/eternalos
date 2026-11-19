@@ -10,6 +10,7 @@
 import { fileTypeFromBuffer } from 'file-type';
 import type { Env } from '../index';
 import type { AuthContext } from '../middleware/auth';
+import { acquireAiRequest } from '../middleware/aiUsage';
 import type { DesktopItem, ImageAnalysisMetadata } from '../types';
 import { sanitizeFilename, sanitizeText } from '../utils/sanitize';
 
@@ -955,6 +956,28 @@ export async function handleAnalyzeImageItem(
     }
 
     const fileBuffer = await object.arrayBuffer();
+
+    // Per-account daily AI budget (see middleware/aiUsage.ts). Charged only
+    // when the request is valid and analysis is actually about to start, so
+    // invalid-item requests stay free; an exhausted budget answers a clear
+    // 429 with a friendly message instead of kicking off provider work.
+    try {
+      const decision = await acquireAiRequest(env, auth.uid, { slot: false });
+      if (!decision.allowed) {
+        const headers: Record<string, string> = {
+          'Retry-After': String(decision.retryAfterSeconds),
+        };
+        return Response.json({ error: decision.message }, { status: 429, headers });
+      }
+    } catch (error) {
+      // Fail closed on a guard outage, like the per-IP limiter.
+      console.error('AI usage guard unavailable for image analysis:', error);
+      return Response.json(
+        { error: 'AI usage could not be verified, so analysis is unavailable right now. Please try again shortly.' },
+        { status: 503 },
+      );
+    }
+
     await patchItemImageAnalysis(stub, item.id, { status: 'pending' });
     ctx.waitUntil(analyzeUploadedImage(env, stub, item.id, item.mimeType, fileBuffer));
 
