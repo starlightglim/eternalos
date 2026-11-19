@@ -22,6 +22,13 @@ import {
   type AppValidationIssue,
 } from '../../utils/appBundleValidation';
 import { buildTodoTemplate } from './appTemplates';
+import {
+  APP_SPEC_SYSTEM_PROMPT,
+  appSpecSchema,
+  derivePermissionsFromSpec,
+  validateAppSpec,
+  type AppSpec,
+} from './appSpec';
 
 interface AppToolsContext {
   env: Env;
@@ -157,40 +164,12 @@ const permissionsSchema = z.object({
   }).optional(),
 }).optional();
 
-const generatedAppSchema = z.object({
-  name: z.string().min(1).max(80),
-  description: z.string().max(500).default(''),
-  width: z.number().int().min(360).max(1600).default(720),
-  height: z.number().int().min(320).max(1200).default(560),
-  files: z.record(z.string()).refine(
-    (files) => Object.keys(files).length > 0,
-    'At least one source file is required',
-  ),
-  permissions: permissionsSchema,
-  rationale: z.string().max(500).optional(),
-});
-
-const appSpecSchema = z.object({
-  name: z.string().min(1).max(80),
-  description: z.string().max(500).default(''),
-  kind: z.enum(['viewer', 'editor', 'utility', 'dashboard', 'game', 'other']).default('other'),
-  goals: z.array(z.string().min(1).max(200)).max(8).default([]),
-  dataDependencies: z.array(z.enum(['images', 'audio', 'video', 'text', 'profile', 'none'])).max(6).default(['none']),
-  width: z.number().int().min(360).max(1600).default(720),
-  height: z.number().int().min(320).max(1200).default(560),
-  permissions: permissionsSchema,
-  rationale: z.string().max(500).optional(),
-  acceptance: z.array(z.string().min(1).max(200)).max(8).default([]),
-});
-
 const generatedAppFilesSchema = z.object({
   files: z.record(z.string()).refine(
     (files) => Object.keys(files).length > 0,
     'At least one source file is required',
   ),
 });
-
-type AppSpec = z.infer<typeof appSpecSchema>;
 
 const APP_BUILD_TIMEOUT_MS = {
   desktopSummary: 5_000,
@@ -589,25 +568,6 @@ export function createAppWorkspace(files: Record<string, string>): AppWorkspace 
   };
 }
 
-function normalizeGeneratedApp(input: z.infer<typeof generatedAppSchema>): AppBundleInput {
-  const files = Object.fromEntries(
-    Object.entries(input.files)
-      .map(([name, content]) => [name.replace(/^\/+/, '').trim(), String(content)] as const)
-      .filter(([name, content]) => name.length > 0 && content.length > 0),
-  );
-  createAppWorkspace(files);
-
-  return {
-    name: input.name.trim() || 'Untitled App',
-    description: input.description.trim(),
-    width: Math.min(1600, Math.max(360, input.width)),
-    height: Math.min(1200, Math.max(320, input.height)),
-    files,
-    permissions: input.permissions,
-    rationale: input.rationale?.trim() || undefined,
-  };
-}
-
 function normalizeGeneratedFiles(files: Record<string, string>): Record<string, string> {
   return Object.fromEntries(
     Object.entries(files)
@@ -616,17 +576,23 @@ function normalizeGeneratedFiles(files: Record<string, string>): Record<string, 
   );
 }
 
+/**
+ * Assemble the app the manifest will record from the validated spec and the
+ * generated files. The manifest permissions are DERIVED from the spec here —
+ * the file generator does not declare any — so the permissions the bundle
+ * gates enforce are by construction the ones the spec planned.
+ */
 function normalizeAppFromSpec(spec: AppSpec, files: Record<string, string>): AppBundleInput {
   const normalizedFiles = normalizeGeneratedFiles(files);
   createAppWorkspace(normalizedFiles);
 
   return {
     name: spec.name.trim() || 'Untitled App',
-    description: spec.description.trim(),
+    description: spec.purpose.trim(),
     width: Math.min(1600, Math.max(360, spec.width)),
     height: Math.min(1200, Math.max(320, spec.height)),
     files: normalizedFiles,
-    permissions: spec.permissions,
+    permissions: derivePermissionsFromSpec(spec),
     rationale: spec.rationale?.trim() || undefined,
   };
 }
@@ -873,37 +839,86 @@ async function loadDesktopSummary(ctx: AppToolsContext): Promise<DesktopSummary 
   }
 }
 
-async function generateAppSpec(
+/**
+ * Explicit spec stage ahead of file generation (CORE-ROADMAP Workstream 3,
+ * Phase A): ask the build model for a typed AppSpec from the user's prompt
+ * BEFORE any file is written, then reject it deterministically when it
+ * declares anything the platform cannot derive permissions from. Validation
+ * failures throw AppValidationError so the repair loop can feed the exact
+ * issue codes back into a spec regeneration prompt.
+ */
+async function buildSpecFromPrompt(
   env: Env,
   prompt: string,
   desktopSummary: DesktopSummary | null,
+  repairContext?: string,
 ): Promise<AppSpec> {
   const contextBlock = desktopSummary
     ? `User desktop summary:
 ${JSON.stringify(desktopSummary, null, 2)}`
     : 'Desktop summary not available.';
 
-  return generateStructuredObject(
+  const repairBlock = repairContext
+    ? `
+
+A previous specification attempt was rejected by deterministic validation. Every problem below is exact — fix each one:
+${repairContext}`
+    : '';
+
+  const spec = await generateStructuredObject(
     env,
     appSpecSchema,
-    `You design app specifications for EternalOS before code generation.
-
-Your job:
-- translate a natural-language app request into a compact product spec
-- request the narrowest permissions that still let the app work
-- prefer mime-type permissions over full-path or full-desktop permissions
-- if the app does not need desktop data, omit permissions entirely
-- if broad permissions are required, include a short rationale
-- produce a realistic default window size
-- write concrete acceptance bullets that can be validated later`,
+    APP_SPEC_SYSTEM_PROMPT,
     `Create an app specification for this request:
 
 ${prompt}
 
-${contextBlock}`,
+${contextBlock}${repairBlock}`,
     'Generating app specification',
     APP_BUILD_TIMEOUT_MS.specGeneration,
   );
+
+  const issues = validateAppSpec(spec);
+  if (issues.length > 0) {
+    throw new AppValidationError(issues);
+  }
+  return spec;
+}
+
+/**
+ * Spec stage wired to the existing repair loop: a deterministic spec
+ * rejection regenerates with the structured issue codes in the prompt (no
+ * delay — these are model-fixable), a capacity error waits and retries, and
+ * anything else propagates immediately. The spec must be valid before file
+ * generation starts, so the permissions derived from it are exactly the ones
+ * the generated files are held to.
+ */
+async function generateSpecWithRetries(
+  ctx: AppToolsContext,
+  prompt: string,
+  desktopSummary: DesktopSummary | null,
+): Promise<AppSpec> {
+  let lastError = 'Unknown generation error';
+  let repairContext: string | undefined;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      emitStage(ctx, 'spec');
+      return await buildSpecFromPrompt(ctx.env, prompt, desktopSummary, repairContext);
+    } catch (error) {
+      if (error instanceof AppValidationError) {
+        lastError = repairContext = formatAppValidationIssues(error.issues);
+        continue;
+      }
+      lastError = error instanceof Error ? error.message : String(error);
+      if (!isCapacityExceededError(error) || attempt === 2) {
+        throw error;
+      }
+      await waitForCapacityRetry(attempt);
+    }
+  }
+
+  throw new Error(`Failed to generate a valid app specification: ${lastError}`);
 }
 
 async function generateAppFromPrompt(
@@ -921,7 +936,7 @@ Return the corrected, complete app bundle. Keep everything that was already vali
     : 'This is the first generation attempt.';
 
   const contextBlock = desktopSummary
-    ? `User's desktop summary (use this to pick sensible defaults, scope permissions, and make the app feel personal — but only request permissions you will actually use):
+    ? `User's desktop summary (use this to pick sensible defaults and make the app feel personal — but only call the bridge APIs the derived permissions cover):
 ${JSON.stringify(desktopSummary, null, 2)}`
     : 'Desktop summary not available; design the app as a general-purpose starter.';
 
@@ -932,8 +947,8 @@ ${JSON.stringify(desktopSummary, null, 2)}`
 
 Apps run in a sandboxed iframe. Direct browser network access is blocked by CSP;
 the platform injects a window.eternal bridge that gives apps access to the
-user's desktop or an allowlisted network proxy if (and only if) they declare
-the right permissions. Always prefer window.eternal APIs over asking the user
+user's desktop or an allowlisted network proxy if (and only if) the app's
+manifest grants it. Always prefer window.eternal APIs over asking the user
 to paste data.
 
 Available in window.eternal (platform-injected — do not re-implement):
@@ -953,15 +968,24 @@ Available in window.eternal (platform-injected — do not re-implement):
 
 Item shape: { id, name, type, path, mimeType?, fileSize?, updatedAt, isPublic, caption?, tags?, dominantColors?, url? }
 
-Permissions — declare what you use, nothing more:
-  fs.read: path globs — ['**'], ['/Photos/**'], ['/Notes/*.md']
-  fs.write / fs.delete: path globs for mutations
-  fs.mimeTypes: ['image/*'], ['audio/*'], ['video/*'], ['text/*'], ['application/pdf']
-  profile.read: subset of ['username', 'displayName', 'bio', 'avatar']
-  network.outbound: host patterns such as ['api.example.com', '*.example.com']
-  ipc.listen / ipc.emit: topic names or topic prefixes such as ['music.now_playing']
-
-If the app doesn't need desktop data, omit permissions entirely and it runs hermetic.
+Permissions — DERIVED from the app specification by the platform, not declared by you:
+  The manifest permissions supplied with the prompt are final. Do not add,
+  remove, or re-declare permissions, and do not return a permissions field —
+  it is ignored. Use ONLY the bridge APIs the derived permissions cover:
+  - eternal.fs.list/read/readText/readJson/urlFor require derived fs
+    permissions; list with a path inside a derived fs.read glob or with a
+    derived fs.mimeTypes type, otherwise the call silently returns nothing
+  - eternal.fs.write/patch require derived fs.write: write only to paths
+    inside a derived fs.write glob, otherwise the write is rejected with 403
+  - eternal.fs.delete requires derived fs.delete
+  - eternal.profile.get requires derived profile.read fields
+  - eternal.fetch requires the URL's host to be in derived network.outbound
+  - eternal.ipc.emit/on require the topic in derived ipc.emit/listen
+  - eternal.storage.get/set/list/delete need no permission (private per-app)
+  Without derived fs write/delete scopes, do not write or delete desktop
+  files — persist state with eternal.storage instead. If the derived
+  permissions are empty, the app runs hermetic: use only plain variables and
+  eternal.storage.
 
 Rules for files:
 - Return a COMPLETE app bundle: at minimum index.html, styles.css, app.js
@@ -970,16 +994,15 @@ Rules for files:
 - Reference local assets with relative paths: ./styles.css, ./app.js
 - Use standard browser APIs and window.eternal only — no npm packages
 - Output production-ready HTML/CSS/JS. No markdown fences, no placeholder "// TODO" stubs
-- Handle the empty case gracefully: eternal.fs.list() returns [] until the user grants permission
+- Handle the empty case gracefully: eternal.fs.list() returns [] until the user grants permission, and every data-driven screen must implement the empty state its specification declares
 - Wrap fetches in try/catch so a permission denial or empty desktop doesn't crash the UI
-- Match the supplied app specification exactly for metadata and permissions
+- Match the supplied app specification exactly for name, purpose, screens, and window size
 
 Runtime sandbox contract (violations are rejected by deterministic validation before install):
 - The app runs in a sandboxed iframe with an opaque origin. localStorage, sessionStorage, document.cookie, and indexedDB all throw SecurityError. Use window.eternal.storage.get/set/list/delete for persistent state, and plain variables for the rest.
 - geolocation, camera/microphone (getUserMedia), and Web Workers/service workers are unavailable — there is no bridge alternative; design around them.
-- Direct fetch/XHR/WebSocket/EventSource to absolute external URLs is blocked by the CSP. For external data, declare network.outbound and call window.eternal.fetch(url) (the allowlisted proxy). For bundled data, fetch a relative path like './data.json'.
+- Direct fetch/XHR/WebSocket/EventSource to absolute external URLs is blocked by the CSP. For external data, call window.eternal.fetch(url) with a host in the derived network.outbound list (the allowlisted proxy). For bundled data, fetch a relative path like './data.json'.
 - Only the window.eternal APIs listed above exist. Calling any other namespace or method (e.g. eternal.fs.save, eternal.ai.chat) throws at runtime.
-- eternal.fs.list({ path }) must be inside a glob you declare under fs.read (or covered by fs.mimeTypes) — otherwise it silently returns nothing. Same for fs.write paths under fs.write.
 - eternal.fs.urlFor(id) is asynchronous in installed apps. Always capture it with await first (const src = await eternal.fs.urlFor(id); img.src = src). Calling it without awaiting — or interpolating its result into a string or template literal — produces "[object Promise]", not a URL.
 - CSS url() and HTML src/href references must point at files included in the bundle.
 - import statements must reference bundled local files ('./utils.js') and names those files actually export; bare specifiers like 'lodash' cannot resolve — there is no package manager.`,
@@ -989,6 +1012,9 @@ ${prompt}
 
 App specification:
 ${JSON.stringify(spec, null, 2)}
+
+Manifest permissions (derived from the specification by the platform — final; use only bridge APIs these cover):
+${JSON.stringify(derivePermissionsFromSpec(spec), null, 2)}
 
 ${contextBlock}
 
@@ -1030,25 +1056,7 @@ async function buildAppFromPromptWithRetries(
 ): Promise<{ appId: string; itemId: string; name: string; status: 'created'; permissions?: AppPermissions }> {
   let lastError = 'Unknown generation error';
   const desktopSummary = await loadDesktopSummary(ctx);
-  let spec: AppSpec | null = null;
-
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      emitStage(ctx, 'spec');
-      spec = await generateAppSpec(ctx.env, prompt, desktopSummary);
-      break;
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-      if (!isCapacityExceededError(error) || attempt === 2) {
-        throw error;
-      }
-      await waitForCapacityRetry(attempt);
-    }
-  }
-
-  if (!spec) {
-    throw new Error('Failed to generate app specification');
-  }
+  const spec = await generateSpecWithRetries(ctx, prompt, desktopSummary);
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
@@ -1343,25 +1351,7 @@ async function buildAppPreviewFromPromptWithRetries(
 ): Promise<Awaited<ReturnType<typeof createAppPreview>>> {
   let lastError = 'Unknown generation error';
   const desktopSummary = await loadDesktopSummary(ctx);
-  let spec: AppSpec | null = null;
-
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      emitStage(ctx, 'spec');
-      spec = await generateAppSpec(ctx.env, prompt, desktopSummary);
-      break;
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-      if (!isCapacityExceededError(error) || attempt === 2) {
-        throw error;
-      }
-      await waitForCapacityRetry(attempt);
-    }
-  }
-
-  if (!spec) {
-    throw new Error('Failed to generate app specification');
-  }
+  const spec = await generateSpecWithRetries(ctx, prompt, desktopSummary);
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {

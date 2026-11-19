@@ -40,6 +40,11 @@ const { OrchestratorAgent } = await import('../src/agents/OrchestratorAgent.ts')
 const { createDesktopTools } = await import('../src/agents/tools/desktopTools.ts');
 const { createMemoryTools } = await import('../src/agents/tools/memoryTools.ts');
 const { createAppTools, initAppRegistry } = await import('../src/agents/tools/appTools.ts');
+const {
+  appSpecSchema,
+  derivePermissionsFromSpec,
+  validateAppSpec,
+} = await import('../src/agents/tools/appSpec.ts');
 const { AIChatAgent } = await import('@cloudflare/ai-chat');
 
 const UID = 'user-abc123';
@@ -954,6 +959,194 @@ describe('memoryTools', () => {
 });
 
 // ---------------------------------------------------------------------------
+// appSpec — deterministic spec validation and spec -> permission derivation
+// ---------------------------------------------------------------------------
+
+describe('appSpec', () => {
+  /** A minimal valid spec; overrides replace whole sections. */
+  const spec = (overrides = {}) => appSpecSchema.parse({
+    name: 'Photo Grid',
+    purpose: "Shows the user's photos as a scrollable grid.",
+    screens: [
+      {
+        name: 'Grid',
+        summary: 'All photos, newest first.',
+        emptyState: 'A hint to upload photos when none exist yet.',
+      },
+    ],
+    dataReads: [{ kind: 'fs', mimeTypes: ['image/*'] }],
+    ...overrides,
+  });
+
+  it('derivePermissionsFromSpec maps every declaration to its manifest permission', () => {
+    const permissions = derivePermissionsFromSpec(spec({
+      dataReads: [
+        { kind: 'fs', mimeTypes: ['image/*'], paths: ['/Photos/**'] },
+        { kind: 'fs', mimeTypes: ['image/*'] }, // duplicate — deduped
+        { kind: 'fs', paths: ['*.jpg'] },
+      ],
+      storageKeys: ['photogrid.layout'],
+      networkDomains: ['api.example.com', '*.cdn.example.net'],
+      profileFields: ['displayName', 'displayName'],
+      ipcTopics: { emit: ['photogrid.opened'], listen: ['music.now_playing'] },
+    }));
+
+    assert.deepEqual(permissions, {
+      fs: { read: ['/Photos/**', '*.jpg'], mimeTypes: ['image/*'] },
+      profile: { read: ['displayName'] },
+      network: { outbound: ['api.example.com', '*.cdn.example.net'] },
+      ipc: { emit: ['photogrid.opened'], listen: ['music.now_playing'] },
+    });
+    // eternal.storage is private per-app sandboxed state — it implies no
+    // permission, so only the four permission kinds appear.
+    assert.deepEqual(Object.keys(permissions), ['fs', 'profile', 'network', 'ipc']);
+  });
+
+  it('derivePermissionsFromSpec is hermetic for a spec without declarations', () => {
+    assert.deepEqual(derivePermissionsFromSpec(spec({ dataReads: [] })), {});
+  });
+
+  it('derivePermissionsFromSpec skips unknown kinds (validateAppSpec rejects them first)', () => {
+    const permissions = derivePermissionsFromSpec(spec({
+      dataReads: [{ kind: 'camera' }],
+    }));
+    assert.deepEqual(permissions, {});
+  });
+
+  it('derivePermissionsFromSpec maps declared writes to the manifest fs write/delete shape', () => {
+    const permissions = derivePermissionsFromSpec(spec({
+      dataReads: [],
+      dataWrites: [{
+        kind: 'fs',
+        paths: ['/Notes/**', '/Journal/*.md', '/Notes/**'], // duplicate — deduped
+        deletePaths: ['/Notes/**'],
+        mimeTypes: ['text/markdown'],
+      }],
+    }));
+
+    assert.deepEqual(permissions, {
+      fs: { write: ['/Notes/**', '/Journal/*.md'], delete: ['/Notes/**'] },
+    });
+    // The manifest's declared write shape is path globs only — write mime
+    // types guide the file generator, they derive no permission.
+    assert.ok(!permissions.fs.mimeTypes);
+  });
+
+  it('validateAppSpec accepts a well-formed spec', () => {
+    assert.deepEqual(validateAppSpec(spec()), []);
+  });
+
+  it('validateAppSpec rejects an empty purpose and empty screens', () => {
+    const issues = validateAppSpec(spec({ purpose: '   ', screens: [] }));
+    assert.deepEqual(issues.map((issue) => issue.code), ['spec/missing-purpose', 'spec/empty-screens']);
+  });
+
+  it('validateAppSpec rejects unknown permission kinds with the supported list', () => {
+    const issues = validateAppSpec(spec({
+      dataReads: [{ kind: 'camera' }, { kind: 'fs', mimeTypes: ['image/*'] }],
+    }));
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].code, 'spec/unknown-permission-kind');
+    assert.match(issues[0].message, /camera/);
+    assert.match(issues[0].hint, /fs/);
+  });
+
+  it('validateAppSpec rejects an fs read without scope', () => {
+    const issues = validateAppSpec(spec({ dataReads: [{ kind: 'fs' }] }));
+    assert.deepEqual(issues.map((issue) => issue.code), ['spec/data-read-without-scope']);
+  });
+
+  it('validateAppSpec rejects path globs and mime types the fs policy cannot honor', () => {
+    const issues = validateAppSpec(spec({
+      dataReads: [{
+        kind: 'fs',
+        paths: ['Photos/**', '*', '/Photos/../Secret/**'],
+        mimeTypes: ['image', 'image/**'],
+      }],
+    }));
+    assert.deepEqual(issues.map((issue) => issue.code), [
+      'spec/invalid-fs-glob', 'spec/invalid-fs-glob', 'spec/invalid-fs-glob',
+      'spec/invalid-mime-type', 'spec/invalid-mime-type',
+    ]);
+    // Every form the fs policy does honor passes.
+    assert.deepEqual(validateAppSpec(spec({
+      dataReads: [{
+        kind: 'fs',
+        paths: ['**', '/Photos/**', '/Notes/*.md', '*.jpg'],
+        mimeTypes: ['image/*', 'application/pdf'],
+      }],
+    })), []);
+  });
+
+  it('validateAppSpec rejects network domains that are not hostnames', () => {
+    const bad = ['https://api.example.com/x', 'api.example.com:8443', 'exa mple.com', 'example..com', 'example.*', '*.'];
+    const issues = validateAppSpec(spec({ networkDomains: bad }));
+    assert.equal(issues.length, bad.length);
+    assert.ok(issues.every((issue) => issue.code === 'spec/invalid-network-domain'));
+    // Valid host patterns pass, including the manifest's wildcard forms.
+    assert.deepEqual(
+      validateAppSpec(spec({ networkDomains: ['api.example.com', '*.example.com', '*', 'localhost'] })),
+      [],
+    );
+  });
+
+  it('validateAppSpec rejects storage keys the bridge storage would refuse', () => {
+    const issues = validateAppSpec(spec({ storageKeys: ['fine', 'has:colon', 'bad\nkey'] }));
+    assert.deepEqual(issues.map((issue) => issue.code), ['spec/invalid-storage-key', 'spec/invalid-storage-key']);
+  });
+
+  it('validateAppSpec requires an empty state on every screen of a data-reading app', () => {
+    const issues = validateAppSpec(spec({
+      dataReads: [{ kind: 'fs', mimeTypes: ['image/*'] }],
+      screens: [
+        { name: 'Grid', summary: 'All photos.', emptyState: 'An upload hint.' },
+        { name: 'Viewer', summary: 'One photo.', emptyState: '' },
+      ],
+    }));
+    assert.deepEqual(issues.map((issue) => issue.code), ['spec/screen-missing-empty-state']);
+    assert.equal(issues[0].file, 'Viewer');
+    // A hermetic app needs no empty states.
+    assert.deepEqual(validateAppSpec(spec({
+      dataReads: [],
+      screens: [{ name: 'Timer', summary: 'A countdown.', emptyState: '' }],
+    })), []);
+  });
+
+  it('validateAppSpec accepts folder-scoped writes and whole-desktop writes marked arbitrary', () => {
+    assert.deepEqual(
+      validateAppSpec(spec({ dataWrites: [{ kind: 'fs', paths: ['/Notes/**'] }] })),
+      [],
+    );
+    assert.deepEqual(validateAppSpec(spec({
+      dataWrites: [{ kind: 'fs', paths: ['**'], deletePaths: ['**'], arbitraryFiles: true }],
+    })), []);
+  });
+
+  it('validateAppSpec rejects whole-desktop write scopes unless the spec marks them arbitrary', () => {
+    const issues = validateAppSpec(spec({
+      dataWrites: [{ kind: 'fs', paths: ['**'], deletePaths: ['/**'] }],
+    }));
+    assert.deepEqual(issues.map((issue) => issue.code), ['spec/broad-fs-write', 'spec/broad-fs-write']);
+    assert.match(issues[0].hint, /arbitraryFiles/);
+  });
+
+  it('validateAppSpec rejects unknown write kinds, unscoped writes, and bad write globs', () => {
+    const issues = validateAppSpec(spec({
+      dataWrites: [
+        { kind: 'disk' },
+        { kind: 'fs' },
+        { kind: 'fs', paths: ['Notes/**'] },
+      ],
+    }));
+    assert.deepEqual(issues.map((issue) => issue.code), [
+      'spec/unknown-permission-kind',
+      'spec/data-write-without-scope',
+      'spec/invalid-fs-glob',
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // appTools — happy paths, bad input, permission boundaries, rollback
 // ---------------------------------------------------------------------------
 
@@ -1254,13 +1447,12 @@ describe('appTools', () => {
       {
         response: JSON.stringify({
           name: 'Pomodoro Timer',
-          description: 'A focus timer',
-          kind: 'utility',
-          goals: ['count down focus sessions'],
-          dataDependencies: ['none'],
+          purpose: 'A focus timer that alternates work and break sessions.',
+          screens: [
+            { name: 'Timer', summary: 'The countdown with start/pause controls.' },
+          ],
           width: 480,
           height: 420,
-          acceptance: ['timer counts down'],
         }),
       },
       {
@@ -1279,10 +1471,168 @@ describe('appTools', () => {
     );
     assert.equal(result.status, 'created');
     assert.equal(result.name, 'Pomodoro Timer');
+    // A hermetic spec derives no permissions — the app runs with none.
+    assert.deepEqual(result.permissions, {});
     assert.equal(h.desktop.itemsOf('app').length, 1);
     // The generator was called for the spec and for the files.
     assert.equal(h.ai.calls.length, 2);
     assert.match(h.ai.calls[0].inputs.messages.at(-1).content, /pomodoro timer app/);
+  });
+
+  it('buildAppFromPrompt runs the spec stage first and derives the manifest permissions from the spec', async () => {
+    const h = createAppToolsHarness();
+    h.ai.script.push(
+      // 1st model call: the spec stage — declares an image read and profile use.
+      {
+        response: JSON.stringify({
+          name: 'Photo Grid',
+          purpose: "Shows the user's photos as a scrollable grid.",
+          screens: [
+            {
+              name: 'Grid',
+              summary: 'All photos, newest first.',
+              emptyState: 'A hint to upload photos when none exist yet.',
+            },
+          ],
+          dataReads: [{ kind: 'fs', mimeTypes: ['image/*'] }],
+          profileFields: ['displayName'],
+          rationale: 'Reads the photo library to build the grid.',
+        }),
+      },
+      // 2nd model call: file generation — no permissions field at all, proving
+      // the file generator cannot invent permissions; the manifest gets the
+      // ones derived from the spec.
+      {
+        response: JSON.stringify({
+          files: { ...MINIMAL_APP_FILES, 'app.js': 'console.log("grid");' },
+        }),
+      },
+    );
+
+    const result = await h.tools.buildAppFromPrompt.execute(
+      { prompt: 'build a gallery app for my photos' },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(result.status, 'created');
+
+    // The spec stage ran first (its prompt carries the user request), file
+    // generation second (its prompt carries the spec + derived permissions).
+    assert.equal(h.ai.calls.length, 2);
+    assert.match(h.ai.calls[0].inputs.messages.at(-1).content, /gallery app for my photos/);
+    const filesPrompt = h.ai.calls[1].inputs.messages.at(-1).content;
+    assert.match(filesPrompt, /Photo Grid/, 'the files stage receives the spec');
+    assert.match(filesPrompt, /image\/\*/, 'the files stage receives the permissions derived from the spec');
+
+    // The installed manifest carries the derived permissions even though the
+    // file generator never declared any.
+    const appItem = h.desktop.itemsOf('app')[0];
+    assert.deepEqual(appItem.appManifest.permissions, {
+      fs: { mimeTypes: ['image/*'] },
+      profile: { read: ['displayName'] },
+    });
+    // The spec's one-line purpose is the manifest description.
+    assert.equal(appItem.appManifest.description, "Shows the user's photos as a scrollable grid.");
+    // And the persisted metadata declares the same permissions.
+    const metadata = JSON.parse(h.r2.objects.get(`apps/${UID}/${result.appId}/metadata.json`));
+    assert.deepEqual(metadata.permissions, {
+      fs: { mimeTypes: ['image/*'] },
+      profile: { read: ['displayName'] },
+    });
+  });
+
+  it('buildAppFromPrompt repairs an invalid spec through the validation loop before any file is generated', async () => {
+    const h = createAppToolsHarness();
+    h.ai.script.push(
+      // 1st spec attempt: rejected by deterministic spec validation (no
+      // screens, a URL instead of a hostname, an unscoped read).
+      {
+        response: JSON.stringify({
+          name: 'Weather',
+          purpose: 'Shows the current weather.',
+          screens: [],
+          dataReads: [{ kind: 'fs' }],
+          networkDomains: ['https://api.weather.example.com/forecast'],
+        }),
+      },
+      // 2nd spec attempt: every issue fixed.
+      {
+        response: JSON.stringify({
+          name: 'Weather',
+          purpose: 'Shows the current weather.',
+          screens: [
+            { name: 'Today', summary: 'Current conditions.', emptyState: 'A prompt to pick a city.' },
+          ],
+          dataReads: [{ kind: 'fs', mimeTypes: ['text/*'] }],
+          networkDomains: ['api.weather.example.com'],
+        }),
+      },
+      // 3rd call: file generation, only after the spec validated.
+      { response: JSON.stringify({ files: { ...MINIMAL_APP_FILES } }) },
+    );
+
+    const result = await h.tools.buildAppFromPrompt.execute(
+      { prompt: 'build a weather app' },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(result.status, 'created');
+
+    // The rejected spec was fed back into the regeneration prompt by its
+    // actual validation codes, and no files were generated before it passed.
+    assert.equal(h.ai.calls.length, 3);
+    const retryPrompt = h.ai.calls[1].inputs.messages.at(-1).content;
+    assert.match(retryPrompt, /spec\/empty-screens/);
+    assert.match(retryPrompt, /spec\/invalid-network-domain/);
+    assert.match(retryPrompt, /spec\/data-read-without-scope/);
+
+    const appItem = h.desktop.itemsOf('app')[0];
+    assert.deepEqual(appItem.appManifest.permissions, {
+      fs: { mimeTypes: ['text/*'] },
+      network: { outbound: ['api.weather.example.com'] },
+    });
+  });
+
+  it('buildAppFromPrompt derives fs write/delete permissions when the spec declares desktop-file writes', async () => {
+    const h = createAppToolsHarness();
+    h.ai.script.push(
+      // Spec stage: the app saves notes as real desktop files (and lists
+      // what it saved), keeping only its draft in private storage.
+      {
+        response: JSON.stringify({
+          name: 'Note Saver',
+          purpose: "Saves the user's quick notes as markdown files on their desktop.",
+          screens: [
+            {
+              name: 'Notes',
+              summary: 'Saved notes with a compose box.',
+              emptyState: 'A prompt to write the first note.',
+            },
+          ],
+          dataReads: [{ kind: 'fs', paths: ['/Notes/**'] }],
+          dataWrites: [{ kind: 'fs', paths: ['/Notes/**'], deletePaths: ['/Notes/**'] }],
+          storageKeys: ['notesaver.draft'],
+        }),
+      },
+      // File generation: no permissions field — the manifest gets the
+      // permissions derived from the spec.
+      { response: JSON.stringify({ files: { ...MINIMAL_APP_FILES } }) },
+    );
+
+    const result = await h.tools.buildAppFromPrompt.execute(
+      { prompt: 'save my notes as desktop files I can open anywhere' },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(result.status, 'created');
+    assert.equal(h.ai.calls.length, 2);
+
+    // The manifest carries read + write + delete, all derived from the spec,
+    // in the same path-glob shape chat-supplied apps declare.
+    const expected = { fs: { read: ['/Notes/**'], write: ['/Notes/**'], delete: ['/Notes/**'] } };
+    const appItem = h.desktop.itemsOf('app')[0];
+    assert.deepEqual(appItem.appManifest.permissions, expected);
+    const metadata = JSON.parse(h.r2.objects.get(`apps/${UID}/${result.appId}/metadata.json`));
+    assert.deepEqual(metadata.permissions, expected);
+    // The private storage key still derives no permission.
+    assert.deepEqual(Object.keys(expected.fs), ['read', 'write', 'delete']);
   });
 
   it('buildAppFromPrompt reports a generation failure clearly and writes nothing', async () => {
@@ -1308,7 +1658,15 @@ describe('appTools', () => {
   it('previewAppFromPrompt stages a preview and installAppPreview installs it once', async () => {
     const h = createAppToolsHarness();
     h.ai.script.push(
-      { response: JSON.stringify({ name: 'Preview App', description: 'd', width: 400, height: 320 }) },
+      {
+        response: JSON.stringify({
+          name: 'Preview App',
+          purpose: 'A tiny app staged for preview.',
+          screens: [{ name: 'Main', summary: 'One screen.' }],
+          width: 400,
+          height: 320,
+        }),
+      },
       { response: JSON.stringify({ files: { ...MINIMAL_APP_FILES } }) },
     );
 
