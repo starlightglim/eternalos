@@ -5,6 +5,7 @@
  */
 
 import { apiRequest } from './transport';
+import type { AppGrantApproval } from '../types';
 
 export interface AppCapabilityResponse {
   token: string;
@@ -18,6 +19,13 @@ export interface AppPermissionResponse {
   appId: string;
   requested: Record<string, unknown>;
   granted: Record<string, unknown>;
+  /** Scope ids that are broad within the declared set (warning rows in the
+   *  install/approval dialog). Computed server-side — see worker
+   *  utils/appScopes.ts. */
+  broad?: string[];
+  /** Per-scope approval metadata ("approved on …"). Absent approvedAt =
+   *  legacy install, approved with the date unknown. */
+  approvals?: Record<string, AppGrantApproval>;
   rationale?: string;
 }
 
@@ -79,10 +87,13 @@ export async function getAppPermissions(appId: string): Promise<AppPermissionRes
 export async function updateAppPermissions(
   appId: string,
   granted: Record<string, unknown>,
+  /** Broad scope ids the user explicitly ticked. The server rejects a grant
+   *  request that includes a broad scope without its tick (400). */
+  broadApprovals: string[] = [],
 ): Promise<AppPermissionResponse> {
   return apiRequest<AppPermissionResponse>(`/api/apps/${encodeURIComponent(appId)}/permissions`, {
     method: 'PATCH',
-    body: JSON.stringify({ granted }),
+    body: JSON.stringify({ granted, broadApprovals }),
   });
 }
 

@@ -6,6 +6,8 @@ import {
   updateAppPermissions,
   type AppPermissionResponse,
 } from '../../services/api';
+import { AppPermissionDialog } from '../apps/AppPermissionDialog';
+import { getPermissionEntries, hasAllPermissionValues } from '../apps/appPermissionScopes';
 import type { AppPermissions } from '../../types';
 
 interface AppViewerProps {
@@ -32,62 +34,6 @@ interface ActiveAppListener {
 // In-memory list of active app viewers for the parent-mediated IPC event bus.
 const activeAppListeners = new Set<ActiveAppListener>();
 
-interface PermissionEntry {
-  key: string;
-  label: string;
-  values: string[];
-}
-
-const permissionLabels: Record<string, string> = {
-  'fs.read': 'Read desktop files',
-  'fs.write': 'Write desktop files',
-  'fs.delete': 'Delete desktop files',
-  'fs.mimeTypes': 'Access selected file types',
-  'profile.read': 'Read profile details',
-  'network.outbound': 'Connect to external websites',
-  'ipc.listen': 'Receive messages from other apps',
-  'ipc.emit': 'Send messages to other apps',
-  'handlers.mimeTypes': 'Handle selected file types',
-  'handlers.extensions': 'Handle selected file extensions',
-};
-
-function getPermissionEntries(value: Record<string, unknown>): PermissionEntry[] {
-  const entries: PermissionEntry[] = [];
-  for (const [domain, domainValue] of Object.entries(value)) {
-    if (!domainValue || typeof domainValue !== 'object') continue;
-    for (const [scope, scopeValue] of Object.entries(domainValue as Record<string, unknown>)) {
-      if (!Array.isArray(scopeValue) || !scopeValue.every((item) => typeof item === 'string')) continue;
-      const key = `${domain}.${scope}`;
-      entries.push({
-        key,
-        label: permissionLabels[key] || `${domain}: ${scope}`,
-        values: scopeValue as string[],
-      });
-    }
-  }
-  return entries;
-}
-
-function hasAllPermissionValues(granted: Record<string, unknown>, entry: PermissionEntry): boolean {
-  const [domain, scope] = entry.key.split('.');
-  const domainValue = granted[domain];
-  if (!domainValue || typeof domainValue !== 'object') return false;
-  const values = (domainValue as Record<string, unknown>)[scope];
-  return Array.isArray(values) && entry.values.every((value) => values.includes(value));
-}
-
-function buildGrantedPermissions(requested: Record<string, unknown>, selectedKeys: string[]): Record<string, unknown> {
-  const selected = new Set(selectedKeys);
-  const granted: Record<string, Record<string, string[]>> = {};
-  for (const entry of getPermissionEntries(requested)) {
-    if (!selected.has(entry.key)) continue;
-    const [domain, scope] = entry.key.split('.');
-    granted[domain] ||= {};
-    granted[domain][scope] = entry.values;
-  }
-  return granted;
-}
-
 function topicMatches(topic: unknown, patterns: string[] | undefined): boolean {
   if (typeof topic !== 'string' || topic.length === 0 || topic.length > 120) return false;
   return (patterns ?? []).some((pattern) => (
@@ -100,7 +46,6 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
   const capabilityRef = useRef<string | null>(null);
   const iframeLoadedRef = useRef(false);
   const [permissionPrompt, setPermissionPrompt] = useState<AppPermissionResponse | null>(null);
-  const [selectedPermissionKeys, setSelectedPermissionKeys] = useState<string[]>([]);
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [grantedPermissions, setGrantedPermissions] = useState<AppPermissions>({});
 
@@ -125,7 +70,6 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
     capabilityRef.current = null;
     iframeLoadedRef.current = false;
     setPermissionPrompt(null);
-    setSelectedPermissionKeys([]);
     setGrantedPermissions({});
     if (previewId || !appId) return;
 
@@ -134,15 +78,16 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
       .then(async (permissions) => {
         if (cancelled) return;
         const requested = permissions.requested || {};
-        const entries = getPermissionEntries(requested);
+        const broad = permissions.broad || [];
+        const entries = getPermissionEntries(requested, broad);
         const granted = permissions.granted || {};
         setGrantedPermissions(granted as AppPermissions);
         const missing = entries.filter((entry) => !hasAllPermissionValues(granted, entry));
         if (missing.length > 0) {
+          // The dialog owns the pre-tick state: granted narrow scopes are
+          // pre-ticked, broad scopes never are (each needs its explicit
+          // tick every time it is granted).
           setPermissionPrompt(permissions);
-          setSelectedPermissionKeys(entries
-            .filter((entry) => hasAllPermissionValues(granted, entry))
-            .map((entry) => entry.key));
           return;
         }
         const { token } = await mintAppCapability(appId);
@@ -160,15 +105,11 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
     };
   }, [appId, previewId, src, sendCapability]);
 
-  const handlePermissionChoice = useCallback(async (allow: boolean) => {
+  const handlePermissionAllow = useCallback(async (granted: Record<string, unknown>, broadApprovals: string[]) => {
     if (!appId || !permissionPrompt) return;
     setPermissionBusy(true);
     try {
-      const requested = permissionPrompt.requested || {};
-      const granted = allow
-        ? buildGrantedPermissions(requested, selectedPermissionKeys)
-        : permissionPrompt.granted;
-      await updateAppPermissions(appId, granted);
+      await updateAppPermissions(appId, granted, broadApprovals);
       setGrantedPermissions(granted as AppPermissions);
       setPermissionPrompt(null);
       if (Object.keys(granted).length > 0) {
@@ -181,7 +122,14 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
     } finally {
       setPermissionBusy(false);
     }
-  }, [appId, permissionPrompt, selectedPermissionKeys, sendCapability]);
+  }, [appId, permissionPrompt, sendCapability]);
+
+  const handlePermissionDeny = useCallback(() => {
+    // Deny only the new ask: keep exactly what is already granted and close.
+    // No server write — a denial must not touch (or re-date) the approval
+    // metadata of grants the user already confirmed.
+    setPermissionPrompt(null);
+  }, []);
 
   // Handle messages posted from inside the iframe bridge
   useEffect(() => {
@@ -269,8 +217,6 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
     };
   }, [appId, previewId, grantedPermissions]);
 
-  const permissionEntries = permissionPrompt ? getPermissionEntries(permissionPrompt.requested || {}) : [];
-
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <iframe
@@ -290,52 +236,16 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
         title="App"
       />
       {permissionPrompt && (
-        <div style={{
-          position: 'absolute',
-          inset: 0,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: 20,
-          background: 'rgba(0, 0, 0, 0.45)',
-          zIndex: 2,
-        }}>
-          <div role="dialog" aria-modal="true" aria-labelledby="app-permissions-title" style={{
-            width: 'min(420px, 100%)',
-            maxHeight: '100%',
-            overflow: 'auto',
-            padding: 16,
-            background: 'var(--window-bg, #f5f5f5)',
-            color: 'var(--window-text-color, #000)',
-            border: '2px solid var(--black, #000)',
-            boxShadow: '4px 4px 0 rgba(0, 0, 0, 0.35)',
-          }}>
-            <h2 id="app-permissions-title" style={{ margin: '0 0 8px', fontSize: 15 }}>App permissions</h2>
-            <p style={{ margin: '0 0 10px', fontSize: 12 }}>
-              {permissionPrompt.rationale || 'Choose what this app can access. You can change this later by reopening the app.'}
-            </p>
-            {permissionEntries.map((entry) => (
-              <label key={entry.key} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', margin: '8px 0', fontSize: 12 }}>
-                <input
-                  type="checkbox"
-                  checked={selectedPermissionKeys.includes(entry.key)}
-                  onChange={(event) => setSelectedPermissionKeys((current) => event.target.checked
-                    ? [...current, entry.key]
-                    : current.filter((key) => key !== entry.key))}
-                />
-                <span>
-                  <strong>{entry.label}</strong>
-                  <br />
-                  <small>{entry.values.join(', ')}</small>
-                </span>
-              </label>
-            ))}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
-              <button type="button" onClick={() => void handlePermissionChoice(false)} disabled={permissionBusy}>Deny</button>
-              <button type="button" onClick={() => void handlePermissionChoice(true)} disabled={permissionBusy}>Allow selected</button>
-            </div>
-          </div>
-        </div>
+        <AppPermissionDialog
+          requested={permissionPrompt.requested || {}}
+          granted={permissionPrompt.granted || {}}
+          broad={permissionPrompt.broad || []}
+          approvals={permissionPrompt.approvals}
+          rationale={permissionPrompt.rationale}
+          busy={permissionBusy}
+          onAllow={(granted, broadApprovals) => void handlePermissionAllow(granted, broadApprovals)}
+          onDeny={handlePermissionDeny}
+        />
       )}
     </div>
   );

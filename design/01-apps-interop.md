@@ -203,8 +203,25 @@ interface DesktopItem {
   appManifest?: AppManifest;
   grantedPermissions?: GrantedPermissions;  // what the user approved
   permissionGrantedAt?: number;
+  // Per-scope approval metadata, keyed 'fs.read' | 'network.outbound' | …
+  // (Workstream 3 Phase B). Granted scopes without a stored entry are
+  // legacy installs — read as approved with approvedAt unknown.
+  grantedPermissionApprovals?: Record<string, {
+    approvedAt?: number;   // absent = approved before metadata existed
+    approvedBy?: string;   // uid of the approver
+    rationale?: string;    // the manifest's rationale at approval time
+  }>;
 }
 ```
+
+**Broad scopes (Phase B).** A grant that hands the app the whole filesystem
+(`**` / `/**` / `/`), a wildcard network domain, or every profile field is
+*broad*: the approval UI shows it as a distinct warning row with the
+manifest's rationale, never pre-ticks it, and the permissions route rejects
+a grant request containing one unless the request carries that scope's
+explicit `broadApprovals` tick (400 otherwise). Narrow scopes keep the plain
+checkbox flow. See worker `utils/appScopes.ts` — the single classifier used
+by both the route and (via the permissions GET's `broad` list) the UI.
 
 Users can revoke or narrow later from the app's context menu → "App permissions".
 

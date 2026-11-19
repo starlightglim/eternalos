@@ -223,6 +223,25 @@ export interface AppGrantedPermissions {
 }
 
 /**
+ * Approval metadata for one granted permission scope (`'fs.read'`,
+ * `'network.outbound'`, …), recorded when the user granted it. Stored on the
+ * app's `DesktopItem` in `grantedPermissionApprovals`, keyed by scope id.
+ *
+ * `approvedAt` is absent for legacy installs that were granted before this
+ * metadata existed — those grants are lazily treated as approved with the
+ * approval date unknown (see worker routes/apps.ts).
+ */
+export interface AppGrantApproval {
+  /** Unix ms when the user approved this grant. Absent = approved before
+   *  approval metadata existed (migrated lazily; date unknown). */
+  approvedAt?: number;
+  /** uid of the user who ticked the approval. Absent for migrated grants. */
+  approvedBy?: string;
+  /** The manifest's `rationale` text as it read at approval time. */
+  rationale?: string;
+}
+
+/**
  * Represents a single item on the desktop (file, folder, widget, etc.)
  */
 export interface DesktopItem {
@@ -263,6 +282,12 @@ export interface DesktopItem {
   // app (default).
   grantedPermissions?: AppGrantedPermissions;
   permissionGrantedAt?: number;
+  // For type='app': per-scope approval metadata for the granted permissions,
+  // keyed by scope id ('fs.read', 'network.outbound', …). See
+  // AppGrantApproval. Granted scopes without a stored entry are legacy
+  // installs granted before this field existed — reads treat them as
+  // approved with approvedAt unknown.
+  grantedPermissionApprovals?: Record<string, AppGrantApproval>;
   // Installed console game (type='cartridge') — references a bazaar pack or
   // the owner's own draft; the cartridge itself stays in R2/KV.
   cartridgeRef?: { packId?: string; draftId?: string; coverUrl?: string };
