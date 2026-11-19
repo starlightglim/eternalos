@@ -1966,6 +1966,22 @@ describe('worker integration', () => {
     assert.ok(!JSON.stringify(profile).includes('evil.example'), 'hostile URL must not be stored');
   });
 
+  it('returns 404 (not 500) when reverting an unknown CSS version', async () => {
+    const user = await signupUser();
+    await patchProfile(user.token, { customCSS: '.window { border-radius: 10px; }' });
+
+    const { response, body } = await fetchJson('/api/css-history/no-such-version/revert', {
+      method: 'POST',
+      headers: authHeaders(user.token),
+    });
+    assert.equal(response.status, 404, `expected 404, got ${response.status}`);
+    assert.match(body?.error ?? '', /not found/i);
+
+    // The failed revert changed nothing.
+    const profile = await expectOk('/api/profile', { headers: authHeaders(user.token) });
+    assert.equal(profile.profile.customCSS, '.window { border-radius: 10px; }');
+  });
+
   it('hard-deletes an account once past the deletion grace deadline', async () => {
     const user = await signupUser();
 

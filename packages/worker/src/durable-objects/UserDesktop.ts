@@ -1138,7 +1138,9 @@ export class UserDesktop {
   ): Promise<UserProfile | null> {
     const version = this.cssHistory.find((entry) => entry.id === versionId);
     if (!version) {
-      throw new Error('Custom CSS version not found');
+      // A missing version is a client error (bad/unknown ID), not a server
+      // fault — answer 404 instead of the old blanket 500.
+      throw new HttpError(404, 'Custom CSS version not found');
     }
 
     const updatedProfile = await this.updateProfile({ customCSS: version.css }, apiOrigin);
