@@ -78,9 +78,13 @@ Gated by policies declared under `permissions.fs` in the app's manifest. Paths u
 * **`fs.readJson(itemId)`**: Reads a desktop file and parses its contents as JSON.
   - **Arguments**: `itemId: string`
   - **Returns**: `Promise<any>`
-* **`fs.urlFor(itemId)`**: Returns a same-origin loopback URL for the file. Use this to bind media directly to HTML elements (e.g., `<img src="${window.eternal.fs.urlFor(id)}">`).
+* **`fs.urlFor(itemId)`**: Resolves to a URL you can bind directly to media elements (`<img>`, `<audio>`, `<video>` `src`). In installed apps this is a blob object URL fetched with the app's capability (cached per item id); in previews it is a plain loopback URL. The call is asynchronous — always `await` it and never interpolate its result into a string without awaiting (that produces `"[object Promise]"`, not a URL):
+  ```js
+  const src = await window.eternal.fs.urlFor(id);
+  img.src = src;
+  ```
   - **Arguments**: `itemId: string`
-  - **Returns**: `string`
+  - **Returns**: `Promise<string>`
 * **`fs.write(opts)`**: Creates a new file or overwrites an existing one. If parent folders in the path do not exist, they are created automatically.
   - **Arguments**: `opts: { path: string, content: string | Blob, mimeType: string }`
   - **Returns**: `Promise<{ id: string, path: string, item: DesktopItem }>`

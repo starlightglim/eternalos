@@ -463,7 +463,10 @@ window.eternal = {
     read(itemId: string): Promise<Blob>;
     readText(itemId: string): Promise<string>;
     readJson<T = unknown>(itemId: string): Promise<T>;
-    urlFor(itemId: string): string;
+    // Async: in installed apps it fetches the bytes with the app's capability
+    // and resolves a blob object URL; previews resolve a plain loopback URL.
+    // Always await it — never use the result without awaiting.
+    urlFor(itemId: string): Promise<string>;
   };
   profile: {
     get(): Promise<{ username?: string; displayName?: string; bio?: string; avatar?: string }>;

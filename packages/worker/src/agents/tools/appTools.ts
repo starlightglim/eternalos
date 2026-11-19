@@ -941,7 +941,10 @@ Available in window.eternal (platform-injected — do not re-implement):
   eternal.fs.read(id)       -> Blob
   eternal.fs.readText(id)   -> string
   eternal.fs.readJson(id)   -> object
-  eternal.fs.urlFor(id)     -> same-origin URL safe for <img src>, <audio src>
+  eternal.fs.urlFor(id)     -> Promise<string>, always await it, then assign the
+                              URL to <img src>/<audio src>/<video src> (a blob:
+                              object URL in installed apps, a plain URL in
+                              previews)
   eternal.fs.write(options), fs.patch(id, updates), fs.delete(id)
   eternal.profile.get()     -> { username?, displayName?, bio?, avatar? }
   eternal.fetch(url, init?) -> allowlisted proxy response
@@ -977,6 +980,7 @@ Runtime sandbox contract (violations are rejected by deterministic validation be
 - Direct fetch/XHR/WebSocket/EventSource to absolute external URLs is blocked by the CSP. For external data, declare network.outbound and call window.eternal.fetch(url) (the allowlisted proxy). For bundled data, fetch a relative path like './data.json'.
 - Only the window.eternal APIs listed above exist. Calling any other namespace or method (e.g. eternal.fs.save, eternal.ai.chat) throws at runtime.
 - eternal.fs.list({ path }) must be inside a glob you declare under fs.read (or covered by fs.mimeTypes) — otherwise it silently returns nothing. Same for fs.write paths under fs.write.
+- eternal.fs.urlFor(id) is asynchronous in installed apps. Always capture it with await first (const src = await eternal.fs.urlFor(id); img.src = src). Calling it without awaiting — or interpolating its result into a string or template literal — produces "[object Promise]", not a URL.
 - CSS url() and HTML src/href references must point at files included in the bundle.
 - import statements must reference bundled local files ('./utils.js') and names those files actually export; bare specifiers like 'lodash' cannot resolve — there is no package manager.`,
     `Build a desktop web app for this request:
@@ -1438,8 +1442,18 @@ export function initAppRegistry(sql: SqlStorage) {
  * as a thin fetch wrapper over same-origin `/_eternal/*` routes handled inside
  * the Dynamic Worker (which then RPCs to the parent's EternalService binding).
  *
- * The iframe never sees a capability token; grants are bound into the Dynamic
- * Worker at load time via ctx.props.
+ * Installed apps are capability-gated: the parent frame postMessages a
+ * short-lived capability token in, every request() attaches it as a Bearer
+ * header, and grants are still bound into the Dynamic Worker at load time
+ * via ctx.props. Preview mounts skip the handshake (requiresCapability is
+ * compiled to false).
+ *
+ * fs.urlFor(id) must produce a URL usable from <img src>/<audio src>, which
+ * cannot send headers: in capability mode it fetches the bytes through
+ * request() itself and returns a cached blob: object URL (all revoked on
+ * pagehide); capability-free previews keep the plain bridge URL, returned
+ * synchronously. Apps must always await urlFor — its result is a Promise in
+ * installed apps.
  */
 const ETERNAL_RUNTIME_JS = `(() => {
   const requiresCapability = __REQUIRE_CAPABILITY__;
@@ -1496,6 +1510,23 @@ const ETERNAL_RUNTIME_JS = `(() => {
     return encodeURIComponent(String(id || ''));
   }
 
+  // Blob object URLs minted by fs.urlFor in capability mode, keyed by the
+  // bridge path of the item. An entry is the in-flight fetch Promise until
+  // it settles, then the plain blob: URL string. Repeated calls for the same
+  // id reuse the entry instead of refetching. Everything is revoked on
+  // pagehide so the blobs don't outlive the app document.
+  const objectUrls = new Map();
+  window.addEventListener('pagehide', () => {
+    for (const entry of objectUrls.values()) {
+      if (typeof entry === 'string') {
+        URL.revokeObjectURL(entry);
+      } else {
+        entry.then((url) => URL.revokeObjectURL(url)).catch(() => {});
+      }
+    }
+    objectUrls.clear();
+  });
+
   const fs = {
     async list(opts) {
       const params = new URLSearchParams();
@@ -1517,8 +1548,37 @@ const ETERNAL_RUNTIME_JS = `(() => {
       const res = await request('/fs/read/' + encodeId(id));
       return res.json();
     },
+    // urlFor(id) hands the app a URL it can assign straight to <img src>,
+    // <audio src>, or <video src> — none of which can send an Authorization
+    // header. Two very different shapes depending on the mount:
+    // - Capability-free previews keep the plain same-origin bridge URL; the
+    //   preview bridge answers without a Bearer header, so it resolves as-is.
+    //   (Returned synchronously, like it always was.)
+    // - Installed apps require the Bearer capability, so the plain URL would
+    //   401 in a bare <img src> fetch. Instead fetch the bytes through
+    //   request() — which attaches the capability — and return a blob:
+    //   object URL, cached per id. This path is asynchronous: apps must
+    //   await the result; using it without awaiting (or interpolating it
+    //   into a string) yields "[object Promise]", not a URL.
     urlFor(id) {
-      return apiUrl('/fs/read/' + encodeId(id));
+      const path = '/fs/read/' + encodeId(id);
+      if (!requiresCapability) return apiUrl(path);
+      const cached = objectUrls.get(path);
+      if (cached !== undefined) return Promise.resolve(cached);
+      const pending = request(path)
+        .then((res) => res.blob())
+        .then((blob) => {
+          const url = URL.createObjectURL(blob);
+          if (objectUrls.get(path) === pending) objectUrls.set(path, url);
+          return url;
+        });
+      // A failed fetch must not poison the id: drop the entry so the next
+      // call retries instead of re-throwing the same error forever.
+      pending.catch(() => {
+        if (objectUrls.get(path) === pending) objectUrls.delete(path);
+      });
+      objectUrls.set(path, pending);
+      return pending;
     },
     async write(opts) {
       const res = await request('/fs/write', {
