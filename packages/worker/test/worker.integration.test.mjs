@@ -2179,6 +2179,108 @@ describe('worker integration', () => {
     assert.ok(badValue.response.status >= 400, `expected rejection, got ${badValue.response.status}`);
   });
 
+  it('clears saved appearance fields via null PATCH; null for protected fields is rejected or ignored', async () => {
+    const user = await signupUser();
+
+    // Seed a saved appearance the way the Appearance panel does.
+    await patchProfile(user.token, {
+      accentColor: '#000080',
+      desktopColor: '#C0C0C0',
+      systemFont: 'chicago',
+      fontSmoothing: true,
+      windowOpacity: 80,
+      customCSS: '.window { border-radius: 8px; }',
+      designTokens: { 'menuBar.background': '#222' },
+      variants: { 'window.titleBar': 'gradient' },
+    });
+    const seeded = await expectOk('/api/profile', { headers: authHeaders(user.token) });
+    assert.equal(seeded.profile.accentColor, '#000080');
+    assert.equal(seeded.profile.customCSS, '.window { border-radius: 8px; }');
+
+    // The Appearance "Reset" + Save payload: null for every reset field.
+    const cleared = await patchProfile(user.token, {
+      accentColor: null,
+      desktopColor: null,
+      systemFont: null,
+      fontSmoothing: null,
+      windowOpacity: null,
+      customCSS: null,
+      designTokens: null,
+      variants: null,
+    });
+    for (const field of ['accentColor', 'desktopColor', 'systemFont', 'fontSmoothing',
+      'windowOpacity', 'customCSS', 'designTokens', 'variants']) {
+      assert.ok(!(field in cleared.profile), `cleared field "${field}" must be absent, not stored as null`);
+    }
+
+    // GET shows them gone — a reload renders the reset state, not the old rice.
+    const after = await expectOk('/api/profile', { headers: authHeaders(user.token) });
+    for (const field of ['accentColor', 'desktopColor', 'systemFont', 'fontSmoothing',
+      'windowOpacity', 'customCSS', 'designTokens', 'variants']) {
+      assert.ok(!(field in after.profile), `cleared field "${field}" must stay gone on GET`);
+    }
+    // Identity and account fields are untouched by the clear.
+    assert.equal(after.profile.username, user.username);
+    assert.equal(after.profile.uid, user.user.uid);
+    assert.equal(after.profile.wallpaper, 'default');
+
+    // `null` for an allowlisted identity field (username is settable via the
+    // change-username flow) is an explicit clear attempt on a protected field
+    // → 400, never a silent no-op.
+    const nullUsername = await fetchJson('/api/profile', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ username: null }),
+    });
+    assert.equal(nullUsername.response.status, 400,
+      `null username must be rejected, got ${nullUsername.response.status}`);
+    assert.match(nullUsername.body.error, /cannot be cleared/);
+
+    // Same for other known-but-unclearable fields (wallpaper is not part of
+    // the appearance reset; soundPack has its own non-null clear UI).
+    for (const field of ['wallpaper', 'soundPack', 'bio']) {
+      const rejected = await fetchJson('/api/profile', {
+        method: 'PATCH',
+        headers: authHeaders(user.token, JSON_HEADERS),
+        body: JSON.stringify({ [field]: null }),
+      });
+      assert.equal(rejected.response.status, 400,
+        `null ${field} must be rejected, got ${rejected.response.status}`);
+    }
+
+    // Fields outside the allowlist entirely (uid, email, auth material) keep
+    // today's unknown-field behavior: silently ignored, profile intact.
+    await patchProfile(user.token, { uid: null, email: null, passwordHash: null });
+    const intact = await expectOk('/api/profile', { headers: authHeaders(user.token) });
+    assert.equal(intact.profile.uid, user.user.uid);
+    assert.equal(intact.profile.username, user.username);
+    assert.equal(intact.profile.email, undefined, 'unknown fields must not be stored');
+    assert.ok(!JSON.stringify(intact.profile).includes('passwordHash'));
+
+    // Non-null values validate exactly as before: out-of-range numbers and
+    // dangerous color strings are still rejected and never stored.
+    const badOpacity = await fetchJson('/api/profile', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ windowOpacity: 999 }),
+    });
+    assert.ok(badOpacity.response.status >= 400,
+      `out-of-range windowOpacity must be rejected, got ${badOpacity.response.status}`);
+
+    const badColor = await fetchJson('/api/profile', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ accentColor: 'javascript:alert(1)' }),
+    });
+    assert.ok(badColor.response.status >= 400,
+      `dangerous accentColor must be rejected, got ${badColor.response.status}`);
+
+    // A legitimate re-save after the clear still works.
+    await patchProfile(user.token, { accentColor: '#008000' });
+    const final = await expectOk('/api/profile', { headers: authHeaders(user.token) });
+    assert.equal(final.profile.accentColor, '#008000');
+  });
+
   it('changes username with password confirmation, normalization, and uniqueness', async () => {
     const user = await signupUser();
     const uniq = () => `u${Math.random().toString(36).slice(2, 9)}`;
