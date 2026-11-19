@@ -1146,15 +1146,40 @@ describe('appTools', () => {
     assert.equal(h.desktop.itemsOf('app')[0].appManifest.version, '2', 'desktop must keep the last good manifest');
   });
 
-  it('deleteApp removes the app from every store', async () => {
+  it('deleteApp removes the app from every store, trashing the icon before deleting data', async () => {
     const h = createAppToolsHarness();
     const created = await h.tools.createApp.execute(
       { name: 'Deletable', files: { ...MINIMAL_APP_FILES } },
       { toolCallId: 'tc', messages: [] },
     );
 
+    // Record every destructive operation across the stores to pin the order:
+    // the desktop icon must be trashed before any backing data is deleted.
+    const ops = [];
+    const desktopFetch = h.desktop.stub.fetch.bind(h.desktop.stub);
+    h.desktop.stub.fetch = async (request) => {
+      if (request.method === 'PATCH') ops.push('trash-icon');
+      return desktopFetch(request);
+    };
+    const r2Delete = h.r2.delete.bind(h.r2);
+    h.r2.delete = async (key) => {
+      ops.push('r2-delete');
+      return r2Delete(key);
+    };
+    const kvDelete = h.kv.delete.bind(h.kv);
+    h.kv.delete = async (key) => {
+      ops.push('kv-delete');
+      return kvDelete(key);
+    };
+    const sqlExec = h.sql.exec.bind(h.sql);
+    h.sql.exec = (query, ...params) => {
+      ops.push('sql-exec');
+      return sqlExec(query, ...params);
+    };
+
     const result = await h.tools.deleteApp.execute({ appId: created.appId }, { toolCallId: 'tc', messages: [] });
     assert.equal(result.status, 'deleted');
+    assert.equal(ops[0], 'trash-icon', 'the desktop icon must be trashed before any backing data is deleted');
     assert.equal(h.r2.keys(`apps/${UID}/${created.appId}/`).length, 0);
     assert.equal((await h.kv.get(`app:${created.appId}`, 'json')), null);
     assert.ok(h.sql.statements.some((s) => s.query.startsWith('DELETE FROM apps') && s.params[0] === created.appId));
@@ -1162,6 +1187,64 @@ describe('appTools', () => {
     await assert.rejects(
       h.tools.deleteApp.execute({ appId: 'no-such-app' }, { toolCallId: 'tc', messages: [] }),
       /App no-such-app not found/,
+    );
+  });
+
+  it('deleteApp leaves every store intact when trashing the icon fails', async () => {
+    const h = createAppToolsHarness();
+    const created = await h.tools.createApp.execute(
+      { name: 'Stuck', files: { ...MINIMAL_APP_FILES } },
+      { toolCallId: 'tc', messages: [] },
+    );
+
+    // The desktop refuses to trash the icon. The tool must stop right there:
+    // no data may be deleted, or the user is left with an inert icon
+    // pointing at nothing.
+    h.desktop.state.fail.patch = 500;
+    await assert.rejects(
+      h.tools.deleteApp.execute({ appId: created.appId }, { toolCallId: 'tc', messages: [] }),
+      /Failed to remove app from desktop/,
+    );
+    assert.equal(h.desktop.itemsOf('app').length, 1, 'the icon must still be on the desktop');
+    assert.ok(h.r2.keys(`apps/${UID}/${created.appId}/`).length > 0, 'R2 artifacts must not be deleted');
+    assert.ok((await h.kv.get(`app:${created.appId}`, 'json')) !== null, 'the KV registry entry must not be deleted');
+    assert.ok(
+      !h.sql.statements.some((s) => s.query.startsWith('DELETE FROM apps') && s.params[0] === created.appId),
+      'the SQL row must not be deleted',
+    );
+  });
+
+  it('deleteApp reports a data-cleanup failure after the icon is already trashed', async () => {
+    const h = createAppToolsHarness();
+    const created = await h.tools.createApp.execute(
+      { name: 'Messy', files: { ...MINIMAL_APP_FILES } },
+      { toolCallId: 'tc', messages: [] },
+    );
+
+    // The icon trashes fine, but R2 refuses to list the app's files (the
+    // failure mode that propagates out of deleteR2Prefix).
+    const r2List = h.r2.list.bind(h.r2);
+    h.r2.list = async (opts) => {
+      if ((opts?.prefix ?? '').startsWith(`apps/${UID}/`)) throw new Error('R2 unavailable');
+      return r2List(opts);
+    };
+
+    await assert.rejects(
+      h.tools.deleteApp.execute({ appId: created.appId }, { toolCallId: 'tc', messages: [] }),
+      (error) => {
+        assert.match(error.message, /App removed from the desktop, but cleaning up its data failed/);
+        assert.match(error.message, /app files \(R2 unavailable\)/);
+        return true;
+      },
+    );
+    // The icon is already trashed — the user cannot launch a broken app,
+    // which is the safer failure.
+    assert.equal(h.desktop.itemsOf('app').length, 0, 'the icon must be trashed even when data cleanup fails');
+    // The cleanup is best-effort: the other stores are still deleted.
+    assert.equal(await h.kv.get(`app:${created.appId}`, 'json'), null, 'KV cleanup must still run');
+    assert.ok(
+      h.sql.statements.some((s) => s.query.startsWith('DELETE FROM apps') && s.params[0] === created.appId),
+      'SQL cleanup must still run',
     );
   });
 

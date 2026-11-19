@@ -1013,6 +1013,10 @@ function buildRepairContext(error: unknown): string {
   if (error instanceof AppValidationError) {
     return formatAppValidationIssues(error.issues);
   }
+  return errorText(error);
+}
+
+function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -2311,12 +2315,10 @@ export function createAppTools(ctx: AppToolsContext) {
       execute: async (input) => {
         const registered = await getRegisteredDesktopApp(env, uid, input.appId);
 
-        await deleteR2Prefix(env, `apps/${uid}/${input.appId}/`);
-
-        await env.DESKTOP_KV.delete(`app:${input.appId}`);
-
-        sql.exec('DELETE FROM apps WHERE id = ?', input.appId);
-
+        // Trash the desktop icon FIRST. If this fails, nothing has been
+        // deleted yet and the user keeps a fully working app — the safer
+        // half-done state. (Deleting the data first used to leave an inert
+        // icon pointing at deleted R2/KV/SQL data when this step failed.)
         const stub = env.USER_DESKTOP.get(env.USER_DESKTOP.idFromName(uid));
         const trashResponse = await stub.fetch(new Request('http://internal/items', {
           method: 'PATCH',
@@ -2327,6 +2329,32 @@ export function createAppTools(ctx: AppToolsContext) {
         }));
         if (!trashResponse.ok) {
           throw new Error('Failed to remove app from desktop');
+        }
+
+        // The icon is gone, so the app can no longer be launched. Clean up
+        // the backing data best-effort — every store is attempted even if a
+        // previous one failed — and report whichever failed. Leftover data
+        // is recoverable; a dead icon pointing at deleted data is not.
+        const failedCleanup: string[] = [];
+        try {
+          await deleteR2Prefix(env, `apps/${uid}/${input.appId}/`);
+        } catch (error) {
+          failedCleanup.push(`app files (${errorText(error)})`);
+        }
+        try {
+          await env.DESKTOP_KV.delete(`app:${input.appId}`);
+        } catch (error) {
+          failedCleanup.push(`app registry entry (${errorText(error)})`);
+        }
+        try {
+          sql.exec('DELETE FROM apps WHERE id = ?', input.appId);
+        } catch (error) {
+          failedCleanup.push(`app record (${errorText(error)})`);
+        }
+        if (failedCleanup.length > 0) {
+          throw new Error(
+            `App removed from the desktop, but cleaning up its data failed: ${failedCleanup.join('; ')}`,
+          );
         }
 
         return { appId: input.appId, status: 'deleted' };
