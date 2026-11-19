@@ -8,9 +8,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => {
   const backing = new Map<string, string>();
+  const sessionBacking = new Map<string, string>();
   const g = globalThis as unknown as {
     localStorage?: unknown;
+    sessionStorage?: unknown;
     __storageBacking?: Map<string, string>;
+    __sessionBacking?: Map<string, string>;
     __apiConfigured?: { value: boolean };
   };
   g.localStorage = {
@@ -18,7 +21,13 @@ const mocks = vi.hoisted(() => {
     setItem: (key: string, value: string) => void backing.set(key, value),
     removeItem: (key: string) => void backing.delete(key),
   };
+  g.sessionStorage = {
+    getItem: (key: string) => sessionBacking.get(key) ?? null,
+    setItem: (key: string, value: string) => void sessionBacking.set(key, value),
+    removeItem: (key: string) => void sessionBacking.delete(key),
+  };
   g.__storageBacking = backing;
+  g.__sessionBacking = sessionBacking;
   g.__apiConfigured = { value: true };
   return {
     updateProfile: vi.fn(),
@@ -30,6 +39,11 @@ const mocks = vi.hoisted(() => {
     setWallpaper: vi.fn(),
     setWallpaperMode: vi.fn(),
     apiConfigured: g.__apiConfigured,
+    sessionBacking,
+    /** Auth session the (mocked) auth store reports via getState(). */
+    authState: { initialized: false as boolean, user: null as unknown },
+    /** Listeners registered on the mocked auth store's subscribe(). */
+    authListeners: [] as Array<() => void>,
   };
 });
 
@@ -62,7 +76,15 @@ vi.mock('../stores/authStore', () => ({
     getState: () => ({
       setWallpaper: mocks.setWallpaper,
       setWallpaperMode: mocks.setWallpaperMode,
+      initialized: mocks.authState.initialized,
+      user: mocks.authState.user,
     }),
+    // The real store is a zustand store; tests drive its notifications by
+    // hand through these listeners (used by the preview-asset sweep hook).
+    subscribe: (listener: () => void) => {
+      mocks.authListeners.push(listener);
+      return () => {};
+    },
   },
 }));
 
@@ -81,6 +103,16 @@ const SEED_APPEARANCE = {
 };
 
 const OLD_PACK = { name: 'Old Pack', sounds: { click: '/api/sounds/u1/old/click.mp3' } };
+
+/** sessionStorage key the preview-asset ledger keeps its record under. */
+const PREVIEW_ASSET_KEY = 'eternalos-estheme-preview-assets';
+
+const flushAsync = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** Simulate an auth-store notification (what the store fires on app boot / login). */
+const notifyAuth = () => {
+  for (const listener of mocks.authListeners) listener();
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -104,6 +136,9 @@ beforeEach(() => {
   mocks.deleteCursor.mockResolvedValue({ success: true });
   mocks.deleteSound.mockResolvedValue({ success: true });
   mocks.apiConfigured.value = true;
+  mocks.sessionBacking.clear();
+  mocks.authState.initialized = false;
+  mocks.authState.user = null;
 
   useAppearanceStore.getState().loadAppearance({ ...SEED_APPEARANCE });
   useSoundStore.getState().setCustomSoundPack({ ...OLD_PACK, sounds: { ...OLD_PACK.sounds } });
@@ -329,6 +364,125 @@ describe('revert — exact restore', () => {
 
     await useEsthemePreviewStore.getState().revert();
     expect(useAppearanceStore.getState().appearance).toEqual(snapshotBefore);
+  });
+});
+
+describe('preview-asset ledger — uploads are never orphaned silently', () => {
+  // The banner's whole contract: files uploaded before Keep/Revert are
+  // recorded in sessionStorage as they land, the record is cleared when the
+  // preview resolves (Keep adopts / Revert deletes), and a page load that
+  // finds leftover ids sweeps them through the normal delete routes.
+
+  const recordRaw = (): string | null => mocks.sessionBacking.get(PREVIEW_ASSET_KEY) ?? null;
+
+  const simulatePageDeath = () => {
+    // A dead preview: the module state is fresh but the record (like real
+    // sessionStorage) survived the "reload".
+    useEsthemePreviewStore.setState({ status: 'idle', info: null, error: null });
+  };
+
+  test('each successful upload lands in the abandoned-asset ledger', async () => {
+    await useEsthemePreviewStore.getState().beginImport(await buildFullThemeBundle());
+    expect(recordRaw()).toBe(
+      JSON.stringify({
+        cursors: ['cur-default', 'cur-pointer'],
+        sounds: ['snd-click', 'snd-windowOpen'],
+      }),
+    );
+  });
+
+  test('uploads that never succeed are never ledgered', async () => {
+    mocks.uploadCursor.mockRejectedValue(new Error('quota'));
+    mocks.uploadSound.mockRejectedValue(new Error('quota'));
+    await useEsthemePreviewStore.getState().beginImport(await buildFullThemeBundle());
+    expect(mocks.sessionBacking.has(PREVIEW_ASSET_KEY)).toBe(false);
+  });
+
+  test('Keep clears the ledger as it adopts the uploads', async () => {
+    await useEsthemePreviewStore.getState().beginImport(await buildFullThemeBundle());
+    const kept = await useEsthemePreviewStore.getState().keep();
+    expect(kept).toBe(true);
+    expect(mocks.sessionBacking.has(PREVIEW_ASSET_KEY)).toBe(false);
+  });
+
+  test('a refused Keep clears the ledger, and the still-active preview still resolves it (retry or revert)', async () => {
+    await useEsthemePreviewStore.getState().beginImport(await buildFullThemeBundle());
+    mocks.updateProfile.mockRejectedValueOnce(new Error('offline'));
+    const kept = await useEsthemePreviewStore.getState().keep();
+    expect(kept).toBe(false);
+    // The record is dropped the moment Keep commits to adopting the uploads —
+    // a later sweep must never delete assets the profile may now own.
+    expect(mocks.sessionBacking.has(PREVIEW_ASSET_KEY)).toBe(false);
+
+    // The preview is still active, so Revert remains the exact cleanup path.
+    await useEsthemePreviewStore.getState().revert();
+    expect(mocks.deleteCursor).toHaveBeenCalledWith('cur-default');
+    expect(mocks.deleteSound).toHaveBeenCalledWith('snd-click');
+  });
+
+  test('Revert clears the ledger alongside deleting the uploads', async () => {
+    await useEsthemePreviewStore.getState().beginImport(await buildFullThemeBundle());
+    await useEsthemePreviewStore.getState().revert();
+    expect(mocks.deleteCursor).toHaveBeenCalledWith('cur-default');
+    expect(mocks.deleteCursor).toHaveBeenCalledWith('cur-pointer');
+    expect(mocks.deleteSound).toHaveBeenCalledWith('snd-click');
+    expect(mocks.deleteSound).toHaveBeenCalledWith('snd-windowOpen');
+    expect(mocks.sessionBacking.has(PREVIEW_ASSET_KEY)).toBe(false);
+  });
+
+  test('the app-start sweep never fires without a signed-in session', async () => {
+    // Deletes without a session token would 401 and log the user out — the
+    // record must wait for a signed-in start.
+    await useEsthemePreviewStore.getState().beginImport(await buildFullThemeBundle());
+    simulatePageDeath();
+    mocks.deleteCursor.mockClear();
+    mocks.deleteSound.mockClear();
+
+    mocks.authState.initialized = true;
+    mocks.authState.user = null;
+    notifyAuth();
+    await flushAsync();
+
+    expect(mocks.deleteCursor).not.toHaveBeenCalled();
+    expect(mocks.deleteSound).not.toHaveBeenCalled();
+    expect(mocks.sessionBacking.has(PREVIEW_ASSET_KEY)).toBe(true); // kept for a signed-in start
+  });
+
+  test('demo mode (no API) never sweeps either — the record waits', async () => {
+    await useEsthemePreviewStore.getState().beginImport(await buildFullThemeBundle());
+    simulatePageDeath();
+    mocks.deleteCursor.mockClear();
+    mocks.deleteSound.mockClear();
+
+    mocks.apiConfigured.value = false;
+    mocks.authState.initialized = true;
+    mocks.authState.user = { uid: 'demo-user' };
+    notifyAuth();
+    await flushAsync();
+
+    expect(mocks.deleteCursor).not.toHaveBeenCalled();
+    expect(mocks.sessionBacking.has(PREVIEW_ASSET_KEY)).toBe(true);
+  });
+
+  test('app start sweeps the ids a dead preview left behind, once, when a signed-in session appears', async () => {
+    await useEsthemePreviewStore.getState().beginImport(await buildFullThemeBundle());
+    simulatePageDeath();
+    mocks.deleteCursor.mockClear();
+    mocks.deleteSound.mockClear();
+
+    mocks.authState.initialized = true;
+    mocks.authState.user = { uid: 'u1' };
+    notifyAuth();
+    notifyAuth(); // a second notification must not re-sweep
+    await flushAsync();
+
+    expect(mocks.deleteCursor).toHaveBeenCalledTimes(2);
+    expect(mocks.deleteCursor).toHaveBeenCalledWith('cur-default');
+    expect(mocks.deleteCursor).toHaveBeenCalledWith('cur-pointer');
+    expect(mocks.deleteSound).toHaveBeenCalledTimes(2);
+    expect(mocks.deleteSound).toHaveBeenCalledWith('snd-click');
+    expect(mocks.deleteSound).toHaveBeenCalledWith('snd-windowOpen');
+    expect(mocks.sessionBacking.has(PREVIEW_ASSET_KEY)).toBe(false);
   });
 });
 

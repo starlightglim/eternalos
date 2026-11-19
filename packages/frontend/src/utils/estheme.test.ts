@@ -1,4 +1,5 @@
-import { expect, test, describe } from 'vitest';
+import { expect, test, describe, vi } from 'vitest';
+import JSZip from 'jszip';
 import {
   validateManifest,
   validateManifestAgainstFiles,
@@ -6,10 +7,19 @@ import {
   parseEsthemeBundle,
   isSafeBundlePath,
   cursorSlotPath,
+  MAX_MANIFEST_BYTES,
   type EsthemeManifest,
   type EsthemeBuildInput,
 } from './estheme';
-import { buildFullThemeBundle, buildTestBundle, TEST_META, PNG_BYTES, FULL_THEME_FILES } from '../estheme/bundleFixtures';
+import {
+  buildFullThemeBundle,
+  buildTestBundle,
+  buildDeflatedTestBundle,
+  withLyingDeclaredSizes,
+  TEST_META,
+  PNG_BYTES,
+  FULL_THEME_FILES,
+} from '../estheme/bundleFixtures';
 
 // A minimal valid manifest head (everything except the derived `layers`).
 const meta: Omit<EsthemeManifest, 'layers'> = {
@@ -392,14 +402,6 @@ describe('parseEsthemeBundle hostile-input hardening', () => {
     await expect(parseEsthemeBundle(buf)).rejects.toThrow(/unsafe entry path/);
   });
 
-  test('rejects a bundle whose expanded content exceeds the limit', async () => {
-    // 11MB of zeros deflates to almost nothing — the extracted-size cap is
-    // what catches it, not the zip's byte size.
-    const bomb = new Uint8Array(11 * 1024 * 1024);
-    const buf = await buildTestBundle({ css: 'theme.css' }, { 'theme.css': 'body {}', 'big.bin': bomb });
-    await expect(parseEsthemeBundle(buf)).rejects.toThrow(/expanded content exceeds/);
-  });
-
   test('rejects a bundle with more entries than the file cap', async () => {
     const files: Record<string, string> = { 'theme.css': 'body {}' };
     for (let i = 0; i < 80; i++) files[`filler/${i}.txt`] = 'x';
@@ -410,5 +412,124 @@ describe('parseEsthemeBundle hostile-input hardening', () => {
   test('a manifest declaring a path-traversal layer is still rejected by the schema', async () => {
     const buf = await buildTestBundle({ css: '../../etc/passwd' }, { 'theme.css': 'body {}' });
     await expect(parseEsthemeBundle(buf)).rejects.toThrow(/Invalid manifest/);
+  });
+});
+
+describe('parseEsthemeBundle zip-bomb hardening', () => {
+  // Which rejection path fired is observable through ZipObject#internalStream
+  // (the streaming read every inflated byte goes through, jszip@3.10.1): a
+  // spy that was never called means the bundle was turned away at the
+  // central directory, BEFORE any inflate work.
+  const spyOnInflate = () => {
+    const zip = new JSZip();
+    zip.file('probe', 'x');
+    return vi.spyOn(Object.getPrototypeOf(zip.files['probe']), 'internalStream');
+  };
+
+  // Pseudorandom (xorshift32), effectively incompressible bytes: honest
+  // declared sizes that no size or ratio gate can object to individually.
+  const noisyBytes = (length: number): Uint8Array => {
+    const out = new Uint8Array(length);
+    let x = 0x9e3779b9;
+    for (let i = 0; i < length; i++) {
+      x ^= x << 13;
+      x ^= x >>> 17;
+      x ^= x << 5;
+      out[i] = (x >>> 24) & 0xff;
+    }
+    return out;
+  };
+
+  test('rejects a single entry whose declared size alone exceeds the cap, without inflating', async () => {
+    const inflate = spyOnInflate();
+    // 11MB of zeros deflates to almost nothing — the classic bomb. The
+    // central directory declares the full 11MB, so the pre-inflation gate
+    // rejects it without any inflate work.
+    const bomb = new Uint8Array(11 * 1024 * 1024);
+    const buf = await buildTestBundle({ css: 'theme.css' }, { 'theme.css': 'body {}', 'big.bin': bomb });
+    await expect(parseEsthemeBundle(buf)).rejects.toThrow(
+      /"big\.bin" declares 11MB of content, over the 10MB limit/,
+    );
+    expect(inflate).not.toHaveBeenCalled();
+  });
+
+  test('rejects entries whose declared sizes sum over the cap, without inflating', async () => {
+    const inflate = spyOnInflate();
+    // Two 5.5MB incompressible entries: each passes the per-entry cap and
+    // the ratio gate, but 11MB declared together is over the bundle cap.
+    const buf = await buildTestBundle(
+      { css: 'theme.css' },
+      { 'theme.css': 'body {}', 'a.bin': noisyBytes(5.5 * 1024 * 1024), 'b.bin': noisyBytes(5.5 * 1024 * 1024) },
+    );
+    await expect(parseEsthemeBundle(buf)).rejects.toThrow(
+      /entries declare 11MB of content in total, over the 10MB limit/,
+    );
+    expect(inflate).not.toHaveBeenCalled();
+  });
+
+  test('rejects a big entry declaring an implausible compression ratio, without inflating', async () => {
+    const inflate = spyOnInflate();
+    // 4KB of zeros next to a directory claiming 2MB uncompressed — a >100:1
+    // claim for a >1MB entry is a bomb signature no honest theme matches.
+    const honest = await buildDeflatedTestBundle(
+      { css: 'theme.css' },
+      { 'theme.css': 'body {}', 'big.bin': new Uint8Array(4096) },
+    );
+    const buf = await withLyingDeclaredSizes(honest, { 'big.bin': 2 * 1024 * 1024 });
+    await expect(parseEsthemeBundle(buf)).rejects.toThrow(/implausible for theme assets/);
+    expect(inflate).not.toHaveBeenCalled();
+  });
+
+  test('a bundle whose declared sizes lie is aborted mid-stream once the running total passes the cap', async () => {
+    const inflate = spyOnInflate();
+    // Declares 1KB — small enough to pass every central-directory check —
+    // but actually inflates to 11MB. Only the streaming cap can stop it, and
+    // the stop happens DURING inflation, not before it.
+    const honest = await buildDeflatedTestBundle(
+      { css: 'theme.css' },
+      { 'theme.css': 'body {}', 'big.bin': new Uint8Array(11 * 1024 * 1024) },
+    );
+    const buf = await withLyingDeclaredSizes(honest, { 'big.bin': 1024 });
+    await expect(parseEsthemeBundle(buf)).rejects.toThrow(
+      /"big\.bin" inflates the bundle past the 10MB content limit/,
+    );
+    expect(inflate).toHaveBeenCalled();
+  });
+
+  test('rejects an oversized manifest by its declared size, without inflating', async () => {
+    const inflate = spyOnInflate();
+    const buf = await buildTestBundle(
+      { css: 'theme.css' },
+      { 'theme.css': 'body {}' },
+      { description: 'x'.repeat(MAX_MANIFEST_BYTES + 1024) },
+    );
+    await expect(parseEsthemeBundle(buf)).rejects.toThrow(
+      /manifest\.json declares \d+KB, over the 256KB limit/,
+    );
+    expect(inflate).not.toHaveBeenCalled();
+  });
+
+  test('a manifest that lies about its size is aborted mid-stream at the manifest cap', async () => {
+    const inflate = spyOnInflate();
+    // The manifest declares 64 bytes but actually inflates to ~300KB —
+    // the streaming manifest cap cuts it off instead of parsing it.
+    const honest = await buildDeflatedTestBundle(
+      { css: 'theme.css' },
+      { 'theme.css': 'body {}' },
+      { description: 'x'.repeat(300 * 1024) },
+    );
+    const buf = await withLyingDeclaredSizes(honest, { 'manifest.json': 64 });
+    await expect(parseEsthemeBundle(buf)).rejects.toThrow(/manifest\.json inflates past the 256KB limit/);
+    expect(inflate).toHaveBeenCalled();
+  });
+
+  test('a bundle just under the cap still parses intact', async () => {
+    // The boundary cuts both ways: 9.5MB of honest incompressible content
+    // must come through the streaming read unchanged.
+    const payload = noisyBytes(9.5 * 1024 * 1024);
+    const buf = await buildTestBundle({ css: 'theme.css' }, { 'theme.css': 'body {}', 'big.bin': payload });
+    const parsed = await parseEsthemeBundle(buf);
+    expect(parsed.files.get('big.bin')?.size).toBe(payload.length);
+    expect(await parsed.files.get('theme.css')!.text()).toBe('body {}');
   });
 });

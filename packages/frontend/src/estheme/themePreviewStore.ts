@@ -22,6 +22,12 @@
  *     cursor and sound files uploaded for the preview are best-effort deleted,
  *     mirroring the manual remove flows, so a reverted preview leaves no
  *     orphaned assets.
+ *
+ *   Orphan bookkeeping (previewAssetLedger.ts): every upload is recorded in
+ *   sessionStorage as it lands, and the record is cleared by keep()/revert().
+ *   A page load that finds leftover ids (the page died mid-preview) sweeps
+ *   them through the normal delete routes at app start, once a signed-in
+ *   session exists — see the sweep hook at the bottom of this module.
  */
 
 import { create } from 'zustand';
@@ -31,6 +37,12 @@ import {
   mimeForAsset,
   type EsthemeImportPlan,
 } from './importEstheme';
+import {
+  recordPreviewCursor,
+  recordPreviewSound,
+  clearPreviewAssetRecord,
+  sweepAbandonedPreviewAssets,
+} from './previewAssetLedger';
 import { useAppearanceStore, type CustomAppearance } from '../stores/appearanceStore';
 import { useSoundStore, type SoundPack } from '../stores/soundStore';
 import { useAuthStore } from '../stores/authStore';
@@ -117,13 +129,15 @@ export const useEsthemePreviewStore = create<EsthemePreviewState>((set, get) => 
     });
     // Best-effort cleanup of the assets the preview uploaded — mirrors the
     // manual cursor/sound remove flows. A failed delete leaves an orphaned
-    // (inert) file, never a wrong mapping.
+    // (inert) file, never a wrong mapping. The sessionStorage ledger is
+    // cleared with them: these ids are resolved, not abandoned.
     for (const cursorId of active.uploadedCursorIds) {
       deleteCursor(cursorId).catch(() => {});
     }
     for (const soundId of active.uploadedSoundIds) {
       deleteSound(soundId).catch(() => {});
     }
+    clearPreviewAssetRecord();
   };
 
   return {
@@ -171,6 +185,9 @@ export const useEsthemePreviewStore = create<EsthemePreviewState>((set, get) => 
                 const file = new File([cursor.blob], cursor.filename, { type: mime });
                 const result = await uploadCursor(file, cursor.state, cursor.hotspotX, cursor.hotspotY);
                 uploadedCursorIds.push(result.asset.cursorId);
+                // Ledger the id the moment the upload lands — a page death
+                // mid-preview must leave a sweepeable record, not an R2 orphan.
+                recordPreviewCursor(result.asset.cursorId);
                 cursorTokens[cursor.state] =
                   `${getCursorUrl(result.asset.url)}|${cursor.hotspotX}|${cursor.hotspotY}`;
               } catch (e) {
@@ -194,6 +211,7 @@ export const useEsthemePreviewStore = create<EsthemePreviewState>((set, get) => 
                 const file = new File([sound.blob], sound.filename, { type: mime });
                 const result = await uploadSound(file, sound.type);
                 uploadedSoundIds.push(result.asset.soundId);
+                recordPreviewSound(result.asset.soundId);
                 sounds[sound.type] = result.asset.url;
               } catch (e) {
                 warnings.push(
@@ -237,6 +255,12 @@ export const useEsthemePreviewStore = create<EsthemePreviewState>((set, get) => 
       if (get().status !== 'active' || !session) return false;
       const active = session;
       set({ status: 'keeping' });
+      // The uploads are being adopted by the saved profile — take them off
+      // the abandoned-asset ledger BEFORE the first save attempt, so a crash
+      // mid-Keep can never leave a record that a later sweep would delete
+      // just-owned assets from. A refused Keep simply reverts (which deletes
+      // through the session's own id list), so nothing is lost either way.
+      clearPreviewAssetRecord();
       const failures: string[] = [];
 
       // 1. Appearance (tokens, CSS, variants, cursor tokens, lineage) — the
@@ -312,3 +336,42 @@ export const useEsthemePreviewStore = create<EsthemePreviewState>((set, get) => 
     clearError: () => set({ error: null }),
   };
 });
+
+// ---------------------------------------------------------------------------
+// App-start sweep of abandoned preview assets
+// ---------------------------------------------------------------------------
+
+/**
+ * Fire the abandoned-asset sweep once per page load, at the moment a signed-in
+ * session exists (auth rehydrates from localStorage on boot; deletes need its
+ * token — without one every call would 401 and log the user out). The sweep
+ * itself is a no-op unless a previous page load left recorded ids behind.
+ */
+let previewAssetSweepStarted = false;
+
+function maybeSweepAbandonedPreviewAssets(): void {
+  if (previewAssetSweepStarted) return;
+  if (!isApiConfigured) return;
+  const { initialized, user } = useAuthStore.getState();
+  if (!initialized || !user) return;
+  previewAssetSweepStarted = true;
+  void sweepAbandonedPreviewAssets().catch(() => {
+    // Best-effort by contract — a failed sweep leaves the same inert orphans
+    // the manual remove flows tolerate.
+  });
+}
+
+// The auth store flips `initialized`/`user` when the app boots (App.tsx's
+// initialize effect) and again on login — subscribe so the sweep fires
+// whenever that first happens, including after this lazily-loaded module's
+// code is evaluated mid-session. The subscribe guard keeps non-zustand test
+// mocks (which only implement getState) importable.
+const authSubscribe = (useAuthStore as unknown as {
+  subscribe?: (listener: () => void) => () => void;
+}).subscribe;
+if (typeof authSubscribe === 'function') {
+  authSubscribe(() => {
+    maybeSweepAbandonedPreviewAssets();
+  });
+}
+maybeSweepAbandonedPreviewAssets();
