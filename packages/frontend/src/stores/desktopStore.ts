@@ -359,14 +359,21 @@ export const useDesktopStore = create<DesktopStore>()((set, get, api) => {
 
   // Arrange the un-trashed items of one parent into grid columns (max ~8
   // per column) and persist the new positions. Shared by Clean Up and the
-  // three sort orders. Every position write goes through the per-item
-  // write queue (persistItemMutation), so each item's save keeps its
-  // per-item order — an earlier in-flight save for that item settles
-  // first, and a later drag queues behind — and a refused write rolls that
-  // item back to its acknowledged position, surfacing one shared
-  // "Sync Failed" for the batch. A batch that partially fails leaves the
-  // succeeded items arranged (the server really holds those positions) and
-  // reverts only the refused ones.
+  // three sort orders. The arrangement is ONE batched `apiUpdateItems`
+  // call (same request shape as the original fire-and-forget save — the
+  // API's 300 req/min limit means a per-item fan-out would self-throttle a
+  // large sort into 429s), but registered in EVERY affected item's write
+  // queue: the request fires exactly once, when the last affected item's
+  // queue turn comes — so it can never overtake an earlier in-flight save
+  // for any of its items, and any write those items queue later (a drag)
+  // lands behind it — and every queue entry awaits the same shared
+  // outcome, so that per-item ordering is real.
+  //
+  // Refusal is all-or-nothing: the server's PATCH handler applies the
+  // whole batch or (401/429/5xx/network) none of it, so a refused batch
+  // reverts every item to its acknowledged position — except items a
+  // newer interaction already re-touched — and surfaces one shared
+  // "Sync Failed"; a success advances every item's acknowledged snapshot.
   const arrangeAndPersist = (
     parentId: string | null,
     compare: (a: DesktopItem, b: DesktopItem) => number,
@@ -400,12 +407,37 @@ export const useDesktopStore = create<DesktopStore>()((set, get, api) => {
     cacheItems(newItems);
 
     const version = currentDesktopSession();
+    // The single batched request. `fireBatch` is called exactly once — by
+    // the queue entry whose turn comes last — and every entry (including
+    // that one) awaits the shared `batchSettled` promise, holding its
+    // item's queue slot open until the batch settles.
+    const updates = updatedItems.map((item) => ({
+      id: item.id,
+      updates: { position: item.position },
+    }));
+    let turnsLeft = updatedItems.length;
+    let fireBatch!: (request: Promise<unknown>) => void;
+    const batchSettled = new Promise<unknown>((resolve) => {
+      fireBatch = resolve;
+    });
+    let refused = false;
+
     const writes = updatedItems.map((item) =>
-      persistItemMutation(item.id, () =>
-        apiUpdateItems([{ id: item.id, updates: { position: item.position } }])
-      )
+      persistItemMutation(item.id, () => {
+        turnsLeft -= 1;
+        if (turnsLeft === 0) {
+          // Every affected item's queue reached the batch: send it once.
+          fireBatch(apiUpdateItems(updates));
+        }
+        // Entries whose turn came earlier await the same request. If the
+        // session dies before the last turn, `turnsLeft` never reaches 0
+        // and this promise never settles — harmless: the dead session's
+        // queues are dropped whole (resetItemSync), and no snapshot or
+        // alert may advance for it anyway.
+        return batchSettled;
+      })
         .then((savedInSession) => {
-          // The server now holds this arranged position.
+          // The batch landed: the server now holds every arranged position.
           if (savedInSession) {
             noteAcknowledgedWrite(item.id, { position: item.position });
           }
@@ -414,10 +446,12 @@ export const useDesktopStore = create<DesktopStore>()((set, get, api) => {
           return false;
         })
         .catch((error) => {
-          // This item's write was refused (offline/401/429/500). Revert it
-          // to the acknowledged position — unless a newer interaction (a
-          // drag) already moved it after the sort — and remember the
-          // failure so the batch surfaces one shared error.
+          // The whole batch was refused (offline/401/429/500): nothing was
+          // applied server-side. Revert this item to its acknowledged
+          // position — unless a newer interaction (a drag) already moved
+          // it after the sort — and remember the refusal so the batch
+          // surfaces one shared error.
+          refused = true;
           console.error(`Failed to update positions during ${operation}:`, error);
           if (version === currentDesktopSession()) {
             const displayed = get().getItem(item.id);
@@ -433,9 +467,9 @@ export const useDesktopStore = create<DesktopStore>()((set, get, api) => {
           return true;
         })
     );
-    void Promise.all(writes).then((failures) => {
+    void Promise.all(writes).then(() => {
       if (version !== currentDesktopSession()) return;
-      if (failures.some(Boolean)) {
+      if (refused) {
         showError('Could not save the new arrangement. It has been reverted.', 'Sync Failed');
       }
     });

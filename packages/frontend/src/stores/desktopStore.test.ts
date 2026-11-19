@@ -554,8 +554,12 @@ test.each(arrangements)(
       expect(store.getItem(id)?.position).toEqual(position);
     }
     await vi.advanceTimersByTimeAsync(0);
-    // Every write was refused: each item rolls back to its acknowledged
-    // position, and one shared error surfaces for the batch.
+    // The whole arrangement was one refused request: every item rolls back
+    // to its acknowledged position, and one shared error surfaces.
+    expect(api.updateItems).toHaveBeenCalledTimes(1);
+    expect(api.updateItems).toHaveBeenCalledWith(
+      arranged.map(([id, position]) => ({ id, updates: { position } }))
+    );
     for (const item of sortSeed) {
       expect(store.getItem(item.id)?.position).toEqual(item.position);
     }
@@ -572,6 +576,7 @@ test.each(failures)('sort: a forced %s failure reverts the arrangement and surfa
   store.setItems(sortSeed.map((item) => ({ ...item })));
   store.sortByName(null);
   await vi.advanceTimersByTimeAsync(0);
+  expect(api.updateItems).toHaveBeenCalledTimes(1);
   for (const item of sortSeed) {
     expect(store.getItem(item.id)?.position).toEqual(item.position);
   }
@@ -581,19 +586,24 @@ test.each(failures)('sort: a forced %s failure reverts the arrangement and surfa
   );
 });
 
-test('a successful sort persists each arranged position through the item write queue', async () => {
+test('a successful sort persists the whole arrangement as one batched, queued write', async () => {
   api.updateItems.mockResolvedValue([]);
   const store = useDesktopStore.getState();
   store.setItems(sortSeed.map((item) => ({ ...item })));
   store.sortByName(null);
   await vi.advanceTimersByTimeAsync(0);
-  // Each item's position reached the server as its own queued write,
-  // keeping per-item write order — not one fire-and-forget batch.
-  expect(api.updateItems).toHaveBeenCalledWith([{ id: 'note-a', updates: { position: { x: 0, y: 0 } } }]);
-  expect(api.updateItems).toHaveBeenCalledWith([{ id: 'note-b', updates: { position: { x: 0, y: 1 } } }]);
-  expect(api.updateItems).toHaveBeenCalledWith([{ id: 'note-c', updates: { position: { x: 0, y: 2 } } }]);
-  // And the acknowledged snapshot holds the arranged positions.
+  // One request carries the whole arrangement — a per-item fan-out would
+  // self-throttle a large sort into the API's 300 req/min limit…
+  expect(api.updateItems).toHaveBeenCalledTimes(1);
+  expect(api.updateItems).toHaveBeenCalledWith([
+    { id: 'note-a', updates: { position: { x: 0, y: 0 } } },
+    { id: 'note-b', updates: { position: { x: 0, y: 1 } } },
+    { id: 'note-c', updates: { position: { x: 0, y: 2 } } },
+  ]);
+  // …and the acknowledged snapshot holds every arranged position.
   expect(getAcknowledgedItem('note-a')?.position).toEqual({ x: 0, y: 0 });
+  expect(getAcknowledgedItem('note-b')?.position).toEqual({ x: 0, y: 1 });
+  expect(getAcknowledgedItem('note-c')?.position).toEqual({ x: 0, y: 2 });
   expect(store.getItem('note-c')?.position).toEqual({ x: 0, y: 2 });
 });
 
@@ -609,18 +619,53 @@ test('a sort waits for an earlier in-flight save on the same item', async () => 
   await vi.advanceTimersByTimeAsync(600); // the drag save fires, still pending
   store.sortByName(null);
   await vi.advanceTimersByTimeAsync(0);
-  // note-a's and note-b's writes ran (nothing queued ahead of them);
-  // note-c's arranged write waits behind its in-flight drag save instead
-  // of overtaking it — the old fire-and-forget batch could land before the
-  // drag, letting the stale drag position clobber the arrangement.
-  expect(api.updateItems).toHaveBeenCalledTimes(3);
-  expect(api.updateItems).not.toHaveBeenCalledWith([{ id: 'note-c', updates: { position: { x: 0, y: 2 } } }]);
+  // The batch is registered in every item's write queue and fires only
+  // when each item's turn comes, so it cannot overtake note-c's in-flight
+  // drag save: nothing but that save has been sent.
+  expect(api.updateItems).toHaveBeenCalledTimes(1);
   acknowledge();
   await vi.advanceTimersByTimeAsync(0);
-  // Now the arranged write for note-c lands — after the drag save settled.
-  expect(api.updateItems).toHaveBeenCalledWith([{ id: 'note-c', updates: { position: { x: 0, y: 2 } } }]);
-  expect(api.updateItems).toHaveBeenCalledTimes(4);
+  // The drag save settles first, then the whole arrangement follows as
+  // one batched write — the stale drag position can never clobber it.
+  expect(api.updateItems).toHaveBeenCalledTimes(2);
+  expect(api.updateItems).toHaveBeenLastCalledWith([
+    { id: 'note-a', updates: { position: { x: 0, y: 0 } } },
+    { id: 'note-b', updates: { position: { x: 0, y: 1 } } },
+    { id: 'note-c', updates: { position: { x: 0, y: 2 } } },
+  ]);
   expect(store.getItem('note-c')?.position).toEqual({ x: 0, y: 2 });
+});
+
+test('a drag issued while a sort is pending lands after the arrangement', async () => {
+  // note-c's earlier save hangs, so the arranged batch is still waiting for
+  // its queue turn when the user drags note-b elsewhere.
+  let acknowledge!: () => void;
+  api.updateItems.mockImplementationOnce(() => new Promise<void>((resolve) => { acknowledge = resolve; }));
+  api.updateItems.mockResolvedValue([]);
+  const store = useDesktopStore.getState();
+  store.setItems(sortSeed.map((item) => ({ ...item })));
+  store.moveItem('note-c', { x: 9, y: 9 });
+  await vi.advanceTimersByTimeAsync(600); // note-c's save is in flight
+  store.sortByName(null);
+  // The user drags note-b away while the batch waits for note-c's save.
+  store.moveItem('note-b', { x: 8, y: 8 });
+  await vi.advanceTimersByTimeAsync(600); // note-b's save queues behind the batch
+  acknowledge(); // note-c's in-flight save settles -> the batch fires
+  await vi.advanceTimersByTimeAsync(0);
+  // The arrangement landed as one write, and note-b's queued drag save
+  // landed after it — the batch never clobbers a newer interaction.
+  expect(api.updateItems).toHaveBeenCalledTimes(3);
+  expect(api.updateItems).toHaveBeenNthCalledWith(2, [
+    { id: 'note-a', updates: { position: { x: 0, y: 0 } } },
+    { id: 'note-b', updates: { position: { x: 0, y: 1 } } },
+    { id: 'note-c', updates: { position: { x: 0, y: 2 } } },
+  ]);
+  expect(api.updateItems).toHaveBeenNthCalledWith(3, [
+    { id: 'note-b', updates: { position: { x: 8, y: 8 } } },
+  ]);
+  // note-b shows the user's newer drag, and the server ends there too.
+  expect(store.getItem('note-b')?.position).toEqual({ x: 8, y: 8 });
+  expect(getAcknowledgedItem('note-b')?.position).toEqual({ x: 8, y: 8 });
 });
 
 // ---------------------------------------------------------------------------
