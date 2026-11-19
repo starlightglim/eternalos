@@ -44,6 +44,20 @@
   color: var(--selection-text);
 }
 
+/* Keyboard focus (F10 / arrow navigation): the same classic inverted
+   highlight, driven by the same theme variables. focus-visible only, so
+   mouse users never see a lingering highlight. */
+.menuItem:focus-visible {
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
+  outline: none;
+}
+
+/* When focused, invert the apple icon too (matches the hover/active rule) */
+.menuItem:focus-visible .appleIconSvg {
+  filter: invert(1);
+}
+
 /* Apple logo menu (leftmost) */
 .appleMenu {
   padding: 0 6px;
@@ -100,6 +114,14 @@
   color: var(--selection-text);
 }
 
+/* Keyboard focus: the highlight IS the focus indicator for arrow-key
+   navigation (same approach as ContextMenu) — theme variables only. */
+.dropdownItem:focus-visible {
+  background: var(--accent, var(--selection));
+  color: var(--selection-text);
+  outline: none;
+}
+
 /* Disabled state */
 .dropdownItem.disabled {
   color: var(--text-muted);
@@ -118,6 +140,12 @@
   padding: 0;
   background: var(--control-border);
   border: none;
+}
+
+/* Checkmark for toggleable (menuitemcheckbox) entries */
+.checkmark {
+  margin-right: 4px;
+  font-size: 10px;
 }
 
 /* Shortcut hint (right-aligned) */
