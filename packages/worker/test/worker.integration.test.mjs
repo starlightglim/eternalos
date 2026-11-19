@@ -277,6 +277,121 @@ function createTestCartridge(version = '1.0.0') {
   };
 }
 
+// --- Agent chat over WebSocket (per-account AI controls) ------------------
+//
+// The chat transport has no HTTP status: the client opens a WS to
+// /api/agent/chat (Bearer + allowed Origin) and drives turns with
+// cf_agent_use_chat_request frames, reading cf_agent_use_chat_response
+// frames until done. The test worker has no [ai] binding, so every admitted
+// turn fails at the provider — exactly the degraded path the per-account
+// controls must handle legibly (friendly message, terminated stream, slot
+// released for the next turn).
+
+function openAgentChatSocket(user, threadId) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(
+      `ws://${worker.address || '127.0.0.1'}:${worker.port}/api/agent/chat?threadId=${threadId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${user.token}`,
+          Origin: 'http://localhost:5173',
+          'CF-Connecting-IP': `agentchat-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        },
+      }
+    );
+    socket.on('error', (error) => reject(error));
+    socket.on('open', () => {
+      socket.removeAllListeners('error');
+      // Post-open socket noise (close races, keep-alive pings) must not
+      // surface as unhandled errors between turns.
+      socket.on('error', () => {});
+      resolve(socket);
+    });
+  });
+}
+
+function sendChatTurn(socket, requestId, text, threadId) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let errorFrameText = null;
+    let settled = false;
+
+    const errorText = () => {
+      const errorChunk = chunks.find((chunk) => chunk && chunk.type === 'error');
+      return errorChunk?.errorText ?? errorFrameText ?? null;
+    };
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      socket.off('message', onMessage);
+      resolve({ chunks, errorText: errorText(), done: true });
+    };
+    const onMessage = (data) => {
+      let frame;
+      try {
+        frame = JSON.parse(data.toString());
+      } catch {
+        return;
+      }
+      if (frame.type !== 'cf_agent_use_chat_response' || frame.id !== requestId) return;
+      if (frame.error) {
+        // The error broadcast frame carries the message; the stream still
+        // terminates with its own done frame right after.
+        errorFrameText = frame.body || errorFrameText;
+        return;
+      }
+      if (typeof frame.body === 'string' && frame.body.trim()) {
+        try {
+          chunks.push(JSON.parse(frame.body));
+        } catch {
+          // Non-JSON noise between protocol frames — ignore.
+        }
+      }
+      if (frame.done) finish();
+    };
+
+    socket.on('message', onMessage);
+    socket.send(JSON.stringify({
+      id: requestId,
+      type: 'cf_agent_use_chat_request',
+      init: {
+        method: 'POST',
+        body: JSON.stringify({
+          messages: [
+            { id: `msg-${requestId}`, role: 'user', parts: [{ type: 'text', text }] },
+          ],
+          threadId,
+        }),
+      },
+    }));
+
+    // A turn that never terminates is precisely the failure mode these
+    // tests guard against (the stuck-spinner bug) — fail loudly instead of
+    // hanging the suite.
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      socket.off('message', onMessage);
+      reject(new Error(`chat turn ${requestId} never completed`));
+    }, 20000);
+    timeout.unref?.();
+  });
+}
+
+function closeAgentChatSocket(socket) {
+  return new Promise((resolve) => {
+    socket.removeAllListeners();
+    socket.on('close', () => resolve());
+    socket.on('error', () => resolve());
+    socket.close();
+    const force = setTimeout(() => socket.terminate(), 250);
+    force.unref?.();
+  });
+}
+
+const BUDGET_REFUSAL = /Daily AI limit reached/;
+const CONCURRENCY_REFUSAL = /up to 2 Eternal requests at once/;
+const PROVIDER_FAILURE = /AI service/;
+
 // Each test run gets a fresh, ephemeral persistence directory instead of the
 // default shared `.wrangler/state`. This keeps the suite hermetic (no state
 // leaks between runs), stops test churn (hundreds of disposable signups) from
@@ -1698,6 +1813,171 @@ describe('worker integration', () => {
     });
     assert.equal(noOrigin.status, 401);
     assert.deepEqual(JSON.parse(noOrigin.text), { error: 'Unauthorized' });
+  });
+
+  it('degrades agent chat provider failure to a legible, terminated stream', async () => {
+    const user = await signupUser();
+    const socket = await openAgentChatSocket(user, 'provider-failure');
+    try {
+      // No [ai] binding in the test worker, so the turn fails at the
+      // provider — the exact degraded path this test pins down.
+      const turn = await sendChatTurn(socket, 'pf-1', 'hello there', 'provider-failure');
+
+      // The stream terminated cleanly — a provider failure must never leave
+      // the client waiting forever (the stuck-spinner bug).
+      assert.equal(turn.done, true, 'provider-failed turn must still terminate');
+
+      // And the failure is legible: an AI-service explanation, not raw
+      // provider internals.
+      assert.match(turn.errorText ?? '', PROVIDER_FAILURE);
+      assert.doesNotMatch(turn.errorText ?? '', /undefined|Cannot read|at .*\(http/i,
+        'raw provider internals must not leak into the chat stream');
+    } finally {
+      await closeAgentChatSocket(socket);
+    }
+  });
+
+  it('enforces the per-account daily AI budget across chat and image analysis', async () => {
+    const user = await signupUser();
+    // A real uploaded image gives the analyze surface a valid target.
+    const uploadForm = new UndiciFormData();
+    uploadForm.set('file', createPngFile('budget.png'));
+    const upload = await expectOk('/api/upload', {
+      method: 'POST',
+      headers: authHeaders(user.token),
+      body: uploadForm,
+    });
+
+    const socket = await openAgentChatSocket(user, 'budget');
+    try {
+      // The test env caps accounts at 6 AI requests/day (test/worker.env).
+      // The first 6 turns are admitted — each fails at the (absent)
+      // provider but still consumes budget: attempts count.
+      for (let i = 0; i < 6; i++) {
+        const turn = await sendChatTurn(socket, `budget-${i}`, `turn ${i}`, 'budget');
+        assert.equal(turn.done, true, `budget turn ${i} must terminate`);
+        assert.doesNotMatch(turn.errorText ?? '', BUDGET_REFUSAL,
+          `budget turn ${i} should be admitted`);
+      }
+
+      // The 7th turn is refused with the friendly budget message —
+      // in-stream, since the WS transport has no HTTP status — and still
+      // terminates like any other turn.
+      const refused = await sendChatTurn(socket, 'budget-6', 'one too many', 'budget');
+      assert.equal(refused.done, true, 'the refused turn must terminate');
+      assert.match(refused.errorText ?? '', BUDGET_REFUSAL);
+      assert.match(refused.errorText ?? '', /reset/i, 'the refusal explains when the budget resets');
+
+      // The budget is per-account across surfaces: image analysis (a real
+      // AI request against the same account) now answers a clear HTTP 429
+      // with the same friendly framing and a Retry-After hint.
+      const analysis = await fetchJson(`/api/desktop/items/${upload.item.id}/analyze`, {
+        method: 'POST',
+        headers: authHeaders(user.token),
+      });
+      assert.equal(analysis.response.status, 429);
+      assert.match(analysis.body.error, BUDGET_REFUSAL);
+      const retryAfter = Number(analysis.response.headers.get('Retry-After'));
+      assert.ok(Number.isFinite(retryAfter) && retryAfter > 0,
+        'the 429 carries a positive Retry-After (seconds to the UTC reset)');
+
+      // A fresh account is unaffected — the budget is per-account, not
+      // global: its first analyze call is admitted (and fails at the
+      // absent provider, not at the budget).
+      const other = await signupUser();
+      const otherForm = new UndiciFormData();
+      otherForm.set('file', createPngFile('other-budget.png'));
+      const otherUpload = await expectOk('/api/upload', {
+        method: 'POST',
+        headers: authHeaders(other.token),
+        body: otherForm,
+      });
+      const otherAnalysis = await fetchJson(`/api/desktop/items/${otherUpload.item.id}/analyze`, {
+        method: 'POST',
+        headers: authHeaders(other.token),
+      });
+      assert.notEqual(otherAnalysis.response.status, 429,
+        'a fresh account must not inherit another account’s exhausted budget');
+    } finally {
+      await closeAgentChatSocket(socket);
+    }
+  });
+
+  it('caps concurrent agent turns per account', async () => {
+    const user = await signupUser();
+    // Threads map 1:1 to OrchestratorAgent Durable Objects, so one socket
+    // per thread is the real concurrency surface: turns on separate
+    // threads genuinely overlap, while turns on one DO are serialized by
+    // the DO's input gate. A burst across six threads therefore contends
+    // on the shared per-account guard (cap 2, the default).
+    const threads = ['cap-a', 'cap-b', 'cap-c', 'cap-d', 'cap-e', 'cap-f'];
+    const sockets = await Promise.all(threads.map((t) => openAgentChatSocket(user, t)));
+    try {
+      const ids = threads.map((_, i) => `cap-${i}`);
+      // Send the whole burst before awaiting anything, so the acquires
+      // queue while earlier turns are still in flight.
+      const pending = ids.map((id, i) => sendChatTurn(sockets[i], id, `simultaneous ${id}`, threads[i]));
+      const results = await Promise.all(pending);
+
+      const refused = results.filter((r) => CONCURRENCY_REFUSAL.test(r.errorText ?? ''));
+      const admitted = results.filter((r) => PROVIDER_FAILURE.test(r.errorText ?? ''));
+
+      // Every turn — admitted or refused — terminated with a legible
+      // outcome; none of the six can hit the 6/day test budget.
+      assert.equal(admitted.length + refused.length, 6,
+        'every turn ended in a provider failure or a cap refusal');
+      for (const result of results) {
+        assert.equal(result.done, true, 'every turn, refused or not, terminates');
+      }
+
+      // The burst must produce at least one cap refusal. (Six parallel
+      // turns each take several KV round-trips before releasing their
+      // slot, while the whole burst is sent in one write, so total
+      // serialization is not observed in practice; the strict cap math is
+      // pinned by aiUsageState.test.mjs.)
+      assert.ok(refused.length >= 1,
+        `expected at least one concurrency refusal in the burst, got ${refused.length}`);
+      assert.ok(admitted.length >= 1, 'at least one turn should run');
+    } finally {
+      await Promise.all(sockets.map((socket) => closeAgentChatSocket(socket)));
+    }
+  });
+
+  it('releases turn slots when a turn crashes, keeping the account usable', async () => {
+    const user = await signupUser();
+    // Phase 1 — a parallel burst across threads: whatever is admitted
+    // "crashes" at the (absent) provider, exercising the error-path
+    // release; whatever is refused by the cap proves slots were held.
+    const threads = ['crash-a', 'crash-b', 'crash-c', 'crash-d'];
+    const sockets = await Promise.all(threads.map((t) => openAgentChatSocket(user, t)));
+    try {
+      const ids = threads.map((_, i) => `crash-1-${i}`);
+      const burst = await Promise.all(
+        ids.map((id, i) => sendChatTurn(sockets[i], id, `burst ${id}`, threads[i]))
+      );
+      const crashed = burst.filter((r) => PROVIDER_FAILURE.test(r.errorText ?? ''));
+      assert.ok(crashed.length >= 1, 'at least one admitted turn crashed at the provider');
+      for (const result of burst) {
+        assert.equal(result.done, true, 'every burst turn terminated');
+      }
+
+      // Phase 2 — after the crashes settle, two more turns (on fresh
+      // threads) must both be admitted. If crashed turns leaked their
+      // slots, the account would be wedged at the cap instead. (A single
+      // leaked slot can slip past a cap of 2 here; the strict single-slot
+      // and lease-expiry reclamation rules are pinned by
+      // aiUsageState.test.mjs.)
+      const followUp1 = await sendChatTurn(sockets[0], 'crash-2-a', 'still usable 1', 'crash-a');
+      assert.equal(followUp1.done, true);
+      assert.match(followUp1.errorText ?? '', PROVIDER_FAILURE,
+        'the first post-crash turn must be admitted, not refused');
+      const followUp2 = await sendChatTurn(sockets[1], 'crash-2-b', 'still usable 2', 'crash-b');
+      assert.equal(followUp2.done, true);
+      assert.match(followUp2.errorText ?? '', PROVIDER_FAILURE,
+        'the second post-crash turn must be admitted, not refused');
+    } finally {
+      await Promise.all(sockets.map((socket) => closeAgentChatSocket(socket)));
+    }
   });
 
   it('preserves the legacy policies of a sample of existing routes', async () => {
