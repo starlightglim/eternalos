@@ -15,3 +15,22 @@
   display: flex;
   flex-direction: column;
 }
+
+/* ============================================
+   KEYBOARD FOCUS (title bar + window buttons)
+   The title bar and the div-based window buttons become focusable with
+   the keyboard surface; show visible focus. Attribute selectors only —
+   they apply across every chrome/button variant.
+   ============================================ */
+
+[eos-part='titlebar']:focus-visible {
+  outline: 2px solid var(--highlight);
+  outline-offset: -2px;
+}
+
+[eos-part='close']:focus-visible,
+[eos-part='zoom']:focus-visible,
+[eos-part='collapse']:focus-visible {
+  outline: 2px solid var(--highlight);
+  outline-offset: 1px;
+}
