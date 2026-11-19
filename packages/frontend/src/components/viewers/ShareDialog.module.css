@@ -128,6 +128,12 @@
   color: var(--accent, var(--selection, #000080));
 }
 
+.saveErrorIndicator {
+  font-weight: normal;
+  font-size: 10px;
+  color: var(--danger, #990000);
+}
+
 /* URL Section */
 .urlSection {
   display: flex;

@@ -386,11 +386,17 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => {
       set({ isLoading: true });
 
       try {
-        saveLocalAppearance(appearance);
-
+        // Server first: mirror the appearance into localStorage only after
+        // the PATCH is acknowledged. Persisting before the request meant a
+        // refused save (offline / 401 / 429 / 500) left the unsaved rice in
+        // localStorage as if saved — a reload painted it until the next
+        // full desktop sync.
         if (isApiConfigured) {
           await updateProfile(appearanceToProfileFields(appearance) as Parameters<typeof updateProfile>[0]);
         }
+        // Demo mode (API not configured) has no server that can refuse the
+        // save — the local mirror is the source of truth, so it still saves.
+        saveLocalAppearance(appearance);
 
         set({
           originalAppearance: appearance,
@@ -401,6 +407,9 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => {
         });
       } catch (error) {
         console.error('Failed to save appearance:', error);
+        // Nothing is committed on failure: the edit stays in `appearance`
+        // (still painted as a live preview) and `hasUnsavedChanges` keeps
+        // marking it unsaved so the caller's save-failure UX can surface it.
         set({ isLoading: false });
         throw error;
       }

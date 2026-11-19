@@ -190,6 +190,12 @@
   align-self: center;
 }
 
+.saveError {
+  font-size: 11px;
+  color: var(--danger);
+  align-self: center;
+}
+
 .noLinks {
   color: var(--text-muted);
   font-style: italic;

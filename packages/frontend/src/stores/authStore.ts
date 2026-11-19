@@ -3,7 +3,7 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { UserProfile, AuthUser } from '../types';
+import type { UserProfile, AuthUser, ProfileLink } from '../types';
 import {
   isApiConfigured,
   setAuthToken,
@@ -40,12 +40,19 @@ interface AuthActions {
   logout: () => Promise<void>;
   clearError: () => void;
   initialize: () => () => void;
-  setWallpaper: (wallpaper: string) => void;
-  setWallpaperMode: (mode: 'cover' | 'tile' | 'center') => void;
-  setBio: (bio: string) => void;
-  setProfileLinks: (links: { title: string; url: string }[]) => void;
-  setShareDescription: (desc: string) => void;
-  setAnalyticsEnabled: (enabled: boolean) => void;
+  /**
+   * Optimistic profile setters: apply the value locally, PATCH it to the
+   * server, and resolve to whether the server acknowledged the change.
+   * On failure the profile field is rolled back to the last
+   * server-acknowledged value and the promise resolves `false` (it never
+   * rejects — fire-and-forget callers must not get unhandled rejections).
+   */
+  setWallpaper: (wallpaper: string) => Promise<boolean>;
+  setWallpaperMode: (mode: 'cover' | 'tile' | 'center') => Promise<boolean>;
+  setBio: (bio: string) => Promise<boolean>;
+  setProfileLinks: (links: ProfileLink[]) => Promise<boolean>;
+  setShareDescription: (desc: string) => Promise<boolean>;
+  setAnalyticsEnabled: (enabled: boolean) => Promise<boolean>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<{ success: boolean; error?: string }>;
   changeUsername: (newUsername: string, password: string) => Promise<{ success: boolean; error?: string }>;
   sendVerificationEmail: () => Promise<{ success: boolean; error?: string }>;
@@ -66,6 +73,102 @@ function validateUsername(username: string): string | null {
     return 'Username can only contain letters, numbers, and underscores';
   }
   return null;
+}
+
+// The profile fields the optimistic setters below sync to the server.
+type SyncedProfileField =
+  | 'wallpaper'
+  | 'wallpaperMode'
+  | 'bio'
+  | 'profileLinks'
+  | 'shareDescription'
+  | 'analyticsEnabled';
+
+// Per-field PATCH serialization + rollback bookkeeping — the same discipline
+// desktopStore applies to items (persistItemMutation / positionRollback):
+//  - writes to the same field serialize, so a refusal can never land after a
+//    newer edit of that field;
+//  - the rollback target is captured once per save cycle (the last
+//    server-acknowledged value before the first un-acked edit) and is
+//    refreshed on every ack, so a failed save during a rapid edit chain
+//    reverts to where the server actually is, not to an intermediate
+//    optimistic value;
+//  - a failed PATCH reverts only if the field is unchanged since, so a stale
+//    failure never clobbers a newer edit.
+const profileWriteQueues = new Map<SyncedProfileField, Promise<boolean>>();
+const profileRollback = new Map<SyncedProfileField, unknown>();
+
+function resetProfileSyncQueues(): void {
+  profileWriteQueues.clear();
+  profileRollback.clear();
+}
+
+// Minimal store seam the helper below needs (the zustand store's set/get).
+type AuthStoreSet = (partial: Partial<AuthStore>) => void;
+type AuthStoreGet = () => AuthStore;
+
+/**
+ * Optimistically apply a profile field, then PATCH it to the server.
+ * Resolves true when the server acknowledged the change (or in demo mode,
+ * where there is no server to refuse it); resolves false after rolling the
+ * field back to the last server-acknowledged value.
+ */
+function syncProfileField(
+  set: AuthStoreSet,
+  get: AuthStoreGet,
+  field: SyncedProfileField,
+  value: unknown,
+  payload: Record<string, unknown>
+): Promise<boolean> {
+  const { profile } = get();
+  if (!profile) return Promise.resolve(false);
+
+  // Update local state immediately for responsive UI.
+  set({ profile: { ...profile, [field]: value } as UserProfile });
+
+  // Demo mode: no server to refuse the change; the local value stands.
+  if (!isApiConfigured) return Promise.resolve(true);
+
+  // Capture the rollback target once per save cycle: the last
+  // server-acknowledged value before the first un-acked edit.
+  if (!profileWriteQueues.has(field)) {
+    profileRollback.set(field, profile[field]);
+  }
+
+  const previous = profileWriteQueues.get(field) ?? Promise.resolve(true);
+  const pending: Promise<boolean> = previous.catch(() => false).then(async () => {
+    await apiUpdateProfile(payload as Parameters<typeof apiUpdateProfile>[0]);
+    return true;
+  });
+  profileWriteQueues.set(field, pending);
+
+  return pending
+    .then(() => {
+      // Acknowledged: this value is now the server-known rollback target
+      // for any edit still queued behind it.
+      profileRollback.set(field, value);
+      return true;
+    })
+    .catch((error: unknown) => {
+      console.error(`Failed to sync ${field} to backend:`, error);
+      // The server refused (offline / 401 / 429 / 500): revert to the last
+      // server-known value — unless the user edited again in the meantime,
+      // in which case this stale failure must not clobber the newer edit
+      // (it gets its own save).
+      const current = get().profile;
+      if (current && current[field] === value) {
+        set({ profile: { ...current, [field]: profileRollback.get(field) } as UserProfile });
+      }
+      return false;
+    })
+    .finally(() => {
+      // Only the last write of the cycle retires the bookkeeping — an
+      // earlier one finishing must leave it for the edits queued behind it.
+      if (profileWriteQueues.get(field) === pending) {
+        profileWriteQueues.delete(field);
+        profileRollback.delete(field);
+      }
+    });
 }
 
 // Mock user for demo mode
@@ -266,6 +369,7 @@ export const useAuthStore = create<AuthStore>()(
         }
         // Wipe every per-user cache so the next sign-in can't see the
         // previous user's items, windows, or image URLs.
+        resetProfileSyncQueues();
         useWindowStore.getState().resetOnLogout();
         useDesktopStore.getState().reset();
         clearFileToken();
@@ -281,83 +385,27 @@ export const useAuthStore = create<AuthStore>()(
       clearError: () => set({ error: null }),
 
       setWallpaper: (wallpaper: string) => {
-        const { profile } = get();
-        if (profile) {
-          // Update local state immediately for responsive UI
-          set({
-            profile: { ...profile, wallpaper },
-          });
-
-          // Sync to backend if API is configured
-          if (isApiConfigured) {
-            apiUpdateProfile({ wallpaper }).catch((error) => {
-              console.error('Failed to sync wallpaper to backend:', error);
-            });
-          }
-        }
+        return syncProfileField(set, get, 'wallpaper', wallpaper, { wallpaper });
       },
 
       setWallpaperMode: (wallpaperMode: 'cover' | 'tile' | 'center') => {
-        const { profile } = get();
-        if (profile) {
-          set({
-            profile: { ...profile, wallpaperMode },
-          });
-
-          if (isApiConfigured) {
-            apiUpdateProfile({ wallpaperMode }).catch((error) => {
-              console.error('Failed to sync wallpaper mode to backend:', error);
-            });
-          }
-        }
+        return syncProfileField(set, get, 'wallpaperMode', wallpaperMode, { wallpaperMode });
       },
 
       setBio: (bio: string) => {
-        const { profile } = get();
-        if (profile) {
-          set({ profile: { ...profile, bio } });
-          if (isApiConfigured) {
-            apiUpdateProfile({ bio }).catch((error) => {
-              console.error('Failed to sync bio to backend:', error);
-            });
-          }
-        }
+        return syncProfileField(set, get, 'bio', bio, { bio });
       },
 
-      setProfileLinks: (profileLinks: { title: string; url: string }[]) => {
-        const { profile } = get();
-        if (profile) {
-          set({ profile: { ...profile, profileLinks } });
-          if (isApiConfigured) {
-            apiUpdateProfile({ profileLinks }).catch((error) => {
-              console.error('Failed to sync profile links to backend:', error);
-            });
-          }
-        }
+      setProfileLinks: (profileLinks: ProfileLink[]) => {
+        return syncProfileField(set, get, 'profileLinks', profileLinks, { profileLinks });
       },
 
       setShareDescription: (shareDescription: string) => {
-        const { profile } = get();
-        if (profile) {
-          set({ profile: { ...profile, shareDescription } });
-          if (isApiConfigured) {
-            apiUpdateProfile({ shareDescription }).catch((error) => {
-              console.error('Failed to sync share description to backend:', error);
-            });
-          }
-        }
+        return syncProfileField(set, get, 'shareDescription', shareDescription, { shareDescription });
       },
 
       setAnalyticsEnabled: (analyticsEnabled: boolean) => {
-        const { profile } = get();
-        if (profile) {
-          set({ profile: { ...profile, analyticsEnabled } });
-          if (isApiConfigured) {
-            apiUpdateProfile({ analyticsEnabled }).catch((error) => {
-              console.error('Failed to sync analytics setting to backend:', error);
-            });
-          }
-        }
+        return syncProfileField(set, get, 'analyticsEnabled', analyticsEnabled, { analyticsEnabled });
       },
 
       changePassword: async (currentPassword: string, newPassword: string) => {
@@ -446,6 +494,7 @@ export const useAuthStore = create<AuthStore>()(
           setAuthToken(null);
           setRefreshToken(null);
           clearFileToken();
+          resetProfileSyncQueues();
           useWindowStore.getState().resetOnLogout();
           useDesktopStore.getState().reset();
           set({

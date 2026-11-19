@@ -29,7 +29,7 @@ interface QuickStartWizardProps {
 export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps) {
   const [selectedId, setSelectedId] = useState<string>(THEME_PRESETS[0].id);
   const [isApplying, setIsApplying] = useState(false);
-  const { loadAppearance, saveAppearance } = useAppearanceStore();
+  const { loadAppearance, updateAppearance, saveAppearance } = useAppearanceStore();
   const items = useDesktopStore((state) => state.items);
   const addItem = useDesktopStore((state) => state.addItem);
   const updateItem = useDesktopStore((state) => state.updateItem);
@@ -104,11 +104,36 @@ export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps
   const handleApply = useCallback(async () => {
     setIsApplying(true);
 
-    try {
-      loadAppearance({ ...selectedPreset.appearance });
-      await saveAppearance();
-      syncCustomCSSWorkspace(selectedPreset);
+    // The pre-apply rice is the last server-acknowledged appearance (loaded
+    // by the desktop sync) — the revert target if the preset save is refused.
+    const before = useAppearanceStore.getState().appearance;
 
+    // Phase 1 — the preset itself. Apply as an UNSAVED edit (loadAppearance
+    // would commit the preset to localStorage and mark it saved before the
+    // server had accepted it), then save; on refusal, revert.
+    try {
+      updateAppearance({ ...selectedPreset.appearance });
+      await saveAppearance();
+    } catch (error) {
+      console.error('Failed to apply starter preset:', error);
+      // The server refused (offline / 401 / 429 / 500): put the last
+      // acknowledged rice back so nothing unaccepted stays looking applied
+      // or saved — in the store, the DOM, or localStorage.
+      loadAppearance(before);
+      onComplete();
+      return;
+    }
+
+    // Phase 2 — the CSS snapshot workspace and the wallpaper / new-user
+    // flag. The local wallpaper is adopted only after the server records
+    // it; a refusal here leaves the profile untouched, so nothing needs
+    // reverting — the honest state is simply "not changed".
+    try {
+      syncCustomCSSWorkspace(selectedPreset);
+      await updateProfile({
+        wallpaper: selectedPreset.wallpaper,
+        isNewUser: false,
+      });
       if (profile) {
         useAuthStore.setState({
           profile: {
@@ -118,17 +143,12 @@ export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps
           },
         });
       }
-
-      await updateProfile({
-        wallpaper: selectedPreset.wallpaper,
-        isNewUser: false,
-      });
-      onComplete();
     } catch (error) {
-      console.error('Failed to apply starter preset:', error);
-      onComplete();
+      console.error('Failed to finish starter preset:', error);
     }
-  }, [loadAppearance, onComplete, profile, saveAppearance, selectedPreset, syncCustomCSSWorkspace]);
+
+    onComplete();
+  }, [loadAppearance, onComplete, profile, saveAppearance, selectedPreset, syncCustomCSSWorkspace, updateAppearance]);
 
   const handleSkip = useCallback(async () => {
     setIsApplying(true);
@@ -249,7 +269,7 @@ export function QuickStartWizard({ username, onComplete }: QuickStartWizardProps
           </button>
           <button
             className={styles.applyButton}
-            onClick={handleApply}
+            onClick={() => void handleApply()}
             disabled={isApplying}
           >
             {isApplying ? 'Applying...' : 'Apply & Continue'}
