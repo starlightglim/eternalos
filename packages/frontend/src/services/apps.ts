@@ -60,7 +60,7 @@ export interface AppVersionsResponse {
 
 // --- Source revisions -------------------------------------------------------
 
-export type AppRevisionKind = 'deploy' | 'restore' | 'backfill';
+export type AppRevisionKind = 'deploy' | 'restore' | 'rollback' | 'backfill';
 export type AppRevisionAuthor = 'human' | 'agent';
 
 export interface AppRevisionSummary {
@@ -72,7 +72,8 @@ export interface AppRevisionSummary {
   summary: string;
   /** Release version this revision deployed (valid deploys/restores). */
   appVersion?: number;
-  /** Revision a restore took its content from (kind 'restore'). */
+  /** Revision a restore took its content from (kind 'restore'), or the
+   *  revision the app rolled back FROM (kind 'rollback'). */
   parentRevision?: string;
   name?: string;
 }

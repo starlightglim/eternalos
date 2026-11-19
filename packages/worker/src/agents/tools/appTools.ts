@@ -28,6 +28,12 @@ import {
   validateAppSpec,
   type AppSpec,
 } from './appSpec';
+import {
+  ensureRevisionBaseline,
+  pruneAppRevisions,
+  writeAppRevision,
+  type AppRevisionPointers,
+} from '../../routes/appRevisions';
 
 interface AppToolsContext {
   env: Env;
@@ -110,6 +116,12 @@ interface StoredAppMetadata {
 type AppArtifactBuildResult = {
   metadata: StoredAppMetadata;
   build: AppBuildSummary;
+  /**
+   * The normalized workspace source files (what source.json holds). The
+   * install paths use these as the revision's files so a revision always
+   * snapshots exactly what was deployed.
+   */
+  files: Record<string, string>;
 };
 
 const APP_WORKER_ENTRY_FILE = '__eternal_worker__.js';
@@ -164,7 +176,7 @@ const permissionsSchema = z.object({
 }).optional();
 
 const generatedAppFilesSchema = z.object({
-  files: z.record(z.string()).refine(
+  files: z.record(z.string(), z.string()).refine(
     (files) => Object.keys(files).length > 0,
     'At least one source file is required',
   ),
@@ -265,7 +277,7 @@ function parseGeneratedJson(text: string): unknown {
 
 async function generateStructuredObject<T>(
   env: Env,
-  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  schema: z.ZodType<T>,
   system: string,
   prompt: string,
   step: string,
@@ -356,13 +368,20 @@ async function getNextDesktopGridPosition(stub: DurableObjectStub): Promise<{ x:
 
 interface RegisteredDesktopApp {
   item: DesktopItem;
-  metadata: {
-    uid: string;
-    version: number;
-    granted?: AppGrantedPermissions;
-    r2Prefix?: string;
-  };
+  metadata: AgentAppRegistryMeta;
 }
+
+/**
+ * Registry record shape (`app:{appId}` in KV) as the agent update flow reads
+ * and restores it — the shared fields plus the revision pointers this module
+ * now writes (see routes/appRevisions.ts).
+ */
+type AgentAppRegistryMeta = AppRevisionPointers & {
+  uid: string;
+  version: number;
+  granted?: AppGrantedPermissions;
+  r2Prefix?: string;
+};
 
 async function getRegisteredDesktopApp(
   env: Env,
@@ -1262,7 +1281,7 @@ async function generateAppWithRepairLoop<T>(
 async function buildAppFromPromptWithRetries(
   ctx: AppToolsContext,
   prompt: string,
-): Promise<{ appId: string; itemId: string; name: string; status: 'created'; permissions?: AppPermissions }> {
+): Promise<{ appId: string; itemId: string; name: string; status: 'created'; revision: string; permissions?: AppPermissions }> {
   const desktopSummary = await loadDesktopSummary(ctx);
   const spec = await generateSpecWithRetries(ctx, prompt, desktopSummary);
   const { app, result } = await generateAppWithRepairLoop(
@@ -1357,13 +1376,13 @@ async function writeAppArtifact(
   );
   tracker.markCompleted('write-storage');
 
-  return { metadata, build: tracker.success() };
+  return { metadata, build: tracker.success(), files: workspace.files };
 }
 
 async function createAndRegisterApp(
   ctx: AppToolsContext,
   input: AppBundleInput
-): Promise<{ appId: string; itemId: string; name: string; status: 'created'; build: AppBuildSummary }> {
+): Promise<{ appId: string; itemId: string; name: string; status: 'created'; build: AppBuildSummary; revision: string }> {
   const { env, sql, agentName: uid } = ctx;
   const appId = crypto.randomUUID();
   const r2Prefix = `apps/${uid}/${appId}`;
@@ -1373,6 +1392,25 @@ async function createAndRegisterApp(
   try {
     validateGeneratedApp(input);
     const artifact = await writeAppArtifact(ctx, input, appId, r2Prefix, '/api/apps', tracker);
+
+    // Same revision contract as dev-deploy (routes/appRevisions.ts): every
+    // save that installs a bundle appends an immutable revision, and the
+    // registry points at it. Author 'agent' marks the tool pipeline as the
+    // writer. A failed create cleans everything up below and records
+    // nothing — the app was never registered (the dev-deploy create rule).
+    const revision = await writeAppRevision(env, uid, appId, {
+      kind: 'deploy',
+      author: 'agent',
+      valid: true,
+      files: artifact.files,
+      name: input.name,
+      description: input.description,
+      permissions: input.permissions,
+      rationale: input.rationale,
+      windowConfig: { defaultWidth: input.width, defaultHeight: input.height, resizable: true },
+      appVersion: 1,
+      summary: 'Agent build (v1)',
+    });
 
     const now = Date.now();
     sql.exec(
@@ -1391,6 +1429,8 @@ async function createAndRegisterApp(
           version: 1,
           granted: {},
           r2Prefix,
+          current_revision: revision.revisionId,
+          last_valid_revision: revision.revisionId,
         }),
       ),
     );
@@ -1441,11 +1481,18 @@ async function createAndRegisterApp(
     sql.exec('UPDATE apps SET desktop_item_id = ? WHERE id = ?', item.id, appId);
     tracker.markCompleted('install-desktop');
 
+    // Cap the revision history with the registry pointers pinned (same as
+    // dev-deploy). A no-op on first install (one revision, cap 50).
+    await pruneAppRevisions(env, uid, appId, new Set([revision.revisionId])).catch((error) => {
+      console.error('App revision cleanup failed:', error);
+    });
+
     return {
       appId,
       itemId: item.id,
       name: input.name,
       status: 'created',
+      revision: revision.revisionId,
       build: {
         ...artifact.build,
         currentStage: 'ready',
@@ -1556,7 +1603,7 @@ async function buildAppPreviewFromPromptWithRetries(
 async function installAppPreview(
   ctx: AppToolsContext,
   previewId: string,
-): Promise<{ appId: string; itemId: string; name: string; status: 'created'; previewId: string }> {
+): Promise<{ appId: string; itemId: string; name: string; status: 'created'; revision: string; previewId: string }> {
   const { env, sql, agentName: uid } = ctx;
   const previewMeta = await env.DESKTOP_KV.get<StoredAppMetadata>(`app-preview:${previewId}`, 'json');
   if (!previewMeta || previewMeta.uid !== uid) {
@@ -2262,7 +2309,7 @@ export function createAppTools(ctx: AppToolsContext) {
       inputSchema: z.object({
         name: z.string().min(1).max(80).describe('App name'),
         description: z.string().max(500).optional().describe('Short description'),
-        files: z.record(z.string()).describe('App source files: { "index.html": "...", "styles.css": "...", "app.js": "..." }'),
+        files: z.record(z.string(), z.string()).describe('App source files: { "index.html": "...", "styles.css": "...", "app.js": "..." }'),
         width: z.number().int().min(360).max(1600).optional().default(600).describe('Default window width'),
         height: z.number().int().min(320).max(1200).optional().default(500).describe('Default window height'),
         permissions: permissionsSchema,
@@ -2284,7 +2331,7 @@ export function createAppTools(ctx: AppToolsContext) {
       description: 'Update an existing app\'s code. Provide the full updated files.',
       inputSchema: z.object({
         appId: z.string().describe('The app ID to update'),
-        files: z.record(z.string()).describe('Updated source files'),
+        files: z.record(z.string(), z.string()).describe('Updated source files'),
         name: z.string().optional().describe('Updated name'),
         description: z.string().max(500).optional().describe('Updated description'),
         width: z.number().int().min(360).max(1600).optional().describe('Updated default window width'),
@@ -2294,6 +2341,11 @@ export function createAppTools(ctx: AppToolsContext) {
       execute: async (input, { toolCallId }) => {
         const tctx = { ...ctx, toolCallId };
         const registered = await getRegisteredDesktopApp(env, uid, input.appId);
+        // Lazy migration: apps created before revisions existed get their
+        // current source snapshotted as revision #0 on this first touch
+        // (same as the dev-deploy update flow), so this update lands on top
+        // of a real history instead of starting one.
+        await ensureRevisionBaseline(env, uid, input.appId, registered.metadata);
         const app = {
           version: registered.metadata.version,
           r2_prefix: registered.metadata.r2Prefix || `apps/${uid}/${input.appId}`,
@@ -2313,16 +2365,19 @@ export function createAppTools(ctx: AppToolsContext) {
         const nextWidth = input.width ?? app.width;
         const nextHeight = input.height ?? app.height;
         const nextR2Prefix = getAppReleasePrefix(app.r2_prefix, newVersion);
-        let previousMeta: {
-          uid: string;
-          version: number;
-          granted?: AppGrantedPermissions;
-          r2Prefix?: string;
-        } | null = null;
+        let previousMeta: AgentAppRegistryMeta | null = null;
         let appMetadataWriteStarted = false;
+        // Revision objects are tracked separately from release keys: on a
+        // genuine infra failure both are cleaned up, but on a *validation*
+        // failure the (invalid) revision is the diagnostics record and is
+        // deliberately kept — it is written in the catch below, after these
+        // keys are decided, so this list only ever holds the success path's.
+        let writtenRevisionKeys: string[] = [];
 
         try {
-          previousMeta = registered.metadata;
+          // Re-read after the baseline so an infra-failure rollback
+          // restores the baselined record (same as dev-deploy).
+          previousMeta = await env.DESKTOP_KV.get<AgentAppRegistryMeta>(`app:${input.appId}`, 'json');
 
           const updatedInput: AppBundleInput = {
             name: nextName,
@@ -2394,6 +2449,24 @@ export function createAppTools(ctx: AppToolsContext) {
           );
           tracker.markCompleted('write-storage');
 
+          // Same revision contract as dev-deploy: the validated update
+          // appends a revision (author 'agent') and the registry below
+          // points at it. install = freeze a validated revision.
+          const revision = await writeAppRevision(env, uid, input.appId, {
+            kind: 'deploy',
+            author: 'agent',
+            valid: true,
+            files: workspace.files,
+            name: nextName,
+            description: nextDescription,
+            permissions: app.permissions,
+            rationale: app.rationale,
+            windowConfig: { defaultWidth: nextWidth, defaultHeight: nextHeight, resizable: true },
+            appVersion: newVersion,
+            summary: `Agent update (v${newVersion})`,
+          });
+          writtenRevisionKeys.push(...revision.keys);
+
           const preservedGrants = previousMeta?.granted ?? {};
           appMetadataWriteStarted = true;
           await withStepTimeout(
@@ -2401,7 +2474,14 @@ export function createAppTools(ctx: AppToolsContext) {
             APP_BUILD_TIMEOUT_MS.storageWrite,
             env.DESKTOP_KV.put(
               `app:${input.appId}`,
-              JSON.stringify({ uid, version: newVersion, granted: preservedGrants, r2Prefix: nextR2Prefix }),
+              JSON.stringify({
+                uid,
+                version: newVersion,
+                granted: preservedGrants,
+                r2Prefix: nextR2Prefix,
+                current_revision: revision.revisionId,
+                last_valid_revision: revision.revisionId,
+              }),
             ),
           );
 
@@ -2444,14 +2524,59 @@ export function createAppTools(ctx: AppToolsContext) {
           await pruneAppReleases(env, uid, input.appId, nextR2Prefix).catch((error) => {
             console.error('App release cleanup failed:', error);
           });
-          return { appId: input.appId, version: newVersion, status: 'updated', build: tracker.success() };
+          // Cap the revision history with the registry pointers pinned
+          // (same as dev-deploy).
+          await pruneAppRevisions(env, uid, input.appId, new Set([revision.revisionId])).catch((error) => {
+            console.error('App revision cleanup failed:', error);
+          });
+          return { appId: input.appId, version: newVersion, status: 'updated', revision: revision.revisionId, build: tracker.success() };
         } catch (error) {
           await deleteR2Prefix(env, getAppReleasePrefix(app.r2_prefix, app.version + 1)).catch(() => {});
+          if (writtenRevisionKeys.length > 0) {
+            // Infra failure mid-flight: the revision never became a save.
+            // A validation failure takes the branch below instead and keeps
+            // its revision (writtenRevisionKeys is only populated on the
+            // success path, after validation, so this never deletes a
+            // diagnostics record).
+            await Promise.allSettled(writtenRevisionKeys.map((key) => env.ETERNALOS_FILES.delete(key)));
+          }
           if (appMetadataWriteStarted) {
             if (previousMeta) {
               await env.DESKTOP_KV.put(`app:${input.appId}`, JSON.stringify(previousMeta)).catch(() => {});
             } else {
               await env.DESKTOP_KV.delete(`app:${input.appId}`).catch(() => {});
+            }
+          }
+          if (error instanceof AppValidationError) {
+            // A rejected update on an EXISTING app is itself history: all
+            // validation ran before any release write, so the installed
+            // bundle is untouched — but the attempted source and the
+            // diagnostics are recorded as an invalid revision, and only
+            // current_revision moves (last_valid_revision does not). Same
+            // contract as dev-deploy's failed update.
+            try {
+              const failed = await writeAppRevision(env, uid, input.appId, {
+                kind: 'deploy',
+                author: 'agent',
+                valid: false,
+                issues: error.issues,
+                files: input.files,
+                name: nextName,
+                description: nextDescription,
+                permissions: app.permissions,
+                rationale: app.rationale,
+                windowConfig: { defaultWidth: nextWidth, defaultHeight: nextHeight, resizable: true },
+                summary: 'Failed agent update — validation rejected',
+              });
+              const currentMeta = await env.DESKTOP_KV.get<AppRevisionPointers & { uid?: string }>(`app:${input.appId}`, 'json');
+              if (currentMeta && currentMeta.uid === uid) {
+                await env.DESKTOP_KV.put(`app:${input.appId}`, JSON.stringify({
+                  ...currentMeta,
+                  current_revision: failed.revisionId,
+                }));
+              }
+            } catch (revisionError) {
+              console.error('Failed to record invalid app revision:', revisionError);
             }
           }
           throw wrapBuildError(error, tracker);

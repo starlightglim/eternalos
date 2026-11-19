@@ -14,9 +14,9 @@
   "dependencies": {
     "@ai-sdk/react": "^3.0.118",
     "@eternalos/contracts": "0.1.0",
-    "@cloudflare/ai-chat": "^0.1.8",
+    "@cloudflare/ai-chat": "^0.2.5",
     "@types/dompurify": "^3.0.5",
-    "agents": "^0.7.5",
+    "agents": "^0.8.5",
     "dompurify": "^3.4.17",
     "jszip": "^3.10.1",
     "marked": "^17.0.5",
