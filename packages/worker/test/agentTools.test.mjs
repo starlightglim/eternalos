@@ -31,8 +31,11 @@
  */
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { register } from 'node:module';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 register(new URL('./tsModuleHooks.mjs', import.meta.url));
 
@@ -45,9 +48,15 @@ const {
   derivePermissionsFromSpec,
   validateAppSpec,
 } = await import('../src/agents/tools/appSpec.ts');
+const {
+  AppValidationError,
+  collectAppBundleIssues,
+} = await import('../src/utils/appBundleValidation.ts');
 const { AIChatAgent } = await import('@cloudflare/ai-chat');
 
 const UID = 'user-abc123';
+const TEST_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const FIXTURES_ROOT = path.join(TEST_ROOT, 'test', 'fixtures', 'apps');
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -233,6 +242,20 @@ const fakeSql = () => {
     },
   };
 };
+
+/**
+ * Source files of an app fixture directory (manifest.json/expect.json are
+ * fixture metadata, not app files).
+ */
+function readFixtureFiles(name) {
+  const dir = path.join(FIXTURES_ROOT, name);
+  const files = {};
+  for (const entry of fs.readdirSync(dir)) {
+    if (entry === 'manifest.json' || entry === 'expect.json') continue;
+    files[entry] = fs.readFileSync(path.join(dir, entry), 'utf8');
+  }
+  return files;
+}
 
 // ---------------------------------------------------------------------------
 // Turn harness — drives the real OrchestratorAgent.onChatMessage pipeline
@@ -1147,6 +1170,137 @@ describe('appSpec', () => {
 });
 
 // ---------------------------------------------------------------------------
+// appBundleValidation — every issue code the repair prompt can act on
+// ---------------------------------------------------------------------------
+
+describe('appBundleValidation issue hints', () => {
+  // The repair prompts (targeted and full) embed exactly these issues; a
+  // code without a hint the model can act on burns an attempt blind. The
+  // trigger table below has one deterministic input per issue code in
+  // src/utils/appBundleValidation.ts, and the source scan pins the table's
+  // completeness: adding a code to the module without a trigger (and a
+  // hint) fails this test.
+  const HTML = (body) => `<!doctype html><html><head><title>t</title></head><body>${body}</body></html>`;
+  const SHELL = HTML('<script src="app.js"></script>');
+  const appInput = (files, permissions, overrides = {}) => ({
+    files,
+    manifest: {
+      entryHtml: 'index.html',
+      sourceFiles: Object.keys(files).sort(),
+      runtimeAsset: 'eternal-runtime.js',
+      workerEntrypoint: '__eternal_worker__.js',
+    },
+    permissions,
+    ...overrides,
+  });
+  const compiledBundle = (assets) => ({
+    mainModule: 'bundle.js',
+    modules: {
+      'bundle.js': [
+        `const ASSETS = ${JSON.stringify(assets)};`,
+        'export default { async fetch(request, env) { return new Response("ok"); } };',
+      ].join('\n'),
+    },
+  });
+
+  it('every issue code carries a non-empty hint the repair prompt can act on', () => {
+    const triggers = [
+      ['entry/missing-html', appInput({ 'app.js': 'void 0;' })],
+      ['permission/undeclared-fs-read', appInput({ 'index.html': SHELL, 'app.js': 'window.eternal.fs.list({});' })],
+      ['permission/undeclared-fs-write', appInput({ 'index.html': SHELL, 'app.js': 'window.eternal.fs.write({ path: "/n.txt", content: "x" });' })],
+      ['permission/undeclared-fs-delete', appInput({ 'index.html': SHELL, 'app.js': 'window.eternal.fs.delete("id");' })],
+      ['permission/undeclared-profile', appInput({ 'index.html': SHELL, 'app.js': 'window.eternal.profile.get();' })],
+      ['permission/undeclared-network', appInput({ 'index.html': SHELL, 'app.js': "window.eternal.fetch('https://api.example.com/x');" })],
+      ['permission/undeclared-ipc-emit', appInput({ 'index.html': SHELL, 'app.js': 'window.eternal.ipc.emit("t", {});' })],
+      ['permission/undeclared-ipc-listen', appInput({ 'index.html': SHELL, 'app.js': 'window.eternal.ipc.on("t", () => {});' })],
+      ['bridge/unknown-namespace', appInput({ 'index.html': SHELL, 'app.js': 'window.eternal.ai.chat("hi");' })],
+      ['bridge/unknown-method', appInput({ 'index.html': SHELL, 'app.js': 'window.eternal.fs.save("/notes.txt", "x");' })],
+      ['permission/fs-read-uncovered', appInput(
+        { 'index.html': SHELL, 'app.js': "window.eternal.fs.list({ path: '/Documents' });" },
+        { fs: { read: ['/Photos/**'] } },
+      )],
+      ['permission/fs-write-uncovered', appInput(
+        { 'index.html': SHELL, 'app.js': "window.eternal.fs.write({ path: '/Secret/new.md', content: 'x' });" },
+        { fs: { write: ['/Notes/**'] } },
+      )],
+      ['permission/ipc-emit-uncovered', appInput(
+        { 'index.html': SHELL, 'app.js': "window.eternal.ipc.emit('chat.message', {});" },
+        { ipc: { emit: ['music.*'] } },
+      )],
+      ['permission/ipc-listen-uncovered', appInput(
+        { 'index.html': SHELL, 'app.js': "window.eternal.ipc.on('chat.incoming', () => {});" },
+        { ipc: { listen: ['music.*'] } },
+      )],
+      ['sandbox/blocked-storage', appInput({ 'index.html': SHELL, 'app.js': "localStorage.setItem('k', 'v');" })],
+      ['sandbox/blocked-media', appInput({ 'index.html': SHELL, 'app.js': 'navigator.geolocation.getCurrentPosition(() => {});' })],
+      ['sandbox/blocked-worker', appInput({ 'index.html': SHELL, 'app.js': 'const w = new Worker("./worker.js"); void w;' })],
+      ['sandbox/external-network', appInput({ 'index.html': SHELL, 'app.js': "fetch('https://api.example.com/data');" })],
+      ['asset/missing', appInput({ 'index.html': HTML('<img src="./missing-icon.png">') })],
+      ['module/missing', appInput({ 'index.html': SHELL, 'app.js': "import { helper } from './utils.js'; void helper;" })],
+      ['module/missing-export', appInput({
+        'index.html': HTML('<script type="module" src="app.js"></script>'),
+        'app.js': "import { init } from './boot.js'; void init;",
+        'boot.js': 'export function start() {}',
+      })],
+      ['bundle/entrypoint-missing', appInput(
+        { 'index.html': SHELL, 'app.js': 'void 0;' },
+        undefined,
+        { compiled: { mainModule: 'bundle.js', modules: {} } },
+      )],
+      ['bundle/entrypoint-export-missing', appInput(
+        { 'index.html': SHELL, 'app.js': 'void 0;' },
+        undefined,
+        { compiled: { mainModule: 'bundle.js', modules: { 'bundle.js': 'const handler = { async fetch() {} };' } } },
+      )],
+      ['bundle/asset-not-packaged', appInput(
+        { 'index.html': SHELL, 'app.js': 'void 0;' },
+        undefined,
+        { compiled: compiledBundle({ 'index.html': '<!doctype html>', 'eternal-runtime.js': 'window.eternal = {};' }) },
+      )],
+    ];
+
+    const seen = new Set();
+    for (const [code, input] of triggers) {
+      const issues = collectAppBundleIssues(input);
+      const match = issues.find((issue) => issue.code === code);
+      assert.ok(
+        match,
+        `trigger for ${code} produced ${JSON.stringify(issues.map((issue) => issue.code))} instead`,
+      );
+      for (const issue of issues) {
+        assert.ok(
+          typeof issue.hint === 'string' && issue.hint.trim().length >= 16,
+          `${issue.code} must carry a specific, non-empty hint the repair prompt can act on`,
+        );
+      }
+      seen.add(code);
+    }
+
+    // validation/unknown is the defensive fallback for an issue-less
+    // failure; it is constructed directly, and it must be actionable too.
+    const fallback = new AppValidationError([]);
+    assert.equal(fallback.issues[0].code, 'validation/unknown');
+    assert.ok(
+      typeof fallback.issues[0].hint === 'string' && fallback.issues[0].hint.trim().length >= 16,
+      'validation/unknown must carry a hint the repair prompt can act on',
+    );
+    seen.add('validation/unknown');
+
+    // Completeness: every code literal in the module has a trigger here.
+    const moduleSource = fs.readFileSync(
+      path.join(TEST_ROOT, 'src', 'utils', 'appBundleValidation.ts'),
+      'utf8',
+    );
+    const moduleCodes = [...new Set([...moduleSource.matchAll(/code: '([^']+)'/g)].map((m) => m[1]))];
+    assert.deepEqual(
+      [...seen].sort(),
+      [...moduleCodes].sort(),
+      'every appBundleValidation issue code needs a trigger (and a hint) in this test',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // appTools — happy paths, bad input, permission boundaries, rollback
 // ---------------------------------------------------------------------------
 
@@ -1688,6 +1842,245 @@ describe('appTools', () => {
     assert.deepEqual(metadata.permissions, expected);
     // The private storage key still derives no permission.
     assert.deepEqual(Object.keys(expected.fs), ['read', 'write', 'delete']);
+  });
+
+  it('buildAppFromPrompt repairs a runtime-contract mismatch by patching only the failing file (Photo Grid regression)', async () => {
+    // CORE-ROADMAP Workstream 3, Phase C. The first generation of the
+    // reference Photo Grid app reaches for localStorage — a deterministic
+    // SecurityError in the opaque-origin app iframe. The targeted repair
+    // pass must feed back ONLY the failing file (app.js) plus the
+    // structured issue, ask for a patched version of just that file, and
+    // install the merged bundle. No blind full regeneration, no raised
+    // attempt budget.
+    const h = createAppToolsHarness();
+    const reference = readFixtureFiles('photo-grid');
+    // Swap the bridge-storage line the fixture uses for its tile-size
+    // preference for the blocked browser API.
+    const storageLine = "window.eternal.storage.set('photo-grid.tileSize', size).catch(() => {});";
+    assert.ok(
+      reference['app.js'].includes(storageLine),
+      'the Photo Grid fixture must still contain the storage.set line this test swaps out',
+    );
+    const badAppJs = reference['app.js'].replace(
+      storageLine,
+      "localStorage.setItem('photo-grid.tileSize', size);",
+    );
+    const derivedPermissions = { fs: { mimeTypes: ['image/*'] } };
+
+    // Precondition, pinned: the first generation is a valid Photo Grid
+    // bundle whose ONLY problem is one unguarded localStorage use in
+    // app.js — exactly the shape targeted repair exists for.
+    const badIssues = collectAppBundleIssues({
+      files: { ...reference, 'app.js': badAppJs },
+      manifest: {
+        entryHtml: 'index.html',
+        sourceFiles: ['app.js', 'index.html', 'styles.css'],
+        runtimeAsset: 'eternal-runtime.js',
+        workerEntrypoint: '__eternal_worker__.js',
+      },
+      permissions: derivedPermissions,
+    });
+    assert.deepEqual(
+      badIssues.map((issue) => [issue.code, issue.file]),
+      [['sandbox/blocked-storage', 'app.js']],
+    );
+
+    h.ai.script.push(
+      // 1st model call: the spec stage — Photo Grid reads images and keeps
+      // its tile-size preference in private storage.
+      {
+        response: JSON.stringify({
+          name: 'Photo Grid',
+          purpose: "Shows the user's photos as a scrollable grid.",
+          screens: [
+            {
+              name: 'Grid',
+              summary: 'All photos, newest first.',
+              emptyState: 'A hint to upload photos when none exist yet.',
+            },
+          ],
+          dataReads: [{ kind: 'fs', mimeTypes: ['image/*'] }],
+          storageKeys: ['photo-grid.tileSize'],
+          width: 880,
+          height: 620,
+        }),
+      },
+      // 2nd model call: full file generation — the reference bundle except
+      // app.js persists the tile size through localStorage.
+      {
+        response: JSON.stringify({
+          files: { ...reference, 'app.js': badAppJs },
+        }),
+      },
+      // 3rd model call: the targeted repair — a patched app.js only.
+      {
+        response: JSON.stringify({
+          files: { 'app.js': reference['app.js'] },
+        }),
+      },
+    );
+
+    const result = await h.tools.buildAppFromPrompt.execute(
+      { prompt: 'build me a gallery app for my photos' },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(result.status, 'created');
+    assert.equal(result.name, 'Photo Grid');
+    assert.deepEqual(result.permissions, derivedPermissions);
+
+    // Spec, full generation, targeted repair — nothing more.
+    assert.equal(h.ai.calls.length, 3);
+
+    // The repair prompt is targeted: the failing file's current content
+    // plus the structured issue with its fix — and none of the files that
+    // validated clean.
+    const repairPrompt = h.ai.calls[2].inputs.messages.at(-1).content;
+    assert.match(repairPrompt, /Files to patch/);
+    assert.match(repairPrompt, /--- app\.js \(current content\) ---/);
+    assert.match(repairPrompt, /localStorage\.setItem\('photo-grid\.tileSize', size\)/);
+    assert.match(repairPrompt, /\[sandbox\/blocked-storage\] — app\.js/);
+    assert.match(repairPrompt, /fix: Use window\.eternal\.storage/);
+    assert.ok(!repairPrompt.includes(reference['index.html']), 'clean files must not be fed back');
+    assert.ok(!repairPrompt.includes(reference['styles.css']), 'clean files must not be fed back');
+
+    // The merged bundle installed: the patched app.js replaced the failing
+    // one, everything else kept from the first generation.
+    const appItem = h.desktop.itemsOf('app')[0];
+    assert.equal(appItem.appManifest.name, 'Photo Grid');
+    assert.deepEqual(appItem.appManifest.permissions, derivedPermissions);
+    const storedSource = JSON.parse(h.r2.objects.get(`apps/${UID}/${result.appId}/source.json`));
+    assert.equal(storedSource['app.js'], reference['app.js']);
+    assert.ok(!storedSource['app.js'].includes('localStorage'), 'the installed app.js must be the patched version');
+    assert.equal(storedSource['index.html'], reference['index.html']);
+    assert.equal(storedSource['styles.css'], reference['styles.css']);
+
+    // The installed artifacts, re-validated, are clean.
+    const storedWorkspace = JSON.parse(h.r2.objects.get(`apps/${UID}/${result.appId}/workspace.json`));
+    const storedMetadata = JSON.parse(h.r2.objects.get(`apps/${UID}/${result.appId}/metadata.json`));
+    assert.deepEqual(
+      collectAppBundleIssues({
+        files: storedSource,
+        manifest: storedWorkspace,
+        permissions: storedMetadata.permissions,
+      }),
+      [],
+      'the installed bundle must pass the deterministic post-bundle validation',
+    );
+  });
+
+  it('a targeted repair that does not converge falls back to a full regeneration within the same budget', async () => {
+    const h = createAppToolsHarness();
+    // First generation persists state through localStorage; the targeted
+    // patch swaps it for sessionStorage — still blocked — so the repair
+    // does not converge and the final attempt must be today's full
+    // regeneration.
+    const badAppJs = `${MINIMAL_APP_FILES['app.js']}\nlocalStorage.setItem('k', 'v');`;
+    const stillBadAppJs = `${MINIMAL_APP_FILES['app.js']}\nsessionStorage.setItem('k', 'v');`;
+
+    h.ai.script.push(
+      {
+        response: JSON.stringify({
+          name: 'Prefs',
+          purpose: 'Keeps a small preference.',
+          screens: [{ name: 'Main', summary: 'The preference.', emptyState: 'A hint.' }],
+          storageKeys: ['prefs.k'],
+        }),
+      },
+      { response: JSON.stringify({ files: { ...MINIMAL_APP_FILES, 'app.js': badAppJs } }) },
+      { response: JSON.stringify({ files: { 'app.js': stillBadAppJs } }) },
+      { response: JSON.stringify({ files: { ...MINIMAL_APP_FILES } }) },
+    );
+
+    const result = await h.tools.buildAppFromPrompt.execute(
+      { prompt: 'build me a small preferences app' },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(result.status, 'created');
+
+    // Spec + 3 attempts — the budget did not grow for the targeted pass.
+    assert.equal(h.ai.calls.length, 4);
+
+    // Attempt 1 was the targeted pass (only the failing file fed back)…
+    const repairPrompt = h.ai.calls[2].inputs.messages.at(-1).content;
+    assert.match(repairPrompt, /Files to patch/);
+    assert.match(repairPrompt, /\[sandbox\/blocked-storage\]/);
+    assert.ok(!repairPrompt.includes(MINIMAL_APP_FILES['index.html']));
+
+    // …and attempt 2 fell back to today's full regeneration, carrying the
+    // latest validation issues.
+    const regenPrompt = h.ai.calls[3].inputs.messages.at(-1).content;
+    assert.match(regenPrompt, /Build a desktop web app/);
+    assert.match(regenPrompt, /Previous attempt failed deterministic app validation/);
+    assert.match(regenPrompt, /\[sandbox\/blocked-storage\]/);
+    assert.ok(!regenPrompt.includes('Files to patch'));
+
+    // The installed app is the fully regenerated bundle.
+    const storedSource = JSON.parse(h.r2.objects.get(`apps/${UID}/${result.appId}/source.json`));
+    assert.equal(storedSource['app.js'], MINIMAL_APP_FILES['app.js']);
+  });
+
+  it('a targeted patch returning files outside the failing set is rejected and the loop regenerates in full', async () => {
+    const h = createAppToolsHarness();
+    const badAppJs = `${MINIMAL_APP_FILES['app.js']}\nlocalStorage.setItem('k', 'v');`;
+
+    h.ai.script.push(
+      {
+        response: JSON.stringify({
+          name: 'Broken',
+          purpose: 'An app that needs one repair.',
+          screens: [{ name: 'Main', summary: 'One screen.', emptyState: 'A hint.' }],
+          storageKeys: ['broken.k'],
+        }),
+      },
+      { response: JSON.stringify({ files: { ...MINIMAL_APP_FILES, 'app.js': badAppJs } }) },
+      // The repair ignores instructions and returns a brand-new file.
+      { response: JSON.stringify({ files: { 'patched.js': 'console.log("x");' } }) },
+      { response: JSON.stringify({ files: { ...MINIMAL_APP_FILES } }) },
+    );
+
+    const result = await h.tools.buildAppFromPrompt.execute(
+      { prompt: 'build me an app' },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(result.status, 'created');
+    assert.equal(h.ai.calls.length, 4);
+
+    // The final attempt was a FULL regeneration that still saw the original
+    // bundle issues — a rejected patch must not erase them from the
+    // repair context.
+    const regenPrompt = h.ai.calls[3].inputs.messages.at(-1).content;
+    assert.match(regenPrompt, /Previous attempt failed deterministic app validation/);
+    assert.match(regenPrompt, /\[sandbox\/blocked-storage\]/);
+    assert.ok(!regenPrompt.includes('repair/invalid-patch'));
+  });
+
+  it('issues that name no file skip the targeted pass and regenerate in full', async () => {
+    const h = createAppToolsHarness();
+    h.ai.script.push(
+      {
+        response: JSON.stringify({
+          name: 'NoHtml',
+          purpose: 'An app that forgets its HTML entry.',
+          screens: [{ name: 'Main', summary: 'One screen.', emptyState: 'A hint.' }],
+        }),
+      },
+      // No HTML at all: entry/no-html carries no file to patch.
+      { response: JSON.stringify({ files: { 'app.js': 'console.log("x");' } }) },
+      { response: JSON.stringify({ files: { ...MINIMAL_APP_FILES } }) },
+    );
+
+    const result = await h.tools.buildAppFromPrompt.execute(
+      { prompt: 'build me an app' },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(result.status, 'created');
+    assert.equal(h.ai.calls.length, 3);
+
+    // The retry was a full regeneration, not a targeted patch.
+    const retryPrompt = h.ai.calls[2].inputs.messages.at(-1).content;
+    assert.match(retryPrompt, /Previous attempt failed deterministic app validation/);
+    assert.match(retryPrompt, /\[entry\/no-html\]/);
+    assert.ok(!retryPrompt.includes('Files to patch'));
   });
 
   it('buildAppFromPrompt reports a generation failure clearly and writes nothing', async () => {
