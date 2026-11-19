@@ -6,6 +6,11 @@
  * All handlers return the raw DO response; the dispatcher decorates them with
  * CORS + security headers. The two exceptions that clean up R2 objects after
  * a successful DO delete re-emit the DO's JSON result.
+ *
+ * The item create/patch forwards are the one place that inspects the body
+ * before passing it on: the DO's internal /items endpoints are trusted by
+ * server-side app flows, and the public routes must not hand that trust to
+ * a client session (see rejectServerManagedItemFields).
  */
 
 import type { Env } from '../index';
@@ -15,6 +20,69 @@ import { requireAuthContext, ROUTE_FALLTHROUGH } from './router';
 
 function userDesktopStub(env: Env, uid: string) {
   return env.USER_DESKTOP.get(env.USER_DESKTOP.idFromName(uid));
+}
+
+/**
+ * Item fields that only server-side app flows may write: dev-deploy and the
+ * agent install (manifest + grants on create), the app permissions route
+ * (grants, grant date, approval metadata), and release rollback. All of
+ * those call the UserDesktop DO's internal /items endpoints directly. The
+ * DO's update allowlist keeps accepting these fields for those callers —
+ * but the public routes forward bodies verbatim to the same endpoints, so
+ * without a gate here any owner session could rewrite an installed app's
+ * manifest (declaring scopes the app never shipped, then granting them
+ * through the honest permissions route), forge granted permissions, or
+ * fabricate approval dates — skipping the never-grant-more-than-declared
+ * rule, the broad-scope approval tick, and the approval audit trail.
+ */
+const SERVER_MANAGED_ITEM_FIELDS = [
+  'appManifest',
+  'grantedPermissions',
+  'permissionGrantedAt',
+  'grantedPermissionApprovals',
+] as const;
+
+/**
+ * Which server-managed fields a client item payload tries to set. A create
+ * body is one item object; a patch body is an array of { id, updates } and
+ * only `updates` is ever applied by the DO. Anything the DO would not apply
+ * (fields at a patch entry's top level) is ignored here too.
+ */
+function serverManagedItemFieldsIn(payload: unknown): string[] {
+  if (Array.isArray(payload)) {
+    const names = payload.flatMap((entry) => serverManagedItemFieldsIn(
+      typeof entry === 'object' && entry !== null ? (entry as { updates?: unknown }).updates : null,
+    ));
+    return [...new Set(names)];
+  }
+  if (payload !== null && typeof payload === 'object') {
+    const record = payload as Record<string, unknown>;
+    return SERVER_MANAGED_ITEM_FIELDS.filter((field) => field in record);
+  }
+  return [];
+}
+
+/**
+ * Reject (400) a public item create/patch whose body sets server-managed
+ * app fields, naming them. Returns null when the payload is clean (or not
+ * valid JSON — the DO then answers that exactly as it did before this
+ * gate) and the request should be forwarded unchanged.
+ */
+function rejectServerManagedItemFields(body: string): Response | null {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  const fields = serverManagedItemFieldsIn(payload);
+  if (fields.length === 0) return null;
+  return Response.json(
+    {
+      error: `Item writes may not set ${fields.join(', ')}; app manifests and grants are managed by the app install and permissions routes`,
+    },
+    { status: 400 },
+  );
 }
 
 /** GET /api/desktop — load all desktop items. */
@@ -27,6 +95,10 @@ export async function handleGetDesktop(c: RouteContext): Promise<Response> {
 export async function handleCreateDesktopItems(c: RouteContext): Promise<Response> {
   const auth = requireAuthContext(c);
   const body = await c.request.text();
+  // App items are created by the install paths (which call the DO directly),
+  // never by a client — a manifest or grants on a create body is a forgery.
+  const rejection = rejectServerManagedItemFields(body);
+  if (rejection) return rejection;
   return userDesktopStub(c.env, auth.uid).fetch(new Request('http://internal/items', {
     method: 'POST',
     body,
@@ -37,6 +109,10 @@ export async function handleCreateDesktopItems(c: RouteContext): Promise<Respons
 export async function handleUpdateDesktopItems(c: RouteContext): Promise<Response> {
   const auth = requireAuthContext(c);
   const body = await c.request.text();
+  // Ordinary item edits (name, position, isPublic, trash, ...) forward as
+  // before; only the server-managed app fields are refused.
+  const rejection = rejectServerManagedItemFields(body);
+  if (rejection) return rejection;
   return userDesktopStub(c.env, auth.uid).fetch(new Request('http://internal/items', {
     method: 'PATCH',
     body,
