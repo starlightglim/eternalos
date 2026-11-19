@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { WindowManager } from '../window';
 import { DesktopIcon, Trash } from '../icons';
 import { Sticker } from './Sticker';
+import { useDesktopShortcuts } from './desktopKeyboard';
 import { EffectsOverlay } from '../../effects/EffectsOverlay';
 import { MenuBar } from '../menubar';
 import { UploadProgress } from './UploadProgress';
@@ -68,7 +69,6 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
     selectItem,
     deselectAll,
     moveItem,
-    removeItem,
     moveToTrash,
     getTrashCount,
     uploadFile,
@@ -1350,136 +1350,21 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
     setContextMenu(null);
   }, []);
 
-  // Keyboard navigation for desktop icons
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't handle if focus is in an input or textarea
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-        return;
-      }
-
-      // Handle Cmd+` (backtick) to cycle through open windows
-      // Note: Cmd+Tab conflicts with OS/browser tab switching, so we use ` instead
-      if ((e.metaKey || e.ctrlKey) && (e.key === '`' || e.key === '~')) {
-        e.preventDefault();
-        const visibleWindows = windows.filter((w) => !w.minimized);
-        if (visibleWindows.length > 1) {
-          // Sort by z-index to find current top window
-          const sortedWindows = [...visibleWindows].sort((a, b) => b.zIndex - a.zIndex);
-          // Focus the next window (wraps around)
-          const currentTopIndex = 0; // Top window is first after sorting
-          const nextIndex = e.shiftKey
-            ? (currentTopIndex - 1 + sortedWindows.length) % sortedWindows.length
-            : (currentTopIndex + 1) % sortedWindows.length;
-          focusWindow(sortedWindows[nextIndex].id);
-        }
-        return;
-      }
-
-      // Handle Tab to cycle through desktop icons (no modifier keys)
-      if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        e.preventDefault();
-        if (rootItems.length === 0) return;
-
-        const selectedArray = Array.from(selectedIds);
-        if (selectedArray.length === 0) {
-          // No selection, select first item
-          selectItem(rootItems[0].id, false);
-        } else {
-          // Find current selection in sorted items list and move to next
-          const sortedItems = [...rootItems].sort((a, b) => {
-            // Sort by position: top-to-bottom, then left-to-right
-            if (a.position.y !== b.position.y) return a.position.y - b.position.y;
-            return a.position.x - b.position.x;
-          });
-          const currentIndex = sortedItems.findIndex((i) => selectedArray.includes(i.id));
-          const nextIndex = e.shiftKey
-            ? (currentIndex - 1 + sortedItems.length) % sortedItems.length
-            : (currentIndex + 1) % sortedItems.length;
-          selectItem(sortedItems[nextIndex].id, false);
-        }
-        return;
-      }
-
-      // Get currently selected items
-      const selectedArray = Array.from(selectedIds);
-      if (selectedArray.length === 0 && !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
-        return;
-      }
-
-      // Handle Enter to open selected item
-      if (e.key === 'Enter' && selectedArray.length === 1) {
-        const item = rootItems.find((i) => i.id === selectedArray[0]);
-        if (item) {
-          e.preventDefault();
-          handleIconDoubleClick(item);
-        }
-        return;
-      }
-
-      // Handle Escape to deselect
-      if (e.key === 'Escape') {
-        deselectAll();
-        setContextMenu(null);
-        return;
-      }
-
-      // Handle Cmd+Backspace / Cmd+Delete to trash selected items
-      // Requires modifier to prevent accidental deletion (matches MenuBar shortcut ⌘⌫)
-      if ((e.key === 'Delete' || e.key === 'Backspace') && (e.metaKey || e.ctrlKey) && selectedArray.length > 0) {
-        e.preventDefault();
-        moveToTrash(selectedArray);
-        deselectAll();
-        return;
-      }
-
-      // Handle arrow key navigation
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
-        e.preventDefault();
-
-        // If nothing selected, select first item
-        if (selectedArray.length === 0 && rootItems.length > 0) {
-          selectItem(rootItems[0].id, false);
-          return;
-        }
-
-        // Get the last selected item's position
-        const lastSelected = rootItems.find((i) => i.id === selectedArray[selectedArray.length - 1]);
-        if (!lastSelected) return;
-
-        const { x, y } = lastSelected.position;
-        let targetX = x;
-        let targetY = y;
-
-        switch (e.key) {
-          case 'ArrowUp':
-            targetY = y - 1;
-            break;
-          case 'ArrowDown':
-            targetY = y + 1;
-            break;
-          case 'ArrowLeft':
-            targetX = x - 1;
-            break;
-          case 'ArrowRight':
-            targetX = x + 1;
-            break;
-        }
-
-        // Find item at target position
-        const targetItem = rootItems.find(
-          (i) => i.position.x === targetX && i.position.y === targetY
-        );
-
-        if (targetItem) {
-          selectItem(targetItem.id, e.shiftKey);
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [selectedIds, rootItems, selectItem, deselectAll, handleIconDoubleClick, moveToTrash, removeItem, windows, focusWindow]);
+  // Keyboard navigation for desktop icons (Tab/Enter/Escape/⌘⌫/arrows) and
+  // Cmd+` window cycling, registered on the document. Extracted to
+  // desktopKeyboard.ts so the contract — including the modal, window, and
+  // text-control gates — is test-pinned; see that module for the rules.
+  useDesktopShortcuts({
+    rootItems,
+    selectedIds,
+    selectItem,
+    deselectAll,
+    openItem: handleIconDoubleClick,
+    moveToTrash,
+    closeContextMenu,
+    windows,
+    focusWindow,
+  });
 
   // Right-click on desktop (empty area)
   const handleDesktopContextMenu = useCallback(
