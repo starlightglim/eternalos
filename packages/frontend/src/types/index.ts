@@ -1,179 +1,32 @@
 // EternalOS Type Definitions
+//
+// Domain types shared with the worker live in @eternalos/contracts and are
+// re-exported here so existing `from '../types'` imports keep working.
+// Frontend-only types (window state, cartridges, menu bar, auth session
+// user) stay local.
 
-/**
- * Desktop item types
- */
-export type DesktopItemType = 'folder' | 'image' | 'text' | 'link' | 'audio' | 'video' | 'pdf' | 'widget' | 'sticker' | 'app' | 'cartridge';
-
-/**
- * Widget types for Layer 3 customization
- */
-export type WidgetType = 'sticky-note' | 'guestbook' | 'music-player' | 'pixel-canvas' | 'link-board';
-
-/**
- * Widget configuration types
- */
-export interface StickyNoteConfig {
-  color: string; // Hex color for background
-  text: string;
-}
-
-export interface GuestbookEntry {
-  name: string;
-  message: string;
-  timestamp: number;
-}
-
-export interface GuestbookConfig {
-  entries: GuestbookEntry[];
-}
-
-export interface MusicTrack {
-  title: string;
-  url: string;
-}
-
-export interface MusicPlayerConfig {
-  tracks: MusicTrack[];
-}
-
-export interface PixelCanvasConfig {
-  grid: number[][]; // 16x16 grid of color indices
-  palette: string[]; // 8 hex colors
-}
-
-export interface LinkBoardLink {
-  title: string;
-  url: string;
-  icon?: string;
-}
-
-export interface LinkBoardConfig {
-  links: LinkBoardLink[];
-}
-
-export type WidgetConfig = StickyNoteConfig | GuestbookConfig | MusicPlayerConfig | PixelCanvasConfig | LinkBoardConfig;
-
-/**
- * Sticker configuration (freely placed decoration images)
- */
-export interface StickerConfig {
-  width: number;
-  height: number;
-  rotation: number;   // degrees
-  opacity: number;    // 0-1
-}
-
-export interface ImageAnalysisMetadata {
-  status: 'pending' | 'complete' | 'failed' | 'skipped';
-  analyzedAt?: number;
-  caption?: string;
-  tags?: string[];
-  detectedText?: string[];
-  dominantColors?: string[];
-  model?: string;
-  error?: string;
-}
-
-/**
- * Profile link for the profile window
- */
-export interface ProfileLink {
-  title: string;
-  url: string;
-}
-
-/**
- * Represents a single item on the desktop (file, folder, widget, etc.)
- */
-export interface DesktopItem {
-  id: string;
-  type: DesktopItemType;
-  name: string;
-  parentId: string | null; // null = root desktop
-  position: { x: number; y: number };
-  isPublic: boolean;
-  createdAt: number; // unix timestamp (ms)
-  updatedAt: number; // unix timestamp (ms)
-  // Trash state
-  isTrashed?: boolean; // true if item is in trash
-  trashedAt?: number; // unix timestamp when moved to trash
-  originalParentId?: string | null; // parentId before trashing, for restore
-  // Optional fields based on type
-  r2Key?: string; // R2 object key for uploaded files
-  thumbnailKey?: string; // R2 key for thumbnail image (generated on upload)
-  mimeType?: string;
-  fileSize?: number;
-  textContent?: string; // for text files
-  url?: string; // for link files
-  // Custom icon (Layer 2 customization)
-  customIcon?: string; // ID of custom icon from library, or R2 key for uploaded icon
-  // Widget fields (Layer 3 customization)
-  widgetType?: WidgetType;
-  widgetConfig?: WidgetConfig;
-  // Sticker fields (Layer 3 decoration)
-  stickerConfig?: StickerConfig;
-  // User-curated tags for search and organization
-  userTags?: string[];
-  // AI / metadata enrichment for uploaded images
-  imageAnalysis?: ImageAnalysisMetadata;
-  // User-created app (type='app')
-  appManifest?: AppManifest;
-  grantedPermissions?: {
-    fs?: { read?: string[]; write?: string[]; delete?: string[]; mimeTypes?: string[] };
-    profile?: { read?: Array<'username' | 'displayName' | 'bio' | 'avatar'> };
-    network?: { outbound?: string[] };
-    handlers?: { mimeTypes?: string[]; extensions?: string[] };
-    ipc?: { listen?: string[]; emit?: string[] };
-  };
-  permissionGrantedAt?: number;
-  // Installed console game (type='cartridge') — references a bazaar pack or
-  // the owner's own draft; the cartridge itself lives server-side.
-  cartridgeRef?: { packId?: string; draftId?: string; coverUrl?: string };
-}
-
-export interface AppPermissions {
-  fs?: {
-    read?: string[];
-    write?: string[];
-    delete?: string[];
-    mimeTypes?: string[];
-  };
-  profile?: {
-    read?: Array<'username' | 'displayName' | 'bio' | 'avatar'>;
-  };
-  network?: {
-    outbound?: string[];
-  };
-  ipc?: {
-    listen?: string[];
-    emit?: string[];
-  };
-  handlers?: {
-    mimeTypes?: string[];
-    extensions?: string[];
-  };
-}
-
-/**
- * App manifest for user-created apps (Dynamic Workers)
- */
-export interface AppManifest {
-  name: string;
-  description?: string;
-  version: string;
-  windowConfig: {
-    defaultWidth: number;
-    defaultHeight: number;
-    minWidth?: number;
-    minHeight?: number;
-    resizable?: boolean;
-    frameless?: boolean;
-  };
-  appId: string;
-  permissions?: AppPermissions;
-  rationale?: string;
-}
+export type {
+  DesktopItemType,
+  WidgetType,
+  StickyNoteConfig,
+  GuestbookEntry,
+  GuestbookConfig,
+  MusicTrack,
+  MusicPlayerConfig,
+  PixelCanvasConfig,
+  LinkBoardLink,
+  LinkBoardConfig,
+  WidgetConfig,
+  StickerConfig,
+  ImageAnalysisMetadata,
+  ProfileLink,
+  DesktopItem,
+  AppPermissions,
+  AppWindowConfig,
+  AppManifest,
+  AppGrantedPermissions,
+  UserProfile,
+} from '@eternalos/contracts';
 
 /**
  * Cartridge format for the fantasy game console.
@@ -225,57 +78,6 @@ export interface WindowState {
 
   contentId?: string; // Reference to DesktopItem id if applicable
   launchFileId?: string; // Double-clicked file ID to pass to a custom handler app
-}
-
-/**
- * User profile
- */
-export interface UserProfile {
-  uid: string;
-  username: string;
-  displayName?: string;
-  wallpaper?: string;
-  createdAt: number; // unix timestamp (ms)
-  // Onboarding flag (set to true on signup, cleared after first visit)
-  isNewUser?: boolean;
-  // Custom appearance settings (Layer 1 customization)
-  accentColor?: string;     // Hex color for selection, highlights
-  desktopColor?: string;    // Hex color for desktop background
-  windowBgColor?: string;   // Hex color for window content area
-  titleBarBgColor?: string; // Hex color for title bars and chrome bands
-  titleBarTextColor?: string; // Hex color for window title text
-  windowBorderColor?: string; // Hex color for window borders
-  buttonBgColor?: string;   // Hex color for buttons and controls
-  buttonTextColor?: string; // Hex color for button labels
-  buttonBorderColor?: string; // Hex color for control borders
-  labelColor?: string;      // Hex color for desktop/file labels
-  // Typography
-  systemFont?: string;      // Font catalog ID for UI text (titles, menus)
-  bodyFont?: string;        // Font catalog ID for body text (labels, content)
-  monoFont?: string;        // Font catalog ID for monospace (code, hex values)
-  fontSmoothing?: boolean;  // Override theme's font smoothing
-  windowBorderRadius?: number; // Rounded corners for windows
-  windowOpacity?: number;     // Window content opacity (30-100 percent)
-  controlBorderRadius?: number; // Rounded corners for buttons and inputs
-  windowShadow?: number;    // Shadow intensity (0-32)
-  // Extended design tokens (JSON blob for new properties beyond legacy flat fields)
-  designTokens?: Record<string, string | number | boolean>;
-  // Variant selections (e.g. window-chrome style)
-  variants?: Record<string, string>;
-  // Custom CSS (Layer 4 customization)
-  customCSS?: string;       // User-defined CSS, max 50KB, scoped to .user-desktop
-  // Wallpaper display mode
-  wallpaperMode?: 'cover' | 'tile' | 'center'; // How custom wallpaper images are displayed
-  // Watermark setting
-  hideWatermark?: boolean;  // Hide "Made with EternalOS" watermark in visitor mode
-  // Profile fields
-  bio?: string;                    // User bio, max 500 chars
-  profileLinks?: ProfileLink[];    // User links, max 5
-  shareDescription?: string;       // Custom OG description, max 200 chars
-  // Analytics
-  analyticsEnabled?: boolean;      // Opt-in view counter
-  // Sound customization (Skin system)
-  soundPack?: { name: string; sounds: Partial<Record<string, string>> };
 }
 
 /**
