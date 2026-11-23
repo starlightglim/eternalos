@@ -24,6 +24,7 @@ import { useDesktopStore } from '../../stores/desktopStore';
 import { useWindowStore } from '../../stores/windowStore';
 import { getTextFileContentType, type DesktopItem } from '../../types';
 import { AlertDialog } from '../ui/AlertDialog';
+import { notifyAppDataChanged, openAppIds, reloadAppWindows } from '../../utils/appWindowBus';
 import styles from './AgentChatWindow.module.css';
 
 const STARTER_PROMPTS = [
@@ -120,6 +121,33 @@ type ListAppsOutput = {
     created_at: number;
   }>;
 };
+
+/**
+ * Keep open app windows in step with what the assistant just did: new code
+ * remounts the window, backend data changes ping the running app.
+ */
+function syncOpenAppWindows(part: MessagePart): void {
+  const input = (part.input ?? {}) as { appId?: unknown; method?: unknown };
+  const output = (part.output ?? {}) as { appId?: unknown; ok?: unknown; changedApps?: unknown };
+  if (part.type === 'tool-updateApp' || part.type === 'tool-installAppPreview') {
+    if (typeof output.appId === 'string') reloadAppWindows(output.appId);
+    return;
+  }
+  if (part.type === 'tool-callAppApi') {
+    const method = typeof input.method === 'string' ? input.method.toUpperCase() : 'GET';
+    if (typeof input.appId === 'string' && method !== 'GET' && output.ok !== false) {
+      notifyAppDataChanged(input.appId);
+    }
+    return;
+  }
+  if (part.type === 'tool-codemode' && Array.isArray(output.changedApps)) {
+    // Code Mode reports every app whose data its run changed.
+    const open = new Set(openAppIds());
+    for (const appId of output.changedApps) {
+      if (typeof appId === 'string' && open.has(appId)) notifyAppDataChanged(appId);
+    }
+  }
+}
 
 type GetAppSourceOutput = {
   appId: string;
@@ -740,6 +768,7 @@ function AgentChatThreadPane({
         ) {
           refreshedToolCalls.current.add(part.toolCallId);
           void loadDesktop();
+          syncOpenAppWindows(part);
         }
       }
     }

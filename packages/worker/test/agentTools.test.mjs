@@ -1228,6 +1228,15 @@ describe('appBundleValidation issue hints', () => {
     );
   });
 
+  it('accepts the full eternal.api surface in apps that ship a backend', () => {
+    const issues = collectAppBundleIssues(appInput({
+      'index.html': SHELL,
+      'app.js': "const load = () => window.eternal.api.get('/todos');\nwindow.eternal.api.onChange(load);\nwindow.eternal.api.post('/todos', {});\nload();",
+      'server.js': 'export default { async fetch() { return Response.json([]); } };',
+    }));
+    assert.deepEqual(issues.map((issue) => issue.code), []);
+  });
+
   it('every issue code carries a non-empty hint the repair prompt can act on', () => {
     const triggers = [
       ['entry/missing-html', appInput({ 'app.js': 'void 0;' })],

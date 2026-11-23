@@ -1056,6 +1056,10 @@ const APP_BRIDGE_API_PROMPT = `Available in window.eternal (platform-injected �
                               init) returns the raw Response. Paths are
                               relative to the backend: api.get('/todos') hits
                               GET /api/todos. Only exists when server.js ships.
+  eternal.api.onChange(callback) -> unsubscribe fn; called when the assistant
+                              changes this app's backend data while it is
+                              open — re-fetch there (without a handler the
+                              app is reloaded).
 
 Item shape: { id, name, type, path, mimeType?, fileSize?, updatedAt, isPublic, caption?, tags?, dominantColors?, url? }`;
 
@@ -1088,7 +1092,8 @@ Backend contract (server.js — optional; include it when the specification has 
 - env.storage is the async Durable Object storage API on the same database (await env.storage.get(key) / put(key, value) / delete(key)) for small JSON blobs.
 - env.desktop.list({ path?, mimeType?, limit? }), env.desktop.readText(id), env.desktop.write({ path, content, mimeType? }) reach the user's desktop under the same derived fs permissions as the frontend.
 - Plain fetch(url) works only for hosts in derived network.outbound; everything else is blocked. No window, document, localStorage, or npm packages in the backend. Helper modules go under server/ and are imported relatively ('./server/db.js').
-- The frontend talks to it only through eternal.api.* (never raw fetch('/api/...')). Render a loading state while requests are in flight and an error message if a request throws.`;
+- The frontend talks to it only through eternal.api.* (never raw fetch('/api/...')). Render a loading state while requests are in flight and an error message if a request throws.
+- Register eternal.api.onChange(() => reload()) once at startup (reload = your function that re-fetches and re-renders), so records the assistant adds or edits while the app is open appear immediately.`;
 
 async function generateAppFromPrompt(
   env: Env,
@@ -2389,7 +2394,28 @@ const ETERNAL_RUNTIME_JS = `(() => {
     return data;
   }
 
+  // The assistant (or another client) changed this app's backend data while
+  // it is open. Apps that register handlers refresh in place; apps that
+  // don't are reloaded so they never show stale records.
+  const changeHandlers = new Set();
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent) return;
+    if (!event.data || event.data.type !== 'eternal:data:changed') return;
+    if (changeHandlers.size === 0) {
+      location.reload();
+      return;
+    }
+    for (const handler of changeHandlers) {
+      try { handler(event.data); } catch (_) {}
+    }
+  });
+
   const api = Object.freeze({
+    onChange(handler) {
+      if (typeof handler !== 'function') return () => {};
+      changeHandlers.add(handler);
+      return () => changeHandlers.delete(handler);
+    },
     fetch: apiFetch,
     get: (path) => apiJson('GET', path),
     post: (path, body) => apiJson('POST', path, body),

@@ -61,13 +61,37 @@ function stripApproval(tools: Record<string, AnyTool>): Record<string, AnyTool> 
   );
 }
 
+/**
+ * Wrap apps.callAppApi so a run can report which apps' data it changed —
+ * the chat uses `changedApps` to refresh those apps' open windows. App ids
+ * are usually discovered at runtime (listApps), so the code text alone
+ * cannot tell.
+ */
+function trackAppWrites(apps: Record<string, AnyTool>, changed: Set<string>): Record<string, AnyTool> {
+  const callAppApi = apps.callAppApi as (AnyTool & { execute?: (...args: any[]) => Promise<any> }) | undefined;
+  if (!callAppApi?.execute) return apps;
+  const execute = callAppApi.execute;
+  return {
+    ...apps,
+    callAppApi: {
+      ...callAppApi,
+      execute: async (input: { appId: string; method?: string }, toolOptions: unknown) => {
+        const result = await execute(input, toolOptions);
+        if ((input.method ?? 'GET').toUpperCase() !== 'GET' && result?.ok !== false) changed.add(input.appId);
+        return result;
+      },
+    } as AnyTool,
+  };
+}
+
 export function createCodeModeTool(options: CodeModeOptions): AnyTool {
   const providers: ToolProvider[] = [];
+  const changedApps = new Set<string>();
   if (options.desktop && Object.keys(options.desktop).length) {
     providers.push({ name: 'desktop', tools: stripApproval(options.desktop) as never });
   }
   if (options.apps && Object.keys(options.apps).length) {
-    providers.push({ name: 'apps', tools: stripApproval(options.apps) as never });
+    providers.push({ name: 'apps', tools: stripApproval(trackAppWrites(options.apps, changedApps)) as never });
   }
 
   const executor = new DynamicWorkerExecutor({
@@ -80,7 +104,17 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
     tools: providers,
     executor,
     description: DESCRIPTION,
-  }) as AnyTool;
+  }) as AnyTool & { execute: (...args: any[]) => Promise<Record<string, unknown>> };
 
-  return options.mutating ? ({ ...codeTool, needsApproval: true } as AnyTool) : codeTool;
+  const innerExecute = codeTool.execute;
+  const trackedTool = {
+    ...codeTool,
+    execute: async (...args: any[]) => {
+      changedApps.clear();
+      const output = await innerExecute(...args);
+      return changedApps.size ? { ...output, changedApps: [...changedApps] } : output;
+    },
+  } as AnyTool;
+
+  return options.mutating ? ({ ...trackedTool, needsApproval: true } as AnyTool) : trackedTool;
 }

@@ -9,6 +9,7 @@ import {
 import { AppPermissionDialog } from '../apps/AppPermissionDialog';
 import { getPermissionEntries, hasAllPermissionValues } from '../apps/appPermissionScopes';
 import type { AppPermissions } from '../../types';
+import { activeAppListeners, type ActiveAppListener } from '../../utils/appWindowBus';
 
 interface AppViewerProps {
   appId?: string;
@@ -16,23 +17,6 @@ interface AppViewerProps {
   windowId?: string;
   launchFileId?: string;
 }
-
-interface AppIpcMessage {
-  type: 'eternal:ipc:message';
-  topic: string;
-  payload: unknown;
-  sender: { appId?: string; previewId?: string };
-}
-
-interface ActiveAppListener {
-  appId?: string;
-  previewId?: string;
-  onMessage: (msg: AppIpcMessage) => void;
-  granted: AppPermissions;
-}
-
-// In-memory list of active app viewers for the parent-mediated IPC event bus.
-const activeAppListeners = new Set<ActiveAppListener>();
 
 function topicMatches(topic: unknown, patterns: string[] | undefined): boolean {
   if (typeof topic !== 'string' || topic.length === 0 || topic.length > 120) return false;
@@ -48,6 +32,7 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
   const [permissionPrompt, setPermissionPrompt] = useState<AppPermissionResponse | null>(null);
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [grantedPermissions, setGrantedPermissions] = useState<AppPermissions>({});
+  const [reloadKey, setReloadKey] = useState(0);
 
   const sendCapability = useCallback(() => {
     if (!iframeLoadedRef.current || !capabilityRef.current) return;
@@ -209,6 +194,10 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
           iframeRef.current.contentWindow.postMessage(msg, '*');
         }
       },
+      onReload: () => {
+        iframeLoadedRef.current = false;
+        setReloadKey((key) => key + 1);
+      },
     };
 
     activeAppListeners.add(listener);
@@ -220,6 +209,7 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <iframe
+        key={reloadKey}
         ref={iframeRef}
         src={src}
         onLoad={() => {

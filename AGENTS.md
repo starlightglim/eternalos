@@ -158,6 +158,11 @@ truth for all tokens).
   deletion / account purge calls `AppRunner.purge()` (`facets.delete`).
   Don't call `storage.deleteAll()` on the supervisor: it fails once facets
   exist.
+- Live sync: when the assistant changes an app's data (`callAppApi`, or a
+  Code Mode run — the code tool returns `changedApps`), the chat calls
+  `notifyAppDataChanged` (`src/utils/appWindowBus.ts`) and open windows get
+  `eternal:data:changed`; the runtime runs `eternal.api.onChange` handlers or
+  reloads the app. `updateApp`/`installAppPreview` remount open windows.
 - `ETERNAL_RUNTIME_JS` and the worker entry are emitted from TS template
   literals: regex/backslash escapes need doubling. The backend integration
   test parses the served runtime with `vm.Script` to catch this.
