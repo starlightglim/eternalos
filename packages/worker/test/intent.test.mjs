@@ -241,6 +241,31 @@ describe('intent routing (classifyRoute)', () => {
     { text: 'make me a todo appp', route: 'app-build', note: 'unchanged; repeated-letter collapse' },
   ]);
 
+  describe('installed app names as context', () => {
+    const appNames = ['Guestlog', 'Habit Tracker', 'Groceries App', 'Notes', 'Photos', 'Go'];
+    const cases = [
+      { text: "add 'buy milk' to my guestlog", route: 'app-build', note: 'live run: was chat, model faked success with rememberMemory' },
+      { text: 'add milk to my groceries', route: 'app-build', note: '"App" suffix stripped from the name' },
+      { text: "what's in my Guestlog?", route: 'app-read' },
+      { text: 'show my habit tracker streaks', route: 'app-read', note: 'multi-word name' },
+      { text: 'delete the oldest entry from my guestlog', route: 'app-build' },
+      { text: 'save a note about lunch', route: 'desktop-write', note: 'app named "Notes" must not hijack notes' },
+      { text: 'find my photos from the trip', route: 'desktop-read', note: 'app named "Photos" is unsafe as an app noun' },
+      { text: "let's go for a walk", route: 'chat', note: 'names under 3 chars ignored' },
+      { text: 'tell me a joke about guests', route: 'chat', note: 'whole-word match only' },
+    ];
+    for (const { text, route, note } of cases) {
+      it(`routes ${JSON.stringify(text)} → ${route}${note ? ` (${note})` : ''}`, () => {
+        assert.equal(classifyRoute(text, { appNames }), route);
+      });
+    }
+
+    it('does not change routing when no app names are given', () => {
+      assert.equal(classifyRoute("add 'buy milk' to my guestlog"), 'chat');
+      assert.equal(classifyRoute("add 'buy milk' to my guestlog", { appNames: [] }), 'chat');
+    });
+  });
+
   it('treats empty and whitespace-only input as chat', () => {
     assert.equal(classifyRoute(''), 'chat');
     assert.equal(classifyRoute('   '), 'chat');

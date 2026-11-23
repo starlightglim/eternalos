@@ -69,6 +69,11 @@ Mode: General chat
 - The user is chatting, brainstorming, or asking for advice/explanations
 - Do not call desktop or app tools unless needed
 - You may use memory tools when the user explicitly asks you to remember, forget, or review saved memories
+- Memories are facts about the user for future chats, NOT a place to store
+  app data or desktop content. In this mode you cannot change apps, their
+  data, or the desktop. If the user asks for that (e.g. "add milk to my
+  list"), never pretend it is done: say which app or file you would need and
+  ask them to name it (e.g. "add milk to my Groceries app").
 - Reply like a capable general-purpose assistant`;
 
 const DESKTOP_READ_PROMPT = `${BASE_PROMPT}
@@ -102,6 +107,10 @@ Mode: Desktop assistant (mutating)
 
 ${CODE_MODE_PROMPT}`;
 
+const APP_DATA_STYLE = `When you report an app's data: describe it in plain words, format
+timestamps as readable dates, and do not mention API paths, IDs, or
+endpoint names unless the user asks for them.`;
+
 const APP_READ_PROMPT = `${BASE_PROMPT}
 
 Mode: App assistant (read-only)
@@ -110,9 +119,11 @@ Mode: App assistant (read-only)
   - listApps
   - getAppSource
   - readAppApi — GET data from a full-stack app's own backend (e.g. the
-    items in their todo app); find routes in server.js via getAppSource
+    items in their todo app); use the routes listApps reports in apiRoutes
   - getAppBackendLogs — console output / errors from an app's server.js
 - Do not create, update, or delete apps in this mode
+
+${APP_DATA_STYLE}
 
 ${CODE_MODE_PROMPT}`;
 
@@ -151,9 +162,10 @@ Primary workflow
 - To list/delete: listApps(), deleteApp({ appId }).
 - To work with a full-stack app's DATA (not its code) — "add milk to my
   shopping list app", "what's in my reading tracker?" — call
-  callAppApi({ appId, method, path, body }) against the app's /api/* routes
-  (getAppSource shows server.js if you need the routes). If a backend
-  errors, getAppBackendLogs({ appId }) shows its console output.
+  callAppApi({ appId, method, path, body }) using a route from that app's
+  apiRoutes and body keys from its apiBodyFields (both come from listApps;
+  only read getAppSource if they are missing). If a backend errors,
+  getAppBackendLogs({ appId }) shows its console output.
 
 What apps can do
 - Read the user's desktop via window.eternal.fs.list(), fs.read(), fs.readText(),
@@ -188,6 +200,7 @@ Conversation style
   the desktop plus any permissions it uses. Do not dump generated source.
 - If the generator errors, surface a short human explanation and suggest one
   concrete next step, not a retry-loop explanation.
+- ${APP_DATA_STYLE}
 
 ${CODE_MODE_PROMPT}`;
 
@@ -298,6 +311,25 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
     return this.env.USER_DESKTOP.get(doId);
   }
 
+  /**
+   * Names of the user's installed apps, for intent routing ("add milk to my
+   * Groceries" has no word "app"). Best effort: routing must never fail on it.
+   */
+  private async listInstalledAppNames(): Promise<string[]> {
+    try {
+      const response = await this.getUserDesktopStub().fetch(new Request('http://internal/items'));
+      if (!response.ok) return [];
+      const { items } = await response.json<{ items: Array<{ type?: string; name?: string; isTrashed?: boolean; appManifest?: { name?: string } }> }>();
+      return items
+        .filter((item) => item.type === 'app' && !item.isTrashed)
+        .map((item) => item.appManifest?.name || item.name || '')
+        .filter(Boolean);
+    } catch (error) {
+      console.error('Failed to list app names for routing:', error);
+      return [];
+    }
+  }
+
   private getOwnerUid(): string {
     return extractOwnerUid(this.name);
   }
@@ -399,7 +431,13 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
         console.error('Failed to update agent thread registry entry:', registryError);
       }
 
-      const route = classifyRoute(lastUserText);
+      let route = classifyRoute(lastUserText);
+      // Only consult the user's app names when the plain text did not already
+      // pick an app route — saves a desktop read on most turns.
+      if (!route.startsWith('app-')) {
+        const appNames = await this.listInstalledAppNames();
+        if (appNames.length) route = classifyRoute(lastUserText, { appNames });
+      }
       const memoryTools = createMemoryTools({
         setState: (state) => this.setState(state),
         getState: () => this.state,

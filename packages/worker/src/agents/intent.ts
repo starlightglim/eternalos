@@ -268,8 +268,42 @@ function wantsNewApp(text: string): boolean {
  * The router.
  * ------------------------------------------------------------------ */
 
-export function classifyRoute(rawText: string): ChatRoute {
-  const text = normalizeText(rawText);
+/** Optional per-user context the router may use without any I/O of its own. */
+export interface RouteContext {
+  /**
+   * Names of the user's installed apps. A mention of one counts as an app noun,
+   * so "add milk to my Groceries" or "what's in my guestlog?" reach the app
+   * routes even without the word "app".
+   */
+  appNames?: readonly string[];
+}
+
+/** Names that would hijack ordinary desktop/chat phrasing if treated as apps. */
+const UNSAFE_APP_NAME_RE = new RegExp(
+  `^(?:${DESKTOP_READ_WORDS}|${DESKTOP_WRITE_VERBS}|${HARD_APP_VERBS}|${SOFT_APP_VERBS}|my|me|it|this|that|the|new|eternal|wallpaper|theme|memory|memories)$`,
+);
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Replace mentions of the user's app names with the token "app". */
+function substituteAppNames(text: string, appNames: readonly string[] | undefined): string {
+  if (!appNames?.length) return text;
+  const names = appNames
+    .map((name) => normalizeText(name).replace(/\b(?:app|application)$/, '').trim())
+    .filter((name) => name.length >= 3 && !UNSAFE_APP_NAME_RE.test(name))
+    // Longest first so "habit tracker pro" wins over "habit tracker".
+    .sort((left, right) => right.length - left.length);
+  let result = text;
+  for (const name of names) {
+    result = result.replace(new RegExp(`\\b${escapeRegExp(name)}\\b`, 'g'), 'app');
+  }
+  return result;
+}
+
+export function classifyRoute(rawText: string, context: RouteContext = {}): ChatRoute {
+  const text = substituteAppNames(normalizeText(rawText), context.appNames);
   if (!text) return 'chat';
   // Pure greetings ask for nothing; a greeting followed by a command is NOT
   // a greeting ("hi! build me a chess app" must reach the app rules below).

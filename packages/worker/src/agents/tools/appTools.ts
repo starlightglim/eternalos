@@ -24,6 +24,7 @@ import {
   formatAppValidationIssues,
   type AppValidationIssue,
 } from '../../utils/appBundleValidation';
+import { extractBackendBodyFields, extractBackendRoutes } from '../../utils/backendRoutes';
 import {
   APP_SPEC_SYSTEM_PROMPT,
   appSpecSchema,
@@ -197,8 +198,12 @@ const permissionsSchema = z.object({
   }).optional(),
 }).optional();
 
-const generatedAppFilesSchema = z.object({
-  files: z.record(z.string(), z.string()).refine(
+// `z.object({}).catchall()` rather than `z.record()`: zod v4 emits
+// `propertyNames` for records, which Workers AI's JSON grammar rejects
+// ("Unimplemented keys: [propertyNames]"), so every structured codegen call
+// failed and fell back to free text.
+export const generatedAppFilesSchema = z.object({
+  files: z.object({}).catchall(z.string()).refine(
     (files) => Object.keys(files).length > 0,
     'At least one source file is required',
   ),
@@ -441,6 +446,19 @@ type AgentAppRegistryMeta = AppRevisionPointers & {
   granted?: AppGrantedPermissions;
   r2Prefix?: string;
 };
+
+/** Backend API hints for an installed app (empty for static apps or on any read error). */
+async function readBackendApiHints(env: Env, r2Prefix: string): Promise<{ routes: string[]; bodyFields: string[] }> {
+  try {
+    const obj = await env.ETERNALOS_FILES.get(`${r2Prefix}/source.json`);
+    if (!obj) return { routes: [], bodyFields: [] };
+    const files = await obj.json<Record<string, string>>();
+    if (!files || typeof files['server.js'] !== 'string') return { routes: [], bodyFields: [] };
+    return { routes: extractBackendRoutes(files), bodyFields: extractBackendBodyFields(files) };
+  } catch {
+    return { routes: [], bodyFields: [] };
+  }
+}
 
 async function getRegisteredDesktopApp(
   env: Env,
@@ -3003,7 +3021,7 @@ export function createAppTools(ctx: AppToolsContext) {
     }),
 
     listApps: tool({
-      description: 'List all apps created by the user.',
+      description: "List all apps created by the user. Full-stack apps include `apiRoutes` (e.g. 'GET /api/entries') and `apiBodyFields` (JSON fields its server reads) — use exactly these with callAppApi/readAppApi.",
       inputSchema: z.object({}),
       execute: async () => {
         const response = await env.USER_DESKTOP.get(env.USER_DESKTOP.idFromName(uid)).fetch(new Request('http://internal/items'));
@@ -3013,13 +3031,20 @@ export function createAppTools(ctx: AppToolsContext) {
           .filter((item) => item.type === 'app' && item.appManifest?.appId && !item.isTrashed)
           .map(async (item) => {
             const appId = item.appManifest!.appId;
-            const metadata = await env.DESKTOP_KV.get<{ version?: number }>(`app:${appId}`, 'json');
+            const metadata = await env.DESKTOP_KV.get<{ version?: number; uid?: string; r2Prefix?: string }>(`app:${appId}`, 'json');
+            const api = metadata?.uid === uid
+              ? await readBackendApiHints(env, metadata.r2Prefix || `apps/${uid}/${appId}`)
+              : { routes: [], bodyFields: [] };
             return {
               id: appId,
               name: item.appManifest?.name || item.name,
               description: item.appManifest?.description || '',
               version: metadata?.version ?? (Number(item.appManifest?.version) || 1),
               created_at: item.createdAt,
+              // Found in server.js — so callAppApi/readAppApi use real
+              // paths and JSON field names instead of guessing.
+              ...(api.routes.length ? { apiRoutes: api.routes } : {}),
+              ...(api.bodyFields.length ? { apiBodyFields: api.bodyFields } : {}),
             };
           }));
         apps.sort((left, right) => right.created_at - left.created_at);
@@ -3054,7 +3079,7 @@ export function createAppTools(ctx: AppToolsContext) {
     }),
 
     callAppApi: tool({
-      description: "Call an installed full-stack app's own backend (its server.js, backed by the app's private SQLite database) as the owner. Use it to read or change the app's data for the user — e.g. list the items in their todo app, add an entry to their journal app. Routes are the app's /api/* routes (read getAppSource to see server.js if unsure).",
+      description: "Call an installed full-stack app's own backend (its server.js, backed by the app's private SQLite database) as the owner. Use it to read or change the app's data for the user — e.g. list the items in their todo app, add an entry to their journal app. Use a route from that app's `apiRoutes` in listApps and JSON body keys from its `apiBodyFields` — never guess; if listApps shows no apiRoutes for it, read getAppSource first.",
       inputSchema: z.object({
         appId: z.string().min(1).max(128).describe('Installed app ID (from listApps)'),
         method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).default('GET'),
@@ -3067,7 +3092,7 @@ export function createAppTools(ctx: AppToolsContext) {
     }),
 
     readAppApi: tool({
-      description: "Read data from an installed full-stack app's backend (GET only) — e.g. list the items in the user's todo or journal app.",
+      description: "Read data from an installed full-stack app's backend (GET only) — e.g. list the items in the user's todo or journal app. Use a GET route from that app's `apiRoutes` in listApps rather than guessing.",
       inputSchema: z.object({
         appId: z.string().min(1).max(128).describe('Installed app ID (from listApps)'),
         path: z.string().min(1).max(500).describe("Backend path, e.g. '/api/todos'"),

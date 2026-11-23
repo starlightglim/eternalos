@@ -42,7 +42,7 @@ register(new URL('./tsModuleHooks.mjs', import.meta.url));
 const { OrchestratorAgent } = await import('../src/agents/OrchestratorAgent.ts');
 const { createDesktopTools } = await import('../src/agents/tools/desktopTools.ts');
 const { createMemoryTools } = await import('../src/agents/tools/memoryTools.ts');
-const { createAppTools, initAppRegistry } = await import('../src/agents/tools/appTools.ts');
+const { createAppTools, initAppRegistry, generatedAppFilesSchema } = await import('../src/agents/tools/appTools.ts');
 const {
   listAppRevisionManifests,
   readAppRevision,
@@ -61,6 +61,7 @@ const {
   handleAppRollback,
 } = await import('../src/routes/apps.ts');
 const { AIChatAgent } = await import('@cloudflare/ai-chat');
+const { z } = await import('zod');
 
 const UID = 'user-abc123';
 const TEST_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -483,6 +484,7 @@ function createAgentHarness({ items = [], profile = null } = {}) {
     // TS-private methods live on the prototype; borrow the real ones.
     getOwnerUid: OrchestratorAgent.prototype.getOwnerUid,
     getUserDesktopStub: OrchestratorAgent.prototype.getUserDesktopStub,
+    listInstalledAppNames: OrchestratorAgent.prototype.listInstalledAppNames,
     getModel: OrchestratorAgent.prototype.getModel,
     settleTurnUsage: OrchestratorAgent.prototype.settleTurnUsage,
     degradedTurnResponse: OrchestratorAgent.prototype.degradedTurnResponse,
@@ -993,6 +995,19 @@ describe('memoryTools', () => {
 // ---------------------------------------------------------------------------
 // appSpec — deterministic spec validation and spec -> permission derivation
 // ---------------------------------------------------------------------------
+
+describe('structured output schemas', () => {
+  // Workers AI's JSON grammar rejects some JSON Schema keywords outright
+  // (seen live: "Grammar error: Unimplemented keys: [\"propertyNames\"]"),
+  // which silently forces every generateObject call onto the text fallback.
+  const UNSUPPORTED = ['propertyNames', 'patternProperties', 'if', 'then', 'else', 'dependentSchemas'];
+  for (const [name, schema] of [['appSpecSchema', appSpecSchema], ['generatedAppFilesSchema', generatedAppFilesSchema]]) {
+    it(`${name} uses only keywords Workers AI's grammar supports`, () => {
+      const json = JSON.stringify(z.toJSONSchema(schema, { unrepresentable: 'any' }));
+      for (const key of UNSUPPORTED) assert.ok(!json.includes(`"${key}"`), `${name} emits unsupported "${key}"`);
+    });
+  }
+});
 
 describe('appSpec', () => {
   /** A minimal valid spec; overrides replace whole sections. */
