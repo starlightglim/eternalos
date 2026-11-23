@@ -98,6 +98,19 @@ export const appSpecSchema = z.object({
      */
     arbitraryFiles: z.boolean().default(false),
   })).max(10).default([]),
+  /**
+   * Server-side backend (server.js) — a real Worker running as a Durable
+   * Object Facet with its own SQLite database. Plan it only when the app
+   * needs structured/relational data, server-side logic, or should call
+   * external APIs from the server. Derives no permission (network calls
+   * still go through networkDomains). Generator guidance only.
+   */
+  backend: z.object({
+    /** HTTP routes server.js implements, e.g. 'GET /api/todos', 'POST /api/todos'. */
+    routes: z.array(z.string().min(1).max(120)).max(30).default([]),
+    /** SQLite tables with their columns, e.g. 'todos(id INTEGER PRIMARY KEY, title TEXT, done INTEGER)'. */
+    tables: z.array(z.string().min(1).max(300)).max(20).default([]),
+  }).optional(),
   /** eternal.storage keys the app persists to (no permission implied). */
   storageKeys: z.array(z.string().min(1).max(256)).max(50).optional(),
   /** Hostnames the app fetches from via window.eternal.fetch (no scheme/path/port). */
@@ -130,7 +143,8 @@ Your job:
 - choose WHERE the app's state lives: dataWrites for files the USER should see and open on their desktop (e.g. "save my notes as markdown files"), storageKeys for the app's own private state (settings, drafts, caches — window.eternal.storage, no permission needed)
 - declare desktop file writes as dataWrites: kind 'fs', with paths globs the app writes into (e.g. ['/Notes/**']) and, only when the app manages its own files' lifecycle, deletePaths; keep write scopes as narrow as the request allows
 - reserve whole-desktop write scopes ('**') for apps that genuinely manage arbitrary user files (file managers, batch tools): such an entry must set arbitraryFiles: true, and the spec should include a rationale
-- declare external services as bare hostnames in networkDomains (the app calls them through window.eternal.fetch)
+- declare external services as bare hostnames in networkDomains (the frontend calls them through window.eternal.fetch; a backend calls them with plain fetch())
+- plan a backend (server.js) when the app manages real records — lists, boards, logs, inventories, trackers, journals, anything with CRUD, search, sorting, or aggregation — or when it should call external APIs server-side. Declare its HTTP routes under /api/ and its SQLite tables. Simple single-value settings/drafts stay in storageKeys; tiny hermetic toys (calculators, clocks, single-screen games) need no backend
 - include a short rationale whenever a broad scope ('**', '*') is genuinely required
 
 The platform derives the app's manifest permissions from these declarations; you never write permissions yourself.
@@ -141,6 +155,7 @@ Spec fields:
 - screens: every screen/view (at least one); each has name, summary, and emptyState (what it shows with no data or a denied permission)
 - dataReads: desktop data reads; kind must be 'fs'; scope via paths globs ('**', '/Photos/**', '/Notes/*.md', '*.jpg') and/or mimeTypes ('image/*', 'audio/*', 'text/*', 'application/pdf')
 - dataWrites: desktop file writes (creates/patches; deletePaths for deletes); kind must be 'fs'; '/'-rooted paths globs like '/Notes/**'; optional mimeTypes say what formats it writes
+- backend: optional { routes: ['GET /api/items', 'POST /api/items', ...], tables: ['items(id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, created_at INTEGER)'] }
 - storageKeys: eternal.storage keys the app will read/write
 - networkDomains: bare hostnames only — 'api.example.com', '*.example.com', '*'; never URLs
 - profileFields: subset of 'username', 'displayName', 'bio', 'avatar'

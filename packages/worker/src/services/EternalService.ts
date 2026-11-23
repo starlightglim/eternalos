@@ -90,7 +90,7 @@ function validateStorageKey(key: string): void {
   }
 }
 
-function isPrivateNetworkHost(hostname: string): boolean {
+export function isPrivateNetworkHost(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) return true;
   if (host === '::1' || host === '0.0.0.0' || host === '169.254.169.254') return true;
@@ -105,6 +105,18 @@ function isPrivateNetworkHost(hostname: string): boolean {
   // fcc.gov, fdic.gov — as private and wrongly block granted outbound fetches.
   if (host.includes(':') && (host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:'))) return true;
   return false;
+}
+
+/** Host allowlist match shared by the bridge proxy and the backend outbound filter. */
+export function isOutboundHostAllowed(patterns: readonly string[], hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return patterns.some((pattern) => {
+    const normalizedPattern = pattern.toLowerCase();
+    if (normalizedPattern === '*') return true;
+    if (normalizedPattern === host) return true;
+    if (normalizedPattern.startsWith('*.') && host.endsWith(`.${normalizedPattern.slice(2)}`)) return true;
+    return false;
+  });
 }
 
 function toEternalItem(item: DesktopItem, path: string): EternalItem {
@@ -678,13 +690,7 @@ export class EternalService extends WorkerEntrypoint<Env> {
     if (init?.body && new TextEncoder().encode(init.body).length > MAX_NETWORK_BODY_BYTES) {
       throw new Error('Network request body is too large');
     }
-    const isAllowed = granted.network.outbound.some((pattern) => {
-      const normalizedPattern = pattern.toLowerCase();
-      if (normalizedPattern === '*') return true;
-      if (normalizedPattern === targetUrl.hostname.toLowerCase()) return true;
-      if (normalizedPattern.startsWith('*.') && targetUrl.hostname.toLowerCase().endsWith(`.${normalizedPattern.slice(2)}`)) return true;
-      return false;
-    });
+    const isAllowed = isOutboundHostAllowed(granted.network.outbound, targetUrl.hostname);
 
     if (!isAllowed) {
       throw new Error(`Not permitted: outbound access to ${targetUrl.hostname} is not allowed`);
@@ -717,5 +723,45 @@ export class EternalService extends WorkerEntrypoint<Env> {
       body: bodyText,
       headers: resHeaders,
     };
+  }
+}
+
+/**
+ * globalOutbound for full-stack app backends. Every fetch()/connect() made by
+ * an app's server.js lands here first: only http(s) to a granted
+ * network.outbound host, never a private/loopback address, no credentials in
+ * the URL. Redirects are not followed (a granted host must not bounce the
+ * request somewhere ungranted).
+ */
+export interface AppOutboundProps {
+  appId: string;
+  outbound: string[];
+}
+
+export class AppOutbound extends WorkerEntrypoint<Env> {
+  async fetch(request: Request): Promise<Response> {
+    const { outbound, appId } = (this.ctx as unknown as { props: AppOutboundProps }).props;
+    let target: URL;
+    try {
+      target = new URL(request.url);
+    } catch {
+      return Response.json({ error: 'Invalid outbound URL' }, { status: 400 });
+    }
+    if (
+      !['http:', 'https:'].includes(target.protocol)
+      || target.username
+      || target.password
+      || isPrivateNetworkHost(target.hostname)
+    ) {
+      return Response.json({ error: 'Network URL is not allowed' }, { status: 403 });
+    }
+    if (!isOutboundHostAllowed(outbound ?? [], target.hostname)) {
+      return Response.json(
+        { error: `Not permitted: app ${appId} has no outbound grant for ${target.hostname}` },
+        { status: 403 },
+      );
+    }
+    const upstream = new Request(request, { redirect: 'manual' });
+    return fetch(upstream);
   }
 }

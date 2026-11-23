@@ -31,7 +31,7 @@ import {
   assertAppBundleValid,
   type AppValidationIssue,
 } from '../utils/appBundleValidation';
-import { createAppWorkspace, createWorkerModuleFiles, validateGeneratedApp } from '../agents/tools/appTools';
+import { createAppWorkspace, createWorkerModuleFiles, purgeAppBackend, validateGeneratedApp } from '../agents/tools/appTools';
 import {
   ensureRevisionBaseline,
   isValidRevisionId,
@@ -1425,6 +1425,7 @@ export async function handleAppDelete(
 
   await deleteR2Prefix(env, `apps/${auth.uid}/${appId}/`);
   await env.DESKTOP_KV.delete(`app:${appId}`);
+  await purgeAppBackend(env, appId).catch((error) => console.error('App backend purge failed:', error));
 
   const storagePrefix = `app-storage:${auth.uid}:${appId}:`;
   let storageCursor: string | undefined;
@@ -1474,4 +1475,27 @@ export async function handleGetAppSourceRoute(
     console.error('Failed to get app source:', error);
     return Response.json({ error: error instanceof Error ? error.message : 'Failed to retrieve source' }, { status: 500 });
   }
+}
+
+/**
+ * GET /api/apps/:appId/backend/logs — recent console output and uncaught
+ * exceptions from a full-stack app's server.js (owner only). Static apps
+ * return an empty list.
+ */
+export async function handleAppBackendLogsRoute(
+  request: Request,
+  env: Env,
+  auth: AuthContext,
+  appId: string,
+): Promise<Response> {
+  const appMeta = await env.DESKTOP_KV.get<{ uid: string }>(`app:${appId}`, 'json');
+  if (!appMeta) {
+    return Response.json({ error: 'App not found' }, { status: 404 });
+  }
+  if (appMeta.uid !== auth.uid) {
+    return Response.json({ error: 'Not authorized' }, { status: 403 });
+  }
+  const limit = Number(new URL(request.url).searchParams.get('limit') ?? 50);
+  const logs = await env.APP_RUNNER.getByName(`app:${appId}`).getLogs(Number.isFinite(limit) ? limit : 50);
+  return Response.json({ logs });
 }

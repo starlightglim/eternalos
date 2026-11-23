@@ -134,6 +134,44 @@ truth for all tokens).
   Locally (AI binding disabled) the UI/transport works but replies error.
 - Responsive: inspector hides < 1100px, sidebar hides < 760px.
 
+## App runtime (Dynamic Workers) and Code Mode
+
+- Every app is compiled with `@cloudflare/worker-bundler` and served from a
+  Dynamic Worker (`env.LOADER.get`) at `/api/apps/:appId/` (previews:
+  `/api/app-previews/:id/`). The iframe is `sandbox="allow-scripts"` (origin
+  `null`), so the `app-iframe-preflight` route in `routeTable.ts` answers
+  preflights for `/_eternal/*` and `/api/*` before the global CORS handler.
+  Don't remove it: without it every capability-carrying bridge call fails.
+- Full-stack apps: an optional `server.js` (+ helpers under `server/`) is
+  bundled as the `AppBackend` class (`__eternal_backend__.js` wrapper in
+  `appTools.ts`) and runs as a **Durable Object Facet** under the
+  `AppRunner` supervisor DO (`src/durable-objects/AppRunner.ts`), so each
+  app gets its own SQLite (`env.sql`, `env.storage`, `env.kv`, plus
+  grant-checked `env.desktop`). Requests to `/api/apps/:id/api/*` are routed
+  to it (capability-gated for installed apps). Outbound `fetch()` goes
+  through `AppOutbound` (granted `network.outbound` hosts only, else no
+  network). Console/exception output is tailed via `AppLogTail` into
+  `GET /api/apps/:id/backend/logs`. Frontend calls it with
+  `window.eternal.api.get/post/put/patch/delete`.
+- A new release or grant change bumps the facet's code id → the facet is
+  aborted and restarted on the new class; its SQLite data survives. App
+  deletion / account purge calls `AppRunner.purge()` (`facets.delete`).
+  Don't call `storage.deleteAll()` on the supervisor: it fails once facets
+  exist.
+- `ETERNAL_RUNTIME_JS` and the worker entry are emitted from TS template
+  literals: regex/backslash escapes need doubling. The backend integration
+  test parses the served runtime with `vm.Script` to catch this.
+- Code Mode (`src/agents/tools/codeModeTools.ts`): `@cloudflare/codemode`'s
+  `createCodeTool` + `DynamicWorkerExecutor` (no network). Each chat route
+  exposes its own tools as `desktop.*` / `apps.*`; mutating variants strip
+  inner `needsApproval` (codemode drops such tools otherwise) and gate the
+  whole code tool behind one approval.
+- `test/appBackend.integration.test.mjs` exercises facets end to end under
+  `unstable_dev`; it works without Cloudflare credentials.
+- Shipping: `AppRunner` is a new DO class (migration `v8`) — per the
+  DO-migration deploy note, run `wrangler deploy` once before relying on
+  Workers Builds (`versions upload`).
+
 ## Git / repo facts
 
 - This is a standalone npm-workspaces project. The workspaces are

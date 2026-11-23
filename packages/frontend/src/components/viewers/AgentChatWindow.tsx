@@ -127,7 +127,7 @@ type GetAppSourceOutput = {
   files: Record<string, string>;
   workspaceManifest?: {
     version: 1;
-    profile: 'static-html';
+    profile: 'static-html' | 'fullstack';
     entryHtml: string;
     sourceFiles: string[];
     runtimeAsset: string;
@@ -722,6 +722,7 @@ function AgentChatThreadPane({
       'tool-moveItems',
       'tool-createTextNote',
       'tool-codemode',
+      'tool-callAppApi',
       'tool-previewAppFromPrompt',
       'tool-installAppPreview',
       'tool-buildAppFromPrompt',
@@ -1538,15 +1539,120 @@ function AgentChatThreadPane({
       );
     }
 
-    // Codemode tool — app building via generated TypeScript
+    // Code Mode — the agent runs one sandboxed JS function (Dynamic Worker,
+    // no network) that orchestrates several tools at once.
     if (part.type === 'tool-codemode') {
+      const input = part.input as { code?: string } | undefined;
+      const code = typeof input?.code === 'string' ? input.code : '';
+      const codePreview = code ? (
+        <pre className={styles.codeBlock}>{code.length > 2400 ? `${code.slice(0, 2400)}\n…` : code}</pre>
+      ) : null;
+
       if (part.state === 'approval-requested') {
         return (
           <div key={`codemode-${index}`} className={styles.toolCard}>
-            <div className={styles.toolTitle}>Approval required</div>
+            <div className={styles.toolTitle}>Run code?</div>
             <div className={styles.toolBody}>
-              Eternal wants to execute generated code that may create, update, or delete desktop apps.
+              Eternal wants to run this code in a sandbox. It can make changes through the tools it calls (desktop items or app data).
             </div>
+            {codePreview}
+            <div className={styles.approvalRow}>
+              <button
+                type="button"
+                className={styles.actionButton}
+                onClick={() => {
+                  if (part.approval?.id) {
+                    void addToolApprovalResponse({ id: part.approval.id, approved: true });
+                  }
+                }}
+              >
+                Run
+              </button>
+              <button
+                type="button"
+                className={styles.actionButton}
+                onClick={() => {
+                  if (part.approval?.id) {
+                    void addToolApprovalResponse({ id: part.approval.id, approved: false });
+                  }
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      if (part.state === 'output-denied') {
+        return (
+          <div key={`codemode-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Code run cancelled</div>
+          </div>
+        );
+      }
+
+      if (part.state === 'output-error') {
+        return (
+          <div key={`codemode-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Code failed</div>
+            <div className={styles.errorText}>{String(part.errorText ?? 'Unknown error')}</div>
+            {codePreview}
+          </div>
+        );
+      }
+
+      if (part.state !== 'output-available') {
+        return (
+          <div key={`codemode-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Running code…</div>
+            {codePreview}
+          </div>
+        );
+      }
+
+      const output = part.output as { result?: unknown; logs?: string[] } | undefined;
+      const resultText = output?.result === undefined ? '' : JSON.stringify(output.result, null, 2);
+      return (
+        <div key={`codemode-${index}`} className={styles.toolCard}>
+          <div className={styles.toolTitle}>Code ran</div>
+          {resultText ? (
+            <pre className={styles.codeBlock}>{resultText.length > 1600 ? `${resultText.slice(0, 1600)}\n…` : resultText}</pre>
+          ) : (
+            <div className={styles.toolBody}>Done.</div>
+          )}
+          {output?.logs && output.logs.length > 0 ? (
+            <details className={styles.codeDetails}>
+              <summary>Console ({output.logs.length})</summary>
+              <pre className={styles.codeBlock}>{output.logs.join('\n')}</pre>
+            </details>
+          ) : null}
+          {code ? (
+            <details className={styles.codeDetails}>
+              <summary>Code</summary>
+              {codePreview}
+            </details>
+          ) : null}
+        </div>
+      );
+    }
+
+    // Full-stack app data — calls into an app's own server.js backend.
+    if (part.type === 'tool-callAppApi' || part.type === 'tool-readAppApi') {
+      const input = part.input as { appId?: string; method?: string; path?: string; body?: unknown } | undefined;
+      const method = part.type === 'tool-readAppApi' ? 'GET' : (input?.method ?? 'GET');
+      const target = `${method} ${input?.path ?? ''}`.trim();
+
+      if (part.state === 'approval-requested') {
+        return (
+          <div key={`app-api-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Change app data?</div>
+            <div className={styles.toolBody}>
+              Eternal wants to send <strong>{target}</strong> to one of your apps.
+            </div>
+            {input?.body !== undefined ? (
+              <pre className={styles.codeBlock}>{JSON.stringify(input.body, null, 2)}</pre>
+            ) : null}
             <div className={styles.approvalRow}>
               <button
                 type="button"
@@ -1574,77 +1680,59 @@ function AgentChatThreadPane({
           </div>
         );
       }
-
       if (part.state === 'output-denied') {
         return (
-          <div key={`codemode-${index}`} className={styles.toolCard}>
-            <div className={styles.toolTitle}>App action cancelled</div>
+          <div key={`app-api-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>App change cancelled</div>
           </div>
         );
       }
-
       if (part.state === 'output-error') {
         return (
-          <div key={`codemode-${index}`} className={styles.toolCard}>
-            <div className={styles.toolTitle}>App build failed</div>
+          <div key={`app-api-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>App request failed</div>
             <div className={styles.errorText}>{String(part.errorText ?? 'Unknown error')}</div>
           </div>
         );
       }
-
       if (part.state !== 'output-available') {
         return (
-          <AppBuildProgressCard
-            key={`codemode-${index}`}
-          />
-        );
-      }
-
-      const output = part.output as { result?: unknown; logs?: string[] } | undefined;
-      const result = output?.result as { appId?: string; name?: string; status?: string; version?: number } | undefined;
-
-      if (result?.status === 'created') {
-        return (
-          <div key={`codemode-${index}`} className={styles.toolCard}>
-            <div className={styles.toolTitle}>App created</div>
-            <div className={styles.toolBody}>
-              <strong>{result.name}</strong> has been added to your desktop.
-            </div>
+          <div key={`app-api-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>App data</div>
+            <div className={styles.toolBody}>{target}…</div>
           </div>
         );
       }
-
-      if (result?.status === 'updated') {
-        return (
-          <div key={`codemode-${index}`} className={styles.toolCard}>
-            <div className={styles.toolTitle}>App updated</div>
-            <div className={styles.toolBody}>
-              App updated to version {result.version}. Reload the app window to see changes.
-            </div>
-          </div>
-        );
-      }
-
-      if (result?.status === 'deleted') {
-        return (
-          <div key={`codemode-${index}`} className={styles.toolCard}>
-            <div className={styles.toolTitle}>App deleted</div>
-            <div className={styles.toolBody}>The app has been removed from your desktop.</div>
-          </div>
-        );
-      }
-
-      // Generic codemode output
+      const output = part.output as { status?: number; ok?: boolean } | undefined;
       return (
-        <div key={`codemode-${index}`} className={styles.toolCard}>
-          <div className={styles.toolTitle}>Code executed</div>
-          <div className={styles.toolBody}>
-            {output?.logs && output.logs.length > 0 ? (
-              <pre style={{ fontSize: '10px', whiteSpace: 'pre-wrap', margin: 0 }}>{output.logs.join('\n')}</pre>
-            ) : (
-              <span>Done.</span>
-            )}
+        <div key={`app-api-${index}`} className={styles.toolCard}>
+          <div className={styles.toolTitle}>App data</div>
+          <div className={output?.ok === false ? styles.errorText : styles.toolBody}>
+            {target} → {output?.status ?? '?'}
           </div>
+        </div>
+      );
+    }
+
+    if (part.type === 'tool-getAppBackendLogs') {
+      if (part.state !== 'output-available') {
+        return (
+          <div key={`app-logs-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>App backend logs</div>
+            <div className={styles.toolBody}>Reading logs…</div>
+          </div>
+        );
+      }
+      const output = part.output as { logs?: Array<{ level: string; message: string }> } | undefined;
+      const logs = output?.logs ?? [];
+      return (
+        <div key={`app-logs-${index}`} className={styles.toolCard}>
+          <div className={styles.toolTitle}>App backend logs</div>
+          {logs.length === 0 ? (
+            <div className={styles.toolBody}>No recent log output.</div>
+          ) : (
+            <pre className={styles.codeBlock}>{logs.slice(-12).map((entry) => `[${entry.level}] ${entry.message}`).join('\n')}</pre>
+          )}
         </div>
       );
     }
@@ -1677,8 +1765,9 @@ function AgentChatThreadPane({
         || latestPendingToolPart?.type === 'tool-installAppPreview'
         || latestPendingToolPart?.type === 'tool-createApp'
         || latestPendingToolPart?.type === 'tool-updateApp'
-        || latestPendingToolPart?.type === 'tool-codemode'
           ? 'Building your app...'
+          : latestPendingToolPart?.type === 'tool-codemode'
+            ? 'Running code...'
           : latestPendingToolPart?.type === 'tool-deleteApp'
             ? 'Removing app...'
             : status === 'submitted' || status === 'streaming'

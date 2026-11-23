@@ -16,8 +16,11 @@ import type { Env } from '../../index';
 import type { AppManifest, AppPermissions, DesktopItem, UserProfile } from '../../types';
 import type { AppGrantedPermissions } from '../../utils/jwt';
 import {
+  APP_BACKEND_ENTRY_FILE,
   AppValidationError,
   assertAppBundleValid,
+  isBackendFile,
+  splitBackendFiles,
   formatAppValidationIssues,
   type AppValidationIssue,
 } from '../../utils/appBundleValidation';
@@ -34,6 +37,8 @@ import {
   writeAppRevision,
   type AppRevisionPointers,
 } from '../../routes/appRevisions';
+import { appRunnerName } from '../../durable-objects/AppRunner';
+import { resolveInstalledAppBackend } from '../../routes/appServe';
 import {
   intersectGranted,
   pruneGrantApprovals,
@@ -66,7 +71,7 @@ interface AppBundleInput {
   rationale?: string;
 }
 
-type AppWorkspaceProfile = 'static-html';
+type AppWorkspaceProfile = 'static-html' | 'fullstack';
 
 type AppBuildStageKey =
   | 'prepare-workspace'
@@ -81,6 +86,8 @@ interface AppWorkspaceManifest {
   sourceFiles: string[];
   runtimeAsset: string;
   workerEntrypoint: string;
+  /** Present on 'fullstack' apps: the server-side handler module. */
+  backendEntry?: string;
 }
 
 interface AppWorkspace {
@@ -137,6 +144,7 @@ type AppArtifactBuildResult = {
 };
 
 const APP_WORKER_ENTRY_FILE = '__eternal_worker__.js';
+const APP_BACKEND_WRAPPER_FILE = '__eternal_backend__.js';
 const APP_RUNTIME_ASSET_FILE = 'eternal-runtime.js';
 const APP_WORKSPACE_MANIFEST_FILE = 'workspace.json';
 const APP_BUNDLE_FILE = 'bundle.json';
@@ -151,6 +159,7 @@ const MAX_APP_SOURCE_BYTES = 4 * 1024 * 1024;
 const RESERVED_APP_SOURCE_FILES = new Set([
   APP_WORKER_ENTRY_FILE,
   APP_RUNTIME_ASSET_FILE,
+  APP_BACKEND_WRAPPER_FILE,
 ]);
 
 const APP_BUILD_STAGE_LABELS: Record<AppBuildStageKey, string> = {
@@ -202,6 +211,42 @@ const APP_BUILD_TIMEOUT_MS = {
   storageWrite: 15_000,
   desktopInstall: 15_000,
 } as const;
+
+/**
+ * Owner-trusted call into an installed app's backend facet (agent / Code
+ * Mode). Ownership is checked against the app registry; the capability gate
+ * the iframe goes through is not needed because the caller IS the owner.
+ */
+export async function callAppBackend(
+  env: Env,
+  uid: string,
+  input: { appId: string; method?: string; path: string; body?: unknown },
+): Promise<{ status: number; ok: boolean; data: unknown }> {
+  const resolved = await resolveInstalledAppBackend(env, input.appId);
+  if (!resolved || resolved.ownerUid !== uid) {
+    throw new Error(`App ${input.appId} not found`);
+  }
+  const rawPath = input.path.startsWith('/') ? input.path : `/${input.path}`;
+  const path = rawPath === '/api' || rawPath.startsWith('/api/') || rawPath.startsWith('/api?') ? rawPath : `/api${rawPath}`;
+  const method = (input.method ?? 'GET').toUpperCase();
+  const hasBody = input.body !== undefined && !['GET', 'HEAD', 'DELETE'].includes(method);
+  const request = new Request(`https://app.internal${path}`, {
+    method,
+    headers: hasBody ? { 'content-type': 'application/json' } : undefined,
+    body: hasBody ? JSON.stringify(input.body) : undefined,
+  });
+  const response = await env.APP_RUNNER.getByName(appRunnerName('app', input.appId)).handle(request, resolved.config);
+  const text = await response.text();
+  let data: unknown = text;
+  try { data = text ? JSON.parse(text) : null; } catch { /* plain text body */ }
+  if (typeof data === 'string' && data.length > 20_000) data = `${data.slice(0, 20_000)}…`;
+  return { status: response.status, ok: response.ok, data };
+}
+
+/** Drop a full-stack app's facet database + logs. No-op for static apps. */
+export async function purgeAppBackend(env: Env, appId: string): Promise<void> {
+  await env.APP_RUNNER.getByName(appRunnerName('app', appId)).purge();
+}
 
 async function listR2Prefix(env: Env, prefix: string): Promise<string[]> {
   const keys: string[] = [];
@@ -576,7 +621,9 @@ export function createAppWorkspace(files: Record<string, string>): AppWorkspace 
     }
   }
 
-  const entryHtml = selectHtmlEntry(normalizedFiles);
+  const { frontend: frontendFiles } = splitBackendFiles(normalizedFiles);
+  const hasBackend = APP_BACKEND_ENTRY_FILE in normalizedFiles;
+  const entryHtml = selectHtmlEntry(frontendFiles);
   if (!(entryHtml in normalizedFiles)) {
     throw new AppValidationError([{
       code: 'entry/no-html',
@@ -589,11 +636,12 @@ export function createAppWorkspace(files: Record<string, string>): AppWorkspace 
     files: normalizedFiles,
     manifest: {
       version: 1,
-      profile: 'static-html',
+      profile: hasBackend ? 'fullstack' : 'static-html',
       entryHtml,
       sourceFiles: Object.keys(normalizedFiles).sort(),
       runtimeAsset: APP_RUNTIME_ASSET_FILE,
       workerEntrypoint: APP_WORKER_ENTRY_FILE,
+      ...(hasBackend ? { backendEntry: APP_BACKEND_ENTRY_FILE } : {}),
     },
   };
 }
@@ -651,7 +699,9 @@ function findMatchingFile(files: Record<string, string>, pattern: RegExp): strin
  * targeted repair pass can patch just that file.
  */
 export function validateGeneratedApp(app: AppBundleInput): void {
-  const files = app.files;
+  // Browser-sandbox gates apply to what ships to the iframe. server.js and
+  // server/* run in the Worker facet and are checked by checkBackend().
+  const files = splitBackendFiles(app.files).frontend;
   const htmlFiles = Object.entries(files).filter(([name]) => name.endsWith('.html') || name === 'html');
   if (htmlFiles.length === 0) {
     throw new AppValidationError([{
@@ -999,6 +1049,13 @@ const APP_BRIDGE_API_PROMPT = `Available in window.eternal (platform-injected �
   eternal.fetch(url, init?) -> allowlisted proxy response
   eternal.ipc.emit(topic, payload), ipc.on(topic, callback)
   eternal.window.setTitle(s), eternal.window.close(), eternal.window.requestFocus()
+  eternal.api.get(path), api.post(path, body), api.put(path, body),
+  api.patch(path, body), api.delete(path)  -> parsed JSON from the app's own
+                              server.js (throws Error with the server's
+                              { error } message on non-2xx). api.fetch(path,
+                              init) returns the raw Response. Paths are
+                              relative to the backend: api.get('/todos') hits
+                              GET /api/todos. Only exists when server.js ships.
 
 Item shape: { id, name, type, path, mimeType?, fileSize?, updatedAt, isPublic, caption?, tags?, dominantColors?, url? }`;
 
@@ -1015,7 +1072,23 @@ const APP_RUNTIME_CONTRACT_PROMPT = `Runtime sandbox contract (violations are re
 - Only the window.eternal APIs listed above exist. Calling any other namespace or method (e.g. eternal.fs.save, eternal.ai.chat) throws at runtime.
 - eternal.fs.urlFor(id) is asynchronous in installed apps. Always capture it with await first (const src = await eternal.fs.urlFor(id); img.src = src). Calling it without awaiting — or interpolating its result into a string or template literal — produces "[object Promise]", not a URL.
 - CSS url() and HTML src/href references must point at files included in the bundle.
-- import statements must reference bundled local files ('./utils.js') and names those files actually export; bare specifiers like 'lodash' cannot resolve — there is no package manager.`;
+- import statements must reference bundled local files ('./utils.js') and names those files actually export; bare specifiers like 'lodash' cannot resolve — there is no package manager.
+- Static files must not live under api/ — that path is the backend's mount.
+
+Backend contract (server.js — optional; include it when the specification has a backend):
+- server.js is a real Cloudflare Worker module running as a Durable Object Facet. It never ships to the browser.
+- Shape: export default { async fetch(request, env) { ... return Response.json(data, { status }); } }
+- Route on new URL(request.url).pathname, which always starts with /api/ (e.g. '/api/todos', '/api/todos/42'), and on request.method. Return 404 JSON for unknown routes and 400 JSON ({ error }) for bad input. Parse bodies with await request.json() inside try/catch.
+- env.sql is the app's own SQLite database (Durable Object SQL API), synchronous:
+    env.sql.exec('CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)');
+    const rows = env.sql.exec('SELECT * FROM todos ORDER BY id DESC').toArray();
+    const row = env.sql.exec('INSERT INTO todos (title, created_at) VALUES (?, ?) RETURNING *', title, Date.now()).one();
+    env.sql.exec('UPDATE todos SET done = ? WHERE id = ?', done ? 1 : 0, id);
+  Always bind values with ? placeholders — never interpolate input into SQL. Run CREATE TABLE IF NOT EXISTS at the top of fetch (cheap, idempotent). Booleans are stored as 0/1.
+- env.storage is the async Durable Object storage API on the same database (await env.storage.get(key) / put(key, value) / delete(key)) for small JSON blobs.
+- env.desktop.list({ path?, mimeType?, limit? }), env.desktop.readText(id), env.desktop.write({ path, content, mimeType? }) reach the user's desktop under the same derived fs permissions as the frontend.
+- Plain fetch(url) works only for hosts in derived network.outbound; everything else is blocked. No window, document, localStorage, or npm packages in the backend. Helper modules go under server/ and are imported relatively ('./server/db.js').
+- The frontend talks to it only through eternal.api.* (never raw fetch('/api/...')). Render a loading state while requests are in flight and an error message if a request throws.`;
 
 async function generateAppFromPrompt(
   env: Env,
@@ -1070,6 +1143,7 @@ Permissions — DERIVED from the app specification by the platform, not declared
 
 Rules for files:
 - Return a COMPLETE app bundle: at minimum index.html, styles.css, app.js
+- When the specification has a backend, ALSO return server.js implementing every listed route and creating every listed table; the frontend must load and save its records through eternal.api.* so data persists server-side
 - Do NOT include eternal-runtime.js — the platform auto-injects it
 - Do NOT load external CDNs, fonts, or images
 - Reference local assets with relative paths: ./styles.css, ./app.js
@@ -2283,15 +2357,122 @@ const ETERNAL_RUNTIME_JS = `(() => {
     };
   }
 
+  // Full-stack apps: call the app's own server.js (a Durable Object facet
+  // with its own SQLite) at ./api/*. Same capability gate as the bridge.
+  async function apiFetch(path, init) {
+    let requestInit = init || {};
+    const headers = new Headers(requestInit.headers || {});
+    if (requiresCapability) {
+      const token = capability || await capabilityReady;
+      if (!token) throw new Error('EternalOS capability unavailable');
+      headers.set('Authorization', 'Bearer ' + token);
+    }
+    requestInit = { ...requestInit, headers };
+    const clean = String(path || '').replace(/^\\/+/, '').replace(/^api\\//, '');
+    return fetch(new URL('api/' + clean, document.baseURI).toString(), requestInit);
+  }
+
+  async function apiJson(method, path, body) {
+    const init = { method };
+    if (body !== undefined) {
+      init.headers = { 'Content-Type': 'application/json' };
+      init.body = JSON.stringify(body);
+    }
+    const res = await apiFetch(path, init);
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (_) { data = text; }
+    if (!res.ok) {
+      const message = data && typeof data === 'object' && data.error ? data.error : (text || res.statusText);
+      throw new Error('api ' + method + ' ' + path + ' failed (' + res.status + '): ' + message);
+    }
+    return data;
+  }
+
+  const api = Object.freeze({
+    fetch: apiFetch,
+    get: (path) => apiJson('GET', path),
+    post: (path, body) => apiJson('POST', path, body),
+    put: (path, body) => apiJson('PUT', path, body),
+    patch: (path, body) => apiJson('PATCH', path, body),
+    delete: (path) => apiJson('DELETE', path),
+  });
+
   const meta = document.querySelector('meta[name="eternal-app-id"]');
   const appId = meta ? meta.getAttribute('content') || '' : '';
 
   Object.defineProperty(window, 'eternal', {
-    value: Object.freeze({ appId, hostVersion: '1', fs, profile, window: appWindow, onIntent, storage, ipc, fetch: fetchProxy }),
+    value: Object.freeze({ appId, hostVersion: '1', fs, profile, window: appWindow, onIntent, storage, ipc, fetch: fetchProxy, api }),
     writable: false,
     configurable: false,
   });
 })();
+`;
+
+/**
+ * Facet wrapper for full-stack apps. Bundled next to the app's server.js and
+ * re-exported from the worker entry as `AppBackend`; AppRunner instantiates
+ * it as a Durable Object Facet, so `this.ctx.storage` is the app's OWN SQLite
+ * database. The app's handler gets a small, explicit env:
+ *
+ *   env.sql      SqlStorage  — env.sql.exec(query, ...bindings).toArray()
+ *   env.storage  DurableObjectStorage — await env.storage.get/put/delete/list
+ *   env.kv       synchronous key/value on the same database
+ *   env.desktop  grant-checked desktop access (list/readText/write)
+ *   env.APP_ID   the app id
+ *
+ * Plain fetch() works for granted network.outbound hosts only.
+ */
+const APP_BACKEND_WRAPPER_JS = `import { DurableObject } from 'cloudflare:workers';
+import * as userModule from './server.js';
+
+const handler = userModule.default;
+
+function resolveHandler() {
+  if (typeof handler === 'function') return handler;
+  if (handler && typeof handler.fetch === 'function') return (request, env, ctx) => handler.fetch(request, env, ctx);
+  return null;
+}
+
+function toResponse(value) {
+  if (value instanceof Response) return value;
+  if (value === undefined || value === null) return new Response(null, { status: 204 });
+  if (typeof value === 'string') return new Response(value, { headers: { 'content-type': 'text/plain; charset=utf-8' } });
+  return Response.json(value);
+}
+
+export class AppBackend extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    const eternal = env && env.ETERNAL;
+    const desktop = Object.freeze({
+      list: (options) => eternal.list(options || {}),
+      readText: async (id) => (await eternal.read(id)).text(),
+      readJson: async (id) => (await eternal.read(id)).json(),
+      write: (options) => eternal.write(options),
+    });
+    this.appEnv = Object.freeze({
+      sql: ctx.storage.sql,
+      storage: ctx.storage,
+      kv: ctx.storage.kv,
+      desktop,
+      APP_ID: env && env.APP_ID,
+    });
+  }
+
+  async fetch(request) {
+    const run = resolveHandler();
+    if (!run) {
+      return Response.json({ error: 'server.js must export default { async fetch(request, env) { ... } }' }, { status: 500 });
+    }
+    try {
+      return toResponse(await run(request, this.appEnv, { waitUntil: (p) => this.ctx.waitUntil(p) }));
+    } catch (err) {
+      console.error('Unhandled error in server.js:', err && err.stack ? err.stack : String(err));
+      return Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 });
+    }
+  }
+}
 `;
 
 /**
@@ -2302,7 +2483,8 @@ export function createWorkerModuleFiles(
   workspace: AppWorkspace,
   mountBasePath: '/api/apps' | '/api/app-previews' = '/api/apps',
 ): Record<string, string> {
-  const normalizedFiles = workspace.files;
+  const { frontend: normalizedFiles, backend: backendFiles } = splitBackendFiles(workspace.files);
+  const hasBackend = APP_BACKEND_ENTRY_FILE in backendFiles;
   const htmlPath = workspace.manifest.entryHtml;
   const cssPath = selectDefaultCssEntry(normalizedFiles);
   const jsPath = selectDefaultJsEntry(normalizedFiles);
@@ -2368,8 +2550,16 @@ ${jsPath ? `<script type="module" src="./${jsPath}"></script>` : ''}
   };
   const mountPath = `${mountBasePath}/__APP_ID__`;
 
+  const backendModules: Record<string, string> = hasBackend
+    ? { ...backendFiles, [APP_BACKEND_WRAPPER_FILE]: APP_BACKEND_WRAPPER_JS }
+    : {};
+  const backendExport = hasBackend
+    ? `export { AppBackend } from './${APP_BACKEND_WRAPPER_FILE}';\n`
+    : '';
+
   return {
-    [APP_WORKER_ENTRY_FILE]: `
+    ...backendModules,
+    [APP_WORKER_ENTRY_FILE]: `${backendExport}
 const ASSETS = ${JSON.stringify(assets)};
 const ENTRY = ${JSON.stringify(htmlPath)};
 const MOUNT_PATH = ${JSON.stringify(mountPath)};
@@ -2766,6 +2956,42 @@ export function createAppTools(ctx: AppToolsContext) {
       },
     }),
 
+    callAppApi: tool({
+      description: "Call an installed full-stack app's own backend (its server.js, backed by the app's private SQLite database) as the owner. Use it to read or change the app's data for the user — e.g. list the items in their todo app, add an entry to their journal app. Routes are the app's /api/* routes (read getAppSource to see server.js if unsure).",
+      inputSchema: z.object({
+        appId: z.string().min(1).max(128).describe('Installed app ID (from listApps)'),
+        method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).default('GET'),
+        path: z.string().min(1).max(500).describe("Backend path, e.g. '/api/todos' or '/api/todos/3?full=1'"),
+        body: z.unknown().optional().describe('JSON body for POST/PUT/PATCH'),
+      }),
+      // Reads are free; anything that changes the app's data is confirmed.
+      needsApproval: async (input) => (input.method ?? 'GET') !== 'GET',
+      execute: async (input) => callAppBackend(env, uid, input),
+    }),
+
+    readAppApi: tool({
+      description: "Read data from an installed full-stack app's backend (GET only) — e.g. list the items in the user's todo or journal app.",
+      inputSchema: z.object({
+        appId: z.string().min(1).max(128).describe('Installed app ID (from listApps)'),
+        path: z.string().min(1).max(500).describe("Backend path, e.g. '/api/todos'"),
+      }),
+      execute: async (input) => callAppBackend(env, uid, { ...input, method: 'GET' }),
+    }),
+
+    getAppBackendLogs: tool({
+      description: "Recent console output and uncaught exceptions from an installed app's server.js backend. Use it to debug a full-stack app that returns errors.",
+      inputSchema: z.object({
+        appId: z.string().min(1).max(128),
+        limit: z.number().int().min(1).max(100).default(30),
+      }),
+      execute: async (input) => {
+        const resolved = await resolveInstalledAppBackend(env, input.appId);
+        if (!resolved || resolved.ownerUid !== uid) throw new Error(`App ${input.appId} not found`);
+        const logs = await env.APP_RUNNER.getByName(appRunnerName('app', input.appId)).getLogs(input.limit);
+        return { appId: input.appId, logs };
+      },
+    }),
+
     deleteApp: tool({
       description: 'Delete an app from the desktop and clean up its stored data.',
       inputSchema: z.object({
@@ -2805,6 +3031,11 @@ export function createAppTools(ctx: AppToolsContext) {
           await env.DESKTOP_KV.delete(`app:${input.appId}`);
         } catch (error) {
           failedCleanup.push(`app registry entry (${errorText(error)})`);
+        }
+        try {
+          await purgeAppBackend(env, input.appId);
+        } catch (error) {
+          failedCleanup.push(`app backend database (${errorText(error)})`);
         }
         try {
           sql.exec('DELETE FROM apps WHERE id = ?', input.appId);

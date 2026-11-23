@@ -204,3 +204,16 @@ export async function deleteAppRuntime(appId: string): Promise<{ success: boolea
     method: 'DELETE',
   });
 }
+
+export interface AppBackendLogEntry {
+  at: number;
+  level: string;
+  message: string;
+}
+
+/** Recent console output / uncaught errors from a full-stack app's server.js. */
+export async function getAppBackendLogs(appId: string, limit = 50): Promise<{ logs: AppBackendLogEntry[] }> {
+  return apiRequest<{ logs: AppBackendLogEntry[] }>(
+    `/api/apps/${encodeURIComponent(appId)}/backend/logs?limit=${encodeURIComponent(String(limit))}`,
+  );
+}

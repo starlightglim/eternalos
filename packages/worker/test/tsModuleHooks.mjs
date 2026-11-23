@@ -39,6 +39,15 @@ export class DurableObject {
   }
 }
 export class WorkflowEntrypoint {}
+// AppRunner/AppOutbound (full-stack app backends) and @cloudflare/codemode's
+// ToolDispatcher extend these; only the class shapes matter here.
+export class WorkerEntrypoint {
+  constructor(ctx, env) {
+    this.ctx = ctx;
+    this.env = env;
+  }
+}
+export class RpcTarget {}
 export const env = new Proxy({}, { get: () => undefined });
 `,
   'cloudflare:email': `

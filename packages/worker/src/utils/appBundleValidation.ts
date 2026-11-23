@@ -62,6 +62,35 @@ import type { AppPermissions } from '../types';
 import { pathMatchesGlob } from './fsPolicy';
 
 // ---------------------------------------------------------------------------
+// Backend (server.js) files
+// ---------------------------------------------------------------------------
+
+/**
+ * Full-stack apps may ship a server-side handler: `server.js` (entry) plus any
+ * helper modules under `server/`. Those files are bundled into the app's
+ * Dynamic Worker as a Durable Object Facet (own SQLite) — they are never
+ * served to the browser, and the browser-sandbox checks below do not apply
+ * to them.
+ */
+export const APP_BACKEND_ENTRY_FILE = 'server.js';
+
+export function isBackendFile(name: string): boolean {
+  return name === APP_BACKEND_ENTRY_FILE || name.startsWith('server/');
+}
+
+export function splitBackendFiles(files: Record<string, string>): {
+  frontend: Record<string, string>;
+  backend: Record<string, string>;
+} {
+  const frontend: Record<string, string> = {};
+  const backend: Record<string, string> = {};
+  for (const [name, content] of Object.entries(files)) {
+    (isBackendFile(name) ? backend : frontend)[name] = content;
+  }
+  return { frontend, backend };
+}
+
+// ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
@@ -170,17 +199,21 @@ function truncate(text: string, maxLength = 100): string {
  */
 export function collectAppBundleIssues(input: AppBundleValidationInput): AppValidationIssue[] {
   const issues: AppValidationIssue[] = [];
-  const scans = scanAppFiles(input.files);
+  const { frontend, backend } = splitBackendFiles(input.files);
+  const frontendInput = { ...input, files: frontend };
+  const scans = scanAppFiles(frontend);
 
-  checkEntryHtml(input, issues);
+  checkEntryHtml(frontendInput, issues);
   checkUndeclaredUsage(scans, input.permissions, issues);
   checkBridgeApi(scans, issues);
   checkPermissionCoverage(scans, input.permissions, issues);
   checkSandboxAvailability(scans, issues);
-  checkAssetReferences(input, scans, issues);
-  checkModuleGraph(input.files, scans, issues);
+  checkAssetReferences(frontendInput, scans, issues);
+  checkModuleGraph(frontend, scans, issues);
+  checkBackend(backend, input.permissions, issues);
+  checkApiWiring(scans, frontend, backend, issues);
   if (input.compiled) {
-    checkCompiledBundle(input.manifest, input.compiled, issues);
+    checkCompiledBundle(input.manifest, input.compiled, issues, Object.keys(backend).length > 0);
   }
 
   return dedupeIssues(issues);
@@ -606,6 +639,7 @@ const BRIDGE_MEMBERS: Record<string, ReadonlySet<string>> = {
   storage: new Set(['get', 'set', 'delete', 'list']),
   ipc: new Set(['emit', 'on']),
   fetch: new Set([]), // called directly: eternal.fetch(url, init)
+  api: new Set(['fetch', 'get', 'post', 'put', 'patch', 'delete']), // app's own server.js
 };
 
 const BRIDGE_NAMESPACES = Object.keys(BRIDGE_MEMBERS);
@@ -1184,10 +1218,127 @@ function checkModuleGraph(
 // Check 7 — compiled-bundle contract
 // ---------------------------------------------------------------------------
 
+/**
+ * Server-side handler contract. The backend runs in a Dynamic Worker facet:
+ * real Workers runtime (fetch(), Request/Response, crypto), its own SQLite
+ * via env.sql / env.storage, outbound fetch limited to the granted
+ * network.outbound hosts. No DOM, no window.eternal.
+ */
+function checkBackend(
+  backend: Record<string, string>,
+  permissions: AppPermissions | undefined,
+  issues: AppValidationIssue[],
+): void {
+  const names = Object.keys(backend).sort();
+  if (names.length === 0) return;
+  const entry = backend[APP_BACKEND_ENTRY_FILE];
+  if (entry === undefined) {
+    issues.push({
+      code: 'backend/entry-missing',
+      file: names[0],
+      message: `Files under server/ require a ${APP_BACKEND_ENTRY_FILE} entry`,
+      hint: `Add ${APP_BACKEND_ENTRY_FILE} with \`export default { async fetch(request, env) { … } }\`, or move the helpers out of server/.`,
+    });
+    return;
+  }
+  const entryCode = scanScript(entry).code;
+  const hasDefault = /\bexport\s+default\b/.test(entryCode)
+    || /\bexport\s*\{[^}]*\bas\s+default\b[^}]*\}/.test(entryCode);
+  if (!hasDefault) {
+    issues.push({
+      code: 'backend/default-export-missing',
+      file: APP_BACKEND_ENTRY_FILE,
+      message: `${APP_BACKEND_ENTRY_FILE} must export a default handler`,
+      hint: 'Use `export default { async fetch(request, env) { … return Response.json(data); } }`.',
+    });
+  }
+  for (const name of names) {
+    const scan = scanScript(backend[name]);
+    if (/\b(?:window|document|localStorage|sessionStorage)\s*\./.test(scan.code)) {
+      issues.push({
+        code: 'backend/browser-global',
+        file: name,
+        message: `${name} uses a browser global (window/document/localStorage) — the backend runs in a Worker, not the browser`,
+        hint: 'Persist with env.sql (SQLite) or env.storage instead of localStorage, and keep DOM code in the frontend files.',
+      });
+    }
+    // Bare specifiers have no package manager to resolve from. Relative
+    // imports and the cloudflare:* runtime modules are fine.
+    const importPattern = /\b(?:from\s+|import\s*\(\s*|import\s+)(["'])([^"']+)\1/g;
+    let match: RegExpExecArray | null;
+    while ((match = importPattern.exec(scan.mixed)) !== null) {
+      const specifier = match[2];
+      if (specifier.startsWith('./') || specifier.startsWith('../') || specifier.startsWith('cloudflare:')) continue;
+      issues.push({
+        code: 'backend/bare-import',
+        file: name,
+        evidence: specifier,
+        message: `${name} imports "${specifier}", which cannot be resolved — there is no package manager`,
+        hint: 'Inline the logic or import a bundled local module such as "./server/db.js".',
+      });
+    }
+    if (callsGlobalFetch(scan.code) && !permissions?.network?.outbound?.length) {
+      issues.push({
+        code: 'backend/undeclared-network',
+        file: name,
+        message: `${name} calls fetch() but the app declares no network.outbound hosts — outbound requests will be blocked`,
+        hint: "Declare network: { outbound: ['api.example.com'] } for the hosts the backend calls.",
+      });
+    }
+  }
+}
+
+/**
+ * True when code makes an outbound global fetch() call. The handler's own
+ * `async fetch(request, env) { … }` method definition and member calls such
+ * as `handler.fetch(req)` are not outbound network use; `globalThis.fetch(`
+ * and `self.fetch(` are.
+ */
+export function callsGlobalFetch(code: string): boolean {
+  const withoutDefinitions = code.replace(/(?:\basync\s+)?\bfetch\s*\([^()]*\)\s*\{/g, ' ');
+  return /(?<![.\w$])fetch\s*\(/.test(withoutDefinitions)
+    || /\b(?:globalThis|self)\s*\.\s*fetch\s*\(/.test(withoutDefinitions);
+}
+
+/**
+ * eternal.api.* reaches the app's server.js; without one every call 404s.
+ * And ./api/* is the backend's mount, so no static asset may live there.
+ */
+function checkApiWiring(
+  scans: AppFileScan[],
+  frontend: Record<string, string>,
+  backend: Record<string, string>,
+  issues: AppValidationIssue[],
+): void {
+  if (!(APP_BACKEND_ENTRY_FILE in backend)) {
+    const apiPattern = /\beternal\.api\b/;
+    const offender = jsScans(scans).find((scan) => apiPattern.test(scan.code));
+    if (offender) {
+      issues.push({
+        code: 'backend/api-without-server',
+        file: offender.name,
+        message: 'App calls window.eternal.api but ships no server.js backend',
+        hint: `Add ${APP_BACKEND_ENTRY_FILE} implementing the routes the frontend calls, or persist with eternal.storage instead.`,
+      });
+    }
+  }
+  for (const name of Object.keys(frontend).sort()) {
+    if (name.startsWith('api/')) {
+      issues.push({
+        code: 'asset/reserved-api-path',
+        file: name,
+        message: `"${name}" is under api/, which is reserved for the app backend`,
+        hint: 'Move the file to another folder (for example data/).',
+      });
+    }
+  }
+}
+
 function checkCompiledBundle(
   manifest: AppWorkspaceContract,
   compiled: CompiledAppBundle,
   issues: AppValidationIssue[],
+  hasBackend = false,
 ): void {
   const entry = compiled.modules[compiled.mainModule];
   if (entry === undefined) {
@@ -1212,7 +1363,14 @@ function checkCompiledBundle(
       hint: 'Platform bundling failure, not an app-source problem: the emitted entry lacks the Worker Loader contract (`export default { async fetch(request, env) { … } }`). Regenerate (or re-deploy) the app rather than editing source files.',
     });
   }
-  for (const name of [...manifest.sourceFiles, manifest.runtimeAsset]) {
+  if (hasBackend && !/\bAppBackend\b/.test(content)) {
+    issues.push({
+      code: 'bundle/backend-export-missing',
+      message: `The compiled worker entrypoint "${compiled.mainModule}" does not export the AppBackend facet class`,
+      hint: 'Platform bundling failure, not an app-source problem. Regenerate (or re-deploy) the app.',
+    });
+  }
+  for (const name of [...manifest.sourceFiles.filter((file) => !isBackendFile(file)), manifest.runtimeAsset]) {
     const quoted = JSON.stringify(name);
     if (!content.includes(quoted) && !content.includes(`'${name}'`)) {
       issues.push({

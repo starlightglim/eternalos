@@ -890,6 +890,34 @@
   line-height: 1.5;
 }
 
+/* ── Code Mode ─────────────────────────────────────────── */
+
+.codeBlock {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--chat-border-soft);
+  border-radius: 8px;
+  background: var(--chat-panel-raised);
+  color: var(--chat-text);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.codeDetails {
+  margin-top: 6px;
+  color: var(--chat-muted);
+  font-size: 11px;
+}
+
+.codeDetails > summary {
+  cursor: pointer;
+}
+
 /* ── Misc ──────────────────────────────────────────────── */
 
 .errorText {

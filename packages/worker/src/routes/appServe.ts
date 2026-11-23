@@ -18,7 +18,77 @@
 
 import type { AppGrantedPermissions } from '../utils/jwt';
 import { withCors } from '../middleware/http';
+import { appRunnerName, type AppBackendConfig } from '../durable-objects/AppRunner';
 import type { RouteContext } from './router';
+import type { Env } from '../index';
+
+// Sandboxed app iframes have an opaque (null) origin, so backend calls are
+// cross-origin. No cookies/credentials are ever involved — the capability is
+// an explicit Bearer header — so '*' is safe.
+const BACKEND_CORS: Record<string, string> = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+  'access-control-allow-headers': 'content-type, authorization',
+  'access-control-max-age': '300',
+};
+
+function withBackendCors(response: Response): Response {
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(BACKEND_CORS)) headers.set(key, value);
+  headers.set('x-content-type-options', 'nosniff');
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+/** `/api/apps/{id}/api/todos` → `/api/todos`; null when not a backend path. */
+function backendSubPath(mountPath: string, id: string): string | null {
+  const rest = mountPath.slice(id.length);
+  return rest === '/api' || rest.startsWith('/api/') ? rest : null;
+}
+
+/**
+ * Forward a request to the app's server.js facet via its AppRunner.
+ * Installed apps require the app capability (same gate as the bridge);
+ * previews run capability-free, like the rest of the preview surface.
+ */
+async function serveBackend(
+  c: RouteContext,
+  kind: 'app' | 'preview',
+  subPath: string,
+  config: AppBackendConfig,
+): Promise<Response> {
+  if (c.request.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: BACKEND_CORS });
+  }
+  if (config.requiresCapability) {
+    const authorization = c.request.headers.get('Authorization');
+    const capability = authorization?.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : null;
+    const service = eternalLoopback(c.ctx).EternalService({
+      props: { uid: config.uid, appId: config.appId, granted: config.granted, requiresCapability: true },
+    }) as { authorizeApp(token: string | null): Promise<boolean> };
+    if (!(await service.authorizeApp(capability))) {
+      return withBackendCors(Response.json({ error: 'Invalid or missing capability token' }, { status: 401 }));
+    }
+  }
+
+  const incoming = new URL(c.request.url);
+  const headers = new Headers(c.request.headers);
+  headers.delete('authorization');
+  headers.delete('cookie');
+  const hasBody = !['GET', 'HEAD'].includes(c.request.method);
+  const forwarded = new Request(`https://app.internal${subPath}${incoming.search}`, {
+    method: c.request.method,
+    headers,
+    body: hasBody ? c.request.body : undefined,
+  });
+
+  const stub = c.env.APP_RUNNER.getByName(appRunnerName(kind, config.appId));
+  try {
+    return withBackendCors(await stub.handle(forwarded, config));
+  } catch (error) {
+    console.error('App backend dispatch failed:', error);
+    return withBackendCors(Response.json({ error: 'App backend unavailable' }, { status: 502 }));
+  }
+}
 
 // Short, stable hash of an app's grants object. Used to re-key the Dynamic
 // Worker isolate cache when permissions change — so revocation takes effect
@@ -63,6 +133,36 @@ function eternalLoopback(ctx: ExecutionContext): {
   }).exports;
 }
 
+/**
+ * Backend config for an installed app, for trusted host-side callers (the
+ * owner's agent). Returns null when the app does not exist. Capability is
+ * not required on this path — callers must check ownership themselves.
+ */
+export async function resolveInstalledAppBackend(
+  env: Env,
+  appId: string,
+): Promise<{ config: AppBackendConfig; ownerUid: string } | null> {
+  const appMeta = await env.DESKTOP_KV.get<{
+    uid: string;
+    version: number;
+    r2Prefix?: string;
+    granted?: AppGrantedPermissions;
+  }>(`app:${appId}`, 'json');
+  if (!appMeta) return null;
+  const granted = appMeta.granted ?? {};
+  return {
+    ownerUid: appMeta.uid,
+    config: {
+      codeId: `app-${appId}@v${appMeta.version}-${await hashGrants(granted)}`,
+      r2Prefix: appMeta.r2Prefix ?? `apps/${appMeta.uid}/${appId}`,
+      uid: appMeta.uid,
+      appId,
+      granted,
+      requiresCapability: false,
+    },
+  };
+}
+
 /** ANY /api/app-previews/:previewId[/...] */
 export async function handleServeAppPreview(c: RouteContext): Promise<Response> {
   const previewPath = c.params[0];
@@ -97,6 +197,17 @@ export async function handleServeAppPreview(c: RouteContext): Promise<Response> 
   // install, but keep the field configurable for future permission-review
   // previews.
   const granted = previewMeta.granted ?? {};
+  const previewBackendPath = backendSubPath(previewPath, previewId);
+  if (previewBackendPath) {
+    return serveBackend(c, 'preview', previewBackendPath, {
+      codeId: `preview-${previewId}@v${previewMeta.version}-${await hashGrants(granted)}`,
+      r2Prefix: previewMeta.r2Prefix,
+      uid: previewMeta.uid,
+      appId: previewId,
+      granted,
+      requiresCapability: false,
+    });
+  }
   const bundleObj = await c.env.ETERNALOS_FILES.get(`${previewMeta.r2Prefix}/bundle.json`);
   if (!bundleObj) {
     return withCors(new Response('App preview bundle not found', { status: 404 }), c.corsHeaders);
@@ -151,6 +262,17 @@ export async function handleServeApp(c: RouteContext): Promise<Response> {
 
   // Load the compiled app bundle from R2 and serve via Dynamic Worker.
   const r2Prefix = appMeta.r2Prefix ?? `apps/${appMeta.uid}/${appId}`;
+  const appBackendPath = backendSubPath(appPath, appId);
+  if (appBackendPath) {
+    return serveBackend(c, 'app', appBackendPath, {
+      codeId: `app-${appId}@v${appMeta.version}-${await hashGrants(granted)}`,
+      r2Prefix,
+      uid: appMeta.uid,
+      appId,
+      granted,
+      requiresCapability: true,
+    });
+  }
   const bundleObj = await c.env.ETERNALOS_FILES.get(`${r2Prefix}/bundle.json`);
   if (!bundleObj) {
     return withCors(new Response('App bundle not found', { status: 404 }), c.corsHeaders);

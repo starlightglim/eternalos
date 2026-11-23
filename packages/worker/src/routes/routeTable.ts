@@ -49,6 +49,7 @@ import {
   handleAppRollback,
   handleAppVersions,
   handleGetAppSourceRoute,
+  handleAppBackendLogsRoute,
 } from './apps';
 import { handleAppRevisionGet, handleAppRevisionsList } from './appRevisions';
 import { handleServeApp, handleServeAppPreview } from './appServe';
@@ -388,6 +389,29 @@ export const ROUTES: RouteDefinition[] = [
     handler: (c) => handleGamePlay(c.request, c.env, c.ctx, c.params[0]),
   },
 
+  // App-iframe preflights. Apps run in sandbox="allow-scripts" iframes, so
+  // their origin is opaque ("Origin: null") and every capability-carrying
+  // bridge or backend call (Authorization header) is preflighted. The global
+  // handler below would refuse that origin, so the app mounts answer their
+  // own preflights: credential-less '*' CORS, auth stays the Bearer
+  // capability checked on the real request.
+  {
+    name: 'app-iframe-preflight',
+    method: 'OPTIONS',
+    match: regex(/^\/api\/(?:apps\/[^/]+\/(?:_eternal|api)(?:\/.*)?|app-previews\/.+)$/),
+    policy: { auth: 'none', rateLimit: null },
+    decorate: false,
+    handler: () => new Response(null, {
+      status: 204,
+      headers: {
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+        'access-control-allow-headers': 'content-type, authorization',
+        'access-control-max-age': '300',
+      },
+    }),
+  },
+
   // CORS preflight — path-independent (any OPTIONS request is a preflight;
   // the game console above answers its own). Production rejects disallowed
   // origins with a bare 403; otherwise CORS-only headers, no body. Never
@@ -523,6 +547,14 @@ export const ROUTES: RouteDefinition[] = [
     match: regex(/^\/api\/apps\/([^/]+)\/source$/),
     policy: { auth: 'required', rateLimit: null },
     handler: (c) => handleGetAppSourceRoute(c.request, c.env, requireAuthContext(c), c.params[0]),
+  },
+  // Full-stack app backend logs (owner): GET /api/apps/:appId/backend/logs
+  {
+    name: 'app-backend-logs',
+    method: 'GET',
+    match: regex(/^\/api\/apps\/([^/]+)\/backend\/logs$/),
+    policy: { auth: 'required', rateLimit: null },
+    handler: (c) => handleAppBackendLogsRoute(c.request, c.env, requireAuthContext(c), decodeURIComponent(c.params[0])),
   },
   // Mint a capability token for an app: POST /api/apps/:appId/capability.
   // Runs before the app-serving catch-all below so the capability path

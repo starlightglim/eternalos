@@ -468,6 +468,7 @@ function createAgentHarness({ items = [], profile = null } = {}) {
     DESKTOP_KV: kv,
     ETERNALOS_FILES: r2,
     RATE_LIMITER: usageGuard.binding,
+    APP_RUNNER: createFakeAppRunner().binding,
   };
   const threadMessages = [];
   const agent = {
@@ -1211,6 +1212,22 @@ describe('appBundleValidation issue hints', () => {
     },
   });
 
+  it('backend network check ignores the handler definition but catches real fetch calls', () => {
+    const run = (server, permissions) => collectAppBundleIssues(
+      appInput({ 'index.html': SHELL, 'app.js': 'void 0;', 'server.js': server }, permissions),
+    ).map((issue) => issue.code);
+    const handlerOnly = 'export default {\n  async fetch(request, env) {\n    return Response.json([]);\n  },\n};';
+    assert.deepEqual(run(handlerOnly), [], 'an offline backend must not need network permissions');
+    assert.deepEqual(run('export default { fetch(req, env) { return new Response("x"); } };'), []);
+    assert.deepEqual(run('const h = { async fetch(r) { return new Response(""); } };\nexport default { fetch: (r, e) => h.fetch(r) };'), []);
+    assert.ok(run("export default { async fetch() { const r = await fetch('https://a.example/'); return r; } };").includes('backend/undeclared-network'));
+    assert.ok(run("export default { async fetch() { return globalThis.fetch('https://a.example/'); } };").includes('backend/undeclared-network'));
+    assert.deepEqual(
+      run("export default { async fetch() { return fetch('https://a.example/'); } };", { network: { outbound: ['a.example'] } }),
+      [],
+    );
+  });
+
   it('every issue code carries a non-empty hint the repair prompt can act on', () => {
     const triggers = [
       ['entry/missing-html', appInput({ 'app.js': 'void 0;' })],
@@ -1265,6 +1282,31 @@ describe('appBundleValidation issue hints', () => {
         undefined,
         { compiled: compiledBundle({ 'index.html': '<!doctype html>', 'eternal-runtime.js': 'window.eternal = {};' }) },
       )],
+      // Full-stack apps (server.js runs as a Durable Object Facet).
+      ['backend/entry-missing', appInput({ 'index.html': SHELL, 'app.js': 'void 0;', 'server/db.js': 'export const x = 1;' })],
+      ['backend/default-export-missing', appInput({ 'index.html': SHELL, 'app.js': 'void 0;', 'server.js': 'export function handle() {}' })],
+      ['backend/browser-global', appInput({
+        'index.html': SHELL,
+        'app.js': 'void 0;',
+        'server.js': "export default { async fetch() { localStorage.setItem('k', 'v'); return new Response('x'); } };",
+      })],
+      ['backend/bare-import', appInput({
+        'index.html': SHELL,
+        'app.js': 'void 0;',
+        'server.js': "import { Hono } from 'hono';\nexport default new Hono();",
+      })],
+      ['backend/undeclared-network', appInput({
+        'index.html': SHELL,
+        'app.js': 'void 0;',
+        'server.js': "export default { async fetch() { return fetch('https://api.example.com/'); } };",
+      })],
+      ['backend/api-without-server', appInput({ 'index.html': SHELL, 'app.js': "window.eternal.api.get('/todos');" })],
+      ['asset/reserved-api-path', appInput({ 'index.html': SHELL, 'app.js': 'void 0;', 'api/data.json': '{}' })],
+      ['bundle/backend-export-missing', appInput(
+        { 'index.html': SHELL, 'app.js': 'void 0;', 'server.js': 'export default { async fetch() { return new Response("x"); } };' },
+        undefined,
+        { compiled: compiledBundle({ 'index.html': '<!doctype html>', 'app.js': 'void 0;', 'eternal-runtime.js': 'window.eternal = {};' }) },
+      )],
     ];
 
     const seen = new Set();
@@ -1318,21 +1360,45 @@ const MINIMAL_APP_FILES = {
   'app.js': 'console.log("hello");',
 };
 
+// AppRunner stand-in (full-stack app backends): records purges and serves
+// handle() from a scripted responder so callAppApi can be exercised.
+function createFakeAppRunner() {
+  const purged = [];
+  const calls = [];
+  let responder = async () => Response.json({ ok: true });
+  const binding = {
+    getByName(name) {
+      return {
+        purge: async () => { purged.push(name); return { purged: true }; },
+        getLogs: async () => [{ at: 1, level: 'log', message: `logs for ${name}` }],
+        handle: async (request, config) => {
+          const body = ['GET', 'HEAD'].includes(request.method) ? undefined : await request.text();
+          calls.push({ name, method: request.method, url: request.url, body, config });
+          return responder(request, config);
+        },
+      };
+    },
+  };
+  return { binding, purged, calls, respond(fn) { responder = fn; } };
+}
+
 function createAppToolsHarness() {
   const desktop = createFakeDesktop({ profile: { username: 'jane' } });
   const kv = createFakeKV();
   const r2 = createFakeR2();
   const ai = createFakeAiBinding();
   const sql = fakeSql();
+  const appRunner = createFakeAppRunner();
   const env = {
     AI: ai,
     USER_DESKTOP: { idFromName: () => 'desktop-do-id', get: () => desktop.stub },
     DESKTOP_KV: kv,
     ETERNALOS_FILES: r2,
+    APP_RUNNER: appRunner.binding,
   };
   initAppRegistry(sql);
   const tools = createAppTools({ env, sql, agentName: UID, onBuildStage: () => {} });
-  return { desktop, kv, r2, ai, sql, env, tools };
+  return { desktop, kv, r2, ai, sql, env, tools, appRunner };
 }
 
 describe('appTools', () => {
@@ -1635,10 +1701,47 @@ describe('appTools', () => {
     assert.equal(h.r2.keys(`apps/${UID}/${created.appId}/`).length, 0);
     assert.equal((await h.kv.get(`app:${created.appId}`, 'json')), null);
     assert.ok(h.sql.statements.some((s) => s.query.startsWith('DELETE FROM apps') && s.params[0] === created.appId));
+    assert.deepEqual(h.appRunner.purged, [`app:${created.appId}`], 'the backend facet database must be purged');
 
     await assert.rejects(
       h.tools.deleteApp.execute({ appId: 'no-such-app' }, { toolCallId: 'tc', messages: [] }),
       /App no-such-app not found/,
+    );
+  });
+
+  it('callAppApi reaches the owned app backend with a normalized /api path', async () => {
+    const h = createAppToolsHarness();
+    const created = await h.tools.createApp.execute(
+      { name: 'Backed', files: { ...MINIMAL_APP_FILES } },
+      { toolCallId: 'tc', messages: [] },
+    );
+    h.appRunner.respond(async (request) => Response.json({ echo: new URL(request.url).pathname }, { status: 201 }));
+
+    const result = await h.tools.callAppApi.execute(
+      { appId: created.appId, method: 'POST', path: 'todos', body: { title: 'milk' } },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.deepEqual(result, { status: 201, ok: true, data: { echo: '/api/todos' } });
+    const [call] = h.appRunner.calls;
+    assert.equal(call.name, `app:${created.appId}`);
+    assert.equal(call.method, 'POST');
+    assert.deepEqual(JSON.parse(call.body), { title: 'milk' });
+    assert.equal(call.config.uid, UID);
+    assert.equal(call.config.requiresCapability, false);
+
+    // Reads are free; writes ask first.
+    assert.equal(await h.tools.callAppApi.needsApproval({ appId: created.appId, method: 'GET', path: '/api/todos' }), false);
+    assert.equal(await h.tools.callAppApi.needsApproval({ appId: created.appId, method: 'DELETE', path: '/api/todos/1' }), true);
+
+    const read = await h.tools.readAppApi.execute({ appId: created.appId, path: '/api/todos' }, { toolCallId: 'tc', messages: [] });
+    assert.equal(h.appRunner.calls.at(-1).method, 'GET');
+    assert.equal(read.status, 201);
+
+    // Another user's (or a missing) app is not reachable.
+    await h.kv.put('app:someone-else', JSON.stringify({ uid: 'other-user', version: 1 }));
+    await assert.rejects(
+      h.tools.callAppApi.execute({ appId: 'someone-else', method: 'GET', path: '/api/x' }, { toolCallId: 'tc', messages: [] }),
+      /App someone-else not found/,
     );
   });
 

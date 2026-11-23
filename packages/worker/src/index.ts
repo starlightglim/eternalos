@@ -12,7 +12,8 @@ import { RateLimiter } from './durable-objects/RateLimiter';
 import { AuthCoordinator } from './durable-objects/AuthCoordinator';
 import { BazaarCoordinator } from './durable-objects/BazaarCoordinator';
 import { OrchestratorAgent } from './agents/OrchestratorAgent';
-import { EternalService } from './services/EternalService';
+import { AppOutbound, EternalService } from './services/EternalService';
+import { AppLogTail, AppRunner } from './durable-objects/AppRunner';
 import { handleRequest } from './routes/routeTable';
 import { listDuePendingDeletions, purgeAccount } from './utils/accountPurge';
 
@@ -30,6 +31,7 @@ export interface Env {
   AUTH_COORDINATOR: DurableObjectNamespace;
   BAZAAR_COORDINATOR: DurableObjectNamespace;
   OrchestratorAgent: DurableObjectNamespace<OrchestratorAgent>;
+  APP_RUNNER: DurableObjectNamespace<AppRunner>;
 
   // Dynamic Workers (sandboxed app runtime)
   LOADER: WorkerLoader;
@@ -80,7 +82,7 @@ export interface Env {
   APP_URL?: string; // Base URL for the app (e.g., "https://eternalos.app")
 }
 
-export { UserDesktop, RateLimiter, AuthCoordinator, BazaarCoordinator, OrchestratorAgent, EternalService };
+export { UserDesktop, RateLimiter, AuthCoordinator, BazaarCoordinator, OrchestratorAgent, EternalService, AppRunner, AppOutbound, AppLogTail };
 
 export default {
   /**

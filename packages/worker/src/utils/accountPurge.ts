@@ -153,6 +153,7 @@ export async function purgeAccount(env: Env, pending: PendingDeletion): Promise<
   for (const appId of appIds) {
     await env.DESKTOP_KV.delete(`app:${appId}`).catch(() => {});
     kvDeleted++;
+    await env.APP_RUNNER.getByName(`app:${appId}`).purge().catch(() => {});
   }
 
   // 3. Authored bazaar packs — delete the pack, remove it from its type index,

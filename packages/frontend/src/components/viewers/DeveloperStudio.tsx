@@ -3,9 +3,11 @@ import { useDesktopStore } from '../../stores/desktopStore';
 import {
   deleteAppRuntime,
   deployApp,
+  getAppBackendLogs,
   getAppSource,
   listAppVersions,
   rollbackApp,
+  type AppBackendLogEntry,
   type AppRelease,
 } from '../../services/apps';
 import { AlertDialog } from '../ui/AlertDialog';
@@ -21,7 +23,46 @@ interface AppItem {
   version: string;
 }
 
-type FileTab = 'eternal.app.json' | 'index.html' | 'app.js' | 'styles.css';
+type FileTab = 'eternal.app.json' | 'index.html' | 'app.js' | 'styles.css' | 'server.js';
+
+const FILE_TABS: FileTab[] = ['index.html', 'app.js', 'styles.css', 'server.js', 'eternal.app.json'];
+
+// Starter backend: runs as a Durable Object Facet with its own SQLite
+// database; the frontend reaches it via window.eternal.api.*.
+const SERVER_TEMPLATE = `// Optional backend. Runs server-side with its own SQLite database.
+// Call it from app.js:  const notes = await window.eternal.api.get('/notes');
+export default {
+  async fetch(request, env) {
+    env.sql.exec(
+      'CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, created_at INTEGER NOT NULL)'
+    );
+    const url = new URL(request.url);
+
+    if (url.pathname === '/api/notes' && request.method === 'GET') {
+      return Response.json(env.sql.exec('SELECT * FROM notes ORDER BY id DESC').toArray());
+    }
+
+    if (url.pathname === '/api/notes' && request.method === 'POST') {
+      const { text } = await request.json();
+      if (!text) return Response.json({ error: 'text is required' }, { status: 400 });
+      const note = env.sql
+        .exec('INSERT INTO notes (text, created_at) VALUES (?, ?) RETURNING *', text, Date.now())
+        .one();
+      return Response.json(note, { status: 201 });
+    }
+
+    return Response.json({ error: 'Not found' }, { status: 404 });
+  },
+};
+`;
+
+const EMPTY_FILES: Record<FileTab, string> = {
+  'eternal.app.json': '',
+  'index.html': '',
+  'app.js': '',
+  'styles.css': '',
+  'server.js': '',
+};
 
 export function DeveloperStudio() {
   const { items, loadDesktop, removeItem } = useDesktopStore();
@@ -29,12 +70,9 @@ export function DeveloperStudio() {
 
   const [activeApp, setActiveApp] = useState<AppItem | null>(null);
   const [activeTab, setActiveTab] = useState<FileTab>('index.html');
-  const [files, setFiles] = useState<Record<FileTab, string>>({
-    'eternal.app.json': '',
-    'index.html': '',
-    'app.js': '',
-    'styles.css': '',
-  });
+  const [files, setFiles] = useState<Record<FileTab, string>>(EMPTY_FILES);
+  const [showLogs, setShowLogs] = useState(false);
+  const [backendLogs, setBackendLogs] = useState<AppBackendLogEntry[] | null>(null);
   const [sourceFiles, setSourceFiles] = useState<Record<string, string>>({});
 
   const [isLoading, setIsLoading] = useState(false);
@@ -112,7 +150,10 @@ export function DeveloperStudio() {
         'index.html': srcFiles['index.html'] || '<h1>Hello World</h1>',
         'app.js': srcFiles['app.js'] || '// Write your JS logic here',
         'styles.css': srcFiles['styles.css'] || '/* Write your CSS styling here */',
+        'server.js': srcFiles['server.js'] || '',
       });
+      setShowLogs(false);
+      setBackendLogs(null);
       setSourceFiles(srcFiles);
       setReleases(versionData.releases);
 
@@ -144,15 +185,23 @@ export function DeveloperStudio() {
         throw new Error('Manifest is not valid JSON! Please check eternal.app.json.');
       }
 
+      const deployFiles: Record<string, string> = {
+        ...sourceFiles,
+        'index.html': files['index.html'],
+        'app.js': files['app.js'],
+        'styles.css': files['styles.css'],
+      };
+      // An empty server.js tab means "no backend" (it can be removed again).
+      if (files['server.js'].trim()) {
+        deployFiles['server.js'] = files['server.js'];
+      } else {
+        delete deployFiles['server.js'];
+      }
+
       const data = await deployApp({
         appId: activeApp.appId,
         manifest: manifestObj,
-        files: {
-          ...sourceFiles,
-          'index.html': files['index.html'],
-          'app.js': files['app.js'],
-          'styles.css': files['styles.css'],
-        },
+        files: deployFiles,
       });
 
       setStatus('success');
@@ -221,6 +270,23 @@ export function DeveloperStudio() {
     }, 3000);
   }, [activeApp, handleSelectApp, loadDesktop]);
 
+  const handleToggleLogs = useCallback(async () => {
+    if (!activeApp) return;
+    if (showLogs) {
+      setShowLogs(false);
+      return;
+    }
+    setShowHistory(false);
+    setShowLogs(true);
+    setBackendLogs(null);
+    try {
+      const data = await getAppBackendLogs(activeApp.appId);
+      setBackendLogs(data.logs);
+    } catch (err) {
+      setBackendLogs([{ at: Date.now(), level: 'error', message: err instanceof Error ? err.message : 'Failed to load logs.' }]);
+    }
+  }, [activeApp, showLogs]);
+
   // Delete/Uninstall the app
   const handleDeleteApp = useCallback(async () => {
     if (!activeApp) return;
@@ -233,12 +299,7 @@ export function DeveloperStudio() {
       await deleteAppRuntime(activeApp.appId);
       removeItem(activeApp.id);
       setActiveApp(null);
-      setFiles({
-        'eternal.app.json': '',
-        'index.html': '',
-        'app.js': '',
-        'styles.css': '',
-      });
+      setFiles(EMPTY_FILES);
       setSourceFiles({});
       setReleases([]);
       setRollbackVersion('');
@@ -424,6 +485,7 @@ button:focus-visible { outline: 3px solid color-mix(in srgb, var(--app-accent) 5
         'index.html': defaultHtml,
         'app.js': defaultJs,
         'styles.css': defaultCss,
+        'server.js': '',
       });
       setSourceFiles({
         'index.html': defaultHtml,
@@ -495,7 +557,7 @@ button:focus-visible { outline: 3px solid color-mix(in srgb, var(--app-accent) 5
             {/* Header Tabs */}
             <div className={styles.workspaceHeader}>
               <div className={styles.tabs}>
-                {(['index.html', 'app.js', 'styles.css', 'eternal.app.json'] as FileTab[]).map((tab) => (
+                {FILE_TABS.map((tab) => (
                   <button
                     type="button"
                     key={tab}
@@ -505,10 +567,11 @@ button:focus-visible { outline: 3px solid color-mix(in srgb, var(--app-accent) 5
                     ].filter(Boolean).join(' ')}
                     onClick={() => {
                       setShowHistory(false);
+                      setShowLogs(false);
                       setActiveTab(tab);
                     }}
                   >
-                    {tab === 'eternal.app.json' ? '⚙️ ' : '📝 '}
+                    {tab === 'eternal.app.json' ? '⚙️ ' : tab === 'server.js' ? '🗄️ ' : '📝 '}
                     {tab}
                   </button>
                 ))}
@@ -532,6 +595,19 @@ button:focus-visible { outline: 3px solid color-mix(in srgb, var(--app-accent) 5
                 >
                   🕘 History
                 </button>
+                {files['server.js'].trim() ? (
+                  <button
+                    className={[
+                      styles.actionBtn,
+                      showLogs ? styles.tabActive : '',
+                    ].filter(Boolean).join(' ')}
+                    onClick={() => void handleToggleLogs()}
+                    disabled={isLoading}
+                    aria-pressed={showLogs}
+                  >
+                    📜 Logs
+                  </button>
+                ) : null}
                 {releases.some((release) => !release.current) && (
                   <div className={styles.releaseControls}>
                     <select
@@ -569,7 +645,36 @@ button:focus-visible { outline: 3px solid color-mix(in srgb, var(--app-accent) 5
 
             {/* Code Field / Revision History */}
             <div className={styles.editorArea}>
-              {showHistory ? (
+              {showLogs ? (
+                <pre className={styles.logPanel} aria-live="polite">
+                  {backendLogs === null
+                    ? 'Loading backend logs…'
+                    : backendLogs.length === 0
+                      ? 'No backend output yet. console.log() calls and uncaught errors from server.js show up here.'
+                      : backendLogs
+                        .map((entry) => `${new Date(entry.at).toLocaleTimeString()}  [${entry.level}]  ${entry.message}`)
+                        .join('\n')}
+                </pre>
+              ) : activeTab === 'server.js' && !files['server.js'].trim() ? (
+                <div className={styles.backendEmpty}>
+                  <h3>No backend yet</h3>
+                  <p>
+                    Add a <code>server.js</code> to give this app a real server: it runs as an isolated Worker with its
+                    own SQLite database, and your frontend calls it with <code>window.eternal.api.get('/notes')</code>.
+                  </p>
+                  <button
+                    type="button"
+                    className={styles.actionBtn}
+                    onClick={() => {
+                      setFiles((prev) => ({ ...prev, 'server.js': SERVER_TEMPLATE }));
+                      setSourceFiles((prev) => ({ ...prev, 'server.js': SERVER_TEMPLATE }));
+                    }}
+                    disabled={isLoading}
+                  >
+                    + Add backend
+                  </button>
+                </div>
+              ) : showHistory ? (
                 <AppHistoryPanel
                   appId={activeApp.appId}
                   currentFiles={sourceFiles}

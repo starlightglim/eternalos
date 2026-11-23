@@ -28,6 +28,11 @@ class_name = "AuthCoordinator"
 name = "BAZAAR_COORDINATOR"
 class_name = "BazaarCoordinator"
 
+# Supervisor for full-stack app backends (server.js runs as a Facet)
+[[durable_objects.bindings]]
+name = "APP_RUNNER"
+class_name = "AppRunner"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["UserDesktop"]
@@ -56,6 +61,10 @@ new_sqlite_classes = ["AuthCoordinator"]
 [[migrations]]
 tag = "v7"
 new_sqlite_classes = ["BazaarCoordinator"]
+
+[[migrations]]
+tag = "v8"
+new_sqlite_classes = ["AppRunner"]
 
 # Dynamic Workers (sandboxed app runtime)
 [[worker_loaders]]

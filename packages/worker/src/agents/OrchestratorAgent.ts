@@ -4,7 +4,10 @@
  * Replaces DesktopChatAgent and AppBuilderAgent with a single agent that:
  * - Queries and mutates the desktop via direct AI SDK tools
  * - Creates and manages apps via direct app tools and server-side generation
- * - Runs apps as Dynamic Workers in sandboxed V8 isolates
+ * - Runs apps as Dynamic Workers in sandboxed V8 isolates (full-stack apps
+ *   get a server.js backend running as a Durable Object Facet)
+ * - Offers Code Mode: the model writes one JS function that orchestrates many
+ *   tool calls, executed in a network-less Dynamic Worker
  */
 
 import { AIChatAgent } from '@cloudflare/ai-chat';
@@ -34,6 +37,7 @@ import type { OrchestratorState } from './state';
 import { createDesktopTools } from './tools/desktopTools';
 import { createAppTools, initAppRegistry } from './tools/appTools';
 import { createMemoryTools } from './tools/memoryTools';
+import { createCodeModeTool } from './tools/codeModeTools';
 import {
   deriveThreadTitleFromMessage,
   extractOwnerUid,
@@ -54,6 +58,11 @@ Core behavior:
 - You have durable memory tools. Use them for stable user preferences, identity details, ongoing project context, and other facts likely to matter later.
 - Do not save one-off transient requests as memory unless the user explicitly asks you to remember them`;
 
+const CODE_MODE_PROMPT = `Code Mode
+- The codemode tool runs one async JavaScript arrow function in an isolated sandbox where the tools above are available as namespaced, awaitable functions (see its description for exact names and types).
+- Prefer codemode when a request needs several tool calls, a loop over many items, filtering, counting, or other computation; prefer the plain tool for a single lookup.
+- Return a compact JSON result from the function, then explain it to the user in plain language. Never paste the code into the reply unless asked.`;
+
 const CHAT_PROMPT = `${BASE_PROMPT}
 
 Mode: General chat
@@ -70,7 +79,9 @@ Mode: Desktop assistant (read-only)
   - searchDesktop
   - readTextFile
 - Use tools only if they materially improve the answer
-- If the user just wants a conversational answer, respond without tools`;
+- If the user just wants a conversational answer, respond without tools
+
+${CODE_MODE_PROMPT}`;
 
 const DESKTOP_WRITE_PROMPT = `${BASE_PROMPT}
 
@@ -85,7 +96,11 @@ Mode: Desktop assistant (mutating)
   - createTextNote
 - Prefer search/read tools before mutations when context is missing
 - For createTextNote, write the full note content yourself based on the
-  conversation — do not ask the user to dictate it verbatim unless unclear`;
+  conversation — do not ask the user to dictate it verbatim unless unclear
+- For batch changes (move every screenshot, file all PDFs by year), use
+  codemode so the whole change is one approved step
+
+${CODE_MODE_PROMPT}`;
 
 const APP_READ_PROMPT = `${BASE_PROMPT}
 
@@ -94,16 +109,24 @@ Mode: App assistant (read-only)
 - Available tools:
   - listApps
   - getAppSource
-- Do not create, update, or delete apps in this mode`;
+  - readAppApi — GET data from a full-stack app's own backend (e.g. the
+    items in their todo app); find routes in server.js via getAppSource
+  - getAppBackendLogs — console output / errors from an app's server.js
+- Do not create, update, or delete apps in this mode
+
+${CODE_MODE_PROMPT}`;
 
 const APP_BUILD_PROMPT = `${BASE_PROMPT}
 
 Mode: App builder
 
-Apps are static HTML/CSS/JS bundles served from a Dynamic Worker into a
-sandboxed iframe on the user's desktop. The platform auto-injects a
-window.eternal bridge that exposes the user's desktop data to apps that
-declare the right permissions.
+Apps are HTML/CSS/JS bundles served from a Dynamic Worker into a sandboxed
+iframe on the user's desktop. The platform auto-injects a window.eternal
+bridge that exposes the user's desktop data to apps that declare the right
+permissions. Apps that manage real records can also ship a server.js
+backend: a real Worker that runs as a Durable Object Facet with its own
+SQLite database, reached from the frontend via window.eternal.api.* — the
+generator decides this from the request, you do not need to ask for it.
 
 Primary workflow
 - For app requests where the user wants to inspect quality first, call
@@ -126,6 +149,11 @@ Primary workflow
   installAppPreview({ previewId }) — the preview reinstalls that app as a new
   version (same icon, grants, and storage) instead of creating a second one.
 - To list/delete: listApps(), deleteApp({ appId }).
+- To work with a full-stack app's DATA (not its code) — "add milk to my
+  shopping list app", "what's in my reading tracker?" — call
+  callAppApi({ appId, method, path, body }) against the app's /api/* routes
+  (getAppSource shows server.js if you need the routes). If a backend
+  errors, getAppBackendLogs({ appId }) shows its console output.
 
 What apps can do
 - Read the user's desktop via window.eternal.fs.list(), fs.read(), fs.readText(),
@@ -159,7 +187,9 @@ Conversation style
 - After a successful install: one short sentence confirming the app appeared on
   the desktop plus any permissions it uses. Do not dump generated source.
 - If the generator errors, surface a short human explanation and suggest one
-  concrete next step, not a retry-loop explanation.`;
+  concrete next step, not a retry-loop explanation.
+
+${CODE_MODE_PROMPT}`;
 
 const APP_INSTALL_PREVIEW_PROMPT = `${BASE_PROMPT}
 
@@ -411,6 +441,8 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
       const appReadTools = {
         listApps: appTools.listApps,
         getAppSource: appTools.getAppSource,
+        readAppApi: appTools.readAppApi,
+        getAppBackendLogs: appTools.getAppBackendLogs,
       };
       const appBuildTools = {
         previewAppFromPrompt: appTools.previewAppFromPrompt,
@@ -419,7 +451,10 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
         createApp: appTools.createApp,
         updateApp: appTools.updateApp,
         deleteApp: appTools.deleteApp,
-        ...appReadTools,
+        callAppApi: appTools.callAppApi,
+        listApps: appTools.listApps,
+        getAppSource: appTools.getAppSource,
+        getAppBackendLogs: appTools.getAppBackendLogs,
       };
       const sharedTools = {
         rememberMemory: memoryTools.rememberMemory,
@@ -427,15 +462,38 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
         forgetMemory: memoryTools.forgetMemory,
       };
 
-      const routeTools = {
-        chat: sharedTools,
-        'desktop-read': { ...desktopReadTools, ...sharedTools },
-        'desktop-write': { ...desktopWriteTools, ...sharedTools },
-        'app-read': { ...appReadTools, ...sharedTools },
-        'app-install-preview': { installAppPreview: appTools.installAppPreview, ...sharedTools },
-        'app-build': { ...appBuildTools, ...sharedTools },
-      } as const;
-      const activeRouteTools = routeTools[route];
+      // Code Mode: one sandboxed JS function orchestrating many tool calls.
+      // Each route exposes exactly the tools that route already allows; the
+      // mutating variants are approved as a whole (inner tools lose their
+      // individual needsApproval inside the sandbox).
+      const codemodeFor = {
+        desktopRead: () => createCodeModeTool({ loader: this.env.LOADER, desktop: desktopReadTools, mutating: false }),
+        desktopWrite: () => createCodeModeTool({ loader: this.env.LOADER, desktop: desktopWriteTools, mutating: true }),
+        appRead: () => createCodeModeTool({ loader: this.env.LOADER, desktop: desktopReadTools, apps: appReadTools, mutating: false }),
+        appBuild: () => createCodeModeTool({
+          loader: this.env.LOADER,
+          desktop: desktopReadTools,
+          apps: {
+            listApps: appTools.listApps,
+            getAppSource: appTools.getAppSource,
+            getAppBackendLogs: appTools.getAppBackendLogs,
+            callAppApi: appTools.callAppApi,
+          },
+          mutating: true,
+        }),
+      };
+
+      // Built lazily: only the active route's tool set (and its Code Mode
+      // type definitions) is constructed per turn.
+      const routeTools: Record<ChatRoute, () => Record<string, unknown>> = {
+        chat: () => sharedTools,
+        'desktop-read': () => ({ ...desktopReadTools, codemode: codemodeFor.desktopRead(), ...sharedTools }),
+        'desktop-write': () => ({ ...desktopWriteTools, codemode: codemodeFor.desktopWrite(), ...sharedTools }),
+        'app-read': () => ({ ...appReadTools, codemode: codemodeFor.appRead(), ...sharedTools }),
+        'app-install-preview': () => ({ installAppPreview: appTools.installAppPreview, ...sharedTools }),
+        'app-build': () => ({ ...appBuildTools, codemode: codemodeFor.appBuild(), ...sharedTools }),
+      };
+      const activeRouteTools = routeTools[route]();
       const activeToolNames = Object.keys(activeRouteTools) as string[];
       const shouldForceFirstToolCall = route === 'app-build';
 
