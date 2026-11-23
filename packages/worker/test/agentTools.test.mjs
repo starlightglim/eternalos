@@ -1374,11 +1374,17 @@ const MINIMAL_APP_FILES = {
 function createFakeAppRunner() {
   const purged = [];
   const calls = [];
+  const probes = [];
+  let probeResponder = async (input) => input.requests.map((request) => ({ ...request, status: 200 }));
   let responder = async () => Response.json({ ok: true });
   const binding = {
     getByName(name) {
       return {
         purge: async () => { purged.push(name); return { purged: true }; },
+        probe: async (input) => {
+          probes.push({ name, ...input });
+          return probeResponder(input);
+        },
         getLogs: async () => [{ at: 1, level: 'log', message: `logs for ${name}` }],
         handle: async (request, config) => {
           const body = ['GET', 'HEAD'].includes(request.method) ? undefined : await request.text();
@@ -1388,7 +1394,14 @@ function createFakeAppRunner() {
       };
     },
   };
-  return { binding, purged, calls, respond(fn) { responder = fn; } };
+  return {
+    binding,
+    purged,
+    calls,
+    probes,
+    respond(fn) { responder = fn; },
+    respondToProbe(fn) { probeResponder = fn; },
+  };
 }
 
 function createAppToolsHarness() {
@@ -2059,6 +2072,106 @@ describe('appTools', () => {
     assert.deepEqual(metadata.permissions, expected);
     // The private storage key still derives no permission.
     assert.deepEqual(Object.keys(expected.fs), ['read', 'write', 'delete']);
+  });
+
+  it('buildAppFromPrompt runs server.js before install and repairs a crashing route', async () => {
+    const h = createAppToolsHarness();
+    const html = '<!DOCTYPE html><html><head><link rel="stylesheet" href="./styles.css"></head><body><ul id="l"></ul><script type="module" src="./app.js"></script></body></html>';
+    const appJs = "const l = document.getElementById('l');\nconst load = async () => { try { l.textContent = (await window.eternal.api.get('/todos')).length; } catch (e) { l.textContent = e.message; } };\nwindow.eternal.api.onChange(load);\nload();";
+    const brokenServer = "export default {\n  async fetch(request, env) {\n    return Response.json(env.sql.exec('SELECT * FROM todos').toArray());\n  },\n};";
+    const fixedServer = "export default {\n  async fetch(request, env) {\n    env.sql.exec('CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY, title TEXT)');\n    return Response.json(env.sql.exec('SELECT * FROM todos').toArray());\n  },\n};";
+
+    h.ai.script.push(
+      {
+        response: JSON.stringify({
+          name: 'Todos',
+          purpose: 'Tracks todos on the server.',
+          screens: [{ name: 'List', summary: 'All todos.', emptyState: 'No todos yet.' }],
+          backend: {
+            routes: ['GET /api/todos', 'POST /api/todos', 'GET /api/todos/:id', 'GET /api/todos'],
+            tables: ['todos(id INTEGER PRIMARY KEY, title TEXT)'],
+          },
+          width: 480,
+          height: 520,
+        }),
+      },
+      { response: JSON.stringify({ files: { 'index.html': html, 'styles.css': 'ul{margin:0}', 'app.js': appJs, 'server.js': brokenServer } }) },
+      { response: JSON.stringify({ files: { 'server.js': fixedServer } }) },
+    );
+
+    // First probe: the cold start answers, the list route crashes on the
+    // fresh database. Second probe (after repair): everything answers.
+    let probeRound = 0;
+    h.appRunner.respondToProbe(async (input) => {
+      probeRound += 1;
+      return input.requests.map((request) => (
+        probeRound === 1 && request.path === '/api/todos'
+          ? { ...request, status: 500, error: 'no such table: todos: SQLITE_ERROR' }
+          : { ...request, status: request.path === '/api/todos' ? 200 : 404 }
+      ));
+    });
+
+    const result = await h.tools.buildAppFromPrompt.execute(
+      { prompt: 'build me a todo app that saves on the server' },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(result.status, 'created');
+
+    // Probed twice, each on a throwaway runner, with a cold-start request
+    // plus only the parameter-free GET routes (deduplicated).
+    assert.equal(h.appRunner.probes.length, 2);
+    for (const probe of h.appRunner.probes) {
+      assert.match(probe.name, /^probe:/);
+      assert.deepEqual(probe.requests.map((r) => `${r.method} ${r.path}`), ['GET /api/__eternal_probe', 'GET /api/todos']);
+      assert.match(JSON.stringify(probe.bundle.modules), /AppBackend/);
+    }
+    assert.notEqual(h.appRunner.probes[0].name, h.appRunner.probes[1].name);
+
+    // The repair targeted server.js with the failing route and the error.
+    assert.equal(h.ai.calls.length, 3);
+    const repairPrompt = h.ai.calls[2].inputs.messages.at(-1).content;
+    assert.match(repairPrompt, /\[runtime\/backend-error\] — server\.js/);
+    assert.match(repairPrompt, /GET \/api\/todos returned 500/);
+    assert.match(repairPrompt, /no such table: todos/);
+    assert.match(repairPrompt, /CREATE TABLE IF NOT EXISTS/);
+
+    const storedSource = JSON.parse(h.r2.objects.get(`apps/${UID}/${result.appId}/source.json`));
+    assert.equal(storedSource['server.js'], fixedServer);
+    assert.equal(storedSource['app.js'], appJs);
+  });
+
+  it('backend probe failures caused only by the no-network sandbox do not block install', async () => {
+    const h = createAppToolsHarness();
+    h.ai.script.push(
+      {
+        response: JSON.stringify({
+          name: 'Weather',
+          purpose: 'Shows the weather.',
+          screens: [{ name: 'Now', summary: 'Current weather.', emptyState: 'Loading.' }],
+          networkDomains: ['api.weather.example'],
+          backend: { routes: ['GET /api/now'], tables: [] },
+          width: 400,
+          height: 400,
+        }),
+      },
+      {
+        response: JSON.stringify({
+          files: {
+            'index.html': '<!DOCTYPE html><html><body><p id="o"></p><script type="module" src="./app.js"></script></body></html>',
+            'app.js': "window.eternal.api.get('/now').then((d) => { document.getElementById('o').textContent = d.temp; }).catch(() => {});",
+            'server.js': "export default { async fetch() { const r = await fetch('https://api.weather.example/now'); return Response.json(await r.json()); } };",
+          },
+        }),
+      },
+    );
+    h.appRunner.respondToProbe(async (input) => input.requests.map((request) => (
+      request.path === '/api/now'
+        ? { ...request, status: 500, error: 'This worker is not permitted to access the internet', networkBlocked: true }
+        : { ...request, status: 404 }
+    )));
+    const result = await h.tools.buildAppFromPrompt.execute({ prompt: 'weather app' }, { toolCallId: 'tc', messages: [] });
+    assert.equal(result.status, 'created');
+    assert.equal(h.ai.calls.length, 2, 'no repair round for a sandbox-only network failure');
   });
 
   it('buildAppFromPrompt repairs a runtime-contract mismatch by patching only the failing file (Photo Grid regression)', async () => {

@@ -158,6 +158,13 @@ truth for all tokens).
   deletion / account purge calls `AppRunner.purge()` (`facets.delete`).
   Don't call `storage.deleteAll()` on the supervisor: it fails once facets
   exist.
+- Build-time backend probe: agent builds (`generateAppWithRepairLoop`) run
+  a generated `server.js` before install via `AppRunner.probe()` on a
+  throwaway `probe:{uuid}` instance (fresh SQLite, no network): a cold-start
+  request plus every parameter-free `GET` route from `spec.backend.routes`.
+  5xx/crash/timeout → `runtime/backend-error` issue on `server.js` → the
+  targeted repair loop patches it. Failures caused only by the no-network
+  sandbox are ignored. Dev-deploy does not probe.
 - Live sync: when the assistant changes an app's data (`callAppApi`, or a
   Code Mode run — the code tool returns `changedApps`), the chat calls
   `notifyAppDataChanged` (`src/utils/appWindowBus.ts`) and open windows get

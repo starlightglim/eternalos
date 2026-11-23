@@ -37,7 +37,7 @@ import {
   writeAppRevision,
   type AppRevisionPointers,
 } from '../../routes/appRevisions';
-import { appRunnerName } from '../../durable-objects/AppRunner';
+import { appRunnerName, type AppBackendProbeRequest } from '../../durable-objects/AppRunner';
 import { resolveInstalledAppBackend } from '../../routes/appServe';
 import {
   intersectGranted,
@@ -57,6 +57,7 @@ const REAL_BUILD_STAGES: Record<string, string> = {
   spec: 'Generating specification',
   codegen: 'Writing source files',
   bundle: 'Bundling app',
+  probe: 'Testing backend routes',
   storage: 'Saving files',
   install: 'Installing on desktop',
 };
@@ -208,6 +209,7 @@ const APP_BUILD_TIMEOUT_MS = {
   specGeneration: 90_000,
   fileGeneration: 120_000,
   bundling: 30_000,
+  backendProbe: 20_000,
   storageWrite: 15_000,
   desktopInstall: 15_000,
 } as const;
@@ -1339,6 +1341,10 @@ async function generateAppWithRepairLoop<T>(
       // Pre-bundle source gate — runs with the generated files captured, so
       // its failures can be repaired by patching the files they name.
       validateGeneratedApp(app);
+      // Behavioral gate for full-stack apps: actually run server.js and hit
+      // its declared GET routes; a crash comes back as a repairable issue on
+      // server.js with the route and the error.
+      await probeGeneratedBackend(ctx, app, spec);
       return { app, result: await finalize(app) };
     } catch (error) {
       const isBundleValidation = error instanceof AppValidationError
@@ -1367,6 +1373,71 @@ async function generateAppWithRepairLoop<T>(
   }
 
   throw new Error(`Failed to generate a working ${failureNoun} after multiple attempts: ${lastError}`);
+}
+
+const MAX_PROBED_ROUTES = 8;
+
+/**
+ * Requests the build-time probe replays: one cold-start request (catches
+ * module-load crashes; any non-5xx answer passes, 404 included), then every
+ * parameter-free GET route the spec declares. Writes are not probed — the
+ * probe cannot invent valid bodies — so they are covered by the static
+ * contract checks only.
+ */
+export function backendProbeRequests(spec: AppSpec): AppBackendProbeRequest[] {
+  const requests: AppBackendProbeRequest[] = [{ method: 'GET', path: '/api/__eternal_probe' }];
+  const seen = new Set<string>();
+  for (const route of spec.backend?.routes ?? []) {
+    const match = /^\s*GET\s+(\/api(?:\/[^\s?#]*)?)\s*$/i.exec(route);
+    if (!match) continue;
+    const path = match[1];
+    if (/[:{}<>*]/.test(path) || seen.has(path)) continue;
+    seen.add(path);
+    requests.push({ method: 'GET', path });
+    if (requests.length > MAX_PROBED_ROUTES) break;
+  }
+  return requests;
+}
+
+async function probeGeneratedBackend(ctx: AppToolsContext, app: AppBundleInput, spec: AppSpec): Promise<void> {
+  if (!(APP_BACKEND_ENTRY_FILE in app.files)) return;
+  emitStage(ctx, 'probe');
+  const workspace = createAppWorkspace(app.files);
+  const workerFiles = createWorkerModuleFiles(workspace, '/api/app-previews');
+  const compiled = await withStepTimeout(
+    'Bundling backend for testing',
+    APP_BUILD_TIMEOUT_MS.bundling,
+    createWorker({
+      files: {
+        ...workerFiles,
+        [APP_WORKER_ENTRY_FILE]: workerFiles[APP_WORKER_ENTRY_FILE].replaceAll('__APP_ID__', 'probe'),
+      },
+      entryPoint: APP_WORKER_ENTRY_FILE,
+    }),
+  );
+  const runner = ctx.env.APP_RUNNER.getByName(`probe:${crypto.randomUUID()}`);
+  const results = await withStepTimeout(
+    'Testing backend routes',
+    APP_BUILD_TIMEOUT_MS.backendProbe,
+    runner.probe({
+      bundle: { mainModule: compiled.mainModule, modules: compiled.modules as Record<string, string> },
+      uid: ctx.agentName,
+      appId: 'probe',
+      requests: backendProbeRequests(spec),
+    }),
+  );
+  const issues: AppValidationIssue[] = results
+    .filter((result) => (result.status === 0 || result.status >= 500) && !result.networkBlocked)
+    .map((result) => ({
+      code: 'runtime/backend-error',
+      file: APP_BACKEND_ENTRY_FILE,
+      evidence: `${result.method} ${result.path}`,
+      message: result.status === 0
+        ? `server.js crashed handling ${result.method} ${result.path} on a fresh, empty database: ${result.error ?? 'unknown error'}`
+        : `${result.method} ${result.path} returned ${result.status} on a fresh, empty database: ${result.error ?? 'server error'}`,
+      hint: 'Fix the handler so it works on first run: create every table with CREATE TABLE IF NOT EXISTS before querying it, handle empty results (.toArray() returns [], .one() throws when no row exists), and return 4xx JSON for bad input instead of throwing.',
+    }));
+  if (issues.length) throw new AppValidationError(issues);
 }
 
 async function buildAppFromPromptWithRetries(

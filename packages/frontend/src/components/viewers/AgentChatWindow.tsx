@@ -259,11 +259,14 @@ function isAgentChatMessage(value: unknown): value is AgentChatMessage {
   );
 }
 
-const REAL_BUILD_STAGE_ORDER = ['spec', 'codegen', 'bundle', 'storage', 'install'] as const;
+// 'probe' (running server.js against its routes) only happens for apps
+// with a backend; static builds go straight from codegen to bundle.
+const REAL_BUILD_STAGE_ORDER = ['spec', 'codegen', 'probe', 'bundle', 'storage', 'install'] as const;
 
 const REAL_BUILD_STAGE_LABELS: Record<string, string> = {
   spec: 'Generating specification',
   codegen: 'Writing source files',
+  probe: 'Testing backend routes',
   bundle: 'Bundling app',
   storage: 'Saving files',
   install: 'Installing on desktop',

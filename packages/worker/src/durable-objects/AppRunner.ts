@@ -47,6 +47,22 @@ export interface AppBackendConfig {
   requiresCapability: boolean;
 }
 
+export interface AppBackendProbeRequest {
+  method: string;
+  path: string;
+}
+
+export interface AppBackendProbeResult extends AppBackendProbeRequest {
+  status: number;
+  /** Error text: the backend's { error } body, a crash message, or a timeout. */
+  error?: string;
+  /** The failure came from the probe sandbox having no network, not the code. */
+  networkBlocked?: boolean;
+}
+
+const PROBE_FACET = 'probe';
+const PROBE_REQUEST_TIMEOUT_MS = 5_000;
+
 export interface AppBackendLogEntry {
   at: number;
   level: string;
@@ -119,6 +135,50 @@ export class AppRunner extends DurableObject<Env> {
       this.#loadedCodeId = null;
       return Response.json({ error: `App backend error: ${message}` }, { status: 500 });
     }
+  }
+
+  /**
+   * Build-time smoke test. Runs a compiled bundle's AppBackend in a fresh
+   * facet (empty SQLite, NO network, no desktop grants) and replays the
+   * given requests in order, so a backend that crashes on load or on its
+   * main routes is caught before install. Call it on a throwaway instance
+   * (`probe:{uuid}`); the facet and its database are deleted afterwards.
+   */
+  async probe(input: {
+    bundle: StoredBundle;
+    uid: string;
+    appId: string;
+    requests: AppBackendProbeRequest[];
+  }): Promise<AppBackendProbeResult[]> {
+    const loopback = this.loopback;
+    const worker = this.env.LOADER.load({
+      compatibilityDate: BACKEND_COMPAT_DATE,
+      mainModule: input.bundle.mainModule,
+      modules: input.bundle.modules as Record<string, string>,
+      globalOutbound: null,
+      env: {
+        APP_ID: input.appId,
+        ETERNAL: loopback.EternalService({
+          props: { uid: input.uid, appId: input.appId, granted: {}, requiresCapability: false },
+        }),
+      },
+    });
+    const results: AppBackendProbeResult[] = [];
+    try {
+      const facet = this.ctx.facets.get(PROBE_FACET, () => ({
+        class: worker.getDurableObjectClass(APP_BACKEND_CLASS, {
+          limits: { cpuMs: BACKEND_CPU_MS, subRequests: BACKEND_SUBREQUESTS },
+        }),
+      }));
+      for (const probe of input.requests) {
+        results.push(await probeOnce(facet, probe));
+        // A crashed facet would poison every later request; stop there.
+        if (results[results.length - 1].status === 0) break;
+      }
+    } finally {
+      try { this.ctx.facets.delete(PROBE_FACET); } catch { /* never started */ }
+    }
+    return results;
   }
 
   /** Recent console output / exceptions from the backend, newest last. */
@@ -241,4 +301,32 @@ function safeJson(value: unknown): string {
 /** Name of the AppRunner instance that serves an installed app or a preview. */
 export function appRunnerName(kind: 'app' | 'preview', id: string): string {
   return `${kind}:${id}`;
+}
+
+const NETWORK_BLOCKED_PATTERN = /not permitted to access the internet|globalOutbound|network access/i;
+
+async function probeOnce(facet: Fetcher, probe: AppBackendProbeRequest): Promise<AppBackendProbeResult> {
+  const request = new Request(`https://app.internal${probe.path}`, { method: probe.method });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const response = await Promise.race([
+      facet.fetch(request),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out after ${PROBE_REQUEST_TIMEOUT_MS / 1000}s`)), PROBE_REQUEST_TIMEOUT_MS);
+      }),
+    ]);
+    const text = await response.text();
+    if (response.status < 500) return { ...probe, status: response.status };
+    let error = text.slice(0, 600);
+    try {
+      const body = JSON.parse(text) as { error?: unknown };
+      if (body && typeof body.error === 'string') error = body.error;
+    } catch { /* plain-text error body */ }
+    return { ...probe, status: response.status, error, networkBlocked: NETWORK_BLOCKED_PATTERN.test(error) };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    return { ...probe, status: 0, error, networkBlocked: NETWORK_BLOCKED_PATTERN.test(error) };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
