@@ -209,6 +209,11 @@ describe('full-stack app backends (Dynamic Worker facets)', () => {
     });
     assert.equal(patched.done, 1);
 
+    // Backend output can never execute on the API origin.
+    const listed = await call(`/api/apps/${appId}/api/todos`, { headers: bearer() });
+    assert.match(listed.headers.get('content-security-policy') ?? '', /default-src 'none'.*sandbox/);
+    assert.equal(listed.headers.get('x-content-type-options'), 'nosniff');
+
     // Handler may return plain objects; env.APP_ID is wired.
     assert.deepEqual(await expectStatus(`/api/apps/${appId}/api/whoami`, { headers: bearer() }), { appId: app.appId, version: 1 });
 

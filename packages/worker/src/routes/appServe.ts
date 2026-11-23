@@ -36,6 +36,11 @@ function withBackendCors(response: Response): Response {
   const headers = new Headers(response.headers);
   for (const [key, value] of Object.entries(BACKEND_CORS)) headers.set(key, value);
   headers.set('x-content-type-options', 'nosniff');
+  // Backend responses are data for the app iframe, served from the API's own
+  // origin. Whatever content type server.js returns, it must never run
+  // script or be framed there.
+  headers.set('content-security-policy', "default-src 'none'; frame-ancestors 'none'; sandbox");
+  headers.set('referrer-policy', 'no-referrer');
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 

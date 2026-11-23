@@ -1578,13 +1578,14 @@ function AgentChatThreadPane({
       ) : null;
 
       if (part.state === 'approval-requested') {
+        // Consent must cover the whole script: never truncate it here.
         return (
           <div key={`codemode-${index}`} className={styles.toolCard}>
             <div className={styles.toolTitle}>Run code?</div>
             <div className={styles.toolBody}>
-              Eternal wants to run this code in a sandbox. It can make changes through the tools it calls (desktop items or app data).
+              Eternal wants to run this code in a sandbox. It can make changes through the tools it calls (desktop items or app data). Review the full script before running it.
             </div>
-            {codePreview}
+            {code ? <pre className={styles.codeBlock} tabIndex={0}>{code}</pre> : null}
             <div className={styles.approvalRow}>
               <button
                 type="button"
