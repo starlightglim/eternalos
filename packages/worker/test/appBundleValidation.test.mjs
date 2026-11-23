@@ -550,6 +550,27 @@ describe('source scanning precision', () => {
     assert.ok(scan.code.includes('a'));
     assert.ok(!scan.code.includes('tpl '));
   });
+
+  it('keeps streams the exact source length with emoji (astral chars) in strings and comments', () => {
+    // Live regression: a generated habit tracker with emoji strings made the
+    // scanner loop forever — code-point blanking shrank the streams by one
+    // unit per emoji, so offsets drifted and a // comment skip moved backwards.
+    const source = [
+      "const icons = ['🔥', '💧', '📚']; /* 🎯 goals */",
+      "await api.patch('/habits/' + a.id, { sort_order: 1 });",
+      '',
+      '  // ---- Rendering 🎨 ----',
+      "const label = `streak ${n} 🔥`; // done ✅",
+    ].join('\n');
+    const started = Date.now();
+    const scan = scanScript(source);
+    assert.ok(Date.now() - started < 1000, 'scanScript must terminate quickly');
+    assert.equal(scan.code.length, source.length);
+    assert.equal(scan.mixed.length, source.length);
+    assert.ok(scan.code.includes('const label'));
+    assert.ok(!scan.mixed.includes('Rendering'));
+    assert.ok(scan.mixed.includes('🔥'), 'string contents stay intact in the mixed stream');
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -212,7 +212,9 @@ export const generatedAppFilesSchema = z.object({
 const APP_BUILD_TIMEOUT_MS = {
   desktopSummary: 5_000,
   specGeneration: 90_000,
-  fileGeneration: 120_000,
+  // One plain-text call per attempt (no structured + fallback pair); a full
+  // bundle took ~48s live on deepseek-v4.1-flash with reasoning off.
+  fileGeneration: 150_000,
   bundling: 30_000,
   backendProbe: 20_000,
   storageWrite: 15_000,
@@ -337,6 +339,87 @@ function parseGeneratedJson(text: string): unknown {
     if (start < 0 || end <= start) throw new Error('AI returned invalid JSON');
     return JSON.parse(cleaned.slice(start, end + 1));
   }
+}
+
+const FILE_BLOCK_START = '<<<FILE ';
+const FILE_BLOCK_END = '<<<END FILE>>>';
+
+/**
+ * Output format for generated source. Raw delimited blocks instead of JSON:
+ * a whole app as JSON strings means escaping every quote/backslash/newline
+ * of thousands of lines, and one slip voids the bundle ("did not match
+ * schema" / "invalid JSON" on every live attempt). Constrained JSON was worse
+ * still — deepseek returned an empty {} in 1s.
+ */
+export const FILE_BLOCK_FORMAT_PROMPT = `Output format — follow exactly. Emit every file as a raw block. No JSON, no escaping, no markdown fences, no commentary:
+${FILE_BLOCK_START}index.html>>>
+<full file content>
+${FILE_BLOCK_END}
+${FILE_BLOCK_START}app.js>>>
+<full file content>
+${FILE_BLOCK_END}
+Nothing before the first block or after the last one.`;
+
+/**
+ * Parse delimited file blocks. A block cut off by the output limit (no end
+ * marker) is dropped, never half-kept. A block whose whole body is one
+ * markdown fence is unwrapped (models add fences despite instructions).
+ */
+export function parseFileBlocks(text: string): Record<string, string> {
+  const files: Record<string, string> = {};
+  const pattern = /^<<<FILE[ \t]+([^\n>]+?)[ \t]*>>>[ \t]*\r?\n([\s\S]*?)\r?\n<<<END FILE>>>[ \t]*$/gm;
+  for (const match of text.matchAll(pattern)) {
+    const name = match[1].trim().replace(/^\.\//, '');
+    let body = match[2];
+    const fenced = /^```[\w-]*[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/.exec(body);
+    if (fenced) body = fenced[1];
+    if (name) files[name] = body;
+  }
+  return files;
+}
+
+/**
+ * One plain-text generation call returning source files. Reasoning is off
+ * (see NO_REASONING_INPUTS) and there is no structured-then-text double
+ * attempt: a failure costs one call, not two.
+ */
+async function generateSourceFiles(
+  env: Env,
+  system: string,
+  prompt: string,
+  step: string,
+  timeoutMs: number,
+): Promise<Record<string, string>> {
+  const result = await withStepTimeout(
+    step,
+    timeoutMs,
+    generateText({
+      model: getAppBuilderModel(env, { reasoning: false }),
+      system: `${system}\n\n${FILE_BLOCK_FORMAT_PROMPT}`,
+      prompt,
+      maxOutputTokens: 32_000,
+    }),
+  );
+  const files = parseFileBlocks(result.text);
+  if (Object.keys(files).length === 0) {
+    // Legacy shape: some models still answer { "files": { ... } }.
+    try {
+      const legacy = generatedAppFilesSchema.safeParse(parseGeneratedJson(result.text));
+      if (legacy.success && Object.keys(legacy.data.files).length > 0) return legacy.data.files;
+    } catch {
+      // fall through to the error below
+    }
+  }
+  const truncated = result.finishReason === 'length';
+  if (Object.keys(files).length === 0) {
+    throw new Error(truncated
+      ? `${step}: output hit the length limit before any complete file`
+      : `${step}: the model returned no ${FILE_BLOCK_START}…>>> file blocks`);
+  }
+  if (truncated) {
+    console.warn(`[app-build] ${step}: output hit the length limit; kept ${Object.keys(files).length} complete file(s)`);
+  }
+  return files;
 }
 
 async function generateStructuredObject<T>(
@@ -485,11 +568,41 @@ async function getRegisteredDesktopApp(
   return { item, metadata };
 }
 
-function getAppBuilderModel(env: Env) {
-  const workersAI = createWorkersAI({ binding: env.AI });
-  const modelId = env.APP_BUILDER_MODEL?.startsWith('@cf/')
+/**
+ * Per-model Workers AI inputs that turn hidden reasoning OFF. Code generation
+ * is long-form transcription of an already-planned spec: with reasoning on,
+ * deepseek-v4.1-flash spent ~75k chars thinking and hit the output cap before
+ * writing app.js (finishReason "length"); with it off the whole bundle came
+ * back in ~48s. Models without an off switch (e.g. glm-5.3) get nothing —
+ * never send "none" blindly: glm-5.3 maps it to MAX effort.
+ */
+const NO_REASONING_INPUTS: Record<string, Record<string, unknown>> = {
+  '@cf/deepseek-ai/deepseek-v4.1-flash-1017': { reasoning_effort: 'none' },
+  '@cf/zai-org/glm-4.7-flash': { chat_template_kwargs: { enable_thinking: false } },
+};
+
+export function noReasoningInputsFor(modelId: string): Record<string, unknown> | undefined {
+  return NO_REASONING_INPUTS[modelId];
+}
+
+function appBuilderModelId(env: Env): string {
+  return env.APP_BUILDER_MODEL?.startsWith('@cf/')
     ? env.APP_BUILDER_MODEL
     : '@cf/zai-org/glm-4.7-flash';
+}
+
+function getAppBuilderModel(env: Env, options: { reasoning?: boolean } = {}) {
+  const modelId = appBuilderModelId(env);
+  const extraInputs = options.reasoning === false ? noReasoningInputsFor(modelId) : undefined;
+  // workers-ai-provider builds the run() inputs from a fixed field list, so
+  // model-specific inputs are merged in by wrapping the binding.
+  const binding = extraInputs
+    ? ({
+      run: (model: string, inputs: Record<string, unknown>, runOptions?: unknown) =>
+        (env.AI.run as (...args: unknown[]) => unknown)(model, { ...inputs, ...extraInputs }, runOptions),
+    } as unknown as Ai)
+    : env.AI;
+  const workersAI = createWorkersAI({ binding });
   return workersAI(modelId as Parameters<typeof workersAI>[0]);
 }
 
@@ -1135,10 +1248,9 @@ Return the corrected, complete app bundle. Keep everything that was already vali
 ${JSON.stringify(desktopSummary, null, 2)}`
     : 'Desktop summary not available; design the app as a general-purpose starter.';
 
-  const object = await generateStructuredObject(
+  const files = await generateSourceFiles(
     env,
-    generatedAppFilesSchema,
-    `You generate complete desktop web apps as structured source files for EternalOS.
+    `You generate complete desktop web apps as source files for EternalOS.
 
 Apps run in a sandboxed iframe. Direct browser network access is blocked by CSP;
 the platform injects a window.eternal bridge that gives apps access to the
@@ -1174,7 +1286,7 @@ Rules for files:
 - Do NOT load external CDNs, fonts, or images
 - Reference local assets with relative paths: ./styles.css, ./app.js
 - Use standard browser APIs and window.eternal only — no npm packages
-- Output production-ready HTML/CSS/JS. No markdown fences, no placeholder "// TODO" stubs
+- Output production-ready HTML/CSS/JS. No placeholder "// TODO" stubs
 - Handle the empty case gracefully: eternal.fs.list() returns [] until the user grants permission, and every data-driven screen must implement the empty state its specification declares
 - Wrap fetches in try/catch so a permission denial or empty desktop doesn't crash the UI
 - Match the supplied app specification exactly for name, purpose, screens, and window size
@@ -1200,7 +1312,7 @@ ${repairContext}`,
   // Pre-bundle validation runs in the retry loop (generateAppWithRepairLoop),
   // right after the generated files are captured, so a source-gate failure
   // can be repaired by patching the files it names.
-  return normalizeAppFromSpec(spec, object.files);
+  return normalizeAppFromSpec(spec, files);
 }
 
 function emitStage(ctx: AppToolsContext, stage: keyof typeof REAL_BUILD_STAGES): void {
@@ -1260,7 +1372,7 @@ Hard rules:
 - Never add, rename, or drop files. If a fix seems to need a new file, restructure a listed file instead (remove the reference, inline the code, or fix the path).
 - Change only what the validation issues require; keep everything that already works.
 - The manifest permissions are DERIVED from the app specification and final — you cannot declare, add, or widen them. For permission issues, fix the code: call only the bridge APIs the derived permissions cover, or use eternal.storage (private per-app state, no permission needed).
-- No markdown fences, no placeholder stubs, no explanations — just the files.
+- No placeholder stubs, no explanations — just the files.
 
 ${APP_BRIDGE_API_PROMPT}
 
@@ -1277,9 +1389,8 @@ async function generateTargetedAppRepair(
     .map((name) => `--- ${name} (current content) ---\n${previousFiles[name]}`)
     .join('\n\n');
 
-  const object = await generateStructuredObject(
+  const generated = await generateSourceFiles(
     env,
-    generatedAppFilesSchema,
     APP_REPAIR_SYSTEM_PROMPT,
     `Repair the app "${spec.name}" — it failed deterministic validation.
 
@@ -1295,7 +1406,7 @@ ${fileBlocks}
 Deterministic validation issues (every one is exact — fix each):
 ${formatAppValidationIssues(issues)}
 
-Return { "files": { "<name>": "<full patched content>" } } with exactly the files listed under "Files to patch".`,
+Return exactly the files listed under "Files to patch", each as a complete file block.`,
     'Repairing app files',
     APP_BUILD_TIMEOUT_MS.fileGeneration,
   );
@@ -1304,7 +1415,7 @@ Return { "files": { "<name>": "<full patched content>" } } with exactly the file
   // model returns (a renamed file, a brand-new file) cannot be merged
   // blindly — reject the patch and let the loop fall back to a full
   // regeneration.
-  const patched = normalizeGeneratedFiles(object.files);
+  const patched = normalizeGeneratedFiles(generated);
   const requested = new Set(failingFiles);
   const unrequested = Object.keys(patched).filter((name) => !requested.has(name));
   if (unrequested.length > 0 || Object.keys(patched).length === 0) {

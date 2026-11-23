@@ -21,6 +21,9 @@ function regexToPath(body: string): string {
     .replace(/^\^/, '')
     .replace(/\$$/, '')
     .replace(/\\\//g, '/')
+    // Optional groups are suffixes, not segments: /^\/api\/habits\/(\d+)(\/.*)?$/
+    // is "/api/habits/:id", not "/api/habits/:id:id" (seen live).
+    .replace(/\((?:[^()]|\([^()]*\))*\)[?*]/g, '')
     .replace(/\([^)]*\)/g, ':id')
     .replace(/\\d\+|\\w\+|\[\^\/\]\+/g, ':id')
     .replace(/[?]$/, '');
@@ -54,6 +57,11 @@ export function extractBackendRoutes(files: Record<string, string>): string[] {
   const backendFiles = Object.entries(files).filter(([name]) => name === 'server.js' || name.startsWith('server/'));
   for (const [, code] of backendFiles) {
     if (typeof code !== 'string') continue;
+    // Route comments name the method outright ("// PATCH /api/habits/:id")
+    // and generated servers usually write them; they are the best signal.
+    for (const m of code.matchAll(/\/\/\s*(GET|POST|PUT|PATCH|DELETE)\s+(\/api\/[^\s,;)]*)/g)) {
+      add(`${m[1]} ${m[2].replace(/\/+$/, '')}`);
+    }
     const patterns: Array<[RegExp, (m: RegExpExecArray) => string]> = [
       [/(['"`])(\/api(?:\/[^'"`\s${}]*)?)\1/g, (m) => m[2]],
       [/\/(\^?\\\/api(?:\\.|[^/\\\n])*)\/[gimsuy]*/g, (m) => regexToPath(m[1])],

@@ -43,7 +43,7 @@ Use this when a task needs several tool calls, loops over many items, filtering/
 Available in the sandbox (every call returns a Promise — always await):
 {{types}}
 
-Write ONE async arrow function in plain JavaScript (no TypeScript syntax) and return a JSON-serializable result. console.log output is returned too. There is no fetch/network, DOM, or npm packages — only the namespaces above plus standard JS (Math, Date, JSON, Array, Map, Intl...).
+Write ONE async arrow function in plain JavaScript (no TypeScript syntax) and return a JSON-serializable result. Never declare a variable named "desktop" or "apps" — that shadows the namespace and crashes the run (write: const list = await apps.listApps(); not: const { apps } = await apps.listApps()). console.log output is returned too. There is no fetch/network, DOM, or npm packages — only the namespaces above plus standard JS (Math, Date, JSON, Array, Map, Intl...).
 
 Example:
 async () => {

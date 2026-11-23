@@ -353,13 +353,20 @@ interface AppFileScan {
 
 const BLANK = ' ';
 
-function blankChar(ch: string): string {
-  return ch === '\n' ? '\n' : BLANK;
+/**
+ * Blank every UTF-16 code unit except newlines, so the result has EXACTLY the
+ * input's .length. Must not iterate by code point (Array.from / for...of):
+ * an emoji is two code units, so code-point blanking shrank the string and
+ * desynchronized the scanner's offsets — scanScript then looped forever on
+ * any app with an emoji in a string (found on a live generated app).
+ */
+function blankText(text: string): string {
+  return text.replace(/[^\n]/g, BLANK);
 }
 
 function blankRange(target: string, start: number, end: number): string {
   if (end <= start) return target;
-  return target.slice(0, start) + Array.from(target.slice(start, end), blankChar).join('') + target.slice(end);
+  return target.slice(0, start) + blankText(target.slice(start, end)) + target.slice(end);
 }
 
 /**
@@ -395,7 +402,7 @@ export function scanScript(source: string): ScriptScan {
         const end = lineEnd === -1 ? length : lineEnd;
         mixed = blankRange(mixed, i, end);
         code = blankRange(code, i, end);
-        i = end;
+        i = Math.max(end, i + 2); // never move backwards, whatever the input
         continue;
       }
       if (ch === '/' && next === '*') {
@@ -403,7 +410,7 @@ export function scanScript(source: string): ScriptScan {
         const end = close === -1 ? length : close + 2;
         mixed = blankRange(mixed, i, end);
         code = blankRange(code, i, end);
-        i = end;
+        i = Math.max(end, i + 2);
         continue;
       }
       if (ch === '/' && !/[\w$)\]}'"]/.test(lastSignificant)) {
@@ -525,7 +532,7 @@ export function scanScript(source: string): ScriptScan {
 const HTML_SCRIPT_PATTERN = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
 
 function stripHtmlComments(html: string): string {
-  return html.replace(/<!--[\s\S]*?-->/g, (match) => Array.from(match, blankChar).join(''));
+  return html.replace(/<!--[\s\S]*?-->/g, blankText);
 }
 
 function isExecutableScript(attrs: string): boolean {
@@ -567,7 +574,7 @@ function scanAppFiles(files: Record<string, string>): AppFileScan[] {
         return { name, kind: 'js' as const, code: scan.code, mixed: scan.mixed };
       }
       if (name.endsWith('.css') || name === 'css') {
-        return { name, kind: 'css' as const, code: '', mixed: '', css: content.replace(/\/\*[\s\S]*?\*\//g, (m) => Array.from(m, blankChar).join('')) };
+        return { name, kind: 'css' as const, code: '', mixed: '', css: content.replace(/\/\*[\s\S]*?\*\//g, blankText) };
       }
       return { name, kind: 'other' as const, code: '', mixed: '' };
     });

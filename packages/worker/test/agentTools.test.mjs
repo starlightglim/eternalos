@@ -42,7 +42,7 @@ register(new URL('./tsModuleHooks.mjs', import.meta.url));
 const { OrchestratorAgent } = await import('../src/agents/OrchestratorAgent.ts');
 const { createDesktopTools } = await import('../src/agents/tools/desktopTools.ts');
 const { createMemoryTools } = await import('../src/agents/tools/memoryTools.ts');
-const { createAppTools, initAppRegistry, generatedAppFilesSchema } = await import('../src/agents/tools/appTools.ts');
+const { createAppTools, initAppRegistry, generatedAppFilesSchema, parseFileBlocks, noReasoningInputsFor } = await import('../src/agents/tools/appTools.ts');
 const {
   listAppRevisionManifests,
   readAppRevision,
@@ -995,6 +995,65 @@ describe('memoryTools', () => {
 // ---------------------------------------------------------------------------
 // appSpec — deterministic spec validation and spec -> permission derivation
 // ---------------------------------------------------------------------------
+
+describe('generated source file blocks', () => {
+  const block = (name, body) => `<<<FILE ${name}>>>\n${body}\n<<<END FILE>>>`;
+
+  it('parses raw blocks without any escaping', () => {
+    const js = "const s = \"quote\" + '\\n' + `tpl ${1}`; // \"tricky\" chars: \\ {} []";
+    const files = parseFileBlocks([block('index.html', '<p>hi</p>'), block('app.js', js)].join('\n'));
+    assert.deepEqual(files, { 'index.html': '<p>hi</p>', 'app.js': js });
+  });
+
+  it('drops a block truncated by the output limit instead of keeping half a file', () => {
+    const text = `${block('index.html', '<p>ok</p>')}\n<<<FILE app.js>>>\nconst half = `;
+    assert.deepEqual(parseFileBlocks(text), { 'index.html': '<p>ok</p>' });
+  });
+
+  it('unwraps a block that is entirely one markdown fence, and normalizes ./ names', () => {
+    const files = parseFileBlocks(block('./styles.css', '```css\nbody{margin:0}\n```'));
+    assert.deepEqual(files, { 'styles.css': 'body{margin:0}' });
+  });
+
+  it('ignores preamble text and keeps code that merely mentions the markers inline', () => {
+    const body = "const marker = '<<<END FILE>>> is only special on its own line';";
+    const files = parseFileBlocks(`Here is your app:\n${block('app.js', body)}\nEnjoy!`);
+    assert.deepEqual(files, { 'app.js': body });
+  });
+
+  it('turns reasoning off only for models with a real off switch', () => {
+    assert.deepEqual(noReasoningInputsFor('@cf/deepseek-ai/deepseek-v4.1-flash-1017'), { reasoning_effort: 'none' });
+    assert.deepEqual(noReasoningInputsFor('@cf/zai-org/glm-4.7-flash'), { chat_template_kwargs: { enable_thinking: false } });
+    // glm-5.3 maps "none" to MAX effort — it must get nothing.
+    assert.equal(noReasoningInputsFor('@cf/zai-org/glm-5.3'), undefined);
+  });
+
+  it('builds an app from file blocks, with reasoning off for codegen but not for the spec', async () => {
+    const h = createAppToolsHarness();
+    h.env.APP_BUILDER_MODEL = '@cf/deepseek-ai/deepseek-v4.1-flash-1017';
+    h.ai.script.push(
+      {
+        response: JSON.stringify({
+          name: 'Tasks',
+          purpose: 'A focused task list with filters and quick keyboard actions.',
+          screens: [{ name: 'Tasks', summary: 'The task list.', emptyState: 'Add the first task.' }],
+          storageKeys: ['tasks.items'],
+        }),
+      },
+      { response: Object.entries(MINIMAL_APP_FILES).map(([name, body]) => block(name, body)).join('\n') },
+    );
+
+    const result = await h.tools.buildAppFromPrompt.execute(
+      { prompt: 'build me a todo list app' },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(result.status, 'created');
+    assert.equal(h.ai.calls.length, 2, 'one spec call + ONE codegen call (no structured/fallback pair)');
+    assert.equal(h.ai.calls[0].inputs.reasoning_effort, undefined, 'the spec keeps reasoning');
+    assert.equal(h.ai.calls[1].inputs.reasoning_effort, 'none', 'codegen turns reasoning off');
+    assert.match(h.ai.calls[1].inputs.messages[0].content, /<<<FILE /, 'codegen asks for file blocks');
+  });
+});
 
 describe('structured output schemas', () => {
   // Workers AI's JSON grammar rejects some JSON Schema keywords outright

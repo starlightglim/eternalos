@@ -35,6 +35,16 @@ describe('extractBackendRoutes', () => {
     );
   });
 
+  it('treats optional regex groups as suffixes and reads method comments (live generated server)', () => {
+    const server = [
+      '// GET /api/habits',
+      "if (path === '/api/habits' && method === 'GET') {}",
+      '// PATCH /api/habits/:id',
+      'const habitMatch = path.match(/^\\/api\\/habits\\/(\\d+)(\\/.*)?$/);',
+    ].join('\n');
+    assert.deepEqual(extractBackendRoutes({ 'server.js': server }), ['GET /api/habits', 'PATCH /api/habits/:id']);
+  });
+
   it('returns nothing for static apps', () => {
     assert.deepEqual(extractBackendRoutes({ 'index.html': '<p>hi</p>', 'app.js': "fetch('/api/x')" }), []);
   });
