@@ -356,6 +356,7 @@ async function generateStructuredObject<T>(
     );
     return schema.parse(object);
   } catch (structuredError) {
+    console.warn(`[app-build] ${step}: structured output failed (${(structuredError instanceof Error ? structuredError.message : String(structuredError)).slice(0, 200)}); falling back to text`);
     const { text } = await withStepTimeout(
       `${step} fallback`,
       timeoutMs,
@@ -1343,6 +1344,7 @@ async function generateAppWithRepairLoop<T>(
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     let attemptFiles: Record<string, string> | undefined;
+    const attemptStarted = Date.now();
     try {
       emitStage(ctx, 'codegen');
       const repairFiles = attempt === 1 ? targetedRepairFiles(lastIssues, lastFiles) : null;
@@ -1356,6 +1358,7 @@ async function generateAppWithRepairLoop<T>(
           attempt > 0 ? lastError : undefined,
         );
       attemptFiles = app.files;
+      console.log(`[app-build] attempt ${attempt + 1}: generated ${Object.keys(app.files).length} files in ${Date.now() - attemptStarted}ms`);
       // Pre-bundle source gate — runs with the generated files captured, so
       // its failures can be repaired by patching the files they name.
       validateGeneratedApp(app);
@@ -1365,6 +1368,12 @@ async function generateAppWithRepairLoop<T>(
       await probeGeneratedBackend(ctx, app, spec);
       return { app, result: await finalize(app) };
     } catch (error) {
+      // Without this a slow or failing build is invisible in the logs: each
+      // attempt just restarts the "Writing source files" stage.
+      const detail = error instanceof AppValidationError
+        ? error.issues.map((issue) => `${issue.code}${issue.file ? `@${issue.file}` : ''}`).join(', ')
+        : (error instanceof Error ? error.message : String(error)).slice(0, 300);
+      console.warn(`[app-build] attempt ${attempt + 1} failed after ${Date.now() - attemptStarted}ms: ${detail}`);
       const isBundleValidation = error instanceof AppValidationError
         && error.issues.some((issue) => !issue.code.startsWith('repair/'));
       if (isBundleValidation) {
@@ -1387,7 +1396,7 @@ async function generateAppWithRepairLoop<T>(
   }
 
   if (isCapacityExceededError(lastError)) {
-    throw new Error('Cloudflare Workers AI is temporarily out of capacity for Kimi. Please retry in a minute.');
+    throw new Error('Cloudflare Workers AI is temporarily out of capacity for the app builder model. Please retry in a minute.');
   }
 
   throw new Error(`Failed to generate a working ${failureNoun} after multiple attempts: ${lastError}`);

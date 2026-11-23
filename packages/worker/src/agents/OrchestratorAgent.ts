@@ -200,6 +200,9 @@ Conversation style
   the desktop plus any permissions it uses. Do not dump generated source.
 - If the generator errors, surface a short human explanation and suggest one
   concrete next step, not a retry-loop explanation.
+- Never work around a failed buildAppFromPrompt/previewAppFromPrompt by
+  writing the app's source yourself (createApp, updateApp, or codemode).
+  Report the failure and offer to try again — at most once per turn.
 - ${APP_DATA_STYLE}
 
 ${CODE_MODE_PROMPT}`;

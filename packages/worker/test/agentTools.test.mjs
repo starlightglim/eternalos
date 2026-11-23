@@ -1010,6 +1010,12 @@ describe('structured output schemas', () => {
 });
 
 describe('appSpec', () => {
+  it('accepts ipcTopics given as a bare list (models often answer [])', () => {
+    assert.equal(appSpecSchema.shape.ipcTopics.parse([]), undefined);
+    assert.deepEqual(appSpecSchema.shape.ipcTopics.parse(['notes.*']), { emit: ['notes.*'], listen: ['notes.*'] });
+    assert.deepEqual(appSpecSchema.shape.ipcTopics.parse({ listen: ['a'] }), { listen: ['a'] });
+  });
+
   /** A minimal valid spec; overrides replace whole sections. */
   const spec = (overrides = {}) => appSpecSchema.parse({
     name: 'Photo Grid',

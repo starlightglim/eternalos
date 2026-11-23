@@ -116,10 +116,17 @@ export const appSpecSchema = z.object({
   /** Hostnames the app fetches from via window.eternal.fetch (no scheme/path/port). */
   networkDomains: z.array(z.string().min(1).max(300)).max(20).optional(),
   profileFields: z.array(z.enum(['username', 'displayName', 'bio', 'avatar'])).max(4).optional(),
-  ipcTopics: z.object({
-    emit: z.array(z.string().min(1).max(120)).max(50).optional(),
-    listen: z.array(z.string().min(1).max(120)).max(50).optional(),
-  }).optional(),
+  // Models often answer `ipcTopics: []` (seen live from llama-4-scout,
+  // gpt-oss-120b, and qwen3.8 in text mode), which used to fail the whole
+  // spec. An empty list means none; a bare topic list means the app both
+  // emits and listens — the resulting permissions are shown at install.
+  ipcTopics: z.preprocess(
+    (value) => (Array.isArray(value) ? (value.length ? { emit: value, listen: value } : undefined) : value),
+    z.object({
+      emit: z.array(z.string().min(1).max(120)).max(50).optional(),
+      listen: z.array(z.string().min(1).max(120)).max(50).optional(),
+    }).optional(),
+  ),
   width: z.number().int().min(360).max(1600).default(720),
   height: z.number().int().min(320).max(1200).default(560),
   /** Why the app needs broad scopes, if it requested any. Shown at install. */
