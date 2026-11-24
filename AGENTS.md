@@ -201,7 +201,21 @@ truth for all tokens).
     run posted into the thread as a `data-routine-run` part with steps and
     Undo. Daily-at-time uses the browser time zone sent in the chat body.
     REST: `GET/POST/DELETE /api/agent/routines[...]?threadId=`.
-- Chat replies render through `ChatMarkdown` (safe subset → React nodes).
+- Chat replies render through `ChatMarkdown` (safe subset → React nodes,
+  incl. pipe tables).
+- "Try the 30-second demo" (chat empty state, `src/services/agentDemo.ts`):
+  installs a "Reading List" app (own backend, seeds once via a `meta`
+  table) through the normal dev-deploy route plus a "Books to read.txt"
+  note, opens the app beside the chat, then sends `DEMO_PROMPT` (one Code
+  Mode run across the note and the app). Idempotent: reuses both by name.
+  The app flashes rows that changed, so approve/Undo is visible live.
+- Read-only Code Mode runs fold into the activity line
+  (`readOnlyRunSteps`); finished runs show "Open <app>" for changed apps
+  that aren't open. Undone runs reach the model as a note
+  (`modelNoteForDataPart` via `convertDataPart`).
+- The built-in browser pane blocks the cross-origin app iframe when the
+  worker is on another localhost port (`ERR_BLOCKED_BY_CLIENT`); check app
+  UI in a normal browser or read its data through the API.
 - `test/appBackend.integration.test.mjs` exercises facets end to end under
   `unstable_dev`; it works without Cloudflare credentials.
 - Shipping: `AppRunner` is a new DO class (migration `v8`) — per the

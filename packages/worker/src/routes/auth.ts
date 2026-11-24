@@ -290,6 +290,12 @@ export async function handleSignup(request: Request, env: Env): Promise<Response
 • Right-click for options
 • Right-click the desktop → Change Wallpaper
 
+✦ Meet Ask Eternal (Special → Ask Eternal…)
+  Your assistant can build apps, change their data and
+  tidy your desktop. You see every change before it
+  happens and can undo it after. Open it and click
+  "Try the 30-second demo".
+
 Your page: eternalos.app/@${normalizedUsername}
 
 Happy computing! — EternalOS`,

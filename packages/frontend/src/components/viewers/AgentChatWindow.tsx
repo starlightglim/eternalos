@@ -41,6 +41,7 @@ import {
 } from './CodeRunViews';
 import type { UndoRunResult } from '../../services/agent';
 import { ChatMarkdown } from './ChatMarkdown';
+import { DEMO_APP_NAME, DEMO_PROMPT, ensureAgentDemo } from '../../services/agentDemo';
 import { activityLabel, describeAppChange, isQuietToolPart, readOnlyRunSteps } from '../../utils/codeRunText';
 
 const STARTER_PROMPTS = [
@@ -589,6 +590,9 @@ function AgentChatThreadPane({
   const items = useDesktopStore((state) => state.items);
   const loadDesktop = useDesktopStore((state) => state.loadDesktop);
   const openWindow = useWindowStore((state) => state.openWindow);
+  // Joined string (not the array) so moving windows doesn't re-render the chat.
+  const openAppWindowIds = useWindowStore((state) => state.windows.filter((w) => w.contentType === 'app').map((w) => w.id).join('|'));
+  const [demoStatus, setDemoStatus] = useState<'idle' | 'loading' | 'error'>('idle');
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const refreshedToolCalls = useRef(new Set<string>());
   const [draft, setDraft] = useState('');
@@ -958,6 +962,47 @@ function AgentChatThreadPane({
     void sendMessage({ text: trimmed });
     setDraft('');
     if (inputRef.current) inputRef.current.style.height = 'auto';
+  };
+
+  /** Open an app window next to the chat, so changes are visible as they land. */
+  const openAppBesideChat = (item: DesktopItem) => {
+    const chat = useWindowStore.getState().windows.find((w) => w.id === 'agent-chat');
+    const width = item.appManifest?.windowConfig?.defaultWidth || 420;
+    const height = item.appManifest?.windowConfig?.defaultHeight || 480;
+    const viewportWidth = typeof window === 'undefined' ? 1280 : window.innerWidth;
+    const rightOfChat = chat ? chat.position.x + chat.size.width + 12 : viewportWidth - width - 24;
+    const x = rightOfChat + width <= viewportWidth ? rightOfChat : Math.max(12, viewportWidth - width - 24);
+    openWindow({
+      id: `app-${item.id}`,
+      title: item.appManifest?.name || item.name,
+      position: { x, y: chat ? chat.position.y : 72 },
+      size: { width, height },
+      minimized: false,
+      maximized: false,
+      contentType: 'app',
+      contentId: item.id,
+    });
+  };
+
+  const appItemFor = (appId: string) =>
+    items.find((item) => item.type === 'app' && !item.isTrashed && item.appManifest?.appId === appId);
+
+  const startDemo = async () => {
+    if (demoStatus === 'loading' || isBusy) return;
+    setDemoStatus('loading');
+    try {
+      const { appItemId } = await ensureAgentDemo(items, async () => {
+        await loadDesktop();
+        return useDesktopStore.getState().items;
+      });
+      const appItem = appItemId ? useDesktopStore.getState().items.find((item) => item.id === appItemId) : undefined;
+      if (appItem) openAppBesideChat(appItem);
+      setDemoStatus('idle');
+      submitPrompt(DEMO_PROMPT);
+    } catch (error) {
+      console.error('Demo setup failed:', error);
+      setDemoStatus('error');
+    }
   };
 
   const openItemById = (itemId: string) => {
@@ -1821,13 +1866,26 @@ function AgentChatThreadPane({
         );
       }
 
-      const output = part.output as { result?: unknown; logs?: string[] } | undefined;
+      const output = part.output as { result?: unknown; logs?: string[]; changedApps?: unknown } | undefined;
       const resultText = output?.result === undefined ? '' : JSON.stringify(output.result, null, 2);
+      const openIds = new Set(openAppWindowIds.split('|'));
+      const closedChangedApps = (Array.isArray(output?.changedApps) ? output.changedApps : [])
+        .map((appId) => (typeof appId === 'string' ? appItemFor(appId) : undefined))
+        .filter((item): item is DesktopItem => Boolean(item) && !openIds.has(`app-${item?.id}`));
       return (
         <div key={`codemode-${index}`} className={styles.toolCard}>
           <div className={styles.toolTitle}>{stepsData?.failed ? 'Done, with errors' : 'Done'}</div>
           <RunSteps data={stepsData} running={false} />
           <UndoControl threadId={activeThread.id} undo={undoData} onUndone={handleRunUndone} />
+          {closedChangedApps.length > 0 ? (
+            <div className={styles.openAppsRow}>
+              {closedChangedApps.map((item) => (
+                <button key={item.id} type="button" className={styles.openAppButton} onClick={() => openAppBesideChat(item)}>
+                  Open {item.appManifest?.name || item.name} ↗
+                </button>
+              ))}
+            </div>
+          ) : null}
           {resultText ? (
             <details className={styles.codeDetails}>
               <summary>Result</summary>
@@ -2272,6 +2330,21 @@ function AgentChatThreadPane({
                   <div className={styles.emptyCopy}>
                     Search your desktop, change your apps’ data, build new apps, or set up routines that run on their own. You’ll see every change before it happens, and can undo it after.
                   </div>
+                  <button
+                    type="button"
+                    className={styles.demoButton}
+                    onClick={() => void startDemo()}
+                    disabled={demoStatus === 'loading' || isBusy}
+                  >
+                    <span className={styles.demoTitle}>
+                      {demoStatus === 'loading' ? 'Setting up the demo…' : 'Try the 30-second demo'}
+                    </span>
+                    <span className={styles.demoCopy}>
+                      {demoStatus === 'error'
+                        ? 'Setup didn’t finish. Click to try again.'
+                        : `Adds a sample “${DEMO_APP_NAME}” app and a note, then asks for one change across both. Preview it, approve once, watch the app update, then undo.`}
+                    </span>
+                  </button>
                   <div className={styles.emptyPrompts}>
                     {STARTER_PROMPTS.map((prompt) => (
                       <button

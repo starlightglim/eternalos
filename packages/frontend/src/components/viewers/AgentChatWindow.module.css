@@ -1027,3 +1027,62 @@
     max-width: 100%;
   }
 }
+
+/* ── Demo + open-app buttons ───────────────────────────── */
+
+.demoButton {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  margin-top: 14px;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--chat-accent) 55%, var(--chat-border-soft));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--chat-accent) 10%, var(--chat-surface));
+  color: var(--chat-text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.demoButton:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--chat-accent) 16%, var(--chat-surface));
+}
+
+.demoButton:disabled {
+  cursor: progress;
+  opacity: 0.75;
+}
+
+.demoTitle {
+  font-size: 12px;
+  font-weight: 700;
+  color: color-mix(in srgb, var(--chat-accent) 75%, var(--chat-text));
+}
+
+.demoCopy {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--chat-muted);
+}
+
+.openAppsRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.openAppButton {
+  padding: 4px 10px;
+  border: 1px solid var(--chat-border);
+  border-radius: 6px;
+  background: var(--chat-surface);
+  color: var(--chat-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.openAppButton:hover {
+  background: var(--chat-hover);
+}

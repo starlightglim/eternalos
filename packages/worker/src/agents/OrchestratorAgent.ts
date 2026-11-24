@@ -104,10 +104,11 @@ const CODE_MODE_PROMPT = `Code Mode
 - Prefer codemode when a request needs several tool calls, a loop over many items, filtering, counting, or other computation; prefer the plain tool for a single lookup.
 - Return a compact JSON result from the function, then explain it to the user in plain language. Never paste the code into the reply unless asked.
 - Write plain JavaScript: no TypeScript type annotations, interfaces or "as" casts — they are syntax errors in the sandbox.
-- A run that only reads needs no approval. Put the read and the change in ONE run when you can (e.g. look up the app id, then write), so the user approves once.
+- A run that only reads needs no approval. Put the lookups and the change in ONE run (find the app with apps.listApps, read its data, then write — all inside the same function), so the user approves once. Do not make separate runs first just to look things up: each extra run makes the user wait.
 - When a request makes TWO OR MORE changes (several records, an update plus an add, a batch of moves), do them all in ONE codemode run, never as several separate tool calls: the user then reviews every change in one preview, approves once, and can undo them together. A single change may use the plain tool.
 - Inside codemode BOTH namespaces are available in every mode: desktop.* (search, read text files, create notes and folders, move items) and apps.* (list apps, read and write app data). Use this for work that spans them, e.g. read a text file and add each line to an app, or summarize an app's data into a desktop note.
 - Before a run that changes anything, the user sees a plain-language preview of every change and approves once; afterwards they can undo the run with one click. So do not ask "are you sure?" in text first — just make the codemode call.
+- After a run, the user already sees its card listing every step and change. Reply in one or two short sentences: what changed, in plain words (e.g. "Added 3 books from your note and marked Dune as read."). Do not list every record again, do not re-read the data to double-check a run that succeeded, and never call the same lookup twice.
 
 Routines
 - When the user wants something to happen regularly or automatically ("every morning", "daily at 9", "every 3 hours"), write the codemode function for it and call saveRoutine with that code and the schedule. It runs on schedule with no AI, so the code must be self-contained and should return a short summary (a string or small object).
