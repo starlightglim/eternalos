@@ -1086,3 +1086,28 @@
 .openAppButton:hover {
   background: var(--chat-hover);
 }
+
+/* ── Look-change swatches ─────────────────────────────── */
+
+.swatchRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin: 6px 0 2px;
+}
+
+.swatch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--chat-muted);
+}
+
+.swatchChip {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1px solid var(--chat-border);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, white 25%, transparent);
+}

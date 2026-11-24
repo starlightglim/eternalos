@@ -74,9 +74,12 @@ export interface RoutineRunData {
 
 const MAX_PREVIEW_ROWS = 12;
 
-function changeKind(summary: string): 'add' | 'remove' | 'edit' {
-  if (/^(Add|Create)\b/.test(summary)) return 'add';
-  if (/^(Delete|Remove)\b/.test(summary)) return 'remove';
+function changeKind(action: PlannedAction): 'add' | 'remove' | 'edit' {
+  // Moving things to the Trash reads as a removal (listed first), though
+  // the Trash keeps them restorable.
+  if (action.tool === 'moveToTrash') return 'remove';
+  if (/^(Add|Create)\b/.test(action.summary)) return 'add';
+  if (/^(Delete|Remove)\b/.test(action.summary)) return 'remove';
   return 'edit';
 }
 
@@ -86,7 +89,7 @@ const KIND_ORDER = { remove: 0, edit: 1, add: 2 } as const;
 const KIND_WORD = { add: ['add', 'adds'], edit: ['update', 'updates'], remove: ['delete', 'deletes'] } as const;
 
 function ChangeRow({ action }: { action: PlannedAction }) {
-  const kind = changeKind(action.summary);
+  const kind = changeKind(action);
   return (
     <li className={styles.changeItem}>
       <span className={`${styles.changeIcon} ${styles[`change_${kind}`]}`} aria-hidden="true">{KIND_ICON[kind]}</span>
@@ -116,11 +119,11 @@ export function ChangePreview({ preview }: { preview?: CodePreviewData }) {
   if (preview.actions.length === 0) {
     return <div className={styles.previewNote}>This run won’t change anything.</div>;
   }
-  const sorted = [...preview.actions].sort((a, b) => KIND_ORDER[changeKind(a.summary)] - KIND_ORDER[changeKind(b.summary)]);
+  const sorted = [...preview.actions].sort((a, b) => KIND_ORDER[changeKind(a)] - KIND_ORDER[changeKind(b)]);
   const shown = sorted.slice(0, MAX_PREVIEW_ROWS);
   const rest = sorted.slice(MAX_PREVIEW_ROWS);
   const counts = (['remove', 'edit', 'add'] as const)
-    .map((kind) => [kind, sorted.filter((a) => changeKind(a.summary) === kind).length] as const)
+    .map((kind) => [kind, sorted.filter((a) => changeKind(a) === kind).length] as const)
     .filter(([, n]) => n > 0)
     .map(([kind, n]) => `${n} ${KIND_WORD[kind][n === 1 ? 0 : 1]}`);
   return (

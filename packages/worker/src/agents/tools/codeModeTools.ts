@@ -213,6 +213,8 @@ interface RunState {
   allowance: Map<string, number> | null;
   undo: UndoRecord;
   changedApps: Set<string>;
+  /** The run changed the desktop's look (the browser should reload it). */
+  appearanceChanged: boolean;
 }
 
 function errorMessage(error: unknown): string {
@@ -243,8 +245,8 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
       const listApps = rawExec(options.apps, 'listApps');
       if (listApps) learn('listApps', await listApps({}).catch(() => null));
     }
-    if (['moveItems', 'createTextNote', 'createFolder'].includes(name) && options.loadDesktopItems) {
-      const ids = [...(Array.isArray(input?.itemIds) ? input.itemIds : []), input?.targetFolderId, input?.folderId]
+    if (['moveItems', 'createTextNote', 'createFolder', 'renameItem', 'editTextNote', 'moveToTrash'].includes(name) && options.loadDesktopItems) {
+      const ids = [...(Array.isArray(input?.itemIds) ? input.itemIds : []), input?.targetFolderId, input?.folderId, input?.itemId]
         .filter((id): id is string => typeof id === 'string');
       if (ids.some((id) => !itemNames.has(id))) {
         const items = await options.loadDesktopItems().catch(() => [] as DesktopItemLike[]);
@@ -358,6 +360,7 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
             for (const key of createdIdsOf(name, input, result)) run.created.add(key);
             const failed = (result as { ok?: unknown } | undefined)?.ok === false;
             if (name === 'callAppApi' && !failed) run.changedApps.add(input.appId);
+            if (name === 'changeAppearance' && !failed) run.appearanceChanged = true;
             if (!failed) run.undo.writes += 1;
             const plan = name === 'callAppApi'
               ? planAppInverse(input, result, before as Record<string, unknown> | null, describeCtx)
@@ -411,6 +414,7 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
     allowance: null,
     undo: { ops: [], skipped: [], writes: 0 },
     changedApps: new Set(),
+    appearanceChanged: false,
   });
 
   /** Practice run: real reads, recorded writes. Never changes anything. */
@@ -454,6 +458,7 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
         return {
           ...output,
           ...(run.changedApps.size ? { changedApps: [...run.changedApps] } : {}),
+          ...(run.appearanceChanged ? { appearanceChanged: true } : {}),
           ...(run.undo.ops.length ? { undoAvailable: true } : {}),
         };
       } finally {

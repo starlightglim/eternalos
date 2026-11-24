@@ -168,7 +168,8 @@ export interface CompiledCSS {
 // ---------------------------------------------------------------------------
 
 function applyDerivedTransform(transform: DerivedTransform, value: string): string | null {
-  // Derived transforms only work on hex colors
+  if (transform === 'gradientImage') return /\bgradient\(/i.test(value) ? value : null;
+  // The other derived transforms only work on hex colors
   if (!/^#[0-9A-Fa-f]{6}$/.test(value)) return null;
 
   switch (transform) {

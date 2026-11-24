@@ -60,16 +60,24 @@ async function launchChrome() {
     `--user-data-dir=${profile}`,
     '--remote-debugging-port=0',
     'about:blank',
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  ], { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
+  const exited = new Promise((resolve) => chrome.once('exit', resolve));
   const port = await new Promise((resolve, reject) => {
     let buffer = '';
     const timer = setTimeout(() => reject(new Error('Chrome did not start')), 20_000);
     chrome.stderr.on('data', (chunk) => {
       buffer += chunk;
       const match = /DevTools listening on ws:\/\/[^:]+:(\d+)\//.exec(buffer);
-      if (match) { clearTimeout(timer); resolve(Number(match[1])); }
+      if (match) {
+        clearTimeout(timer);
+        // Stop listening: an open pipe from Chrome's helpers would keep the
+        // test process alive after the test.
+        chrome.stderr.removeAllListeners('data');
+        chrome.stderr.destroy();
+        resolve(Number(match[1]));
+      }
     });
-    chrome.on('exit', () => reject(new Error('Chrome exited early')));
+    chrome.once('exit', () => reject(new Error('Chrome exited early')));
   });
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
   const page = targets.find((target) => target.type === 'page');
@@ -84,9 +92,13 @@ async function launchChrome() {
       pending.delete(message.id);
     }
   };
-  const send = (method, params = {}) => new Promise((resolve) => {
+  const send = (method, params = {}) => new Promise((resolve, reject) => {
     const id = nextId++;
-    pending.set(id, resolve);
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`Chrome did not answer ${method}`));
+    }, 45_000);
+    pending.set(id, (message) => { clearTimeout(timer); resolve(message); });
     socket.send(JSON.stringify({ id, method, params }));
   });
   return {
@@ -97,10 +109,13 @@ async function launchChrome() {
       return reply.result?.result?.value;
     },
     async close() {
-      socket.close();
-      chrome.kill();
-      await new Promise((resolve) => chrome.once('exit', resolve)).catch(() => {});
-      fs.rmSync(profile, { recursive: true, force: true });
+      try { socket.close(); } catch { /* already closed */ }
+      // Kill Chrome and all its helper processes (its own process group).
+      try { process.kill(-chrome.pid, 'SIGKILL'); } catch { chrome.kill('SIGKILL'); }
+      await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5_000))]);
+      try {
+        fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+      } catch { /* a temp folder; the OS cleans it up */ }
     },
   };
 }

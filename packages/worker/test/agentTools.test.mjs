@@ -178,6 +178,20 @@ function createFakeDesktop({ items = [], profile = null } = {}) {
         }
         return Response.json(updated);
       }
+      if (url.pathname === '/profile' && method === 'GET') {
+        return Response.json({ profile: state.profile });
+      }
+      if (url.pathname === '/profile' && method === 'PATCH') {
+        // Like UserDesktop: null clears a field.
+        const updates = await request.json();
+        const next = { ...(state.profile ?? {}) };
+        for (const [key, value] of Object.entries(updates)) {
+          if (value === null) delete next[key];
+          else next[key] = value;
+        }
+        state.profile = next;
+        return Response.json({ success: true, profile: next });
+      }
       return new Response('not found', { status: 404 });
     },
   };
@@ -3536,5 +3550,109 @@ describe('routines (OrchestratorAgent)', () => {
       tools.saveRoutine.execute({ name: 'one too many', code: 'async () => 1', schedule: { every: 'hours', hours: 1 } }, { toolCallId: 'sx', messages: [] }),
       /already has 10 routines/,
     );
+  });
+});
+
+describe('editing the desktop: rename, rewrite, Trash, look — each undoable', async () => {
+  const runs = await import('../src/agents/tools/codeModeRuns.ts');
+  const call = (tools, name, input) => tools[name].execute(input, { toolCallId: `tc-${name}`, messages: [] });
+  const setup = (items, profile = null) => {
+    const desktop = createFakeDesktop({ items, profile });
+    const tools = createDesktopTools({
+      getUserDesktopStub: () => desktop.stub,
+      setState: () => {},
+      getState: () => ({ lastMatchedItemIds: [], lastQuery: null, memories: [] }),
+    });
+    // Apply an undo plan the way OrchestratorAgent.executeInverse does.
+    const undo = async (plan) => {
+      assert.ok(plan && 'op' in plan, `expected an undo step, got ${JSON.stringify(plan)}`);
+      const { op } = plan;
+      const path = op.kind === 'profile' ? '/profile' : '/items';
+      const body = op.kind === 'profile' ? op.updates : op.patches;
+      const res = await desktop.stub.fetch(new Request(`http://internal${path}`, { method: 'PATCH', body: JSON.stringify(body) }));
+      assert.ok(res.ok);
+      return op;
+    };
+    return { desktop, tools, undo };
+  };
+  const note = { id: 'n1', type: 'text', name: 'Shopping.txt', parentId: null, textContent: 'eggs\nmilk', position: { x: 0, y: 0 }, isPublic: false, updatedAt: 1 };
+
+  it('renames an item and undoes back to the old name', async () => {
+    const { desktop, tools, undo } = setup([note]);
+    const result = await call(tools, 'renameItem', { itemId: 'n1', newName: 'Groceries.txt' });
+    assert.equal(desktop.get('n1').name, 'Groceries.txt');
+    assert.equal(result.previousName, 'Shopping.txt');
+    await undo(runs.planDesktopInverse('renameItem', { itemId: 'n1' }, result, null));
+    assert.equal(desktop.get('n1').name, 'Shopping.txt');
+  });
+
+  it('rewrites a note and undoes to the exact previous text; refuses non-notes', async () => {
+    const { desktop, tools, undo } = setup([note, { id: 'f1', type: 'folder', name: 'Stuff', parentId: null, position: { x: 0, y: 1 } }]);
+    const result = await call(tools, 'editTextNote', { itemId: 'n1', content: 'eggs\nmilk\nbread' });
+    assert.equal(desktop.get('n1').textContent, 'eggs\nmilk\nbread');
+    await undo(runs.planDesktopInverse('editTextNote', {}, result, null));
+    assert.equal(desktop.get('n1').textContent, 'eggs\nmilk');
+    await assert.rejects(call(tools, 'editTextNote', { itemId: 'f1', content: 'x' }), /not a text note/);
+    await assert.rejects(call(tools, 'renameItem', { itemId: 'nope', newName: 'x' }), /No desktop item/);
+  });
+
+  it('moves a folder and its contents to the Trash, and undo brings all of it back where it was', async () => {
+    const { desktop, tools, undo } = setup([
+      { id: 'f1', type: 'folder', name: 'Old', parentId: null, position: { x: 1, y: 0 } },
+      { id: 'c1', type: 'text', name: 'a.txt', parentId: 'f1', position: { x: 0, y: 0 } },
+      { id: 'f2', type: 'folder', name: 'Nested', parentId: 'f1', position: { x: 0, y: 1 } },
+      { id: 'c2', type: 'image', name: 'b.png', parentId: 'f2', position: { x: 0, y: 0 } },
+      note,
+    ]);
+    const result = await call(tools, 'moveToTrash', { itemIds: ['f1'] });
+    assert.equal(result.trashedCount, 1);
+    for (const id of ['f1', 'c1', 'f2', 'c2']) assert.equal(desktop.get(id).isTrashed, true, `${id} trashed`);
+    assert.equal(desktop.get('c1').originalParentId, 'f1', 'restore-from-Trash knows where it was');
+    assert.equal(desktop.get('n1').isTrashed, undefined, 'unrelated items stay');
+    await undo(runs.planDesktopInverse('moveToTrash', { itemIds: ['f1'] }, result, null));
+    for (const [id, parent] of [['f1', null], ['c1', 'f1'], ['f2', 'f1'], ['c2', 'f2']]) {
+      assert.equal(desktop.get(id).isTrashed, false);
+      assert.equal(desktop.get(id).parentId, parent);
+    }
+  });
+
+  it('will not trash apps (those go through deleteApp)', async () => {
+    const { tools } = setup([{ id: 'a1', type: 'app', name: 'Books', parentId: null, position: { x: 0, y: 0 } }]);
+    await assert.rejects(call(tools, 'moveToTrash', { itemIds: ['a1'] }), /deleteApp/);
+  });
+
+  it('changes the look and undo restores every touched field, clearing ones that were unset', async () => {
+    const { desktop, tools, undo } = setup([], { uid: 'u', accentColor: '#000080', customCSS: '.window{}', wallpaper: 'custom:u/w1/a.png' });
+    const result = await call(tools, 'changeAppearance', {
+      name: 'Rainy café',
+      accentColor: '#c08552',
+      desktopColor: 'linear-gradient(#4a5a6a, #2b3440)',
+      systemFont: 'inter',
+      windowBorderRadius: 8,
+      wallpaper: 'dots',
+      clearCustomTheme: true,
+    });
+    assert.equal(result.appearanceChanged, true);
+    assert.equal(desktop.state.profile.accentColor, '#c08552');
+    assert.equal(desktop.state.profile.customCSS, undefined, 'the old theme CSS is cleared so the colors show');
+    assert.match(result.summary, /accent #c08552/);
+    const op = await undo(runs.planDesktopInverse('changeAppearance', {}, result, null));
+    assert.equal(op.kind, 'profile');
+    assert.deepEqual(
+      { ...desktop.state.profile },
+      { uid: 'u', accentColor: '#000080', customCSS: '.window{}', wallpaper: 'custom:u/w1/a.png' },
+      'exactly the previous look: unset fields cleared again',
+    );
+    await assert.rejects(call(tools, 'changeAppearance', {}), /Nothing to change/);
+  });
+
+  it('describes the edits in plain words for previews', () => {
+    const ctx = { itemName: (id) => ({ n1: 'Shopping.txt' })[id] };
+    assert.equal(runs.describeAction('renameItem', { itemId: 'n1', newName: 'Groceries.txt' }, ctx).summary, 'Rename “Shopping.txt” to “Groceries.txt”');
+    assert.equal(runs.describeAction('moveToTrash', { itemIds: ['n1'] }, ctx).summary, 'Move 1 item to the Trash');
+    const look = runs.describeAction('changeAppearance', { name: 'Rainy café', accentColor: '#c08552', wallpaper: 'dots' }, ctx);
+    assert.equal(look.summary, "Change your desktop's look to “Rainy café”");
+    assert.equal(look.detail, 'accent #c08552, wallpaper dots');
+    assert.equal(runs.writeSignature('renameItem', { itemId: 'n1', newName: 'X' }, new Set(['desktop n1'])), 'renameItem <new> "X"');
   });
 });

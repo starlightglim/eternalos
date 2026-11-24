@@ -173,3 +173,107 @@ export function readOnlyRunSteps(
   }
   return null;
 }
+
+/* ---- Desktop edits used directly (outside Code Mode): card wording ---- */
+
+export const DESKTOP_EDIT_TOOL_TYPES = new Set([
+  'tool-renameItem',
+  'tool-editTextNote',
+  'tool-moveToTrash',
+  'tool-changeAppearance',
+]);
+
+const APPEARANCE_LABELS: Record<string, string> = {
+  accentColor: 'accent',
+  desktopColor: 'desktop',
+  windowBgColor: 'windows',
+  titleBarBgColor: 'title bars',
+  titleBarTextColor: 'title text',
+  windowBorderColor: 'borders',
+  buttonBgColor: 'buttons',
+  buttonTextColor: 'button text',
+  buttonBorderColor: 'button borders',
+  labelColor: 'icon labels',
+  systemFont: 'system font',
+  bodyFont: 'body font',
+  monoFont: 'mono font',
+  fontSmoothing: 'font smoothing',
+  windowBorderRadius: 'window corners',
+  controlBorderRadius: 'control corners',
+  windowShadow: 'shadow',
+  windowOpacity: 'opacity',
+  wallpaper: 'wallpaper',
+};
+
+/** Color swatches for an appearance change: [label, css color]. */
+export function appearanceSwatches(input: Record<string, unknown>): Array<[string, string]> {
+  return ['desktopColor', 'windowBgColor', 'titleBarBgColor', 'accentColor', 'buttonBgColor', 'labelColor']
+    .filter((field) => typeof input[field] === 'string')
+    .map((field) => [APPEARANCE_LABELS[field], String(input[field])]);
+}
+
+/** One line listing the non-color appearance settings ("system font inter, wallpaper dots"). */
+export function appearanceSettingsLine(input: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const [field, label] of Object.entries(APPEARANCE_LABELS)) {
+    const value = input[field];
+    if (value === undefined || field.endsWith('Color')) continue;
+    parts.push(`${label} ${typeof value === 'boolean' ? (value ? 'on' : 'off') : String(value)}`);
+  }
+  if (input.clearCustomTheme) parts.push('removes your current custom theme CSS');
+  return parts.join(', ');
+}
+
+/** Title and detail for a desktop edit's approval card. */
+export function describeDesktopEdit(
+  type: string,
+  input: Record<string, unknown>,
+  nameOf: (id: string) => string | undefined,
+): { title: string; detail?: string } {
+  const named = (id: unknown) => {
+    const name = typeof id === 'string' ? nameOf(id) : undefined;
+    return name ? `“${name}”` : 'an item';
+  };
+  switch (type) {
+    case 'tool-renameItem':
+      return { title: `Rename ${named(input.itemId)} to “${String(input.newName ?? '')}”` };
+    case 'tool-editTextNote': {
+      const text = typeof input.content === 'string' ? input.content : '';
+      return { title: `Rewrite the note ${named(input.itemId)}`, detail: text ? `New text: ${text.length > 240 ? `${text.slice(0, 240)}…` : text}` : undefined };
+    }
+    case 'tool-moveToTrash': {
+      const ids = Array.isArray(input.itemIds) ? input.itemIds : [];
+      const names = ids.map((id) => (typeof id === 'string' ? nameOf(id) : undefined)).filter(Boolean) as string[];
+      return {
+        title: `Move ${ids.length} item${ids.length === 1 ? '' : 's'} to the Trash`,
+        detail: names.length ? `${names.slice(0, 6).join(', ')}${names.length > 6 ? ', …' : ''}. You can restore them from the Trash.` : 'You can restore them from the Trash.',
+      };
+    }
+    case 'tool-changeAppearance': {
+      const name = typeof input.name === 'string' && input.name ? ` to “${input.name}”` : '';
+      return { title: `Change your desktop's look${name}`, detail: appearanceSettingsLine(input) || undefined };
+    }
+    default:
+      return { title: type.replace(/^tool-/, '') };
+  }
+}
+
+/** Short past-tense line once a desktop edit finished. */
+export function describeDesktopEditDone(type: string, output: Record<string, unknown>): string {
+  switch (type) {
+    case 'tool-renameItem': {
+      const item = output.item as { name?: unknown } | undefined;
+      return `Renamed${typeof output.previousName === 'string' ? ` “${output.previousName}”` : ''} to “${String(item?.name ?? '')}”.`;
+    }
+    case 'tool-editTextNote': {
+      const note = output.note as { name?: unknown } | undefined;
+      return `Saved the new text of “${String(note?.name ?? 'the note')}”.`;
+    }
+    case 'tool-moveToTrash':
+      return `Moved ${String(output.trashedCount ?? 0)} item${output.trashedCount === 1 ? '' : 's'} to the Trash.`;
+    case 'tool-changeAppearance':
+      return typeof output.name === 'string' && output.name ? `Your desktop now has the “${output.name}” look.` : 'Your desktop has its new look.';
+    default:
+      return 'Done.';
+  }
+}

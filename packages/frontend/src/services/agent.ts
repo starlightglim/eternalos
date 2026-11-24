@@ -76,6 +76,8 @@ export interface UndoRunResult {
   done: string[];
   failed: Array<{ summary: string; error: string }>;
   changedApps: string[];
+  /** The undo restored the desktop's look. */
+  appearanceChanged?: boolean;
 }
 
 export interface RoutineSummary {

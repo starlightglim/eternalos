@@ -41,8 +41,18 @@ import {
 } from './CodeRunViews';
 import type { UndoRunResult } from '../../services/agent';
 import { ChatMarkdown } from './ChatMarkdown';
+import { refreshLookFromServer } from '../../utils/refreshLook';
 import { DEMO_APP_NAME, DEMO_PROMPT, ensureAgentDemo } from '../../services/agentDemo';
-import { activityLabel, describeAppChange, isQuietToolPart, readOnlyRunSteps } from '../../utils/codeRunText';
+import {
+  activityLabel,
+  appearanceSwatches,
+  describeAppChange,
+  describeDesktopEdit,
+  describeDesktopEditDone,
+  DESKTOP_EDIT_TOOL_TYPES,
+  isQuietToolPart,
+  readOnlyRunSteps,
+} from '../../utils/codeRunText';
 
 const STARTER_PROMPTS = [
   'What is on my desktop right now?',
@@ -668,6 +678,7 @@ function AgentChatThreadPane({
   // any open windows of apps whose data changed back.
   const handleRunUndone = useCallback((result: UndoRunResult) => {
     void loadDesktop();
+    if (result.appearanceChanged) void refreshLookFromServer().catch(() => {});
     const open = new Set(openAppIds());
     for (const appId of result.changedApps) if (open.has(appId)) notifyAppDataChanged(appId);
   }, [loadDesktop]);
@@ -878,6 +889,10 @@ function AgentChatThreadPane({
       'tool-createFolder',
       'tool-moveItems',
       'tool-createTextNote',
+      'tool-renameItem',
+      'tool-editTextNote',
+      'tool-moveToTrash',
+      'tool-changeAppearance',
       'tool-codemode',
       'tool-callAppApi',
       'tool-previewAppFromPrompt',
@@ -914,6 +929,9 @@ function AgentChatThreadPane({
           refreshedToolCalls.current.add(part.toolCallId);
           void loadDesktop();
           syncOpenAppWindows(part);
+          const changedLook = part.type === 'tool-changeAppearance'
+            || (part.type === 'tool-codemode' && (part.output as { appearanceChanged?: unknown } | undefined)?.appearanceChanged === true);
+          if (changedLook) void refreshLookFromServer().catch(() => {});
           if (part.type === 'tool-saveRoutine' || part.type === 'tool-deleteRoutine') setRoutinesRefresh((n) => n + 1);
         }
       }
@@ -1193,6 +1211,78 @@ function AgentChatThreadPane({
           </div>
         </div>
       );
+    }
+
+    // Renames, note rewrites, Trash and look changes used directly.
+    if (DESKTOP_EDIT_TOOL_TYPES.has(part.type)) {
+      const input = (part.input as Record<string, unknown> | undefined) ?? {};
+      const nameOf = (id: string) => items.find((item) => item.id === id)?.name;
+      const { title, detail } = describeDesktopEdit(part.type, input, nameOf);
+      const swatches = part.type === 'tool-changeAppearance' ? appearanceSwatches(input) : [];
+      const swatchRow = swatches.length ? (
+        <div className={styles.swatchRow}>
+          {swatches.map(([label, color]) => (
+            <span key={label} className={styles.swatch} title={`${label}: ${color}`}>
+              <span className={styles.swatchChip} style={{ background: color }} />
+              {label}
+            </span>
+          ))}
+        </div>
+      ) : null;
+
+      if (part.state === 'approval-requested') {
+        return (
+          <div key={`desktop-edit-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>{title}?</div>
+            {swatchRow}
+            {detail ? <div className={styles.toolBody}>{detail}</div> : null}
+            <div className={styles.approvalRow}>
+              <button
+                type="button"
+                className={styles.actionButton}
+                onClick={() => {
+                  if (part.approval?.id) void addToolApprovalResponse({ id: part.approval.id, approved: true });
+                }}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                className={styles.actionButton}
+                onClick={() => {
+                  if (part.approval?.id) void addToolApprovalResponse({ id: part.approval.id, approved: false });
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        );
+      }
+      if (part.state === 'output-denied') {
+        return (
+          <div key={`desktop-edit-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Cancelled — nothing was changed</div>
+          </div>
+        );
+      }
+      if (part.state === 'output-error') {
+        return (
+          <div key={`desktop-edit-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>That didn’t work</div>
+            <div className={styles.errorText}>{String(part.errorText ?? 'Unknown error')}</div>
+          </div>
+        );
+      }
+      if (part.state === 'output-available') {
+        return (
+          <div key={`desktop-edit-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>{describeDesktopEditDone(part.type, (part.output as Record<string, unknown> | undefined) ?? {})}</div>
+            {swatchRow}
+          </div>
+        );
+      }
+      return null;
     }
 
     if (part.type === 'tool-createTextNote') {

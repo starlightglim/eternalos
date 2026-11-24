@@ -48,7 +48,8 @@ export type DerivedTransform =
   | 'contrastText'    // isDarkColor → #FFF / #000
   | 'secondaryText'   // isDarkColor → #CCC / #666
   | 'darken18'        // adjustColor(hex, -18)
-  | 'selectionText';  // isDarkColor → #FFF / #000  (alias, same logic)
+  | 'selectionText'   // isDarkColor → #FFF / #000  (alias, same logic)
+  | 'gradientImage';  // the value itself when it is a CSS gradient (for background-image)
 
 export interface DerivedVar {
   cssVar: string;
@@ -139,6 +140,10 @@ export const TOKEN_REGISTRY: TokenDefinition[] = [
     cssVars: ['--custom-desktop-color'],
     derivedVars: [
       { cssVar: '--desktop-text-color', transform: 'contrastText' },
+      // background-color cannot hold a gradient (the value is dropped and
+      // the desktop turns transparent); the plain wallpaper paints this as
+      // its background-image instead. See styles/wallpapers.css.
+      { cssVar: '--custom-desktop-image', transform: 'gradientImage' },
     ],
   },
   {

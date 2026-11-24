@@ -152,7 +152,7 @@ describe('intent routing (classifyRoute)', () => {
     { text: 'happy birthday!', route: 'chat' },
     { text: 'what is the meaning of life?', route: 'chat' },
     { text: 'how do I change my wallpaper?', route: 'chat', note: 'appearance question, not a desktop noun' },
-    { text: 'change my wallpaper', route: 'chat', note: 'no app noun → soft verbs cannot fire' },
+    { text: 'change my wallpaper', route: 'desktop-write', note: 'the assistant can change the look (changeAppearance)' },
     { text: 'explain quantum computing simply', route: 'chat' },
     { text: 'thanks for your help', route: 'chat' },
     { text: 'can you help me?', route: 'chat' },
@@ -406,4 +406,25 @@ describe('intent routing (classifyRoute)', () => {
       );
     }
   });
+});
+
+describe('editing the desktop and its look', () => {
+  const cases = [
+    ['make my desktop feel like a rainy café', 'desktop-write'],
+    ['give my desktop a cozy autumn vibe', 'desktop-write'],
+    ['switch to a dark theme', 'desktop-write'],
+    ['change my wallpaper to dots', 'desktop-write'],
+    ['change the font to Inter', 'desktop-write'],
+    ['rename Read Me.txt to Welcome.txt', 'desktop-write'],
+    ['delete my old screenshots', 'desktop-write'],
+    ['rewrite my shopping list note to be shorter', 'desktop-write'],
+    // Not desktop edits:
+    ['how do I change my wallpaper?', 'chat'],
+    ['what colors go well with navy?', 'chat'],
+    ['delete my todo app', 'app-build'],
+    ['make the todo app background blue', 'app-build'],
+  ];
+  for (const [text, route] of cases) {
+    it(`${JSON.stringify(text)} → ${route}`, () => assert.equal(classifyRoute(text), route));
+  }
 });

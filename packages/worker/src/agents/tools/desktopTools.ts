@@ -5,6 +5,14 @@
  * These run inline (no Dynamic Worker sandbox) for speed.
  */
 
+import {
+  APPEARANCE_COLOR_FIELDS,
+  APPEARANCE_TOOL_FIELDS,
+  CUSTOM_THEME_FIELDS,
+  FONT_IDS,
+  WALLPAPER_IDS,
+  describeAppearanceChanges,
+} from '../../utils/appearanceOptions';
 import { nextFreeDesktopCell } from '../../utils/desktopGrid';
 import { tool } from 'ai';
 import { z } from 'zod';
@@ -386,5 +394,168 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
         return { movedCount: moved.length };
       },
     }),
+
+    // ---- Editing what is already there. Each result carries the state from
+    // just before the change, so a Code Mode run can undo it exactly. ----
+
+    renameItem: tool({
+      description: 'Rename a desktop item (file, note, folder, link, image...). Get its id from searchDesktop or getDesktopOverview.',
+      inputSchema: z.object({
+        itemId: z.string().min(1),
+        newName: z.string().trim().min(1).max(120).describe('The new name (keep the extension for files, e.g. "notes.txt")'),
+      }),
+      needsApproval: true,
+      execute: async (input) => {
+        const item = findLiveItem((await loadSnapshot(ctx)).items, input.itemId);
+        await patchItems(ctx, [{ id: item.id, updates: { name: input.newName } }], 'rename');
+        return { item: { id: item.id, name: input.newName, type: item.type }, previousName: item.name };
+      },
+    }),
+
+    editTextNote: tool({
+      description: 'Replace the full text of an existing text note/file on the desktop. Read it first with readTextFile, then send the complete new text.',
+      inputSchema: z.object({
+        itemId: z.string().min(1),
+        content: z.string().max(100_000).describe('The complete new text of the note'),
+      }),
+      needsApproval: true,
+      execute: async (input) => {
+        const item = findLiveItem((await loadSnapshot(ctx)).items, input.itemId);
+        if (item.type !== 'text') throw new Error(`“${item.name}” is not a text note`);
+        await patchItems(ctx, [{ id: item.id, updates: { textContent: input.content } }], 'edit the note');
+        return {
+          note: { id: item.id, name: item.name },
+          characters: input.content.length,
+          previousContent: item.textContent ?? '',
+        };
+      },
+    }),
+
+    moveToTrash: tool({
+      description: 'Move desktop items to the Trash (reversible: the user can restore them from the Trash). A folder takes its contents with it. Apps cannot be trashed here — use deleteApp.',
+      inputSchema: z.object({
+        itemIds: z.array(z.string().min(1)).min(1).max(50),
+      }),
+      needsApproval: true,
+      execute: async (input) => {
+        const { items } = await loadSnapshot(ctx);
+        const targets = input.itemIds.map((id) => findLiveItem(items, id));
+        const apps = targets.filter((item) => item.type === 'app');
+        if (apps.length) throw new Error(`Apps are removed with deleteApp, not the Trash: ${apps.map((a) => a.name).join(', ')}`);
+        // Same cascade as the desktop's own Trash: a folder's contents go with it.
+        const all = new Map<string, DesktopItem>(targets.map((item) => [item.id, item]));
+        const addChildren = (parentId: string) => {
+          for (const child of items) {
+            if (child.parentId === parentId && !child.isTrashed && !all.has(child.id)) {
+              all.set(child.id, child);
+              if (child.type === 'folder') addChildren(child.id);
+            }
+          }
+        };
+        for (const item of targets) if (item.type === 'folder') addChildren(item.id);
+        const now = Date.now();
+        await patchItems(ctx, [...all.values()].map((item) => ({
+          id: item.id,
+          updates: { isTrashed: true, trashedAt: now, originalParentId: item.parentId ?? null },
+        })), 'move items to the Trash');
+        return {
+          trashedCount: targets.length,
+          trashed: targets.map((item) => ({ id: item.id, name: item.name, type: item.type })),
+          // Everything that moved, with where it was — for undo.
+          previous: [...all.values()].map((item) => ({ id: item.id, parentId: item.parentId ?? null })),
+        };
+      },
+    }),
+
+    changeAppearance: tool({
+      description: [
+        "Change how the user's desktop looks: colors, fonts, window style, wallpaper pattern.",
+        'Set only the fields you want to change. Colors take any CSS color; desktopColor may also be a CSS gradient.',
+        `Fonts: ${FONT_IDS.join(', ')}. Wallpaper patterns: ${WALLPAPER_IDS.join(', ')}.`,
+        'Pick colors that keep text readable (title text vs title bar, button text vs buttons).',
+        'If the user has a custom theme its CSS can hide plain color changes: set clearCustomTheme for a whole new look.',
+        'A wallpaper pattern covers desktopColor: leave wallpaper out unless the user wants a pattern (setting desktopColor alone switches to the plain wallpaper).',
+      ].join(' '),
+      inputSchema: z.object({
+        name: z.string().max(60).optional().describe('A short name for the look, e.g. "Rainy café"'),
+        ...Object.fromEntries(APPEARANCE_COLOR_FIELDS.map((field) => [field, z.string().trim().min(1).max(300).optional()])),
+        systemFont: z.enum(FONT_IDS).optional().describe('Titles, menus, window chrome'),
+        bodyFont: z.enum(FONT_IDS).optional().describe('Labels and content'),
+        monoFont: z.enum(FONT_IDS).optional().describe('Code and fixed-width text'),
+        fontSmoothing: z.boolean().optional(),
+        windowBorderRadius: roundedInRange(0, 24).optional().describe('px, 0–24'),
+        controlBorderRadius: roundedInRange(0, 24).optional().describe('px, 0–24'),
+        windowShadow: roundedInRange(0, 32).optional().describe('0–32'),
+        windowOpacity: roundedInRange(30, 100, { fractionIsPercent: true }).optional().describe('percent, 30–100'),
+        wallpaper: z.enum(WALLPAPER_IDS).optional(),
+        clearCustomTheme: z.boolean().optional().describe("Remove the current theme's custom CSS so the new colors show"),
+      }),
+      needsApproval: true,
+      execute: async (rawInput) => {
+        const input = rawInput as Record<string, unknown>;
+        const updates: Record<string, unknown> = {};
+        for (const field of APPEARANCE_TOOL_FIELDS) {
+          if ((CUSTOM_THEME_FIELDS as readonly string[]).includes(field)) continue;
+          if (input[field] !== undefined) updates[field] = input[field];
+        }
+        if (input.clearCustomTheme) for (const field of CUSTOM_THEME_FIELDS) updates[field] = null;
+        // A wallpaper pattern is drawn over the desktop color: a new color
+        // without a pattern choice means the plain wallpaper, so it shows.
+        if (updates.desktopColor !== undefined && updates.wallpaper === undefined) updates.wallpaper = 'default';
+        if (Object.keys(updates).length === 0) throw new Error('Nothing to change: set at least one appearance field');
+
+        const stub = ctx.getUserDesktopStub();
+        const profileRes = await stub.fetch(new Request('http://internal/profile'));
+        if (!profileRes.ok) throw new Error(`Could not read the current look (${profileRes.status})`);
+        const { profile } = await profileRes.json<{ profile: Record<string, unknown> | null }>();
+        // What each touched field was, so undo can put it back. A field that
+        // was never set is cleared again (null) — except the wallpaper, which
+        // cannot be cleared and falls back to the default pattern.
+        const previous: Record<string, unknown> = {};
+        for (const field of Object.keys(updates)) {
+          const value = profile?.[field];
+          previous[field] = value === undefined ? (field === 'wallpaper' ? 'default' : null) : value;
+        }
+        const res = await stub.fetch(new Request('http://internal/profile', {
+          method: 'PATCH',
+          body: JSON.stringify(updates),
+        }));
+        if (!res.ok) throw new Error(`Failed to change the look: ${(await res.text().catch(() => '')).slice(0, 200) || res.status}`);
+        return {
+          appearanceChanged: true,
+          name: typeof input.name === 'string' ? input.name : undefined,
+          changed: updates,
+          summary: describeAppearanceChanges(updates),
+          previous,
+        };
+      },
+    }),
   };
+}
+
+/**
+ * A whole number in [min, max]. Models send 8.5 or an opacity of 0.95;
+ * rejecting that failed whole look changes, so round and clamp instead
+ * (and read a 0–1 opacity as a percentage).
+ */
+function roundedInRange(min: number, max: number, options: { fractionIsPercent?: boolean } = {}) {
+  return z.number().finite().transform((value) => {
+    const scaled = options.fractionIsPercent && value > 0 && value <= 1 ? value * 100 : value;
+    return Math.min(max, Math.max(min, Math.round(scaled)));
+  });
+}
+
+/** A desktop item that exists and is not in the Trash, or a clear error. */
+function findLiveItem(items: DesktopItem[], id: string): DesktopItem {
+  const item = items.find((candidate) => candidate.id === id);
+  if (!item || item.isTrashed) throw new Error(`No desktop item with id ${id} (search the desktop for its id first)`);
+  return item;
+}
+
+async function patchItems(ctx: DesktopToolsContext, patches: Array<{ id: string; updates: Record<string, unknown> }>, what: string): Promise<void> {
+  const res = await ctx.getUserDesktopStub().fetch(new Request('http://internal/items', {
+    method: 'PATCH',
+    body: JSON.stringify(patches),
+  }));
+  if (!res.ok) throw new Error(`Failed to ${what} (${res.status})`);
 }

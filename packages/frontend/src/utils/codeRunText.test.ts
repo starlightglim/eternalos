@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { describeAppChange, readOnlyRunSteps } from './codeRunText';
+import { appearanceSettingsLine, appearanceSwatches, describeAppChange, describeDesktopEdit, describeDesktopEditDone, readOnlyRunSteps } from './codeRunText';
 
 test('describes single app-data changes in plain words', () => {
   expect(describeAppChange('PATCH', '/api/books/1', { is_read: 1 }, 'Books')).toEqual({
@@ -45,5 +45,23 @@ describe('readOnlyRunSteps', () => {
     expect(readOnlyRunSteps('input-available', undefined, { ok: true, actions: [] })).toEqual([]);
     expect(readOnlyRunSteps('input-available', undefined, undefined)).toBeNull();
     expect(readOnlyRunSteps('approval-requested', undefined, { ok: true, actions: [{}] })).toBeNull();
+  });
+});
+
+describe('desktop edit cards', () => {
+  const nameOf = (id: string) => ({ a: 'Read Me.txt', b: 'old.png' } as Record<string, string>)[id];
+  test('describes renames, rewrites and trashing with item names', () => {
+    expect(describeDesktopEdit('tool-renameItem', { itemId: 'a', newName: 'Welcome.txt' }, nameOf).title).toBe('Rename “Read Me.txt” to “Welcome.txt”');
+    expect(describeDesktopEdit('tool-editTextNote', { itemId: 'a', content: 'hi' }, nameOf)).toEqual({ title: 'Rewrite the note “Read Me.txt”', detail: 'New text: hi' });
+    const trash = describeDesktopEdit('tool-moveToTrash', { itemIds: ['a', 'b'] }, nameOf);
+    expect(trash.title).toBe('Move 2 items to the Trash');
+    expect(trash.detail).toContain('Read Me.txt, old.png');
+  });
+  test('describes a look change: swatches for colors, a line for the rest', () => {
+    const input = { name: 'Rainy café', desktopColor: 'linear-gradient(#456, #234)', accentColor: '#c96', systemFont: 'inter', wallpaper: 'dots', clearCustomTheme: true };
+    expect(describeDesktopEdit('tool-changeAppearance', input, nameOf).title).toBe("Change your desktop's look to “Rainy café”");
+    expect(appearanceSwatches(input)).toEqual([['desktop', 'linear-gradient(#456, #234)'], ['accent', '#c96']]);
+    expect(appearanceSettingsLine(input)).toBe('system font inter, wallpaper dots, removes your current custom theme CSS');
+    expect(describeDesktopEditDone('tool-changeAppearance', { name: 'Rainy café' })).toBe('Your desktop now has the “Rainy café” look.');
   });
 });

@@ -126,6 +126,12 @@ const DESKTOP_WRITE_VERBS = 'organize|organise|group|move|sort|tidy|clean up|fil
  * Desktop-content topic words. Deliberately does NOT include "wallpaper" or
  * appearance terms — "how do I change my wallpaper?" is a chat question.
  */
+const TRASHABLE_NOUNS =
+  'file|files|note|notes|memo|memos|folder|folders|image|images|photo|photos|picture|pictures|screenshot|screenshots|item|items|video|videos|duplicates|clutter|junk';
+
+const APPEARANCE_NOUNS =
+  'theme|themes|look|vibe|aesthetic|appearance|wallpaper|background|colou?rs?|colou?r scheme|palette|font|fonts|dark mode|light mode|style';
+
 const DESKTOP_READ_WORDS =
   "desktop|file|files|folder|folders|image|images|photo|photos|picture|pictures|video|videos|audio|pdf|search|find|tag|tags|ocr|upload|uploads|overview|recent|note|notes|memo|memos";
 
@@ -190,8 +196,28 @@ const DESKTOP_WRITE_RE = new RegExp(
   `\\b(?:${DESKTOP_WRITE_VERBS})\\b` +
     `|\\b(?:create|make|add)\\b.{0,60}\\b(?:folder|folders)\\b` +
     `|\\b(?:folder|folders)\\b.{0,60}\\b(?:create|make|new)\\b` +
-    `|\\b(?:write|save|jot|draft|create|make|add|take)\\b.{0,60}\\b(?:note|notes|memo|text file)\\b`,
+    `|\\b(?:write|save|jot|draft|create|make|add|take)\\b.{0,60}\\b(?:note|notes|memo|text file)\\b` +
+    // Editing what is there: rename, rewrite a note, put things in the Trash.
+    `|\\brename\\b` +
+    `|\\b(?:edit|rewrite|update|append to|add to|fix)\\b.{0,40}\\b(?:note|notes|memo|text file)\\b` +
+    `|\\b(?:delete|trash|remove|throw away|throw out|get rid of|bin)\\b.{0,60}\\b(?:${TRASHABLE_NOUNS})\\b`,
 );
+
+/**
+ * Changing the desktop's look ("make my desktop feel like a rainy café",
+ * "switch to a dark theme", "change my wallpaper to dots"). How-to questions
+ * ("how do I change my wallpaper?") stay chat — see isAppearanceRequest.
+ */
+const APPEARANCE_WRITE_RE = new RegExp(
+  `\\b(?:make|change|set|switch|turn|give|restyle|redesign|redo|paint|recolou?r|theme|style|update|use|apply)\\b.{0,60}\\b(?:${APPEARANCE_NOUNS})\\b` +
+    `|\\b(?:${APPEARANCE_NOUNS})\\b.{0,40}\\b(?:to|into|like|more)\\b` +
+    `|\\bmake\\b.{0,30}\\b(?:desktop|it|everything)\\b.{0,20}\\b(?:look|feel)\\b`,
+);
+const HOW_TO_QUESTION_RE = /\bhow (?:do|can|could|would|should) (?:i|you|we)\b|\bwhere (?:do|can) i\b|\bis (?:it|there) (?:possible|a way)\b/;
+
+export function isAppearanceRequest(text: string): boolean {
+  return APPEARANCE_WRITE_RE.test(text) && !HOW_TO_QUESTION_RE.test(text);
+}
 
 const DESKTOP_READ_RE = wordRe(DESKTOP_READ_WORDS);
 
@@ -484,8 +510,9 @@ export function classifyRoute(rawText: string, context: RouteContext = {}): Chat
     return 'app-read';
   }
 
-  // 7) Desktop writes (organize, folder creation, note writing).
-  if (DESKTOP_WRITE_RE.test(actionText)) {
+  // 7) Desktop writes (organize, folder creation, note writing, renaming,
+  //    trashing, and changing the desktop's look).
+  if (DESKTOP_WRITE_RE.test(actionText) || isAppearanceRequest(actionText)) {
     return 'desktop-write';
   }
 

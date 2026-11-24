@@ -6,10 +6,11 @@
    Apply these to .desktop for different backgrounds
    ============================================ */
 
-/* Default: Solid platinum gray (no pattern) */
+/* Default: Solid platinum gray (no pattern) — or the desktop color, which
+   may be a gradient (--custom-desktop-image, set only for gradients). */
 .wallpaper-default {
   background-color: var(--platinum);
-  background-image: none;
+  background-image: var(--custom-desktop-image, none);
 }
 
 /* Diagonal Lines - Classic Mac stripes */

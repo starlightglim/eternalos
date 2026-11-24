@@ -150,7 +150,23 @@ Mode: Desktop assistant (mutating)
   - createFolder
   - moveItems
   - createTextNote
+  - inside codemode only (always use codemode for these — the user gets a
+    preview and one-click Undo): desktop.renameItem, desktop.editTextNote
+    (read it first, send the full new text), desktop.moveToTrash (folders
+    take their contents; not for apps), desktop.changeAppearance (colors,
+    fonts, window style, wallpaper)
 - Prefer search/read tools before mutations when context is missing
+- For a "look" or "vibe" ("cozy autumn", "rainy café", "make it dark"),
+  design a complete, readable palette yourself and apply it with ONE
+  changeAppearance call: desktopColor (a gradient is fine), windowBgColor,
+  titleBarBgColor + titleBarTextColor, accentColor, buttonBgColor +
+  buttonTextColor, labelColor (icon labels sit on the desktop color, so they
+  must contrast with it), plus fonts/corners/wallpaper that fit. Give it a
+  short name. Set clearCustomTheme when the user wants a whole new look.
+  Leave wallpaper out unless the user asks for a pattern: a pattern covers
+  desktopColor (and its fixed gray tones can clash with your palette).
+- Several changes (rename + move + trash, or a look plus a note) go in ONE
+  codemode run so the user previews and undoes them together
 - For createTextNote, write the full note content yourself based on the
   conversation — do not ask the user to dictate it verbatim unless unclear
 - For batch changes (move every screenshot, file all PDFs by year), use
@@ -388,6 +404,10 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
       createFolder: desktopTools.createFolder,
       moveItems: desktopTools.moveItems,
       createTextNote: desktopTools.createTextNote,
+      renameItem: desktopTools.renameItem,
+      editTextNote: desktopTools.editTextNote,
+      moveToTrash: desktopTools.moveToTrash,
+      changeAppearance: desktopTools.changeAppearance,
     };
     const codeApps = {
       listApps: appTools.listApps,
@@ -418,6 +438,13 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
       const execute = (appTools.callAppApi as { execute?: (input: unknown, options: unknown) => Promise<{ ok?: boolean; status?: number; data?: unknown }> }).execute;
       if (!execute) throw new Error('App data is unavailable');
       return execute({ appId: op.appId, method: op.method, path: op.path, body: op.body }, { toolCallId: 'undo', messages: [] });
+    }
+    if (op.kind === 'profile') {
+      const response = await this.getUserDesktopStub().fetch(new Request('http://internal/profile', {
+        method: 'PATCH',
+        body: JSON.stringify(op.updates),
+      }));
+      return { ok: response.ok, status: response.status };
     }
     const patches = op.patches.map((patch) => ({
       id: patch.id,
@@ -897,6 +924,9 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
         createFolder: allDesktopTools.createFolder,
         moveItems: allDesktopTools.moveItems,
         createTextNote: allDesktopTools.createTextNote,
+        // renameItem / editTextNote / moveToTrash / changeAppearance are
+        // offered only inside Code Mode (buildCodeMode), so every such
+        // change gets a preview and one-click Undo.
       };
 
       // Stage emitter: set inside createUIMessageStream.execute before any tool runs.

@@ -18,6 +18,8 @@
  *  - nextRoutineRun: when a saved routine runs next.
  */
 
+import { describeAppearanceChanges } from '../../utils/appearanceOptions';
+
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 export interface PlannedAction {
@@ -46,7 +48,9 @@ export type InverseOp =
     /** Set when this op re-creates a deleted record that had this id. */
     restoresId?: string;
   }
-  | { kind: 'desktop'; patches: Array<{ id: string; updates: Record<string, unknown> }>; summary: string };
+  | { kind: 'desktop'; patches: Array<{ id: string; updates: Record<string, unknown> }>; summary: string }
+  /** Put profile (appearance) fields back to what they were. */
+  | { kind: 'profile'; updates: Record<string, unknown>; summary: string };
 
 export interface DesktopItemLike {
   id: string;
@@ -194,6 +198,33 @@ export function describeAction(tool: string, rawInput: unknown, ctx: DescribeCon
         detail: names.length ? names.map((n) => `“${clip(n, 32)}”`).join(', ') + (ids.length > names.length ? ', …' : '') : undefined,
       };
     }
+    case 'renameItem':
+      return { tool, summary: `Rename ${itemLabel(String(input.itemId ?? ''), ctx)} to “${clip(String(input.newName ?? ''), 40)}”` };
+    case 'editTextNote':
+      return {
+        tool,
+        summary: `Rewrite the note ${itemLabel(String(input.itemId ?? ''), ctx)}`,
+        detail: typeof input.content === 'string' ? `new text: ${clip(input.content, 120)}` : undefined,
+      };
+    case 'moveToTrash': {
+      const ids = Array.isArray(input.itemIds) ? input.itemIds.filter((v): v is string => typeof v === 'string') : [];
+      const names = ids.slice(0, 4).map((itemId) => ctx.itemName?.(itemId)).filter(Boolean) as string[];
+      return {
+        tool,
+        summary: `Move ${countLabel(ids.length, 'item')} to the Trash`,
+        detail: names.length ? names.map((n) => `“${clip(n, 32)}”`).join(', ') + (ids.length > names.length ? ', …' : '') : undefined,
+      };
+    }
+    case 'changeAppearance': {
+      const { name, clearCustomTheme, ...fields } = input;
+      const changes: Record<string, unknown> = { ...fields };
+      if (clearCustomTheme) changes.customCSS = null;
+      return {
+        tool,
+        summary: typeof name === 'string' && name ? `Change your desktop's look to “${clip(name, 40)}”` : "Change your desktop's look",
+        detail: describeAppearanceChanges(changes) || undefined,
+      };
+    }
     default:
       return { tool, summary: `Run ${tool}`, detail: summarizeFields(input) };
   }
@@ -260,6 +291,14 @@ export function describeStepResult(tool: string, result: unknown): string | unde
       return typeof res.movedCount === 'number' ? `created, ${countLabel(res.movedCount, 'item')} moved` : 'created';
     case 'moveItems':
       return typeof res.movedCount === 'number' ? `${countLabel(res.movedCount, 'item')} moved` : undefined;
+    case 'renameItem':
+      return 'renamed';
+    case 'editTextNote':
+      return typeof res.characters === 'number' ? `${res.characters} characters` : 'saved';
+    case 'moveToTrash':
+      return typeof res.trashedCount === 'number' ? `${countLabel(res.trashedCount, 'item')} in the Trash` : undefined;
+    case 'changeAppearance':
+      return 'applied';
     default:
       return undefined;
   }
@@ -294,6 +333,16 @@ export function dryRunResult(tool: string, rawInput: unknown): unknown {
     }
     case 'moveItems':
       return { movedCount: Array.isArray(input.itemIds) ? input.itemIds.length : 0 };
+    case 'renameItem':
+      return { item: { id: input.itemId, name: input.newName }, previousName: '' };
+    case 'editTextNote':
+      return { note: { id: input.itemId }, characters: String(input.content ?? '').length, previousContent: '' };
+    case 'moveToTrash': {
+      const ids = Array.isArray(input.itemIds) ? input.itemIds : [];
+      return { trashedCount: ids.length, trashed: ids.map((id) => ({ id })), previous: [] };
+    }
+    case 'changeAppearance':
+      return { appearanceChanged: true, changed: {}, previous: {} };
     default:
       return { ok: true };
   }
@@ -352,6 +401,9 @@ export function writeSignature(tool: string, rawInput: unknown, created: Readonl
     case 'moveItems': return `${tool} [${ids(input.itemIds)}] -> ${single(input.targetFolderId)}`;
     case 'createFolder': return `${tool} ${JSON.stringify(String(input.folderName ?? ''))} [${ids(input.itemIds)}]`;
     case 'createTextNote': return `${tool} ${canonicalBody({ name: input.name ?? '', content: input.content ?? '', folderId: single(input.folderId) })}`;
+    case 'renameItem': return `${tool} ${single(input.itemId)} ${JSON.stringify(String(input.newName ?? ''))}`;
+    case 'editTextNote': return `${tool} ${single(input.itemId)} ${JSON.stringify(String(input.content ?? ''))}`;
+    case 'moveToTrash': return `${tool} [${ids(input.itemIds)}]`;
     default: return `${tool} ${canonicalBody(input)}`;
   }
 }
@@ -486,6 +538,29 @@ export function planDesktopInverse(
   const res = (result ?? {}) as Record<string, any>;
   const parentOf = (id: string) => before?.find((item) => item.id === id)?.parentId ?? null;
 
+  if (tool === 'renameItem') {
+    const id = res.item?.id;
+    if (typeof id !== 'string' || typeof res.previousName !== 'string') return { skipped: 'the rename (no previous name returned)' };
+    return { op: { kind: 'desktop', patches: [{ id, updates: { name: res.previousName } }], summary: `Rename it back to “${clip(res.previousName, 40)}”` } };
+  }
+  if (tool === 'editTextNote') {
+    const id = res.note?.id;
+    if (typeof id !== 'string' || typeof res.previousContent !== 'string') return { skipped: 'the note edit (no previous text returned)' };
+    return { op: { kind: 'desktop', patches: [{ id, updates: { textContent: res.previousContent } }], summary: `Restore the previous text of “${clip(String(res.note?.name ?? ''), 40)}”` } };
+  }
+  if (tool === 'moveToTrash') {
+    const previous: Array<{ id?: unknown; parentId?: unknown }> = Array.isArray(res.previous) ? res.previous : [];
+    const patches = previous
+      .filter((entry): entry is { id: string; parentId: string | null } => typeof entry.id === 'string')
+      .map((entry) => ({ id: entry.id, updates: { isTrashed: false, parentId: entry.parentId ?? null } }));
+    if (!patches.length) return { skipped: 'the trashed items (nothing returned to restore)' };
+    return { op: { kind: 'desktop', patches, summary: `Take ${countLabel(res.trashedCount ?? patches.length, 'item')} back out of the Trash` } };
+  }
+  if (tool === 'changeAppearance') {
+    const previous = res.previous && typeof res.previous === 'object' ? res.previous as Record<string, unknown> : null;
+    if (!previous || Object.keys(previous).length === 0) return { skipped: 'the look change (the previous look was not returned)' };
+    return { op: { kind: 'profile', updates: previous, summary: 'Put your previous look back' } };
+  }
   if (tool === 'createTextNote') {
     const id = res.note?.id;
     if (typeof id !== 'string') return { skipped: 'the new note (no id returned)' };
@@ -521,6 +596,8 @@ export interface UndoOutcome {
   done: string[];
   failed: Array<{ summary: string; error: string }>;
   changedApps: string[];
+  /** An undone step restored the desktop's look (the browser should reload it). */
+  appearanceChanged?: boolean;
 }
 
 /**
@@ -545,6 +622,7 @@ export async function applyUndoPlan(
       const result = await execute(op);
       if (result && result.ok === false) throw new Error(`the app answered ${result.status ?? 'an error'}`);
       outcome.done.push(op.summary);
+      if (op.kind === 'profile') outcome.appearanceChanged = true;
       if (op.kind === 'app') {
         if (!outcome.changedApps.includes(op.appId)) outcome.changedApps.push(op.appId);
         if (op.restoresId !== undefined) {
