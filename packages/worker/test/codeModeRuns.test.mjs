@@ -304,6 +304,16 @@ describe('Code Mode run descriptions', () => {
     assert.equal(runs.parseResourcePath('/api/categories/abc-123-def-456').noun, 'category');
   });
 
+  it('signatures cover note content and only skip exact top-level timestamps', () => {
+    const note = (content) => runs.writeSignature('createTextNote', { name: 'Digest', content });
+    assert.notEqual(note('a'), note('b'));
+    const post = (body) => runs.writeSignature('callAppApi', { appId: 'a', method: 'POST', path: '/api/x', body });
+    assert.equal(post({ title: 't', created_at: 1 }), post({ title: 't', created_at: 2 }));
+    assert.notEqual(post({ title: 't', due_date: 1 }), post({ title: 't', due_date: 2 }), 'suffix matches are not skipped');
+    assert.notEqual(post({ meta: { created_at: 1 } }), post({ meta: { created_at: 2 } }), 'nested keys are not skipped');
+    assert.notEqual(post({ title: 't' }), runs.writeSignature('callAppApi', { appId: 'a', method: 'POST', path: '/api/x?force=1', body: { title: 't' } }));
+  });
+
   it('reads flags as yes/no', () => {
     assert.equal(runs.summarizeFields({ is_read: 1, title: 'Dune' }), 'read: yes, title: “Dune”');
     assert.equal(runs.summarizeFields({ done: false }), 'done: false');

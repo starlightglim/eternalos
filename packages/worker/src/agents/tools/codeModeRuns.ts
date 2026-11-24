@@ -161,9 +161,10 @@ function describeAppWrite(input: AppCallInput, ctx: DescribeContext): PlannedAct
   const app = appLabel(input.appId, ctx);
   const { noun, id } = parseResourcePath(path);
   const target = id ? `${noun} #${id}` : noun;
-  const detail = summarizeFields(input.body);
+  const query = path.includes('?') ? `with options ${path.slice(path.indexOf('?'))}` : undefined;
+  const detail = [summarizeFields(input.body), query].filter(Boolean).join(', ') || undefined;
   if (method === 'POST') return { tool: 'callAppApi', summary: `Add ${noun} to ${app}`, detail };
-  if (method === 'DELETE') return { tool: 'callAppApi', summary: `Delete ${target} from ${app}` };
+  if (method === 'DELETE') return { tool: 'callAppApi', summary: `Delete ${target} from ${app}`, detail: query };
   return { tool: 'callAppApi', summary: `Update ${target} in ${app}`, detail };
 }
 
@@ -298,22 +299,23 @@ export function dryRunResult(tool: string, rawInput: unknown): unknown {
   }
 }
 
-const TIME_FIELD_RE = /(?:_at|At|date|Date|time|Time|timestamp|Timestamp)$/;
+/** Server-managed timestamps, skipped at the top level of a body only. */
+const SERVER_TIMESTAMP_KEYS = new Set(['created_at', 'createdAt', 'updated_at', 'updatedAt']);
 
-/** Deterministic JSON with sorted keys, time-like fields dropped. */
+/** Deterministic JSON with sorted keys; top-level server timestamps dropped. */
 function canonicalBody(value: unknown): string {
   if (value === undefined) return '';
-  const walk = (v: unknown): unknown => {
-    if (Array.isArray(v)) return v.map(walk);
+  const walk = (v: unknown, top: boolean): unknown => {
+    if (Array.isArray(v)) return v.map((item) => walk(item, false));
     if (v && typeof v === 'object') {
       return Object.fromEntries(Object.keys(v as Record<string, unknown>)
-        .filter((key) => !TIME_FIELD_RE.test(key))
+        .filter((key) => !(top && SERVER_TIMESTAMP_KEYS.has(key)))
         .sort()
-        .map((key) => [key, walk((v as Record<string, unknown>)[key])]));
+        .map((key) => [key, walk((v as Record<string, unknown>)[key], false)]));
     }
     return v;
   };
-  return JSON.stringify(walk(value));
+  return JSON.stringify(walk(value, true));
 }
 
 /** Key for a record or item created during a run: `${scope} ${id}`. */
@@ -325,8 +327,8 @@ export function createdKey(scope: string, id: string): string {
  * Exactly which write a call is, for holding an approved run to its preview:
  * tool, target (app, method, path with query, record id) and body. Ids of
  * records/items the run itself created are written as <new>, since they
- * differ between the practice run and the real one. Time-like body fields
- * are ignored. An approved run may only make writes whose signatures the
+ * differ between the practice run and the real one. Only top-level
+ * created/updated timestamps are ignored in bodies. An approved run may only make writes whose signatures the
  * preview showed, at most as many times as it showed them.
  */
 export function writeSignature(tool: string, rawInput: unknown, created: ReadonlySet<string> = new Set()): string {
@@ -349,7 +351,7 @@ export function writeSignature(tool: string, rawInput: unknown, created: Readonl
   switch (tool) {
     case 'moveItems': return `${tool} [${ids(input.itemIds)}] -> ${single(input.targetFolderId)}`;
     case 'createFolder': return `${tool} ${JSON.stringify(String(input.folderName ?? ''))} [${ids(input.itemIds)}]`;
-    case 'createTextNote': return `${tool} ${JSON.stringify(String(input.name ?? ''))} in ${single(input.folderId)}`;
+    case 'createTextNote': return `${tool} ${canonicalBody({ name: input.name ?? '', content: input.content ?? '', folderId: single(input.folderId) })}`;
     default: return `${tool} ${canonicalBody(input)}`;
   }
 }

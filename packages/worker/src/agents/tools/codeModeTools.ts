@@ -303,6 +303,12 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
       const wrapped: ExecFn = async (input, toolOptions) => {
         const run = current;
         const write = isWriteCall(name, input, mutating);
+        // createFolder without itemIds falls back to the last search's
+        // results — server state that can differ between the practice run
+        // and the approved run. Code Mode must name the items.
+        if (name === 'createFolder' && !(Array.isArray(input?.itemIds) && input.itemIds.length)) {
+          throw new Error('In code, pass createFolder an explicit itemIds array (ids from searchDesktop or getDesktopOverview).');
+        }
         if (!run) {
           // Fail closed: a write outside an active run (e.g. a late call from
           // a sandbox whose run already ended) is never executed.

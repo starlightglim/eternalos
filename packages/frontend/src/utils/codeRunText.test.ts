@@ -11,4 +11,6 @@ test('describes single app-data changes in plain words', () => {
     .toBe('title: “Dune”, author: “Frank Herbert”');
   expect(describeAppChange('DELETE', '/api/entries/abc12345-6789', undefined, 'Evalog').summary).toBe('Delete entry #abc12345-6789 from Evalog');
   expect(describeAppChange('POST', '/api/reading-lists', {}, undefined).summary).toBe('Add reading list to an app');
+  expect(describeAppChange('PATCH', '/api/books/1?cascade=1', { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }, 'Books').detail)
+    .toBe('a: 1, b: 2, c: 3, d: 4, +2 more fields, with options ?cascade=1');
 });

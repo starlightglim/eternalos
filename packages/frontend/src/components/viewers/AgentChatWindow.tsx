@@ -1994,10 +1994,8 @@ function AgentChatThreadPane({
           <div key={`app-api-${index}`} className={styles.toolCard}>
             <div className={styles.toolTitle}>Make this change?</div>
             <ChangePreview preview={{ ok: true, actions: [describeAppChange(method, input?.path ?? '/', input?.body, appName)] }} />
-            <details className={styles.codeDetails}>
-              <summary>Request</summary>
-              <pre className={styles.codeBlock}>{target}{input?.body !== undefined ? `\n${JSON.stringify(input.body, null, 2)}` : ''}</pre>
-            </details>
+            {/* The exact request stays visible, not just the summary. */}
+            <pre className={styles.codeBlock}>{target}{input?.body !== undefined ? `\n${JSON.stringify(input.body, null, 2)}` : ''}</pre>
             <div className={styles.approvalRow}>
               <button
                 type="button"
