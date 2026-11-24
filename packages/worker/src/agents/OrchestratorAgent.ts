@@ -31,7 +31,8 @@ import {
   releaseAiTurnSlot,
   type AiTurnGrant,
 } from '../middleware/aiUsage';
-import { classifyRoute } from './intent';
+import { appDataTermsFromRoutes, classifyRoute } from './intent';
+import { extractBackendRoutes } from '../utils/backendRoutes';
 import type { ChatRoute } from './intent';
 import type { OrchestratorState } from './state';
 import { createDesktopTools } from './tools/desktopTools';
@@ -335,20 +336,44 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
    * Names of the user's installed apps, for intent routing ("add milk to my
    * Groceries" has no word "app"). Best effort: routing must never fail on it.
    */
-  private async listInstalledAppNames(): Promise<string[]> {
+  /**
+   * Routing context: installed app names plus the data nouns from each app's
+   * backend routes ("/api/books" → "books"), so a message about the data
+   * ("add Dune to my books") reaches the app routes without naming the app.
+   */
+  private async listInstalledAppRoutingTerms(): Promise<{ appNames: string[]; appDataTerms: string[] }> {
     try {
       const response = await this.getUserDesktopStub().fetch(new Request('http://internal/items'));
-      if (!response.ok) return [];
-      const { items } = await response.json<{ items: Array<{ type?: string; name?: string; isTrashed?: boolean; appManifest?: { name?: string } }> }>();
-      return items
-        .filter((item) => item.type === 'app' && !item.isTrashed)
-        .map((item) => item.appManifest?.name || item.name || '')
-        .filter(Boolean);
+      if (!response.ok) return { appNames: [], appDataTerms: [] };
+      const { items } = await response.json<{
+        items: Array<{ type?: string; name?: string; isTrashed?: boolean; appManifest?: { name?: string; appId?: string } }>;
+      }>();
+      const apps = items.filter((item) => item.type === 'app' && !item.isTrashed);
+      const appNames = apps.map((item) => item.appManifest?.name || item.name || '').filter(Boolean);
+      const ownerUid = this.getOwnerUid();
+      const routeLists = await Promise.all(
+        apps.slice(0, 20).map(async (item) => {
+          const appId = item.appManifest?.appId;
+          if (!appId) return [];
+          try {
+            const metadata = await this.env.DESKTOP_KV.get<{ uid?: string; r2Prefix?: string }>(`app:${appId}`, 'json');
+            if (!metadata || metadata.uid !== ownerUid) return [];
+            const source = await this.env.ETERNALOS_FILES.get(`${metadata.r2Prefix || `apps/${ownerUid}/${appId}`}/source.json`);
+            if (!source) return [];
+            const files = await source.json<Record<string, string>>();
+            return typeof files?.['server.js'] === 'string' ? extractBackendRoutes(files) : [];
+          } catch {
+            return [];
+          }
+        }),
+      );
+      return { appNames, appDataTerms: appDataTermsFromRoutes(routeLists.flat()) };
     } catch (error) {
       console.error('Failed to list app names for routing:', error);
-      return [];
+      return { appNames: [], appDataTerms: [] };
     }
   }
+
 
   private getOwnerUid(): string {
     return extractOwnerUid(this.name);
@@ -457,12 +482,12 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
       // of landing in chat, which has no app or desktop tools. App names are
       // fetched at most once, and only when plain text did not already pick
       // an app route.
-      let appNames: string[] | undefined;
+      let appTerms: { appNames: string[]; appDataTerms: string[] } | undefined;
       const classifyWithContext = async (text: string, previousRoute?: ChatRoute): Promise<ChatRoute> => {
         const plain = classifyRoute(text, { previousRoute });
         if (plain.startsWith('app-')) return plain;
-        appNames ??= await this.listInstalledAppNames();
-        return appNames.length ? classifyRoute(text, { appNames, previousRoute }) : plain;
+        appTerms ??= await this.listInstalledAppRoutingTerms();
+        return appTerms.appNames.length ? classifyRoute(text, { ...appTerms, previousRoute }) : plain;
       };
       const earlierUserTexts = this.messages
         .filter((message) => message.role === 'user')

@@ -484,7 +484,7 @@ function createAgentHarness({ items = [], profile = null } = {}) {
     // TS-private methods live on the prototype; borrow the real ones.
     getOwnerUid: OrchestratorAgent.prototype.getOwnerUid,
     getUserDesktopStub: OrchestratorAgent.prototype.getUserDesktopStub,
-    listInstalledAppNames: OrchestratorAgent.prototype.listInstalledAppNames,
+    listInstalledAppRoutingTerms: OrchestratorAgent.prototype.listInstalledAppRoutingTerms,
     getModel: OrchestratorAgent.prototype.getModel,
     settleTurnUsage: OrchestratorAgent.prototype.settleTurnUsage,
     degradedTurnResponse: OrchestratorAgent.prototype.degradedTurnResponse,

@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { CHAT_ROUTES, classifyRoute } from '../src/agents/intent.ts';
+import { CHAT_ROUTES, appDataTermsFromRoutes, classifyRoute } from '../src/agents/intent.ts';
 
 /**
  * @typedef {{ text: string, route: string, note?: string }} IntentCase
@@ -268,6 +268,41 @@ describe('intent routing (classifyRoute)', () => {
     it('does not change routing when no app names are given', () => {
       assert.equal(classifyRoute("add 'buy milk' to my guestlog"), 'chat');
       assert.equal(classifyRoute("add 'buy milk' to my guestlog", { appNames: [] }), 'chat');
+    });
+  });
+
+  describe('app data nouns from backend routes as context', () => {
+    it('extracts plural and singular nouns, skipping params and generic words', () => {
+      const terms = appDataTermsFromRoutes([
+        'GET /api/books',
+        'POST /api/books',
+        'PATCH /api/books/:id',
+        'GET /api/health',
+        'GET /api/reading-lists/:listId/items',
+        'GET /api/categories',
+        '/api/stats',
+      ]);
+      assert.deepEqual(terms.sort(), ['book', 'books', 'categories', 'category', 'reading list', 'reading lists'].sort());
+    });
+
+    const context = { appNames: ['Shelf'], appDataTerms: appDataTermsFromRoutes(['GET /api/books', 'POST /api/books']) };
+    const cases = [
+      { text: 'Add Dune by Frank Herbert to my books', route: 'app-build', note: 'production run: was chat, app is named Shelf' },
+      { text: 'what books do I have?', route: 'app-read' },
+      { text: 'delete the book called Dune', route: 'app-build' },
+      { text: 'mark Dune as read in my books', route: 'app-build', note: '"mark" is a soft edit verb' },
+      { text: 'recommend me a good book to read', route: 'chat', note: 'no command verb, stays chat' },
+    ];
+    for (const { text, route, note } of cases) {
+      it(`routes ${JSON.stringify(text)} → ${route}${note ? ` (${note})` : ''}`, () => {
+        assert.equal(classifyRoute(text, context), route);
+      });
+    }
+
+    it('generic route words never become app nouns', () => {
+      const generic = { appNames: ['Logger'], appDataTerms: appDataTermsFromRoutes(['GET /api/items', 'GET /api/notes', 'GET /api/files']) };
+      assert.equal(classifyRoute('save a note about lunch', generic), 'desktop-write');
+      assert.equal(classifyRoute('find my files from yesterday', generic), 'desktop-read');
     });
   });
 

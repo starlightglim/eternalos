@@ -98,7 +98,7 @@ const HARD_APP_VERBS =
  * an unambiguously app-shaped noun (app/application/widget) is also present,
  * in any order: "add dark mode to my todo app", "my app's theme, change it".
  */
-const SOFT_APP_VERBS = 'change|add|tweak|improve|rename|redesign|restyle|recolor';
+const SOFT_APP_VERBS = 'change|add|mark|tweak|improve|rename|redesign|restyle|recolor';
 
 /**
  * Nouns that always refer to an EternalOS app. Soft edit verbs require one of
@@ -282,6 +282,13 @@ export interface RouteContext {
    */
   appNames?: readonly string[];
   /**
+   * Nouns for the data the user's apps hold, from their backend routes
+   * (`/api/books` → "books", "book"; see `appDataTermsFromRoutes`). Treated
+   * like app names, so "add Dune to my books" reaches the app routes even
+   * though the app is called "Shelf".
+   */
+  appDataTerms?: readonly string[];
+  /**
    * Route of the previous user turn in this thread. A follow-up that names
    * nothing ("now make it blue", "add another one", "yes, install it")
    * inherits it instead of falling to chat, which cannot touch apps or files.
@@ -334,6 +341,43 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** Route path words too generic to identify an app's data. */
+const GENERIC_ROUTE_WORDS = new Set([
+  'api', 'data', 'state', 'status', 'health', 'healthz', 'ping', 'stats', 'stat', 'summary', 'config', 'settings',
+  'setting', 'info', 'meta', 'reset', 'clear', 'search', 'export', 'import', 'sync', 'version', 'list', 'all', 'count',
+  'items', 'item', 'entries', 'entry', 'records', 'record', 'today', 'latest', 'recent', 'toggle', 'done', 'complete',
+  'new', 'bulk', 'batch', 'random', 'next', 'prev', 'current', 'debug', 'init', 'seed', 'me', 'auth', 'login', 'logout',
+]);
+
+function singularize(word: string): string {
+  if (/ies$/.test(word) && word.length > 4) return `${word.slice(0, -3)}y`;
+  if (/(?:ss|us)$/.test(word)) return word;
+  if (/(?:ches|shes|xes)$/.test(word)) return word.slice(0, -2);
+  if (/s$/.test(word) && word.length > 3) return word.slice(0, -1);
+  return word;
+}
+
+/**
+ * Data nouns from an app's backend routes ("GET /api/books/:id" → "books",
+ * "book"). Path params, generic words and anything that is not a plain word
+ * are skipped; the router's own unsafe-name filter applies on top.
+ */
+export function appDataTermsFromRoutes(routes: readonly string[]): string[] {
+  const terms = new Set<string>();
+  for (const route of routes) {
+    const path = route.split(/\s+/).pop() ?? '';
+    for (const raw of path.split('/').slice(2)) {
+      const segment = raw.toLowerCase().replace(/[-_]+/g, ' ').trim();
+      if (!/^[a-z]+(?: [a-z]+)?$/.test(segment)) continue;
+      if (GENERIC_ROUTE_WORDS.has(segment)) continue;
+      terms.add(segment);
+      const singular = singularize(segment);
+      if (!GENERIC_ROUTE_WORDS.has(singular)) terms.add(singular);
+    }
+  }
+  return [...terms];
+}
+
 /** Replace mentions of the user's app names with the token "app". */
 function substituteAppNames(text: string, appNames: readonly string[] | undefined): string {
   if (!appNames?.length) return text;
@@ -350,7 +394,10 @@ function substituteAppNames(text: string, appNames: readonly string[] | undefine
 }
 
 export function classifyRoute(rawText: string, context: RouteContext = {}): ChatRoute {
-  const text = substituteAppNames(normalizeText(rawText), context.appNames);
+  const text = substituteAppNames(normalizeText(rawText), [
+    ...(context.appNames ?? []),
+    ...(context.appDataTerms ?? []),
+  ]);
   if (!text) return 'chat';
   // Pure greetings ask for nothing; a greeting followed by a command is NOT
   // a greeting ("hi! build me a chess app" must reach the app rules below).
