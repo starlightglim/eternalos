@@ -282,21 +282,36 @@ export function dryRunResult(tool: string, rawInput: unknown): unknown {
       return {
         status: method === 'POST' ? 201 : 200,
         ok: true,
-        dryRun: true,
-        data: method === 'DELETE' ? { ok: true } : { id: id ?? 'new', ...body },
+        data: method === 'DELETE' ? { ok: true } : { id: id ?? Math.floor(1000 + Math.random() * 9000), ...body },
       };
     }
     case 'createTextNote':
-      return { note: { id: 'dry-run-note', name: input.name, type: 'text' }, location: 'Desktop', characters: String(input.content ?? '').length, dryRun: true };
+      return { note: { id: crypto.randomUUID(), name: input.name, type: 'text' }, location: 'Desktop', characters: String(input.content ?? '').length };
     case 'createFolder': {
       const ids = Array.isArray(input.itemIds) ? input.itemIds : [];
-      return { folder: { id: 'dry-run-folder', name: input.folderName, type: 'folder' }, movedCount: ids.length, movedItems: [], dryRun: true };
+      return { folder: { id: crypto.randomUUID(), name: input.folderName, type: 'folder' }, movedCount: ids.length, movedItems: [] };
     }
     case 'moveItems':
-      return { movedCount: Array.isArray(input.itemIds) ? input.itemIds.length : 0, dryRun: true };
+      return { movedCount: Array.isArray(input.itemIds) ? input.itemIds.length : 0 };
     default:
-      return { ok: true, dryRun: true };
+      return { ok: true };
   }
+}
+
+/**
+ * What kind of write a call is, for holding a real run to its approved
+ * preview: tool + method + collection (record ids are left out, since a
+ * record created during the run gets a different id than in the practice
+ * run). An approved run may only make writes whose signatures the preview
+ * showed, at most as many times as it showed them.
+ */
+export function writeSignature(tool: string, rawInput: unknown): string {
+  const input = (rawInput ?? {}) as Record<string, unknown>;
+  if (tool === 'callAppApi') {
+    const method = String(input.method ?? 'GET').toUpperCase();
+    return `${tool} ${String(input.appId ?? '')} ${method} ${parseResourcePath(String(input.path ?? '/')).collection}`;
+  }
+  return tool;
 }
 
 /* ------------------------------------------------------------------ *

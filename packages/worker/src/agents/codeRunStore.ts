@@ -42,6 +42,11 @@ export function initCodeRunStore(sql: SqlStorage): void {
     plan TEXT NOT NULL,
     undone_at INTEGER
   )`);
+  sql.exec(`CREATE TABLE IF NOT EXISTS code_previews (
+    run_id TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL,
+    signatures TEXT NOT NULL
+  )`);
   sql.exec(`CREATE TABLE IF NOT EXISTS routines (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -90,6 +95,18 @@ export function getUndoPlan(sql: SqlStorage, runId: string): UndoLookup {
 
 export function markUndone(sql: SqlStorage, runId: string, now = Date.now()): void {
   sql.exec('UPDATE code_runs SET undone_at = ? WHERE run_id = ?', now, runId);
+}
+
+/* ------------------------ approved previews ------------------------- */
+
+export function savePreviewSignatures(sql: SqlStorage, runId: string, signatures: string[], now = Date.now()): void {
+  sql.exec('INSERT OR REPLACE INTO code_previews (run_id, created_at, signatures) VALUES (?, ?, ?)', runId, now, JSON.stringify(signatures));
+  sql.exec('DELETE FROM code_previews WHERE created_at < ?', now - 7 * 86_400_000);
+}
+
+export function loadPreviewSignatures(sql: SqlStorage, runId: string): string[] | null {
+  const row = sql.exec<{ signatures: string }>('SELECT signatures FROM code_previews WHERE run_id = ?', runId).toArray()[0];
+  return row ? JSON.parse(row.signatures) as string[] : null;
 }
 
 /* ----------------------------- routines ----------------------------- */

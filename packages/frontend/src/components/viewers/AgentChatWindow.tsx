@@ -1753,7 +1753,7 @@ function AgentChatThreadPane({
               </div>
             )}
             {/* Consent must cover the whole script: it stays complete here. */}
-            {preview ? codeDetails : (code ? <pre className={styles.codeBlock} tabIndex={0}>{code}</pre> : null)}
+            {preview?.ok ? codeDetails : (code ? <pre className={styles.codeBlock} tabIndex={0}>{code}</pre> : null)}
             <div className={styles.approvalRow}>
               <button
                 type="button"

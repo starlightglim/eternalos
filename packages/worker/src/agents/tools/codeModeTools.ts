@@ -42,6 +42,7 @@ import {
   findRecord,
   planAppInverse,
   planDesktopInverse,
+  writeSignature,
   type DescribeContext,
   type DesktopItemLike,
   type InverseOp,
@@ -69,6 +70,12 @@ export interface CodeModeOptions {
   saveUndo?: (runId: string, plan: UndoRecord) => Promise<void> | void;
   /** Saved routines: the user approved the code when saving it. */
   preApproved?: boolean;
+  /**
+   * Store / load the write signatures a practice run showed the user, so the
+   * approved real run (a later request) can be held to them.
+   */
+  savePreview?: (runId: string, signatures: string[]) => Promise<void> | void;
+  loadPreview?: (runId: string) => Promise<string[] | null> | string[] | null;
   /** Test seam; defaults to a no-network DynamicWorkerExecutor. */
   executor?: Executor;
 }
@@ -198,6 +205,9 @@ interface RunState {
   approved: boolean;
   steps: RunStep[];
   actions: PlannedAction[];
+  signatures: string[];
+  /** Writes the approved preview allows (signature → remaining count); null = no preview to enforce. */
+  allowance: Map<string, number> | null;
   undo: UndoRecord;
   changedApps: Set<string>;
 }
@@ -290,7 +300,12 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
       const wrapped: ExecFn = async (input, toolOptions) => {
         const run = current;
         const write = isWriteCall(name, input, mutating);
-        if (!run) return execute(input, toolOptions);
+        if (!run) {
+          // Fail closed: a write outside an active run (e.g. a late call from
+          // a sandbox whose run already ended) is never executed.
+          if (write) throw new Error(`${name} changes data and can only run inside an approved code run.`);
+          return execute(input, toolOptions);
+        }
 
         if (run.mode === 'dry') {
           if (!write) {
@@ -300,11 +315,20 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
           }
           await ensureNames(name, input);
           run.actions.push(describeAction(name, input, describeCtx));
+          run.signatures.push(writeSignature(name, input));
           return dryRunResult(name, input);
         }
 
         if (write && !run.approved) {
           throw new Error(`${name} changes data, so it needs the user's approval: call it in a run whose code names ${name} directly.`);
+        }
+        if (write && run.allowance) {
+          const signature = writeSignature(name, input);
+          const remaining = run.allowance.get(signature) ?? 0;
+          if (remaining <= 0) {
+            throw new Error(`This change was not in the preview the user approved, so it was not made (${describeAction(name, input, describeCtx).summary}). Show the user the new plan and ask again.`);
+          }
+          run.allowance.set(signature, remaining - 1);
         }
         await ensureNames(name, input);
         const step: RunStep = {
@@ -371,19 +395,21 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
     approved,
     steps: [],
     actions: [],
+    signatures: [],
+    allowance: null,
     undo: { ops: [], skipped: [], writes: 0 },
     changedApps: new Set(),
   });
 
   /** Practice run: real reads, recorded writes. Never changes anything. */
-  const preview = (input: { code?: unknown }, runId: string): Promise<CodePreview> => serialize(async () => {
+  const preview = (input: { code?: unknown }, runId: string): Promise<CodePreview & { signatures: string[] }> => serialize(async () => {
     const run = newRun('dry', runId, false);
     current = run;
     try {
       await innerExecute(input, { toolCallId: runId, messages: [] });
-      return { ok: true, actions: run.actions };
+      return { ok: true, actions: run.actions, signatures: run.signatures };
     } catch (error) {
-      return { ok: false, actions: run.actions, error: errorMessage(error).slice(0, 300) };
+      return { ok: false, actions: run.actions, signatures: run.signatures, error: errorMessage(error).slice(0, 300) };
     } finally {
       current = null;
     }
@@ -403,6 +429,14 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
       const approved = Boolean(options.preApproved)
         || (!unapprovedRuns.has(runId) && codeNeedsApproval(input?.code, mutating));
       const run = newRun('real', runId, approved);
+      if (approved && !options.preApproved && options.loadPreview) {
+        // Hold the run to what the approval card showed.
+        const signatures = await options.loadPreview(runId);
+        if (signatures) {
+          run.allowance = new Map();
+          for (const signature of signatures) run.allowance.set(signature, (run.allowance.get(signature) ?? 0) + 1);
+        }
+      }
       current = run;
       try {
         const output = await innerExecute(input, toolOptions);
@@ -442,8 +476,9 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
     needsApproval: async (input: { code?: unknown }, approvalOptions?: { toolCallId?: string }) => {
       if (!codeNeedsApproval(input?.code, mutating)) return false;
       const runId = approvalOptions?.toolCallId ?? crypto.randomUUID();
-      const result = await preview(input, runId);
+      const { signatures, ...result } = await preview(input, runId);
       options.emit?.({ type: 'data-codemode-preview', id: runId, data: result });
+      if (result.ok && signatures.length) await options.savePreview?.(runId, signatures);
       if (result.ok && result.actions.length === 0) {
         unapprovedRuns.add(runId);
         return false;

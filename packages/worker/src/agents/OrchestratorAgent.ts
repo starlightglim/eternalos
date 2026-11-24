@@ -58,10 +58,12 @@ import {
   initCodeRunStore,
   insertRoutine,
   listRoutineRecords,
+  loadPreviewSignatures,
   markUndone,
   MAX_ROUTINE_CODE_CHARS,
   MAX_ROUTINES_PER_THREAD,
   recordRoutineRun,
+  savePreviewSignatures,
   saveUndoPlan,
   updateRoutineSchedule,
   type RoutineRecord,
@@ -393,6 +395,8 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
       preApproved: options.preApproved,
       loadDesktopItems: () => this.loadDesktopItemsForRuns(),
       saveUndo: (runId, plan) => saveUndoPlan(this.ctx.storage.sql, runId, plan),
+      savePreview: (runId, signatures) => savePreviewSignatures(this.ctx.storage.sql, runId, signatures),
+      loadPreview: (runId) => loadPreviewSignatures(this.ctx.storage.sql, runId),
     });
     return { desktopTools, appTools, codemode };
   }

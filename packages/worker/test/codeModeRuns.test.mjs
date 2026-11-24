@@ -76,6 +76,7 @@ function makeTool(extra = {}) {
   const backend = booksBackend();
   const events = [];
   const saved = new Map();
+  const previews = new Map();
   const code = createCodeModeTool({
     loader: /** @type {any} */ ({}),
     apps: backend.apps,
@@ -83,9 +84,23 @@ function makeTool(extra = {}) {
     executor: fakeExecutor,
     emit: (chunk) => events.push(chunk),
     saveUndo: (runId, plan) => saved.set(runId, plan),
+    savePreview: (runId, signatures) => previews.set(runId, signatures),
+    loadPreview: (runId) => previews.get(runId) ?? null,
     ...extra,
   });
-  return { code, backend, events, saved, last: (type) => events.filter((e) => e.type === type).at(-1) };
+  // The approved run happens in a later request: a fresh tool instance that
+  // shares only the stored preview (like the agent's SQLite).
+  const fresh = () => createCodeModeTool({
+    loader: /** @type {any} */ ({}),
+    apps: backend.apps,
+    mutating: true,
+    executor: fakeExecutor,
+    emit: (chunk) => events.push(chunk),
+    saveUndo: (runId, plan) => saved.set(runId, plan),
+    savePreview: (runId, signatures) => previews.set(runId, signatures),
+    loadPreview: (runId) => previews.get(runId) ?? null,
+  });
+  return { code, fresh, backend, events, saved, previews, last: (type) => events.filter((e) => e.type === type).at(-1) };
 }
 
 const ADD_BOOK = `async () => {
@@ -138,6 +153,63 @@ describe('Code Mode preview (practice run before approval)', () => {
     const { code, events } = makeTool();
     assert.equal(await code.needsApproval({ code: 'async () => (await apps.listApps()).apps.length' }, { toolCallId: 'r' }), false);
     assert.equal(events.length, 0);
+  });
+});
+
+describe('Code Mode approved runs are held to their preview', () => {
+  const TOGGLE = `async () => {
+    const books = await apps.readAppApi({ appId: "shelf-id", path: "/api/books" });
+    const hit = books.data.find((b) => b.title === "Neuromancer");
+    if (hit) return apps.callAppApi({ appId: "shelf-id", method: "DELETE", path: "/api/books/" + hit.id });
+    return apps.callAppApi({ appId: "shelf-id", method: "POST", path: "/api/books", body: { title: "Neuromancer" } });
+  }`;
+
+  it('refuses a write the approved preview did not show', async () => {
+    const { code, fresh, backend } = makeTool();
+    assert.equal(await code.needsApproval({ code: TOGGLE }, { toolCallId: 'p1' }), true); // previewed: Add book
+    backend.state.books.push({ id: 7, title: 'Neuromancer' }); // data changed before approval
+    await assert.rejects(fresh().execute({ code: TOGGLE }, { toolCallId: 'p1' }), /not in the preview the user approved/);
+    assert.deepEqual(backend.state.writes, [], 'nothing was deleted');
+  });
+
+  it('allows the previewed writes, even on records created during the run', async () => {
+    const { code, fresh, backend } = makeTool();
+    const ADD_THEN_MARK = `async () => {
+      const made = await apps.callAppApi({ appId: "shelf-id", method: "POST", path: "/api/books", body: { title: "Hail Mary" } });
+      await apps.callAppApi({ appId: "shelf-id", method: "PATCH", path: "/api/books/" + made.data.id, body: { is_read: 1 } });
+      return made.data.id;
+    }`;
+    assert.equal(await code.needsApproval({ code: ADD_THEN_MARK }, { toolCallId: 'p2' }), true);
+    const output = await fresh().execute({ code: ADD_THEN_MARK }, { toolCallId: 'p2' });
+    assert.equal(output.result, 2);
+    assert.deepEqual(backend.state.writes, ['POST /api/books', 'PATCH /api/books/2']);
+  });
+
+  it('caps each kind of write at the previewed count', async () => {
+    const { code, fresh, backend } = makeTool();
+    const LOOP = `async () => {
+      const books = await apps.readAppApi({ appId: "shelf-id", path: "/api/books" });
+      for (const b of books.data) await apps.callAppApi({ appId: "shelf-id", method: "DELETE", path: "/api/books/" + b.id });
+    }`;
+    assert.equal(await code.needsApproval({ code: LOOP }, { toolCallId: 'p3' }), true); // 1 book → 1 delete previewed
+    backend.state.books.push({ id: 8, title: 'Extra' });
+    await assert.rejects(fresh().execute({ code: LOOP }, { toolCallId: 'p3' }), /not in the preview/);
+    assert.deepEqual(backend.state.writes, ['DELETE /api/books/1'], 'only the previewed delete happened');
+  });
+
+  it('never executes a write outside a run', async () => {
+    const backend = booksBackend();
+    let leaked = null;
+    const leakyExecutor = {
+      async execute(code, providers) {
+        leaked = providers.find((p) => p.name === 'apps').fns.callAppApi;
+        return { result: null };
+      },
+    };
+    const code = createCodeModeTool({ loader: {}, apps: backend.apps, mutating: true, executor: leakyExecutor, preApproved: true });
+    await code.execute({ code: 'async () => null' }, { toolCallId: 'x' });
+    await assert.rejects(leaked({ appId: 'shelf-id', method: 'POST', path: '/api/books', body: { title: 'late' } }), /inside an approved code run/);
+    assert.deepEqual(backend.state.writes, []);
   });
 });
 
