@@ -101,6 +101,8 @@ ENVIRONMENT = "production"
 ALLOWED_ORIGINS = "https://eternalos.app,https://www.eternalos.app,https://eternalos.me,https://www.eternalos.me"
 # deepseek-v4.1-flash: ~6s app specs vs 26-54s on glm-4.7-flash (Nov 2026 benchmark)
 APP_BUILDER_MODEL = "@cf/deepseek-ai/deepseek-v4.1-flash-1017"
+# Ask Eternal chat model — chosen with scripts/agent-eval.mjs (Nov 2026).
+AGENT_CHAT_MODEL = "@cf/deepseek-ai/deepseek-v4.1-flash-1017"
 
 # JWT_SECRET is set via: wrangler secret put JWT_SECRET
 # ANTHROPIC_API_KEY is set via: wrangler secret put ANTHROPIC_API_KEY

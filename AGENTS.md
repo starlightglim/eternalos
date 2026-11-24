@@ -184,6 +184,35 @@ truth for all tokens).
   DO-migration deploy note, run `wrangler deploy` once before relying on
   Workers Builds (`versions upload`).
 
+## Agent quality: eval suite (`scripts/agent-eval.mjs`)
+
+Ask Eternal changes (prompts, tools, routing, models) are judged by
+`npm run eval:agent`, not by eyeballing a chat. It drives real turns over the
+agent WebSocket against a running dev worker, auto-approves every approval
+card, and scores each scenario by checking real app state afterwards.
+
+```bash
+EVAL_EMAIL=... EVAL_PASSWORD=... npm run eval:agent -- --api http://localhost:8789 [--build] [--repeat 2] [--only id,id]
+```
+
+- Needs `wrangler dev` with the AI binding and a local account. Each run
+  deploys fixture apps (Evalog, Tally, Ledger, Scores) with known data and
+  known bugs, then deletes them.
+- Scenarios come from real failures: app data without the word "app", batch
+  writes, small fixes in a big file, backend logic bugs, diagnosing from
+  backend logs, honesty when a write is rejected or no app exists.
+- Compare models without editing config: start extra workers with
+  `--var AGENT_CHAT_MODEL:<model> --persist-to <dir>` (separate state, separate
+  account) and point `--api` at each.
+- DON'T edit `packages/worker/src` while an eval runs: every dev worker
+  hot-reloads and in-flight turns fail.
+- Nov 2026 result that picked the chat model: deepseek-v4.1-flash passed
+  (12/12 on the previously failing scenarios after the fixes); glm-4.7-flash
+  wrote invalid Code Mode JS and needed up to 5 approvals for one write;
+  gpt-oss-120b missed backend diagnosis; glm-5.3 got app ids wrong.
+- `InferenceUpstreamError: Network connection lost` mid-turn is the local
+  remote-AI proxy dropping long streams, not a model failure; re-run.
+
 ## Git / repo facts
 
 - This is a standalone npm-workspaces project. The workspaces are

@@ -56,12 +56,20 @@ Core behavior:
 - If a mutation needs approval, explain the pending action briefly
 - Do not claim the app can access the user's desktop, files, or network unless the runtime actually supports it
 - You have durable memory tools. Use them for stable user preferences, identity details, ongoing project context, and other facts likely to matter later.
-- Do not save one-off transient requests as memory unless the user explicitly asks you to remember them`;
+- Do not save one-off transient requests as memory unless the user explicitly asks you to remember them
+
+Getting things right:
+- Finish the whole request in this turn: after looking something up, go on and do the change the user asked for. Do not stop after a lookup.
+- Report only what tool results confirm. If a tool failed or returned an error status (ok: false, 4xx/5xx), say it did not work and why — never describe a failed or rejected change as done.
+- Use exact values from tool results (app ids, routes, field names, file text); never invent them.
+- When an action fails, read the error, fix the cause, and retry once with corrected input before giving up.`;
 
 const CODE_MODE_PROMPT = `Code Mode
 - The codemode tool runs one async JavaScript arrow function in an isolated sandbox where the tools above are available as namespaced, awaitable functions (see its description for exact names and types).
 - Prefer codemode when a request needs several tool calls, a loop over many items, filtering, counting, or other computation; prefer the plain tool for a single lookup.
-- Return a compact JSON result from the function, then explain it to the user in plain language. Never paste the code into the reply unless asked.`;
+- Return a compact JSON result from the function, then explain it to the user in plain language. Never paste the code into the reply unless asked.
+- Write plain JavaScript: no TypeScript type annotations, interfaces or "as" casts — they are syntax errors in the sandbox.
+- A run that only reads needs no approval. Put the read and the change in ONE run when you can (e.g. look up the app id, then write), so the user approves once.`;
 
 const CHAT_PROMPT = `${BASE_PROMPT}
 
@@ -308,9 +316,12 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
 
   private getModel() {
     const workersAI = createWorkersAI({ binding: this.env.AI });
+    // deepseek-v4.1-flash: 13/14 on scripts/agent-eval.mjs vs 12/14 for
+    // glm-4.7-flash, which wrote invalid Code Mode JS (TypeScript syntax),
+    // sent empty app ids, and took 5 approvals for one write.
     const modelId = this.env.AGENT_CHAT_MODEL?.startsWith('@cf/')
       ? this.env.AGENT_CHAT_MODEL
-      : '@cf/zai-org/glm-4.7-flash';
+      : '@cf/deepseek-ai/deepseek-v4.1-flash-1017';
     return workersAI(modelId as Parameters<typeof workersAI>[0]);
   }
 
@@ -500,6 +511,7 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
         editApp: appTools.editApp,
         deleteApp: appTools.deleteApp,
         callAppApi: appTools.callAppApi,
+        readAppApi: appTools.readAppApi,
         listApps: appTools.listApps,
         getAppSource: appTools.getAppSource,
         getAppBackendLogs: appTools.getAppBackendLogs,
@@ -511,9 +523,10 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
       };
 
       // Code Mode: one sandboxed JS function orchestrating many tool calls.
-      // Each route exposes exactly the tools that route already allows; the
-      // mutating variants are approved as a whole (inner tools lose their
-      // individual needsApproval inside the sandbox).
+      // Each route exposes exactly the tools that route already allows. A run
+      // is approval-gated only when its code names a state-changing tool, and
+      // state-changing tools refuse to run in an unapproved run (see
+      // codeModeTools.ts) — read-only lookups never cost an approval.
       const codemodeFor = {
         desktopRead: () => createCodeModeTool({ loader: this.env.LOADER, desktop: desktopReadTools, mutating: false }),
         desktopWrite: () => createCodeModeTool({ loader: this.env.LOADER, desktop: desktopWriteTools, mutating: true }),
@@ -525,6 +538,7 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
             listApps: appTools.listApps,
             getAppSource: appTools.getAppSource,
             getAppBackendLogs: appTools.getAppBackendLogs,
+            readAppApi: appTools.readAppApi,
             callAppApi: appTools.callAppApi,
           },
           mutating: true,

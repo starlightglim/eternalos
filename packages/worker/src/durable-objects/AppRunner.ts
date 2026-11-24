@@ -87,6 +87,16 @@ type LoopbackExports = {
   AppLogTail: (init: { props: Record<string, unknown> }) => Fetcher;
 };
 
+/** Header the backend wrapper sets with the release (codeId) that served the request. */
+const CODE_ID_HEADER = 'x-eternal-code-id';
+
+function stripCodeIdHeader(response: Response): Response {
+  if (!response.headers.has(CODE_ID_HEADER)) return response;
+  const copy = new Response(response.body, response);
+  copy.headers.delete(CODE_ID_HEADER);
+  return copy;
+}
+
 export class AppRunner extends DurableObject<Env> {
   #loadedCodeId: string | null = null;
   #bundles = new Map<string, StoredBundle | null>();
@@ -116,7 +126,7 @@ export class AppRunner extends DurableObject<Env> {
     }
     this.#loadedCodeId = config.codeId;
 
-    const facet = this.ctx.facets.get(APP_BACKEND_FACET, () => {
+    const getFacet = () => this.ctx.facets.get(APP_BACKEND_FACET, () => {
       const worker = this.#loadWorker(config, bundle);
       return {
         class: worker.getDurableObjectClass(APP_BACKEND_CLASS, {
@@ -126,7 +136,19 @@ export class AppRunner extends DurableObject<Env> {
     });
 
     try {
-      return await facet.fetch(request);
+      // Keep a copy: if the wrong release answers, the request is replayed.
+      const retry = request.clone();
+      let response = await getFacet().fetch(request);
+      const answeredBy = response.headers.get(CODE_ID_HEADER);
+      if (answeredBy && answeredBy !== config.codeId) {
+        // abort() + get() can hand back the still-running old instance, and
+        // with #loadedCodeId already updated nothing would ever restart it —
+        // seen live: an edited server.js kept serving the old code. Restart
+        // and replay once on the new release.
+        this.ctx.facets.abort(APP_BACKEND_FACET, new Error('Stale app backend release'));
+        response = await getFacet().fetch(retry);
+      }
+      return stripCodeIdHeader(response);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await this.recordLogs([{ at: Date.now(), level: 'error', message: `Backend crashed: ${message}` }]);
@@ -246,6 +268,7 @@ export class AppRunner extends DurableObject<Env> {
         : null,
       env: {
         APP_ID: config.appId,
+        CODE_ID: config.codeId,
         ETERNAL: loopback.EternalService({
           props: {
             uid: config.uid,

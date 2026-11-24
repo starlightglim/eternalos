@@ -2723,12 +2723,18 @@ export class AppBackend extends DurableObject {
     if (!run) {
       return Response.json({ error: 'server.js must export default { async fetch(request, env) { ... } }' }, { status: 500 });
     }
+    let response;
     try {
-      return toResponse(await run(request, this.appEnv, { waitUntil: (p) => this.ctx.waitUntil(p) }));
+      response = toResponse(await run(request, this.appEnv, { waitUntil: (p) => this.ctx.waitUntil(p) }));
     } catch (err) {
       console.error('Unhandled error in server.js:', err && err.stack ? err.stack : String(err));
-      return Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 });
+      response = Response.json({ error: String(err && err.message ? err.message : err) }, { status: 500 });
     }
+    // Tell the supervisor which release answered, so it can detect a facet
+    // that survived an update and restart it (see AppRunner.handle).
+    const tagged = new Response(response.body, response);
+    if (this.env && this.env.CODE_ID) tagged.headers.set('x-eternal-code-id', String(this.env.CODE_ID));
+    return tagged;
   }
 }
 `;

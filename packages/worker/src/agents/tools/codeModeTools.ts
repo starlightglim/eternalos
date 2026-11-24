@@ -21,6 +21,7 @@
 import { createCodeTool } from '@cloudflare/codemode/ai';
 import { DynamicWorkerExecutor, type ToolProvider } from '@cloudflare/codemode';
 import type { Tool } from 'ai';
+import { z } from 'zod';
 
 const CODE_TIMEOUT_MS = 30_000;
 
@@ -45,18 +46,73 @@ Available in the sandbox (every call returns a Promise — always await):
 
 Write ONE async arrow function in plain JavaScript (no TypeScript syntax) and return a JSON-serializable result. Never declare a variable named "desktop" or "apps" — that shadows the namespace and crashes the run (write: const list = await apps.listApps(); not: const { apps } = await apps.listApps()). console.log output is returned too. There is no fetch/network, DOM, or npm packages — only the namespaces above plus standard JS (Math, Date, JSON, Array, Map, Intl...).
 
-Example:
+Examples (results are objects — read the declared Output types above):
 async () => {
-  const { items } = await desktop.searchDesktop({ query: "invoice", limit: 50 });
-  const pdfs = items.filter((i) => i.mimeType === "application/pdf");
-  return { count: pdfs.length, names: pdfs.map((i) => i.name) };
+  const { items } = await desktop.searchDesktop({ query: "invoice" });
+  return { count: items.length, names: items.map((i) => i.name) };
+}
+async () => {
+  const list = await apps.listApps();
+  const app = list.apps.find((a) => a.name === "Evalog");
+  const res = await apps.readAppApi({ appId: app.id, path: "/api/entries" });
+  return res.ok ? res.data.length : res;
 }`;
 
-function stripApproval(tools: Record<string, AnyTool>): Record<string, AnyTool> {
+/**
+ * Output shapes for the sandbox's type declarations. Without them codemode
+ * declares every result as `unknown` and the model guesses (seen live:
+ * `(await apps.listApps()).find(...)` → "Cannot read properties of undefined
+ * (reading 'find')" — listApps returns { apps: [...] }). Attached only to the
+ * sandbox copies: the AI SDK re-validates stored chat messages against a real
+ * tool's outputSchema, so the chat tools themselves stay schema-free.
+ */
+const loose = <T extends z.ZodRawShape>(shape: T) => z.looseObject(shape);
+const backendResult = loose({ status: z.number(), ok: z.boolean(), data: z.unknown().describe('Parsed JSON body (arrays for list routes)') });
+const OUTPUT_SCHEMAS: Record<string, z.ZodType> = {
+  listApps: loose({
+    apps: z.array(loose({
+      id: z.string(),
+      name: z.string(),
+      description: z.string(),
+      version: z.number(),
+      apiRoutes: z.array(z.string()).optional().describe("e.g. 'GET /api/entries'"),
+      apiBodyFields: z.array(z.string()).optional(),
+    })),
+  }),
+  getAppSource: loose({
+    appId: z.string(),
+    name: z.string(),
+    files: z.record(z.string(), z.string()),
+    syntaxErrors: z.array(loose({ file: z.string(), error: z.string(), line: z.string().optional() })).optional(),
+  }),
+  readAppApi: backendResult,
+  callAppApi: backendResult,
+  getAppBackendLogs: loose({ appId: z.string(), logs: z.array(loose({ at: z.number(), level: z.string(), message: z.string() })) }),
+  getDesktopOverview: loose({
+    totalActiveItems: z.number(),
+    counts: z.record(z.string(), z.number()),
+    recentItems: z.array(loose({ id: z.string(), name: z.string(), type: z.string(), location: z.string() })),
+  }),
+  searchDesktop: loose({
+    query: z.string(),
+    totalMatches: z.number(),
+    items: z.array(loose({ id: z.string(), name: z.string(), type: z.string(), location: z.string(), summary: z.string(), matchedIn: z.array(z.string()) })),
+  }),
+  readTextFile: loose({
+    found: z.boolean(),
+    id: z.string().optional(),
+    name: z.string().optional(),
+    content: z.string().optional(),
+    message: z.string().optional(),
+  }),
+};
+
+function prepareForSandbox(tools: Record<string, AnyTool>): Record<string, AnyTool> {
   return Object.fromEntries(
     Object.entries(tools).map(([name, t]) => {
       const { needsApproval: _needsApproval, ...rest } = t as AnyTool & { needsApproval?: unknown };
-      return [name, rest as AnyTool];
+      const outputSchema = OUTPUT_SCHEMAS[name];
+      return [name, (outputSchema ? { ...rest, outputSchema } : rest) as AnyTool];
     }),
   );
 }
@@ -84,14 +140,62 @@ function trackAppWrites(apps: Record<string, AnyTool>, changed: Set<string>): Re
   };
 }
 
+/**
+ * Names of tools that change state: every tool that carries needsApproval in
+ * its chat form. A run must be approved before it may call any of them.
+ */
+function mutatingToolNames(...groups: Array<Record<string, AnyTool> | undefined>): string[] {
+  return groups.flatMap((group) => Object.entries(group ?? {})
+    .filter(([, t]) => Boolean((t as AnyTool & { needsApproval?: unknown }).needsApproval))
+    .map(([name]) => name));
+}
+
+/** True when the code names a state-changing tool — then the run is approval-gated. */
+export function codeNeedsApproval(code: unknown, mutating: readonly string[]): boolean {
+  const text = typeof code === 'string' ? code : '';
+  return mutating.some((name) => text.includes(name));
+}
+
+/**
+ * Runtime half of the gate: in a run that was not approved, state-changing
+ * tools refuse to run. The static check above decides whether to ask; this
+ * guarantees an unapproved run can never mutate, even if the code reaches a
+ * tool without spelling its name (e.g. apps["call" + "AppApi"]).
+ */
+function guardMutations(
+  tools: Record<string, AnyTool>,
+  mutating: readonly string[],
+  isApproved: () => boolean,
+): Record<string, AnyTool> {
+  return Object.fromEntries(Object.entries(tools).map(([name, t]) => {
+    const execute = (t as AnyTool & { execute?: (...args: any[]) => Promise<any> }).execute;
+    if (!mutating.includes(name) || !execute) return [name, t];
+    return [name, {
+      ...t,
+      execute: async (...args: any[]) => {
+        if (!isApproved()) {
+          throw new Error(`${name} changes data, so it needs the user's approval: call it in a run whose code names ${name} directly.`);
+        }
+        return execute(...args);
+      },
+    } as AnyTool];
+  }));
+}
+
 export function createCodeModeTool(options: CodeModeOptions): AnyTool {
   const providers: ToolProvider[] = [];
   const changedApps = new Set<string>();
+  const mutating = options.mutating ? mutatingToolNames(options.desktop, options.apps) : [];
+  let runApproved = false;
+  const isApproved = () => runApproved;
   if (options.desktop && Object.keys(options.desktop).length) {
-    providers.push({ name: 'desktop', tools: stripApproval(options.desktop) as never });
+    providers.push({ name: 'desktop', tools: prepareForSandbox(guardMutations(options.desktop, mutating, isApproved)) as never });
   }
   if (options.apps && Object.keys(options.apps).length) {
-    providers.push({ name: 'apps', tools: stripApproval(trackAppWrites(options.apps, changedApps)) as never });
+    providers.push({
+      name: 'apps',
+      tools: prepareForSandbox(guardMutations(trackAppWrites(options.apps, changedApps), mutating, isApproved)) as never,
+    });
   }
 
   const executor = new DynamicWorkerExecutor({
@@ -111,10 +215,24 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
     ...codeTool,
     execute: async (...args: any[]) => {
       changedApps.clear();
-      const output = await innerExecute(...args);
-      return changedApps.size ? { ...output, changedApps: [...changedApps] } : output;
+      // The SDK only reaches execute for a gated run after the user approved
+      // it, so "needed approval" here means "was approved".
+      runApproved = codeNeedsApproval((args[0] as { code?: unknown } | undefined)?.code, mutating);
+      try {
+        const output = await innerExecute(...args);
+        return changedApps.size ? { ...output, changedApps: [...changedApps] } : output;
+      } finally {
+        runApproved = false;
+      }
     },
   } as AnyTool;
 
-  return options.mutating ? ({ ...trackedTool, needsApproval: true } as AnyTool) : trackedTool;
+  if (!mutating.length) return trackedTool;
+  // Read-only runs (lookups, counting, reading app data) no longer cost an
+  // approval card: before, every codemode run in the app-build route asked,
+  // and a turn that spent its approval on a lookup could end without acting.
+  return {
+    ...trackedTool,
+    needsApproval: async (input: { code?: unknown }) => codeNeedsApproval(input?.code, mutating),
+  } as AnyTool;
 }

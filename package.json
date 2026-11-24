@@ -26,6 +26,7 @@
     "lint": "npm run lint --workspace=@eternalos/frontend",
     "preview": "npm run preview --workspace=@eternalos/frontend",
     "test:worker": "npm run test --workspace=@eternalos/worker",
-    "coverage:worker": "npm run coverage --workspace=@eternalos/worker"
+    "coverage:worker": "npm run coverage --workspace=@eternalos/worker",
+    "eval:agent": "node scripts/agent-eval.mjs"
   }
 }
