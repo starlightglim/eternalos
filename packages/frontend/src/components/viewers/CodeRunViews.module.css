@@ -1,0 +1,303 @@
+/* Code Mode run views. Colors derive from the chat's theme-based --chat-*
+   variables (defined on .chatWindow) with fallbacks, like the rest of the
+   Ask Eternal window. */
+
+.preview {
+  margin: 8px 0 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--chat-border, color-mix(in srgb, currentColor 18%, transparent));
+  border-radius: 8px;
+  background: var(--chat-panel, color-mix(in srgb, currentColor 4%, transparent));
+}
+
+.previewHeading {
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.previewNote {
+  margin: 8px 0 6px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--chat-panel, color-mix(in srgb, currentColor 4%, transparent));
+  color: var(--chat-muted, inherit);
+}
+
+.previewMore {
+  margin-top: 4px;
+  color: var(--chat-muted, inherit);
+}
+
+.changeList {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.changeItem {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 6px;
+  align-items: start;
+}
+
+.changeIcon {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.change_add {
+  background: color-mix(in srgb, #2f9e58 22%, transparent);
+  color: color-mix(in srgb, #2f9e58 75%, var(--chat-text, currentColor));
+}
+
+.change_remove {
+  background: color-mix(in srgb, #d0453a 22%, transparent);
+  color: color-mix(in srgb, #d0453a 75%, var(--chat-text, currentColor));
+}
+
+.change_edit {
+  background: color-mix(in srgb, var(--chat-accent, #3d78d2) 22%, transparent);
+  color: color-mix(in srgb, var(--chat-accent, #3d78d2) 75%, var(--chat-text, currentColor));
+}
+
+.changeText {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.changeSummary {
+  font-weight: 600;
+}
+
+.changeDetail,
+.stepDetail {
+  overflow-wrap: anywhere;
+  color: var(--chat-muted, inherit);
+}
+
+/* ── Steps ─────────────────────────────────────────── */
+
+.steps {
+  margin: 6px 0;
+}
+
+.stepsEmpty,
+.stepsMore,
+.stepsSummary {
+  color: var(--chat-muted, inherit);
+}
+
+.stepsMore {
+  margin-bottom: 2px;
+}
+
+.stepsSummary {
+  margin-top: 4px;
+}
+
+.stepList {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 16px auto 1fr;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.stepIcon {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  font-weight: 700;
+}
+
+.step_done .stepIcon {
+  color: color-mix(in srgb, #2f9e58 80%, var(--chat-text, currentColor));
+}
+
+.step_error .stepIcon,
+.step_error .stepDetail {
+  color: color-mix(in srgb, #d0453a 85%, var(--chat-text, currentColor));
+}
+
+.stepLabel {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.stepWrite {
+  font-weight: 600;
+}
+
+.step_running .stepLabel {
+  color: var(--chat-text, inherit);
+}
+
+.spinner {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid color-mix(in srgb, var(--chat-accent, #3d78d2) 30%, transparent);
+  border-top-color: var(--chat-accent, #3d78d2);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}
+
+/* ── Undo ──────────────────────────────────────────── */
+
+.undoRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.undoButton,
+.smallButton {
+  padding: 4px 10px;
+  border: 1px solid var(--chat-border, color-mix(in srgb, currentColor 18%, transparent));
+  border-radius: 6px;
+  background: var(--chat-surface, transparent);
+  color: var(--chat-text, inherit);
+  font: inherit;
+  cursor: pointer;
+}
+
+.undoButton:hover:not(:disabled),
+.smallButton:hover:not(:disabled) {
+  background: var(--chat-hover, color-mix(in srgb, currentColor 8%, transparent));
+}
+
+.undoButton:disabled,
+.smallButton:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.undoDone {
+  color: var(--chat-muted, inherit);
+}
+
+.undoError,
+.undoFailures {
+  color: color-mix(in srgb, #d0453a 85%, var(--chat-text, currentColor));
+}
+
+.undoFailures {
+  margin: 0;
+  padding-left: 16px;
+  flex-basis: 100%;
+}
+
+.undoSkipped {
+  flex-basis: 100%;
+  color: var(--chat-muted, inherit);
+}
+
+/* ── Routines ──────────────────────────────────────── */
+
+.routineRun {
+  margin: 6px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--chat-border, color-mix(in srgb, currentColor 18%, transparent));
+  border-radius: 8px;
+  background: var(--chat-panel, transparent);
+}
+
+.routineRunHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.routineBadge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--chat-accent, #3d78d2) 18%, transparent);
+  color: color-mix(in srgb, var(--chat-accent, #3d78d2) 80%, var(--chat-text, currentColor));
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.routineRunName {
+  font-weight: 600;
+}
+
+.routineOk,
+.routineFailed {
+  color: var(--chat-muted, inherit);
+}
+
+.routineFailed {
+  color: color-mix(in srgb, #d0453a 85%, var(--chat-text, currentColor));
+}
+
+.routinesEmpty {
+  color: var(--chat-muted, inherit);
+  line-height: 1.4;
+}
+
+.routineList {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.routineItem {
+  display: grid;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 1px solid var(--chat-border-soft, color-mix(in srgb, currentColor 10%, transparent));
+  border-radius: 7px;
+  background: var(--chat-surface, transparent);
+}
+
+.routineName {
+  font-weight: 600;
+}
+
+.routineMeta {
+  color: var(--chat-muted, inherit);
+}
+
+.routineActions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}

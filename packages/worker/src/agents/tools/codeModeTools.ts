@@ -15,13 +15,39 @@
  *
  * Approval: createCodeTool drops tools marked `needsApproval`, so the
  * mutating variant strips that flag from the inner tools and instead gates
- * the whole code tool behind one approval (the UI shows the code).
+ * the whole code tool behind one approval.
+ *
+ * Runs are legible and reversible (helpers in codeModeRuns.ts):
+ *  - Preview: before asking, the code runs once as a practice ("dry") run —
+ *    reads are real, writes are recorded and answered with stand-in results.
+ *    The approval card lists the writes in plain language. A practice run
+ *    that writes nothing needs no approval at all.
+ *  - Steps: a real run streams one line per tool call to the chat as it
+ *    happens (data part `data-codemode-steps`, id = tool call id).
+ *  - Undo: every successful write records how to reverse it (state read just
+ *    before the write); the plan is saved per run and the result card offers
+ *    Undo (data part `data-codemode-undo`).
  */
 
 import { createCodeTool } from '@cloudflare/codemode/ai';
-import { DynamicWorkerExecutor, type ToolProvider } from '@cloudflare/codemode';
+import { DynamicWorkerExecutor, type Executor, type ToolProvider } from '@cloudflare/codemode';
 import type { Tool } from 'ai';
 import { z } from 'zod';
+import {
+  appPreReadPaths,
+  describeAction,
+  describeStepResult,
+  describeStepStart,
+  dryRunResult,
+  findRecord,
+  planAppInverse,
+  planDesktopInverse,
+  type DescribeContext,
+  type DesktopItemLike,
+  type InverseOp,
+  type PlannedAction,
+  type RunStep,
+} from './codeModeRuns';
 
 const CODE_TIMEOUT_MS = 30_000;
 
@@ -35,7 +61,31 @@ export interface CodeModeOptions {
   apps?: Record<string, AnyTool>;
   /** True when any exposed tool mutates state — gates the code tool behind approval. */
   mutating: boolean;
+  /** Writes a UI data part (previews, live steps, undo availability). */
+  emit?: (chunk: { type: string; id: string; data: unknown }) => void;
+  /** The owner's desktop items: names in previews, and state to undo moves. */
+  loadDesktopItems?: () => Promise<DesktopItemLike[]>;
+  /** Stores a run's undo plan so the Undo button can apply it later. */
+  saveUndo?: (runId: string, plan: UndoRecord) => Promise<void> | void;
+  /** Saved routines: the user approved the code when saving it. */
+  preApproved?: boolean;
+  /** Test seam; defaults to a no-network DynamicWorkerExecutor. */
+  executor?: Executor;
 }
+
+export interface UndoRecord {
+  ops: InverseOp[];
+  skipped: string[];
+  writes: number;
+}
+
+export interface CodePreview {
+  ok: boolean;
+  actions: PlannedAction[];
+  error?: string;
+}
+
+const MAX_STEPS_SHOWN = 40;
 
 const DESCRIPTION = `Run JavaScript in an isolated sandbox to get something done in one step.
 
@@ -118,29 +168,6 @@ function prepareForSandbox(tools: Record<string, AnyTool>): Record<string, AnyTo
 }
 
 /**
- * Wrap apps.callAppApi so a run can report which apps' data it changed —
- * the chat uses `changedApps` to refresh those apps' open windows. App ids
- * are usually discovered at runtime (listApps), so the code text alone
- * cannot tell.
- */
-function trackAppWrites(apps: Record<string, AnyTool>, changed: Set<string>): Record<string, AnyTool> {
-  const callAppApi = apps.callAppApi as (AnyTool & { execute?: (...args: any[]) => Promise<any> }) | undefined;
-  if (!callAppApi?.execute) return apps;
-  const execute = callAppApi.execute;
-  return {
-    ...apps,
-    callAppApi: {
-      ...callAppApi,
-      execute: async (input: { appId: string; method?: string }, toolOptions: unknown) => {
-        const result = await execute(input, toolOptions);
-        if ((input.method ?? 'GET').toUpperCase() !== 'GET' && result?.ok !== false) changed.add(input.appId);
-        return result;
-      },
-    } as AnyTool,
-  };
-}
-
-/**
  * Names of tools that change state: every tool that carries needsApproval in
  * its chat form. A run must be approved before it may call any of them.
  */
@@ -156,49 +183,176 @@ export function codeNeedsApproval(code: unknown, mutating: readonly string[]): b
   return mutating.some((name) => text.includes(name));
 }
 
-/**
- * Runtime half of the gate: in a run that was not approved, state-changing
- * tools refuse to run. The static check above decides whether to ask; this
- * guarantees an unapproved run can never mutate, even if the code reaches a
- * tool without spelling its name (e.g. apps["call" + "AppApi"]).
- */
-function guardMutations(
-  tools: Record<string, AnyTool>,
-  mutating: readonly string[],
-  isApproved: () => boolean,
-): Record<string, AnyTool> {
-  return Object.fromEntries(Object.entries(tools).map(([name, t]) => {
-    const execute = (t as AnyTool & { execute?: (...args: any[]) => Promise<any> }).execute;
-    if (!mutating.includes(name) || !execute) return [name, t];
-    return [name, {
-      ...t,
-      execute: async (...args: any[]) => {
-        if (!isApproved()) {
-          throw new Error(`${name} changes data, so it needs the user's approval: call it in a run whose code names ${name} directly.`);
-        }
-        return execute(...args);
-      },
-    } as AnyTool];
-  }));
+/** Whether one call changes state (callAppApi only when it is not a GET). */
+function isWriteCall(name: string, input: unknown, mutating: readonly string[]): boolean {
+  if (!mutating.includes(name)) return false;
+  if (name === 'callAppApi') return String((input as { method?: unknown } | undefined)?.method ?? 'GET').toUpperCase() !== 'GET';
+  return true;
+}
+
+type ExecFn = (input: any, options?: any) => Promise<any>;
+
+interface RunState {
+  mode: 'dry' | 'real';
+  runId: string;
+  approved: boolean;
+  steps: RunStep[];
+  actions: PlannedAction[];
+  undo: UndoRecord;
+  changedApps: Set<string>;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function createCodeModeTool(options: CodeModeOptions): AnyTool {
-  const providers: ToolProvider[] = [];
-  const changedApps = new Set<string>();
   const mutating = options.mutating ? mutatingToolNames(options.desktop, options.apps) : [];
-  let runApproved = false;
-  const isApproved = () => runApproved;
+  const rawExec = (group: Record<string, AnyTool> | undefined, name: string): ExecFn | undefined =>
+    (group?.[name] as (AnyTool & { execute?: ExecFn }) | undefined)?.execute;
+
+  // Names learned during runs, for plain-language labels.
+  const appNames = new Map<string, string>();
+  const itemNames = new Map<string, string>();
+  const describeCtx: DescribeContext = {
+    appName: (id) => appNames.get(id),
+    itemName: (id) => itemNames.get(id),
+  };
+  const learn = (name: string, result: any) => {
+    if (name === 'listApps' && Array.isArray(result?.apps)) {
+      for (const app of result.apps) if (app?.id && app?.name) appNames.set(app.id, app.name);
+    }
+    const items = name === 'searchDesktop' ? result?.items : name === 'getDesktopOverview' ? result?.recentItems : null;
+    if (Array.isArray(items)) for (const item of items) if (item?.id && item?.name) itemNames.set(item.id, item.name);
+  };
+  const ensureNames = async (name: string, input: any) => {
+    if (typeof input?.appId === 'string' && input.appId && !appNames.has(input.appId)) {
+      const listApps = rawExec(options.apps, 'listApps');
+      if (listApps) learn('listApps', await listApps({}).catch(() => null));
+    }
+    if (['moveItems', 'createTextNote', 'createFolder'].includes(name) && options.loadDesktopItems) {
+      const ids = [...(Array.isArray(input?.itemIds) ? input.itemIds : []), input?.targetFolderId, input?.folderId]
+        .filter((id): id is string => typeof id === 'string');
+      if (ids.some((id) => !itemNames.has(id))) {
+        const items = await options.loadDesktopItems().catch(() => [] as DesktopItemLike[]);
+        for (const item of items) itemNames.set(item.id, item.name);
+      }
+    }
+  };
+
+  // ---- the current run (runs are serialized: one at a time per tool) ----
+  let current: RunState | null = null;
+  let queue: Promise<unknown> = Promise.resolve();
+  const serialize = <T>(task: () => Promise<T>): Promise<T> => {
+    const next = queue.then(task, task);
+    queue = next.catch(() => undefined);
+    return next;
+  };
+
+  const emitSteps = (run: RunState) => {
+    if (!options.emit || run.mode !== 'real') return;
+    options.emit({
+      type: 'data-codemode-steps',
+      id: run.runId,
+      data: {
+        steps: run.steps.slice(-MAX_STEPS_SHOWN),
+        total: run.steps.length,
+        done: run.steps.filter((s) => s.status === 'done').length,
+        failed: run.steps.filter((s) => s.status === 'error').length,
+      },
+    });
+  };
+
+  /** State read just before a write, so the write can be undone. */
+  const captureBefore = async (name: string, input: any): Promise<unknown> => {
+    if (name === 'callAppApi') {
+      const target = appPreReadPaths(String(input?.method ?? 'GET'), String(input?.path ?? '/'));
+      const read = rawExec(options.apps, 'readAppApi') ?? rawExec(options.apps, 'callAppApi');
+      if (!target || !read) return null;
+      const get = (path: string) => read({ appId: input.appId, path, method: 'GET' }).catch(() => null);
+      const single = await get(target.itemPath);
+      const fromSingle = single?.ok ? findRecord(single.data, target.id) : null;
+      if (fromSingle) return fromSingle;
+      if (target.collection === target.itemPath) return null;
+      const list = await get(target.collection);
+      return list?.ok ? findRecord(list.data, target.id) : null;
+    }
+    if ((name === 'moveItems' || name === 'createFolder') && options.loadDesktopItems) {
+      return options.loadDesktopItems().catch(() => null);
+    }
+    return null;
+  };
+
+  const instrument = (group: Record<string, AnyTool>): Record<string, AnyTool> =>
+    Object.fromEntries(Object.entries(group).map(([name, t]) => {
+      const execute = (t as AnyTool & { execute?: ExecFn }).execute;
+      if (!execute) return [name, t];
+      const wrapped: ExecFn = async (input, toolOptions) => {
+        const run = current;
+        const write = isWriteCall(name, input, mutating);
+        if (!run) return execute(input, toolOptions);
+
+        if (run.mode === 'dry') {
+          if (!write) {
+            const result = await execute(input, toolOptions);
+            learn(name, result);
+            return result;
+          }
+          await ensureNames(name, input);
+          run.actions.push(describeAction(name, input, describeCtx));
+          return dryRunResult(name, input);
+        }
+
+        if (write && !run.approved) {
+          throw new Error(`${name} changes data, so it needs the user's approval: call it in a run whose code names ${name} directly.`);
+        }
+        await ensureNames(name, input);
+        const step: RunStep = {
+          id: run.steps.length + 1,
+          tool: name,
+          label: describeStepStart(name, input, write, describeCtx),
+          status: 'running',
+          write,
+        };
+        run.steps.push(step);
+        emitSteps(run);
+        try {
+          const before = write ? await captureBefore(name, input) : null;
+          const result = await execute(input, toolOptions);
+          learn(name, result);
+          if (write) {
+            const failed = (result as { ok?: unknown } | undefined)?.ok === false;
+            if (name === 'callAppApi' && !failed) run.changedApps.add(input.appId);
+            if (!failed) run.undo.writes += 1;
+            const plan = name === 'callAppApi'
+              ? planAppInverse(input, result, before as Record<string, unknown> | null, describeCtx)
+              : planDesktopInverse(name, input, result, before as DesktopItemLike[] | null);
+            if (plan && 'op' in plan) run.undo.ops.push(plan.op);
+            else if (plan) run.undo.skipped.push(plan.skipped);
+          }
+          step.status = (result as { ok?: unknown } | undefined)?.ok === false ? 'error' : 'done';
+          step.detail = describeStepResult(name, result);
+          emitSteps(run);
+          return result;
+        } catch (error) {
+          step.status = 'error';
+          step.detail = errorMessage(error).slice(0, 200);
+          emitSteps(run);
+          throw error;
+        }
+      };
+      return [name, { ...t, execute: wrapped } as AnyTool];
+    }));
+
+  const providers: ToolProvider[] = [];
   if (options.desktop && Object.keys(options.desktop).length) {
-    providers.push({ name: 'desktop', tools: prepareForSandbox(guardMutations(options.desktop, mutating, isApproved)) as never });
+    providers.push({ name: 'desktop', tools: prepareForSandbox(instrument(options.desktop)) as never });
   }
   if (options.apps && Object.keys(options.apps).length) {
-    providers.push({
-      name: 'apps',
-      tools: prepareForSandbox(guardMutations(trackAppWrites(options.apps, changedApps), mutating, isApproved)) as never,
-    });
+    providers.push({ name: 'apps', tools: prepareForSandbox(instrument(options.apps)) as never });
   }
 
-  const executor = new DynamicWorkerExecutor({
+  const executor = options.executor ?? new DynamicWorkerExecutor({
     loader: options.loader,
     timeout: CODE_TIMEOUT_MS,
     globalOutbound: null,
@@ -208,31 +362,93 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
     tools: providers,
     executor,
     description: DESCRIPTION,
-  }) as AnyTool & { execute: (...args: any[]) => Promise<Record<string, unknown>> };
-
+  }) as AnyTool & { execute: ExecFn };
   const innerExecute = codeTool.execute;
+
+  const newRun = (mode: RunState['mode'], runId: string, approved: boolean): RunState => ({
+    mode,
+    runId,
+    approved,
+    steps: [],
+    actions: [],
+    undo: { ops: [], skipped: [], writes: 0 },
+    changedApps: new Set(),
+  });
+
+  /** Practice run: real reads, recorded writes. Never changes anything. */
+  const preview = (input: { code?: unknown }, runId: string): Promise<CodePreview> => serialize(async () => {
+    const run = newRun('dry', runId, false);
+    current = run;
+    try {
+      await innerExecute(input, { toolCallId: runId, messages: [] });
+      return { ok: true, actions: run.actions };
+    } catch (error) {
+      return { ok: false, actions: run.actions, error: errorMessage(error).slice(0, 300) };
+    } finally {
+      current = null;
+    }
+  });
+
+  // Runs whose practice run wrote nothing were not shown to the user, so
+  // they stay unapproved: their writes are refused if the code diverges.
+  const unapprovedRuns = new Set<string>();
+
   const trackedTool = {
     ...codeTool,
-    execute: async (...args: any[]) => {
-      changedApps.clear();
+    execute: (input: { code?: unknown }, toolOptions?: { toolCallId?: string }) => serialize(async () => {
+      const runId = toolOptions?.toolCallId ?? crypto.randomUUID();
       // The SDK only reaches execute for a gated run after the user approved
-      // it, so "needed approval" here means "was approved".
-      runApproved = codeNeedsApproval((args[0] as { code?: unknown } | undefined)?.code, mutating);
+      // it (in a later request, so no state from needsApproval survives) —
+      // "needed approval" here means "was approved".
+      const approved = Boolean(options.preApproved)
+        || (!unapprovedRuns.has(runId) && codeNeedsApproval(input?.code, mutating));
+      const run = newRun('real', runId, approved);
+      current = run;
       try {
-        const output = await innerExecute(...args);
-        return changedApps.size ? { ...output, changedApps: [...changedApps] } : output;
+        const output = await innerExecute(input, toolOptions);
+        return {
+          ...output,
+          ...(run.changedApps.size ? { changedApps: [...run.changedApps] } : {}),
+          ...(run.undo.ops.length ? { undoAvailable: true } : {}),
+        };
       } finally {
-        runApproved = false;
+        current = null;
+        emitSteps(run);
+        if (run.undo.writes > 0) {
+          if (run.undo.ops.length) await options.saveUndo?.(runId, run.undo);
+          options.emit?.({
+            type: 'data-codemode-undo',
+            id: runId,
+            data: {
+              runId,
+              available: run.undo.ops.length > 0,
+              writes: run.undo.writes,
+              steps: run.undo.ops.map((op) => op.summary),
+              skipped: run.undo.skipped,
+              changedApps: [...run.changedApps],
+            },
+          });
+        }
       }
-    },
+    }),
   } as AnyTool;
 
-  if (!mutating.length) return trackedTool;
-  // Read-only runs (lookups, counting, reading app data) no longer cost an
-  // approval card: before, every codemode run in the app-build route asked,
-  // and a turn that spent its approval on a lookup could end without acting.
+  if (!mutating.length || options.preApproved) return trackedTool;
   return {
     ...trackedTool,
-    needsApproval: async (input: { code?: unknown }) => codeNeedsApproval(input?.code, mutating),
+    // Read-only runs (lookups, counting, reading app data) cost no approval.
+    // A run that names a state-changing tool first runs as a practice run;
+    // the approval card then lists exactly what it would change.
+    needsApproval: async (input: { code?: unknown }, approvalOptions?: { toolCallId?: string }) => {
+      if (!codeNeedsApproval(input?.code, mutating)) return false;
+      const runId = approvalOptions?.toolCallId ?? crypto.randomUUID();
+      const result = await preview(input, runId);
+      options.emit?.({ type: 'data-codemode-preview', id: runId, data: result });
+      if (result.ok && result.actions.length === 0) {
+        unapprovedRuns.add(runId);
+        return false;
+      }
+      return true;
+    },
   } as AnyTool;
 }

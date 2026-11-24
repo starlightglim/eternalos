@@ -7,6 +7,10 @@
  *   PATCH  /api/agent/threads/:id       rename a thread
  *   DELETE /api/agent/threads/:id       delete a thread
  *   ANY    /api/agent/chat[/...]        forward to the per-thread agent DO
+ *   POST   /api/agent/runs/:runId/undo  undo a Code Mode run (?threadId=)
+ *   GET    /api/agent/routines          list a thread's routines (?threadId=)
+ *   POST   /api/agent/routines/:id/run  run a routine now (?threadId=)
+ *   DELETE /api/agent/routines/:id      delete a routine (?threadId=)
  *
  * Auth policy: 'required' for the thread/token routes, 'agent-chat' for the
  * forwarded chat transport (Bearer or one-time wsToken on WebSocket upgrades).
@@ -99,4 +103,47 @@ export async function handleAgentChatForward(c: RouteContext): Promise<Response>
   forwardUrl.pathname = remainder || '/';
 
   return agentStub.fetch(new Request(forwardUrl.toString(), c.request));
+}
+
+/** The caller's own per-thread agent: the name is built from the authenticated uid. */
+async function threadAgent(c: RouteContext) {
+  const auth = requireAuthContext(c);
+  const threadId = normalizeThreadId(c.url.searchParams.get('threadId'));
+  return getAgentByName<Env, OrchestratorAgent>(c.env.OrchestratorAgent, buildThreadAgentName(auth.uid, threadId));
+}
+
+const ID_RE = /^[A-Za-z0-9_:.-]{1,200}$/;
+
+/** POST /api/agent/runs/:runId/undo — reverse a Code Mode run. */
+export async function handleUndoCodeRun(c: RouteContext): Promise<Response> {
+  const [runId] = c.params;
+  if (!runId || !ID_RE.test(runId)) return Response.json({ error: 'Invalid run id' }, { status: 400 });
+  const agent = await threadAgent(c);
+  const result = await agent.undoCodeRun(runId);
+  const status = result.status === 'missing' ? 404 : result.status === 'already-undone' ? 409 : 200;
+  return Response.json(result, { status });
+}
+
+/** GET /api/agent/routines — list routines. */
+export async function handleListRoutines(c: RouteContext): Promise<Response> {
+  const agent = await threadAgent(c);
+  return Response.json({ routines: await agent.listRoutines() });
+}
+
+/** POST /api/agent/routines/:id/run — run a routine now. */
+export async function handleRunRoutineNow(c: RouteContext): Promise<Response> {
+  const [routineId] = c.params;
+  if (!routineId || !ID_RE.test(routineId)) return Response.json({ error: 'Invalid routine id' }, { status: 400 });
+  const agent = await threadAgent(c);
+  const result = await agent.runRoutineNow(routineId);
+  return Response.json(result, { status: result.status === 'missing' ? 404 : 200 });
+}
+
+/** DELETE /api/agent/routines/:id — delete a routine. */
+export async function handleDeleteRoutine(c: RouteContext): Promise<Response> {
+  const [routineId] = c.params;
+  if (!routineId || !ID_RE.test(routineId)) return Response.json({ error: 'Invalid routine id' }, { status: 400 });
+  const agent = await threadAgent(c);
+  const result = await agent.deleteRoutine(routineId);
+  return Response.json(result, { status: result.deleted ? 200 : 404 });
 }

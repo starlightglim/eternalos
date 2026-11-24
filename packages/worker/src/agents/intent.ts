@@ -98,7 +98,7 @@ const HARD_APP_VERBS =
  * an unambiguously app-shaped noun (app/application/widget) is also present,
  * in any order: "add dark mode to my todo app", "my app's theme, change it".
  */
-const SOFT_APP_VERBS = 'change|add|mark|tweak|improve|rename|redesign|restyle|recolor';
+const SOFT_APP_VERBS = 'change|add|mark|import|copy|tweak|improve|rename|redesign|restyle|recolor';
 
 /**
  * Nouns that always refer to an EternalOS app. Soft edit verbs require one of
@@ -296,6 +296,23 @@ export interface RouteContext {
   previousRoute?: ChatRoute;
 }
 
+/**
+ * Recurring / automation requests and questions about saved routines. They
+ * need the routine tools, which live on every tool route; desktop-write is
+ * the most general one when nothing more specific matched.
+ */
+const ROUTINE_NOUN_RE = /\b(?:routines?|automations?|automate|automatically|on a schedule)\b/;
+const RECURRENCE_RE =
+  /\b(?:every (?:morning|evening|night|day|hour|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d+ (?:hours?|days?))|each (?:morning|evening|night|day|hour|week)|daily|hourly|nightly|weekly)\b/;
+/** A request to do something ("every morning, move…"), not a description ("I run every morning"). */
+const ROUTINE_COMMAND_RE = new RegExp(
+  `\\b(?:${HARD_APP_VERBS}|${SOFT_APP_VERBS}|${DESKTOP_WRITE_VERBS}|save|write|summarize|summarise|remind|check|log|record|back up|archive|clear|empty|set up|schedule)\\b`,
+);
+
+function isRoutineRequest(text: string): boolean {
+  return ROUTINE_NOUN_RE.test(text) || (RECURRENCE_RE.test(text) && ROUTINE_COMMAND_RE.test(text));
+}
+
 /** Back-references and continuations that mark a message as a follow-up. */
 const FOLLOW_UP_RE =
   /\b(?:it|its|it's|that|this|those|these|them|they|there|another|ones?|the same|again|too|also|instead|as well|more)\b|^(?:now|then|and|also|next|ok|okay|yes|yeah|yep|sure|please|go ahead|do it|do that|great|perfect|nice|cool)\b/;
@@ -451,6 +468,11 @@ export function classifyRoute(rawText: string, context: RouteContext = {}): Chat
     wantsNewApp(actionText)
   ) {
     return 'app-build';
+  }
+
+  // 5b) Recurring work / saved routines.
+  if (isRoutineRequest(actionText) && !CAPABILITY_QUESTION_RE.test(actionText)) {
+    return 'desktop-write';
   }
 
   // 6) Inspecting existing apps or app source.

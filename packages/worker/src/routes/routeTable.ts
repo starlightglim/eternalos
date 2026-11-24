@@ -35,8 +35,12 @@ import {
   handleAgentChatWsToken,
   handleCreateAgentThread,
   handleDeleteAgentThread,
+  handleDeleteRoutine,
   handleListAgentThreads,
+  handleListRoutines,
   handleRenameAgentThread,
+  handleRunRoutineNow,
+  handleUndoCodeRun,
 } from './agent';
 import {
   handleAppCapability,
@@ -485,6 +489,36 @@ export const ROUTES: RouteDefinition[] = [
     match: regex(/^\/api\/agent\/threads\/([^/]+)$/),
     policy: { auth: 'required', rateLimit: RATE_LIMIT_API },
     handler: handleDeleteAgentThread,
+  },
+  // Code Mode undo and routines: owner-only (the agent name is derived from
+  // the authenticated uid), same bucket as the other agent routes.
+  {
+    name: 'agent-run-undo',
+    method: 'POST',
+    match: regex(/^\/api\/agent\/runs\/([^/]+)\/undo$/),
+    policy: { auth: 'required', rateLimit: RATE_LIMIT_API },
+    handler: handleUndoCodeRun,
+  },
+  {
+    name: 'agent-routines-list',
+    method: 'GET',
+    match: exact('/api/agent/routines'),
+    policy: { auth: 'required', rateLimit: RATE_LIMIT_API },
+    handler: handleListRoutines,
+  },
+  {
+    name: 'agent-routine-run',
+    method: 'POST',
+    match: regex(/^\/api\/agent\/routines\/([^/]+)\/run$/),
+    policy: { auth: 'required', rateLimit: RATE_LIMIT_API },
+    handler: handleRunRoutineNow,
+  },
+  {
+    name: 'agent-routine-delete',
+    method: 'DELETE',
+    match: regex(/^\/api\/agent\/routines\/([^/]+)$/),
+    policy: { auth: 'required', rateLimit: RATE_LIMIT_API },
+    handler: handleDeleteRoutine,
   },
   // Authenticated stateful chat agent routed through a stable API path; the
   // agent instance name is derived from the authenticated uid + thread id.

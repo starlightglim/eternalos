@@ -485,6 +485,18 @@ function createAgentHarness({ items = [], profile = null } = {}) {
     getOwnerUid: OrchestratorAgent.prototype.getOwnerUid,
     getUserDesktopStub: OrchestratorAgent.prototype.getUserDesktopStub,
     listInstalledAppRoutingTerms: OrchestratorAgent.prototype.listInstalledAppRoutingTerms,
+    buildCodeMode: OrchestratorAgent.prototype.buildCodeMode,
+    createRoutineTools: OrchestratorAgent.prototype.createRoutineTools,
+    loadDesktopItemsForRuns: OrchestratorAgent.prototype.loadDesktopItemsForRuns,
+    executeInverse: OrchestratorAgent.prototype.executeInverse,
+    undoCodeRun: OrchestratorAgent.prototype.undoCodeRun,
+    routineView: OrchestratorAgent.prototype.routineView,
+    listRoutines: OrchestratorAgent.prototype.listRoutines,
+    scheduleRoutine: OrchestratorAgent.prototype.scheduleRoutine,
+    deleteRoutine: OrchestratorAgent.prototype.deleteRoutine,
+    executeRoutine: OrchestratorAgent.prototype.executeRoutine,
+    runRoutine: OrchestratorAgent.prototype.runRoutine,
+    runRoutineNow: OrchestratorAgent.prototype.runRoutineNow,
     getModel: OrchestratorAgent.prototype.getModel,
     settleTurnUsage: OrchestratorAgent.prototype.settleTurnUsage,
     degradedTurnResponse: OrchestratorAgent.prototype.degradedTurnResponse,
@@ -3372,5 +3384,133 @@ describe('OrchestratorAgent approval flow', () => {
     assert.deepEqual(forget.errors, []);
     assert.equal(toolPartOf(forget.message, 'call_3').output.status, 'deleted');
     assert.equal(h.agent.state.memories.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Code Mode undo and routines (agent side)
+// ---------------------------------------------------------------------------
+
+/** Real in-memory SQLite shaped like a Durable Object's SqlStorage. */
+async function realSqlStorage() {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(':memory:');
+  return {
+    exec(query, ...params) {
+      const statement = db.prepare(String(query));
+      if (/^\s*select/i.test(String(query))) {
+        const rows = statement.all(...params);
+        return { toArray: () => rows };
+      }
+      statement.run(...params);
+      return { toArray: () => [] };
+    },
+  };
+}
+
+describe('Code Mode undo (OrchestratorAgent.undoCodeRun)', () => {
+  it('puts moved items back and trashes a created note, exactly once', async () => {
+    const h = createAgentHarness({
+      items: [
+        { id: 'a', type: 'text', name: 'a.txt', parentId: 'f1' },
+        { id: 'b', type: 'text', name: 'b.txt', parentId: 'f1' },
+        { id: 'n1', type: 'text', name: 'Digest', parentId: null },
+        { id: 'f1', type: 'folder', name: 'Archive', parentId: null },
+      ],
+    });
+    h.agent.ctx = { storage: { sql: await realSqlStorage() } };
+    const { initCodeRunStore, saveUndoPlan } = await import('../src/agents/codeRunStore.ts');
+    initCodeRunStore(h.agent.ctx.storage.sql);
+    saveUndoPlan(h.agent.ctx.storage.sql, 'run-1', {
+      writes: 2,
+      skipped: [],
+      ops: [
+        { kind: 'desktop', patches: [{ id: 'a', updates: { parentId: null } }, { id: 'b', updates: { parentId: 'f0' } }], summary: 'Move 2 items back' },
+        { kind: 'desktop', patches: [{ id: 'n1', updates: { isTrashed: true } }], summary: 'Trash the note' },
+      ],
+    });
+
+    const result = await h.agent.undoCodeRun('run-1');
+    assert.equal(result.status, 'undone');
+    assert.deepEqual(result.done, ['Trash the note', 'Move 2 items back'], 'newest change is undone first');
+    assert.equal(h.desktop.get('a').parentId, null);
+    assert.equal(h.desktop.get('b').parentId, 'f0');
+    assert.equal(h.desktop.get('n1').isTrashed, true);
+    assert.equal(typeof h.desktop.get('n1').trashedAt, 'number');
+
+    assert.equal((await h.agent.undoCodeRun('run-1')).status, 'already-undone');
+    assert.equal((await h.agent.undoCodeRun('nope')).status, 'missing');
+  });
+});
+
+describe('routines (OrchestratorAgent)', () => {
+  async function routineHarness() {
+    const h = createAgentHarness({ items: [] });
+    h.agent.ctx = { storage: { sql: await realSqlStorage() } };
+    const scheduled = [];
+    const cancelled = [];
+    h.agent.schedule = async (when, callback, payload) => {
+      scheduled.push({ when: new Date(when), callback, payload });
+      return { id: `sch-${scheduled.length}` };
+    };
+    h.agent.cancelSchedule = async (id) => { cancelled.push(id); return true; };
+    h.agent.persistMessages = async (messages) => { h.threadMessages.splice(0, h.threadMessages.length, ...messages); };
+    h.agent.turnTimeZone = 'America/Toronto';
+    // No Worker Loader in unit tests: running the code fails, which still
+    // exercises recording the run and posting it into the thread.
+    const tools = h.agent.createRoutineTools('user-1', () => {});
+    return { h, scheduled, cancelled, tools };
+  }
+
+  it('saves, schedules, lists, runs on request (posting the result) and deletes', async () => {
+    const { h, scheduled, cancelled, tools } = await routineHarness();
+    const saved = await tools.saveRoutine.execute({
+      name: 'Morning digest',
+      code: 'async () => "3 unread books"',
+      schedule: { every: 'day', at: '08:00' },
+    }, { toolCallId: 'save-1', messages: [] });
+    assert.equal(saved.routine.name, 'Morning digest');
+    assert.equal(saved.routine.schedule, 'every day at 08:00 (America/Toronto)');
+    assert.equal(scheduled.length, 1);
+    assert.equal(scheduled[0].callback, 'runRoutine');
+    assert.equal(scheduled[0].payload.routineId, saved.routine.id);
+    assert.ok(scheduled[0].when.getTime() > Date.now());
+
+    const listed = await tools.listRoutines.execute({}, { toolCallId: 'l', messages: [] });
+    assert.equal(listed.routines.length, 1);
+
+    const run = await h.agent.runRoutineNow(saved.routine.id);
+    assert.ok(['ok', 'error'].includes(run.status));
+    const posted = h.threadMessages.at(-1);
+    assert.equal(posted.role, 'assistant');
+    const runPart = posted.parts.find((p) => p.type === 'data-routine-run');
+    assert.equal(runPart.data.name, 'Morning digest');
+    assert.match(posted.parts[0].text, /Routine “Morning digest”/);
+    const after = (await h.agent.listRoutines())[0];
+    assert.equal(after.lastStatus, run.status);
+    assert.equal(typeof after.lastRunAt, 'number');
+
+    assert.deepEqual(await h.agent.deleteRoutine(saved.routine.id), { deleted: true });
+    assert.deepEqual(cancelled, ['sch-1']);
+    assert.equal((await h.agent.listRoutines()).length, 0);
+  });
+
+  it('reschedules after a scheduled run and caps routines per thread', async () => {
+    const { h, scheduled, tools } = await routineHarness();
+    const saved = await tools.saveRoutine.execute({
+      name: 'Hourly check', code: 'async () => 1', schedule: { every: 'hours', hours: 3 },
+    }, { toolCallId: 's', messages: [] });
+    await h.agent.runRoutine({ routineId: saved.routine.id });
+    assert.equal(scheduled.length, 2, 'the next run is scheduled after each run');
+    const gap = scheduled[1].when.getTime() - Date.now();
+    assert.ok(gap > 2.9 * 3_600_000 && gap <= 3 * 3_600_000 + 1000);
+
+    for (let i = 1; i < 10; i++) {
+      await tools.saveRoutine.execute({ name: `r${i}`, code: 'async () => 1', schedule: { every: 'hours', hours: 1 } }, { toolCallId: `s${i}`, messages: [] });
+    }
+    await assert.rejects(
+      tools.saveRoutine.execute({ name: 'one too many', code: 'async () => 1', schedule: { every: 'hours', hours: 1 } }, { toolCallId: 'sx', messages: [] }),
+      /already has 10 routines/,
+    );
   });
 });

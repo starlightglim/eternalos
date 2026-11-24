@@ -306,6 +306,24 @@ describe('intent routing (classifyRoute)', () => {
     });
   });
 
+  describe('routines and cross-app requests', () => {
+    const context = { appNames: ['Shelf'], appDataTerms: ['books', 'book'] };
+    const cases = [
+      { text: 'every morning, move new screenshots into my Screenshots folder', route: 'desktop-write' },
+      { text: 'show me my routines', route: 'desktop-write', note: 'routine tools live on tool routes' },
+      { text: 'delete the morning digest routine', route: 'desktop-write' },
+      { text: 'every day at 8 add a reading reminder to my books', route: 'app-build', note: 'app write wins; routine tools are there too' },
+      { text: 'import the books from reading-list.txt into Shelf', route: 'app-build', note: '"import" is an edit verb' },
+      { text: 'I go for a run every morning', route: 'chat', note: 'a description, not a request' },
+      { text: 'can you automate cleaning up my desktop?', route: 'desktop-write' },
+    ];
+    for (const { text, route, note } of cases) {
+      it(`routes ${JSON.stringify(text)} → ${route}${note ? ` (${note})` : ''}`, () => {
+        assert.equal(classifyRoute(text, context), route);
+      });
+    }
+  });
+
   describe('follow-ups inherit the previous turn\'s route', () => {
     const cases = [
       // after building / editing an app

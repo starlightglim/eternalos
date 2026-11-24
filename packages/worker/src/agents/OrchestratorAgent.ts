@@ -40,6 +40,35 @@ import { createAppTools, initAppRegistry } from './tools/appTools';
 import { createMemoryTools } from './tools/memoryTools';
 import { createCodeModeTool } from './tools/codeModeTools';
 import {
+  applyUndoPlan,
+  describeSchedule,
+  isValidTimeZone,
+  MAX_ROUTINE_HOURS,
+  MIN_ROUTINE_HOURS,
+  nextRoutineRun,
+  type InverseOp,
+  type RoutineSchedule,
+  type RunStep,
+} from './tools/codeModeRuns';
+import {
+  countRoutines,
+  deleteRoutineRecord,
+  getRoutineRecord,
+  getUndoPlan,
+  initCodeRunStore,
+  insertRoutine,
+  listRoutineRecords,
+  markUndone,
+  MAX_ROUTINE_CODE_CHARS,
+  MAX_ROUTINES_PER_THREAD,
+  recordRoutineRun,
+  saveUndoPlan,
+  updateRoutineSchedule,
+  type RoutineRecord,
+} from './codeRunStore';
+import { tool, type UIMessage } from 'ai';
+import { z } from 'zod';
+import {
   deriveThreadTitleFromMessage,
   extractOwnerUid,
   normalizeThreadId,
@@ -71,7 +100,14 @@ const CODE_MODE_PROMPT = `Code Mode
 - Prefer codemode when a request needs several tool calls, a loop over many items, filtering, counting, or other computation; prefer the plain tool for a single lookup.
 - Return a compact JSON result from the function, then explain it to the user in plain language. Never paste the code into the reply unless asked.
 - Write plain JavaScript: no TypeScript type annotations, interfaces or "as" casts — they are syntax errors in the sandbox.
-- A run that only reads needs no approval. Put the read and the change in ONE run when you can (e.g. look up the app id, then write), so the user approves once.`;
+- A run that only reads needs no approval. Put the read and the change in ONE run when you can (e.g. look up the app id, then write), so the user approves once.
+- When a request makes TWO OR MORE changes (several records, an update plus an add, a batch of moves), do them all in ONE codemode run, never as several separate tool calls: the user then reviews every change in one preview, approves once, and can undo them together. A single change may use the plain tool.
+- Inside codemode BOTH namespaces are available in every mode: desktop.* (search, read text files, create notes and folders, move items) and apps.* (list apps, read and write app data). Use this for work that spans them, e.g. read a text file and add each line to an app, or summarize an app's data into a desktop note.
+- Before a run that changes anything, the user sees a plain-language preview of every change and approves once; afterwards they can undo the run with one click. So do not ask "are you sure?" in text first — just make the codemode call.
+
+Routines
+- When the user wants something to happen regularly or automatically ("every morning", "daily at 9", "every 3 hours"), write the codemode function for it and call saveRoutine with that code and the schedule. It runs on schedule with no AI, so the code must be self-contained and should return a short summary (a string or small object).
+- listRoutines shows saved routines; deleteRoutine removes one.`;
 
 const CHAT_PROMPT = `${BASE_PROMPT}
 
@@ -180,8 +216,10 @@ Primary workflow
   shopping list app", "what's in my reading tracker?" — call
   callAppApi({ appId, method, path, body }) using a route from that app's
   apiRoutes and body keys from its apiBodyFields (both come from listApps;
-  only read getAppSource if they are missing). If a backend errors,
-  getAppBackendLogs({ appId }) shows its console output.
+  only read getAppSource if they are missing). For two or more data changes
+  in one request, use one codemode run instead (one preview, one approval,
+  one undo). If a backend errors, getAppBackendLogs({ appId }) shows its
+  console output.
 
 What apps can do
 - Read the user's desktop via window.eternal.fs.list(), fs.read(), fs.readText(),
@@ -291,8 +329,296 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
     memories: [],
   };
 
+  /** The browser's time zone, from the chat request body (for routines). */
+  private turnTimeZone: string | undefined;
+
   async onStart() {
     initAppRegistry(this.ctx.storage.sql);
+    initCodeRunStore(this.ctx.storage.sql);
+  }
+
+  /** Active desktop items, for Code Mode previews and undo. */
+  private async loadDesktopItemsForRuns(): Promise<Array<{ id: string; name: string; parentId?: string | null; isTrashed?: boolean }>> {
+    const response = await this.getUserDesktopStub().fetch(new Request('http://internal/items'));
+    if (!response.ok) return [];
+    const { items } = await response.json<{ items: Array<{ id: string; name: string; parentId?: string | null; isTrashed?: boolean }> }>();
+    return items.filter((item) => !item.isTrashed);
+  }
+
+  /**
+   * The tools Code Mode orchestrates, plus the Code Mode tool itself. Shared
+   * by chat turns and scheduled routines. Both namespaces are always
+   * present: one run can read a desktop file and write an app's data.
+   */
+  private buildCodeMode(
+    ownerUid: string,
+    options: {
+      emit?: (chunk: { type: string; id: string; data: unknown }) => void;
+      preApproved?: boolean;
+      onBuildStage?: (toolCallId: string, stage: string, label: string) => void;
+    } = {},
+  ) {
+    const desktopTools = createDesktopTools({
+      getUserDesktopStub: () => this.getUserDesktopStub(),
+      setState: (state) => this.setState(state),
+      getState: () => this.state,
+    });
+    const appTools = createAppTools({
+      env: this.env,
+      sql: this.ctx.storage.sql,
+      agentName: ownerUid,
+      onBuildStage: options.onBuildStage ?? (() => {}),
+    });
+    const codeDesktop = {
+      getDesktopOverview: desktopTools.getDesktopOverview,
+      searchDesktop: desktopTools.searchDesktop,
+      readTextFile: desktopTools.readTextFile,
+      createFolder: desktopTools.createFolder,
+      moveItems: desktopTools.moveItems,
+      createTextNote: desktopTools.createTextNote,
+    };
+    const codeApps = {
+      listApps: appTools.listApps,
+      getAppSource: appTools.getAppSource,
+      getAppBackendLogs: appTools.getAppBackendLogs,
+      readAppApi: appTools.readAppApi,
+      callAppApi: appTools.callAppApi,
+    };
+    const codemode = () => createCodeModeTool({
+      loader: this.env.LOADER,
+      desktop: codeDesktop,
+      apps: codeApps,
+      mutating: true,
+      emit: options.emit,
+      preApproved: options.preApproved,
+      loadDesktopItems: () => this.loadDesktopItemsForRuns(),
+      saveUndo: (runId, plan) => saveUndoPlan(this.ctx.storage.sql, runId, plan),
+    });
+    return { desktopTools, appTools, codemode };
+  }
+
+  /** Apply one undo step (called by applyUndoPlan). */
+  private async executeInverse(ownerUid: string, op: InverseOp) {
+    if (op.kind === 'app') {
+      const { appTools } = this.buildCodeMode(ownerUid);
+      const execute = (appTools.callAppApi as { execute?: (input: unknown, options: unknown) => Promise<{ ok?: boolean; status?: number; data?: unknown }> }).execute;
+      if (!execute) throw new Error('App data is unavailable');
+      return execute({ appId: op.appId, method: op.method, path: op.path, body: op.body }, { toolCallId: 'undo', messages: [] });
+    }
+    const patches = op.patches.map((patch) => ({
+      id: patch.id,
+      updates: patch.updates.isTrashed ? { ...patch.updates, trashedAt: Date.now() } : patch.updates,
+    }));
+    const response = await this.getUserDesktopStub().fetch(new Request('http://internal/items', {
+      method: 'PATCH',
+      body: JSON.stringify(patches),
+    }));
+    return { ok: response.ok, status: response.status };
+  }
+
+  /**
+   * Undo a Code Mode run (the result card's Undo button, via
+   * POST /api/agent/runs/:runId/undo). One-shot: a second call reports it.
+   */
+  async undoCodeRun(runId: string): Promise<{
+    status: 'undone' | 'partial' | 'missing' | 'already-undone';
+    done: string[];
+    failed: Array<{ summary: string; error: string }>;
+    changedApps: string[];
+  }> {
+    const sql = this.ctx.storage.sql;
+    initCodeRunStore(sql);
+    const lookup = getUndoPlan(sql, runId);
+    if (lookup.status === 'missing') return { status: 'missing', done: [], failed: [], changedApps: [] };
+    if (lookup.status === 'undone') return { status: 'already-undone', done: [], failed: [], changedApps: [] };
+    const ownerUid = this.getOwnerUid();
+    const outcome = await applyUndoPlan(lookup.plan.ops, (op) => this.executeInverse(ownerUid, op));
+    markUndone(sql, runId);
+    return { status: outcome.failed.length ? 'partial' : 'undone', ...outcome };
+  }
+
+  /* ------------------------------ routines ------------------------------ */
+
+  private routineView(routine: RoutineRecord) {
+    return {
+      id: routine.id,
+      name: routine.name,
+      schedule: describeSchedule(routine.schedule),
+      nextRunAt: routine.nextRunAt,
+      lastRunAt: routine.lastRunAt,
+      lastStatus: routine.lastStatus,
+      lastSummary: routine.lastSummary,
+      code: routine.code,
+    };
+  }
+
+  async listRoutines() {
+    initCodeRunStore(this.ctx.storage.sql);
+    return listRoutineRecords(this.ctx.storage.sql).map((routine) => this.routineView(routine));
+  }
+
+  private async scheduleRoutine(routine: Pick<RoutineRecord, 'id' | 'schedule'>): Promise<{ nextRunAt: number; scheduleId: string }> {
+    const next = nextRoutineRun(routine.schedule, new Date());
+    const scheduled = await this.schedule(next, 'runRoutine', { routineId: routine.id });
+    return { nextRunAt: next.getTime(), scheduleId: scheduled.id };
+  }
+
+  async deleteRoutine(routineId: string): Promise<{ deleted: boolean }> {
+    const sql = this.ctx.storage.sql;
+    initCodeRunStore(sql);
+    const routine = getRoutineRecord(sql, routineId);
+    if (!routine) return { deleted: false };
+    if (routine.scheduleId) await this.cancelSchedule(routine.scheduleId).catch(() => false);
+    return { deleted: deleteRoutineRecord(sql, routineId) };
+  }
+
+  /** Scheduled callback (this.schedule → 'runRoutine'). Runs, then reschedules. */
+  async runRoutine(payload: { routineId: string }) {
+    const sql = this.ctx.storage.sql;
+    initCodeRunStore(sql);
+    const routine = getRoutineRecord(sql, payload.routineId);
+    if (!routine || !routine.enabled) return;
+    try {
+      await this.executeRoutine(routine, 'schedule');
+    } finally {
+      const { nextRunAt, scheduleId } = await this.scheduleRoutine(routine);
+      updateRoutineSchedule(sql, routine.id, nextRunAt, scheduleId);
+    }
+  }
+
+  /** "Run now" from the routines list (POST /api/agent/routines/:id/run). */
+  async runRoutineNow(routineId: string) {
+    initCodeRunStore(this.ctx.storage.sql);
+    const routine = getRoutineRecord(this.ctx.storage.sql, routineId);
+    if (!routine) return { status: 'missing' as const };
+    return this.executeRoutine(routine, 'manual');
+  }
+
+  /**
+   * Run a routine's saved code (pre-approved, no AI), record the outcome and
+   * post it into the thread as a message with its steps and an Undo.
+   */
+  private async executeRoutine(routine: RoutineRecord, trigger: 'schedule' | 'manual' | 'saved') {
+    const runId = `routine-${routine.id}-${Date.now()}`;
+    let steps: RunStep[] = [];
+    let undo: unknown = null;
+    const { codemode } = this.buildCodeMode(this.getOwnerUid(), {
+      preApproved: true,
+      emit: (chunk) => {
+        if (chunk.type === 'data-codemode-steps') steps = (chunk.data as { steps: RunStep[] }).steps;
+        if (chunk.type === 'data-codemode-undo') undo = chunk.data;
+      },
+    });
+    let status: 'ok' | 'error' = 'ok';
+    let summary: string;
+    let changedApps: string[] = [];
+    try {
+      const execute = (codemode() as { execute: (input: unknown, options: unknown) => Promise<{ result?: unknown; changedApps?: string[] }> }).execute;
+      const output = await execute({ code: routine.code }, { toolCallId: runId, messages: [] });
+      changedApps = output.changedApps ?? [];
+      const result = output.result;
+      summary = result === undefined ? 'Done.' : typeof result === 'string' ? result : JSON.stringify(result);
+    } catch (error) {
+      status = 'error';
+      summary = error instanceof Error ? error.message : String(error);
+    }
+    const sql = this.ctx.storage.sql;
+    recordRoutineRun(sql, routine.id, status, summary);
+    const when = trigger === 'schedule' ? 'on schedule' : trigger === 'saved' ? 'right after saving' : 'on request';
+    const message: UIMessage = {
+      id: `routine-run-${runId}`,
+      role: 'assistant',
+      parts: [
+        {
+          type: 'text',
+          text: status === 'ok'
+            ? `Routine “${routine.name}” ran ${when}: ${summary.slice(0, 600)}`
+            : `Routine “${routine.name}” failed ${when}: ${summary.slice(0, 600)}`,
+        },
+        {
+          type: 'data-routine-run',
+          id: runId,
+          data: { runId, routineId: routine.id, name: routine.name, status, summary: summary.slice(0, 2000), steps, undo, changedApps, ranAt: Date.now(), trigger },
+        } as UIMessage['parts'][number],
+      ],
+    };
+    try {
+      await this.persistMessages([...this.messages, message]);
+    } catch (error) {
+      console.error('Failed to post routine run message:', error);
+    }
+    return { status, summary, runId, changedApps };
+  }
+
+  /** Chat tools for saving, listing and deleting routines. */
+  private createRoutineTools(ownerUid: string, emit: (chunk: { type: string; id: string; data: unknown }) => void) {
+    const sql = this.ctx.storage.sql;
+    const scheduleSchema = z.object({
+      every: z.enum(['day', 'hours']).describe("'day' = once a day at a time; 'hours' = every N hours"),
+      at: z.string().regex(/^\d{1,2}:\d{2}$/).optional().describe("For every 'day': local time HH:MM, e.g. '08:00'"),
+      hours: z.number().int().min(MIN_ROUTINE_HOURS).max(MAX_ROUTINE_HOURS).optional().describe("For every 'hours': the interval"),
+    });
+    const toSchedule = (input: z.infer<typeof scheduleSchema>): RoutineSchedule => (
+      input.every === 'hours'
+        ? { every: 'hours', hours: input.hours ?? 24 }
+        : { every: 'day', at: input.at ?? '08:00', ...(isValidTimeZone(this.turnTimeZone) ? { timeZone: this.turnTimeZone } : {}) }
+    );
+    return {
+      saveRoutine: tool({
+        description: 'Save a Code Mode function as a routine that runs automatically on a schedule (no AI involved when it runs). Use when the user wants something done regularly. The code has the same desktop.* and apps.* namespaces as codemode and should return a short summary.',
+        inputSchema: z.object({
+          name: z.string().min(1).max(60).describe('Short name, e.g. "Morning reading digest"'),
+          code: z.string().min(1).max(MAX_ROUTINE_CODE_CHARS).describe('One async arrow function in plain JavaScript, same rules as codemode'),
+          schedule: scheduleSchema,
+          runNow: z.boolean().optional().describe('Also run it once right away'),
+        }),
+        // Always confirmed: the user approves the code once, and every
+        // scheduled run then acts without asking. The card shows a practice
+        // run's preview of what the code would change right now.
+        needsApproval: async (input, approvalOptions) => {
+          const preview = this.buildCodeMode(ownerUid, { emit }).codemode() as { needsApproval?: (input: unknown, options: unknown) => Promise<boolean> };
+          await preview.needsApproval?.({ code: input.code }, approvalOptions).catch(() => true);
+          return true;
+        },
+        execute: async (input) => {
+          initCodeRunStore(sql);
+          if (countRoutines(sql) >= MAX_ROUTINES_PER_THREAD) {
+            throw new Error(`This thread already has ${MAX_ROUTINES_PER_THREAD} routines; delete one first.`);
+          }
+          const routine: RoutineRecord = {
+            id: crypto.randomUUID(),
+            name: input.name.trim(),
+            code: input.code,
+            schedule: toSchedule(input.schedule),
+            createdAt: Date.now(),
+            nextRunAt: null,
+            scheduleId: null,
+            lastRunAt: null,
+            lastStatus: null,
+            lastSummary: null,
+            enabled: true,
+          };
+          const { nextRunAt, scheduleId } = await this.scheduleRoutine(routine);
+          insertRoutine(sql, { ...routine, nextRunAt, scheduleId });
+          const ranNow = input.runNow ? await this.executeRoutine({ ...routine, nextRunAt, scheduleId }, 'saved') : undefined;
+          return {
+            routine: this.routineView({ ...routine, nextRunAt, scheduleId }),
+            ...(ranNow ? { ranNow: { status: ranNow.status, summary: ranNow.summary, changedApps: ranNow.changedApps } } : {}),
+          };
+        },
+      }),
+      listRoutines: tool({
+        description: "List this thread's saved routines with their schedule, next run and last result.",
+        inputSchema: z.object({}),
+        execute: async () => ({ routines: await this.listRoutines() }),
+      }),
+      deleteRoutine: tool({
+        description: 'Delete a saved routine so it stops running.',
+        inputSchema: z.object({ routineId: z.string().min(1).describe('Routine id from listRoutines') }),
+        needsApproval: true,
+        execute: async (input) => this.deleteRoutine(input.routineId),
+      }),
+    };
   }
 
   /**
@@ -433,6 +759,8 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
     options?: Parameters<AIChatAgent<Env, OrchestratorState>['onChatMessage']>[1],
   ) {
     const ownerUid = this.getOwnerUid();
+    const bodyTimeZone = (options?.body as { timeZone?: unknown } | undefined)?.timeZone;
+    if (typeof bodyTimeZone === 'string' && isValidTimeZone(bodyTimeZone)) this.turnTimeZone = bodyTimeZone;
 
     // --- Per-account guard, before any other work: the daily AI budget and
     // the in-flight turn cap. Deliberately the first await in the turn so
@@ -563,37 +891,32 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
       };
 
       // Code Mode: one sandboxed JS function orchestrating many tool calls.
-      // Each route exposes exactly the tools that route already allows. A run
-      // is approval-gated only when its code names a state-changing tool, and
-      // state-changing tools refuse to run in an unapproved run (see
-      // codeModeTools.ts) — read-only lookups never cost an approval.
+      // Every tool route gets the same Code Mode with BOTH namespaces
+      // (desktop.* and apps.*), so one run can span the desktop and apps. A
+      // run that names a state-changing tool first runs as a practice run;
+      // the approval card lists exactly what it would change, and a run that
+      // changes nothing needs no approval (see codeModeTools.ts). Previews,
+      // live steps and undo availability stream as data parts.
+      const emitData = (chunk: { type: string; id: string; data: unknown }) => stageEmitter.write?.(chunk);
+      const codemode = () => this.buildCodeMode(ownerUid, { emit: emitData }).codemode();
+      const routineTools = this.createRoutineTools(ownerUid, emitData);
       const codemodeFor = {
-        desktopRead: () => createCodeModeTool({ loader: this.env.LOADER, desktop: desktopReadTools, mutating: false }),
-        desktopWrite: () => createCodeModeTool({ loader: this.env.LOADER, desktop: desktopWriteTools, mutating: true }),
-        appRead: () => createCodeModeTool({ loader: this.env.LOADER, desktop: desktopReadTools, apps: appReadTools, mutating: false }),
-        appBuild: () => createCodeModeTool({
-          loader: this.env.LOADER,
-          desktop: desktopReadTools,
-          apps: {
-            listApps: appTools.listApps,
-            getAppSource: appTools.getAppSource,
-            getAppBackendLogs: appTools.getAppBackendLogs,
-            readAppApi: appTools.readAppApi,
-            callAppApi: appTools.callAppApi,
-          },
-          mutating: true,
-        }),
+        desktopRead: codemode,
+        desktopWrite: codemode,
+        appRead: codemode,
+        appBuild: codemode,
       };
+      const toolRouteExtras = routineTools;
 
       // Built lazily: only the active route's tool set (and its Code Mode
       // type definitions) is constructed per turn.
       const routeTools: Record<ChatRoute, () => Record<string, unknown>> = {
         chat: () => sharedTools,
-        'desktop-read': () => ({ ...desktopReadTools, codemode: codemodeFor.desktopRead(), ...sharedTools }),
-        'desktop-write': () => ({ ...desktopWriteTools, codemode: codemodeFor.desktopWrite(), ...sharedTools }),
-        'app-read': () => ({ ...appReadTools, codemode: codemodeFor.appRead(), ...sharedTools }),
+        'desktop-read': () => ({ ...desktopReadTools, codemode: codemodeFor.desktopRead(), ...toolRouteExtras, ...sharedTools }),
+        'desktop-write': () => ({ ...desktopWriteTools, codemode: codemodeFor.desktopWrite(), ...toolRouteExtras, ...sharedTools }),
+        'app-read': () => ({ ...appReadTools, codemode: codemodeFor.appRead(), ...toolRouteExtras, ...sharedTools }),
         'app-install-preview': () => ({ installAppPreview: appTools.installAppPreview, ...sharedTools }),
-        'app-build': () => ({ ...appBuildTools, codemode: codemodeFor.appBuild(), ...sharedTools }),
+        'app-build': () => ({ ...appBuildTools, codemode: codemodeFor.appBuild(), ...toolRouteExtras, ...sharedTools }),
       };
       const activeRouteTools = routeTools[route]();
       const activeToolNames = Object.keys(activeRouteTools) as string[];

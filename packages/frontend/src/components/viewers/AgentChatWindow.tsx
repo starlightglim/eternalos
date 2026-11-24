@@ -26,6 +26,18 @@ import { getTextFileContentType, type DesktopItem } from '../../types';
 import { AlertDialog } from '../ui/AlertDialog';
 import { notifyAppDataChanged, openAppIds, reloadAppWindows } from '../../utils/appWindowBus';
 import styles from './AgentChatWindow.module.css';
+import {
+  ChangePreview,
+  RoutineRunCard,
+  RoutinesPanel,
+  RunSteps,
+  UndoControl,
+  type CodePreviewData,
+  type RoutineRunData,
+  type RunStepsData,
+  type UndoData,
+} from './CodeRunViews';
+import type { UndoRunResult } from '../../services/agent';
 
 const STARTER_PROMPTS = [
   'What is on my desktop right now?',
@@ -46,6 +58,12 @@ type MessagePart = {
   id?: string;
   data?: unknown;
 };
+
+/** The data part of `type` streamed for a given tool call (previews, steps, undo). */
+function dataPartFor<T>(parts: MessagePart[], type: string, toolCallId: string | undefined): T | undefined {
+  if (!toolCallId) return undefined;
+  return parts.find((p) => p.type === type && p.id === toolCallId)?.data as T | undefined;
+}
 
 type SearchResultItem = {
   id: string;
@@ -630,6 +648,22 @@ function AgentChatThreadPane({
     query: agentQuery,
   });
 
+  const browserTimeZone = useMemo(() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone;
+    } catch {
+      return undefined;
+    }
+  }, []);
+  const [routinesRefresh, setRoutinesRefresh] = useState(0);
+  // After Undo (a Code Mode run or a routine run): refresh the desktop and
+  // any open windows of apps whose data changed back.
+  const handleRunUndone = useCallback((result: UndoRunResult) => {
+    void loadDesktop();
+    const open = new Set(openAppIds());
+    for (const appId of result.changedApps) if (open.has(appId)) notifyAppDataChanged(appId);
+  }, [loadDesktop]);
+
   // useAgentChat keys its chat (and its Suspense-based history fetch) on the
   // socket URL, which carries the one-time wsToken. Every reconnect mints a
   // new token, so the default behaviour re-suspended the whole window
@@ -651,7 +685,7 @@ function AgentChatThreadPane({
   } = useAgentChat({
     agent,
     headers: chatHeaders,
-    body: { threadId: activeThread.id },
+    body: { threadId: activeThread.id, timeZone: browserTimeZone },
     getInitialMessages: null,
     messages: seedMessages,
   });
@@ -845,9 +879,24 @@ function AgentChatThreadPane({
       'tool-updateApp',
       'tool-editApp',
       'tool-deleteApp',
+      'tool-saveRoutine',
+      'tool-deleteRoutine',
     ];
     for (const message of messages) {
       for (const part of (message.parts as MessagePart[] | undefined) ?? []) {
+        // A routine ran (posted by the agent): refresh its routines list and,
+        // for a fresh run, the desktop and open windows of apps it changed.
+        if (part.type === 'data-routine-run' && part.id && !refreshedToolCalls.current.has(part.id)) {
+          refreshedToolCalls.current.add(part.id);
+          setRoutinesRefresh((n) => n + 1);
+          const run = part.data as RoutineRunData | undefined;
+          if (run && Date.now() - run.ranAt < 120_000) {
+            void loadDesktop();
+            const open = new Set(openAppIds());
+            for (const appId of run.changedApps ?? []) if (open.has(appId)) notifyAppDataChanged(appId);
+          }
+          continue;
+        }
         if (
           refreshToolTypes.includes(part.type) &&
           part.state === 'output-available' &&
@@ -857,6 +906,7 @@ function AgentChatThreadPane({
           refreshedToolCalls.current.add(part.toolCallId);
           void loadDesktop();
           syncOpenAppWindows(part);
+          if (part.type === 'tool-saveRoutine' || part.type === 'tool-deleteRoutine') setRoutinesRefresh((n) => n + 1);
         }
       }
     }
@@ -1673,23 +1723,37 @@ function AgentChatThreadPane({
     }
 
     // Code Mode — the agent runs one sandboxed JS function (Dynamic Worker,
-    // no network) that orchestrates several tools at once.
+    // no network) that orchestrates several tools at once. Before asking, a
+    // practice run lists what it would change (data-codemode-preview); a real
+    // run streams its steps (data-codemode-steps) and offers Undo
+    // (data-codemode-undo). All keyed by the tool call id.
     if (part.type === 'tool-codemode') {
       const input = part.input as { code?: string } | undefined;
       const code = typeof input?.code === 'string' ? input.code : '';
-      const codePreview = code ? (
-        <pre className={styles.codeBlock}>{code.length > 2400 ? `${code.slice(0, 2400)}\n…` : code}</pre>
+      const preview = dataPartFor<CodePreviewData>(messageParts, 'data-codemode-preview', part.toolCallId);
+      const stepsData = dataPartFor<RunStepsData>(messageParts, 'data-codemode-steps', part.toolCallId);
+      const undoData = dataPartFor<UndoData>(messageParts, 'data-codemode-undo', part.toolCallId);
+      const codeDetails = code ? (
+        <details className={styles.codeDetails}>
+          <summary>Code ({code.split('\n').length} lines)</summary>
+          <pre className={styles.codeBlock} tabIndex={0}>{code}</pre>
+        </details>
       ) : null;
 
       if (part.state === 'approval-requested') {
-        // Consent must cover the whole script: never truncate it here.
+        const changes = preview?.ok ? preview.actions.length : 0;
         return (
           <div key={`codemode-${index}`} className={styles.toolCard}>
-            <div className={styles.toolTitle}>Run code?</div>
-            <div className={styles.toolBody}>
-              Eternal wants to run this code in a sandbox. It can make changes through the tools it calls (desktop items or app data). Review the full script before running it.
-            </div>
-            {code ? <pre className={styles.codeBlock} tabIndex={0}>{code}</pre> : null}
+            <div className={styles.toolTitle}>{preview ? 'Make these changes?' : 'Run code?'}</div>
+            {preview ? (
+              <ChangePreview preview={preview} />
+            ) : (
+              <div className={styles.toolBody}>
+                Eternal wants to run this code in a sandbox. It can make changes through the tools it calls (desktop items or app data). Review the full script before running it.
+              </div>
+            )}
+            {/* Consent must cover the whole script: it stays complete here. */}
+            {preview ? codeDetails : (code ? <pre className={styles.codeBlock} tabIndex={0}>{code}</pre> : null)}
             <div className={styles.approvalRow}>
               <button
                 type="button"
@@ -1700,7 +1764,7 @@ function AgentChatThreadPane({
                   }
                 }}
               >
-                Run
+                {changes > 0 ? `Approve ${changes === 1 ? 'change' : `${changes} changes`}` : 'Run'}
               </button>
               <button
                 type="button"
@@ -1721,7 +1785,7 @@ function AgentChatThreadPane({
       if (part.state === 'output-denied') {
         return (
           <div key={`codemode-${index}`} className={styles.toolCard}>
-            <div className={styles.toolTitle}>Code run cancelled</div>
+            <div className={styles.toolTitle}>Cancelled — nothing was changed</div>
           </div>
         );
       }
@@ -1730,8 +1794,10 @@ function AgentChatThreadPane({
         return (
           <div key={`codemode-${index}`} className={styles.toolCard}>
             <div className={styles.toolTitle}>Code failed</div>
+            <RunSteps data={stepsData} running={false} />
             <div className={styles.errorText}>{String(part.errorText ?? 'Unknown error')}</div>
-            {codePreview}
+            <UndoControl threadId={activeThread.id} undo={undoData} onUndone={handleRunUndone} />
+            {codeDetails}
           </div>
         );
       }
@@ -1739,8 +1805,9 @@ function AgentChatThreadPane({
       if (part.state !== 'output-available') {
         return (
           <div key={`codemode-${index}`} className={styles.toolCard}>
-            <div className={styles.toolTitle}>Running code…</div>
-            {codePreview}
+            <div className={styles.toolTitle}>Working…</div>
+            <RunSteps data={stepsData} running />
+            {codeDetails}
           </div>
         );
       }
@@ -1749,24 +1816,166 @@ function AgentChatThreadPane({
       const resultText = output?.result === undefined ? '' : JSON.stringify(output.result, null, 2);
       return (
         <div key={`codemode-${index}`} className={styles.toolCard}>
-          <div className={styles.toolTitle}>Code ran</div>
+          <div className={styles.toolTitle}>{stepsData?.failed ? 'Done, with errors' : 'Done'}</div>
+          <RunSteps data={stepsData} running={false} />
+          <UndoControl threadId={activeThread.id} undo={undoData} onUndone={handleRunUndone} />
           {resultText ? (
-            <pre className={styles.codeBlock}>{resultText.length > 1600 ? `${resultText.slice(0, 1600)}\n…` : resultText}</pre>
-          ) : (
-            <div className={styles.toolBody}>Done.</div>
-          )}
+            <details className={styles.codeDetails}>
+              <summary>Result</summary>
+              <pre className={styles.codeBlock}>{resultText.length > 1600 ? `${resultText.slice(0, 1600)}\n…` : resultText}</pre>
+            </details>
+          ) : null}
           {output?.logs && output.logs.length > 0 ? (
             <details className={styles.codeDetails}>
               <summary>Console ({output.logs.length})</summary>
               <pre className={styles.codeBlock}>{output.logs.join('\n')}</pre>
             </details>
           ) : null}
-          {code ? (
-            <details className={styles.codeDetails}>
-              <summary>Code</summary>
-              {codePreview}
-            </details>
-          ) : null}
+          {codeDetails}
+        </div>
+      );
+    }
+
+    // A saved routine's run, posted into the thread by the agent.
+    if (part.type === 'data-routine-run') {
+      const data = part.data as RoutineRunData | undefined;
+      if (!data) return null;
+      return <RoutineRunCard key={`routine-run-${index}`} data={data} threadId={activeThread.id} onUndone={handleRunUndone} />;
+    }
+
+    // Routines: save (approval shows the schedule, a preview and the code),
+    // list, delete.
+    if (part.type === 'tool-saveRoutine') {
+      const input = part.input as { name?: string; code?: string; schedule?: { every?: string; at?: string; hours?: number } } | undefined;
+      const schedule = input?.schedule?.every === 'hours'
+        ? `every ${input.schedule.hours === 1 ? 'hour' : `${input.schedule.hours ?? '?'} hours`}`
+        : `every day at ${input?.schedule?.at ?? '08:00'}`;
+      const preview = dataPartFor<CodePreviewData>(messageParts, 'data-codemode-preview', part.toolCallId);
+      if (part.state === 'approval-requested') {
+        return (
+          <div key={`routine-save-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Save routine “{input?.name ?? 'Untitled'}”?</div>
+            <div className={styles.toolBody}>
+              Runs {schedule}, automatically and without asking each time. You can delete it any time.
+            </div>
+            {preview ? (
+              <>
+                <div className={styles.toolBody}>If it ran right now:</div>
+                <ChangePreview preview={preview} />
+              </>
+            ) : null}
+            {input?.code ? <pre className={styles.codeBlock} tabIndex={0}>{input.code}</pre> : null}
+            <div className={styles.approvalRow}>
+              <button
+                type="button"
+                className={styles.actionButton}
+                onClick={() => {
+                  if (part.approval?.id) void addToolApprovalResponse({ id: part.approval.id, approved: true });
+                }}
+              >
+                Save routine
+              </button>
+              <button
+                type="button"
+                className={styles.actionButton}
+                onClick={() => {
+                  if (part.approval?.id) void addToolApprovalResponse({ id: part.approval.id, approved: false });
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        );
+      }
+      if (part.state === 'output-denied') {
+        return (
+          <div key={`routine-save-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Routine not saved</div>
+          </div>
+        );
+      }
+      if (part.state === 'output-error') {
+        return (
+          <div key={`routine-save-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Could not save the routine</div>
+            <div className={styles.errorText}>{String(part.errorText ?? 'Unknown error')}</div>
+          </div>
+        );
+      }
+      if (part.state !== 'output-available') {
+        return (
+          <div key={`routine-save-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Saving routine…</div>
+          </div>
+        );
+      }
+      const output = part.output as { routine?: { name: string; schedule: string; nextRunAt: number | null }; ranNow?: { status: string; summary: string } } | undefined;
+      return (
+        <div key={`routine-save-${index}`} className={styles.toolCard}>
+          <div className={styles.toolTitle}>Routine saved</div>
+          <div className={styles.toolBody}>
+            “{output?.routine?.name}” runs {output?.routine?.schedule}
+            {output?.routine?.nextRunAt ? `; next run ${new Date(output.routine.nextRunAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}` : ''}.
+          </div>
+        </div>
+      );
+    }
+
+    if (part.type === 'tool-listRoutines') {
+      if (part.state !== 'output-available') {
+        return (
+          <div key={`routine-list-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Routines</div>
+            <div className={styles.toolBody}>Loading…</div>
+          </div>
+        );
+      }
+      const routines = (part.output as { routines?: Array<{ id: string; name: string; schedule: string }> } | undefined)?.routines ?? [];
+      return (
+        <div key={`routine-list-${index}`} className={styles.toolCard}>
+          <div className={styles.toolTitle}>Routines</div>
+          <div className={styles.toolBody}>
+            {routines.length === 0 ? 'No routines in this thread.' : routines.map((r) => `${r.name} — ${r.schedule}`).join('\n')}
+          </div>
+        </div>
+      );
+    }
+
+    if (part.type === 'tool-deleteRoutine') {
+      if (part.state === 'approval-requested') {
+        return (
+          <div key={`routine-delete-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Delete this routine?</div>
+            <div className={styles.toolBody}>It will stop running.</div>
+            <div className={styles.approvalRow}>
+              <button
+                type="button"
+                className={styles.actionButton}
+                onClick={() => {
+                  if (part.approval?.id) void addToolApprovalResponse({ id: part.approval.id, approved: true });
+                }}
+              >
+                Delete
+              </button>
+              <button
+                type="button"
+                className={styles.actionButton}
+                onClick={() => {
+                  if (part.approval?.id) void addToolApprovalResponse({ id: part.approval.id, approved: false });
+                }}
+              >
+                Keep it
+              </button>
+            </div>
+          </div>
+        );
+      }
+      if (part.state !== 'output-available') return null;
+      const deleted = (part.output as { deleted?: boolean } | undefined)?.deleted;
+      return (
+        <div key={`routine-delete-${index}`} className={styles.toolCard}>
+          <div className={styles.toolTitle}>{deleted ? 'Routine deleted' : 'Routine not found'}</div>
         </div>
       );
     }
@@ -1916,6 +2125,8 @@ function AgentChatThreadPane({
   const capabilityNotes = [
     'Search files, images, OCR text, and desktop metadata',
     'Build and update apps directly on the desktop',
+    'Preview every change before it happens, and undo it after',
+    'Run routines on a schedule (“every morning…”)',
     'Remember stable preferences and project context',
   ];
 
@@ -2176,6 +2387,19 @@ function AgentChatThreadPane({
                 </button>
               </div>
             </div>
+          </div>
+
+          <div className={styles.inspectorSection}>
+            <div className={styles.sidebarHeading}>Routines</div>
+            <RoutinesPanel
+              threadId={activeThread.id}
+              refreshKey={routinesRefresh}
+              onRan={(changedApps) => {
+                void loadDesktop();
+                const open = new Set(openAppIds());
+                for (const appId of changedApps) if (open.has(appId)) notifyAppDataChanged(appId);
+              }}
+            />
           </div>
 
           <div className={styles.inspectorSection}>
