@@ -630,6 +630,14 @@ function AgentChatThreadPane({
     query: agentQuery,
   });
 
+  // useAgentChat keys its chat (and its Suspense-based history fetch) on the
+  // socket URL, which carries the one-time wsToken. Every reconnect mints a
+  // new token, so the default behaviour re-suspended the whole window
+  // ("Loading viewer…") and rebuilt the chat each time the socket dropped,
+  // e.g. after the tab sat in the background. Instead: no suspending fetch,
+  // the pane loads history itself (below), and a rebuilt chat is seeded with
+  // the messages on screen when the socket dropped.
+  const [seedMessages, setSeedMessages] = useState<AgentChatMessage[]>([]);
   const {
     messages,
     sendMessage,
@@ -644,7 +652,13 @@ function AgentChatThreadPane({
     agent,
     headers: chatHeaders,
     body: { threadId: activeThread.id },
+    getInitialMessages: null,
+    messages: seedMessages,
   });
+  const latestMessages = useRef<AgentChatMessage[]>([]);
+  useEffect(() => {
+    latestMessages.current = messages as AgentChatMessage[];
+  }, [messages]);
 
   // Stick-to-bottom: follow streaming replies, tool cards and approval cards
   // while the reader is at the bottom; stop following once they scroll up to
@@ -727,6 +741,31 @@ function AgentChatThreadPane({
     }
   }, [activeThread.id, apiBaseUrl, authToken]);
 
+  // Load this thread's saved messages (the pane is keyed by thread, so a
+  // thread switch remounts it), and again for each new socket token, since
+  // useAgentChat rebuilds its chat for every new socket URL. Merged so
+  // nothing already on screen or still streaming is lost. setMessages is not
+  // stable across renders, so it is read through a ref, not a dependency
+  // (as a dependency it re-ran every render and hammered get-messages).
+  const setMessagesRef = useRef(setMessages);
+  useEffect(() => {
+    setMessagesRef.current = setMessages;
+  }, [setMessages]);
+  useEffect(() => {
+    if (!wsToken) return;
+    let cancelled = false;
+    void reloadThreadHistory().then((history) => {
+      if (cancelled || !history) return;
+      setMessagesRef.current((current) => mergeChatHistory(current, history));
+      // Also seed the next rebuilt chat, in case this landed in the instance
+      // that is about to be replaced for the new socket.
+      setSeedMessages((current) => mergeChatHistory(current, history));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadThreadHistory, wsToken]);
+
   useEffect(() => {
     const handleSocketOpen = () => {
       setSocketOnline(true);
@@ -762,6 +801,7 @@ function AgentChatThreadPane({
       if (target?.shouldReconnect === false) return;
       setSocketOnline(false);
       setSawDrop(true);
+      setSeedMessages(latestMessages.current);
       refreshWsToken();
       // Abort the in-flight request so the pane is not stuck — and strip the
       // cancel frame the abort just queued: the socket is down, so party-
