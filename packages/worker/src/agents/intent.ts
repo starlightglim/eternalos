@@ -149,9 +149,14 @@ const HARD_BEFORE_NOUN_RE = new RegExp(
   `\\b(?:${HARD_APP_VERBS})\\b.{0,80}\\b(?:${STRONG_APP_NOUNS}|${WEAK_APP_NOUNS})\\b`,
 );
 
-/** App noun before a command verb — only for unambiguous nouns ("my app, fix it"). */
+/**
+ * App noun before a command verb — only for unambiguous nouns ("my app, fix
+ * it"). The window is wide on purpose: bug reports put the details between
+ * the two ("my Streak app shows a blank screen … console says … please fix
+ * it" — seen live routing to chat, which cannot edit apps).
+ */
 const STRONG_BEFORE_HARD_RE = new RegExp(
-  `\\b(?:${STRONG_APP_NOUNS})\\b.{0,80}\\b(?:${HARD_APP_VERBS})\\b`,
+  `\\b(?:${STRONG_APP_NOUNS})\\b.{0,300}\\b(?:${HARD_APP_VERBS})\\b`,
 );
 
 /** "Install … preview" in either order; "uninstall" deliberately does not match. */

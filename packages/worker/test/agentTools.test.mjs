@@ -1390,6 +1390,7 @@ describe('appBundleValidation issue hints', () => {
         'server.js': "export default { async fetch() { return fetch('https://api.example.com/'); } };",
       })],
       ['backend/api-without-server', appInput({ 'index.html': SHELL, 'app.js': "window.eternal.api.get('/todos');" })],
+      ['source/syntax-error', appInput({ 'index.html': SHELL, 'app.js': 'function render() {\n  const x = 1\n  save x;\n}' })],
       ['asset/reserved-api-path', appInput({ 'index.html': SHELL, 'app.js': 'void 0;', 'api/data.json': '{}' })],
       ['bundle/backend-export-missing', appInput(
         { 'index.html': SHELL, 'app.js': 'void 0;', 'server.js': 'export default { async fetch() { return new Response("x"); } };' },
@@ -1697,6 +1698,132 @@ describe('appTools', () => {
     assert.equal(h.r2.keys(`apps/${UID}/${created.appId}/v3/`).length, 0, 'the failed release must be cleaned up');
     assert.equal((await h.kv.get(`app:${created.appId}`, 'json')).version, 2, 'KV must keep the last good version');
     assert.equal(h.desktop.itemsOf('app')[0].appManifest.version, '2', 'desktop must keep the last good manifest');
+  });
+
+  it('updateApp patches: only the changed files are sent, the rest of the bundle is kept (live regression)', async () => {
+    const h = createAppToolsHarness();
+    const created = await h.tools.createApp.execute(
+      { name: 'Patchable', files: { ...MINIMAL_APP_FILES, 'extra.txt': 'remove me' } },
+      { toolCallId: 'tc', messages: [] },
+    );
+
+    // Models send the map JSON-encoded as a string; the schema accepts it.
+    const input = h.tools.updateApp.inputSchema.parse({
+      appId: created.appId,
+      files: JSON.stringify({ 'app.js': 'console.log("patched");' }),
+      removeFiles: ['extra.txt'],
+    });
+    assert.deepEqual(input.files, { 'app.js': 'console.log("patched");' });
+
+    const updated = await h.tools.updateApp.execute(input, { toolCallId: 'tc', messages: [] });
+    assert.equal(updated.status, 'updated');
+
+    const meta = await h.kv.get(`app:${created.appId}`, 'json');
+    const source = JSON.parse(await (await h.r2.get(`${meta.r2Prefix}/source.json`)).text());
+    assert.equal(source['app.js'], 'console.log("patched");');
+    assert.equal(source['index.html'], MINIMAL_APP_FILES['index.html'], 'untouched files are kept');
+    assert.equal(source['styles.css'], MINIMAL_APP_FILES['styles.css']);
+    assert.equal('extra.txt' in source, false, 'removeFiles deletes');
+  });
+
+  it('updateApp rejects a JavaScript syntax error and keeps the working version (live regression)', async () => {
+    const h = createAppToolsHarness();
+    const created = await h.tools.createApp.execute(
+      { name: 'Guarded', files: { ...MINIMAL_APP_FILES } },
+      { toolCallId: 'tc', messages: [] },
+    );
+    await assert.rejects(
+      h.tools.updateApp.execute(
+        // The exact slip seen live: "a save = ..." instead of "var save = ...".
+        { appId: created.appId, files: { 'app.js': "const view = document.body;\n  a save = view.querySelector('[data-action]');" } },
+        { toolCallId: 'tc', messages: [] },
+      ),
+      /syntax error in app\.js/i,
+    );
+    assert.equal((await h.kv.get(`app:${created.appId}`, 'json')).version, 1, 'the broken update must not install');
+  });
+
+  it('editApp applies exact find/replace edits and keeps everything else (live regression)', async () => {
+    const h = createAppToolsHarness();
+    const appJs = "const view = document.body;\na save = view.querySelector('[data-action]');\nconsole.log(save);";
+    const created = await h.tools.createApp.execute(
+      { name: 'Editable', files: { ...MINIMAL_APP_FILES, 'app.js': 'void 0;' } },
+      { toolCallId: 'tc', messages: [] },
+    );
+    // Seed the broken file through a direct source write, as a bad update would.
+    const meta = await h.kv.get(`app:${created.appId}`, 'json');
+    await h.r2.put(`${meta.r2Prefix}/source.json`, JSON.stringify({ ...MINIMAL_APP_FILES, 'app.js': appJs }));
+
+    const edited = await h.tools.editApp.execute(
+      { appId: created.appId, edits: [{ file: 'app.js', find: 'a save =', replace: 'var save =' }] },
+      { toolCallId: 'tc', messages: [] },
+    );
+    assert.equal(edited.status, 'updated');
+    const next = await h.kv.get(`app:${created.appId}`, 'json');
+    const source = JSON.parse(await (await h.r2.get(`${next.r2Prefix}/source.json`)).text());
+    assert.equal(source['app.js'], appJs.replace('a save =', 'var save ='));
+    assert.equal(source['index.html'], MINIMAL_APP_FILES['index.html']);
+  });
+
+  it('editApp tolerates indentation/whitespace differences when the match is still unique (live regression)', async () => {
+    const h = createAppToolsHarness();
+    const appJs = "function onKey(t) {\n      if (t) {\n        a save = 1;\n      }\n}";
+    const created = await h.tools.createApp.execute(
+      { name: 'Indented', files: { ...MINIMAL_APP_FILES, 'app.js': 'void 0;' } },
+      { toolCallId: 'tc', messages: [] },
+    );
+    const meta = await h.kv.get(`app:${created.appId}`, 'json');
+    await h.r2.put(`${meta.r2Prefix}/source.json`, JSON.stringify({ ...MINIMAL_APP_FILES, 'app.js': appJs }));
+    // The model re-indented the snippet (2 spaces instead of 6/8).
+    await h.tools.editApp.execute(
+      { appId: created.appId, edits: [{ file: 'app.js', find: '  if (t) {\n    a save = 1;\n  }', replace: 'if (t) {\n        var save = 1;\n      }' }] },
+      { toolCallId: 'tc', messages: [] },
+    );
+    const next = await h.kv.get(`app:${created.appId}`, 'json');
+    const source = JSON.parse(await (await h.r2.get(`${next.r2Prefix}/source.json`)).text());
+    assert.match(source['app.js'], /var save = 1;/);
+    assert.doesNotMatch(source['app.js'], /a save/);
+  });
+
+  it('getAppSource reports exact syntax errors so fixes land on the right line (live regression)', async () => {
+    const h = createAppToolsHarness();
+    const created = await h.tools.createApp.execute(
+      { name: 'Diagnosed', files: { ...MINIMAL_APP_FILES, 'app.js': 'void 0;' } },
+      { toolCallId: 'tc', messages: [] },
+    );
+    const meta = await h.kv.get(`app:${created.appId}`, 'json');
+    await h.r2.put(`${meta.r2Prefix}/source.json`, JSON.stringify({
+      ...MINIMAL_APP_FILES,
+      'app.js': "const view = document.body;\n  a save = view.querySelector('x');",
+    }));
+    const source = await h.tools.getAppSource.execute({ appId: created.appId }, { toolCallId: 'tc', messages: [] });
+    assert.equal(source.syntaxErrors.length, 1);
+    assert.equal(source.syntaxErrors[0].file, 'app.js');
+    assert.match(source.syntaxErrors[0].error, /\(2:4\)/);
+    assert.equal(source.syntaxErrors[0].line, "a save = view.querySelector('x');");
+  });
+
+  it('editApp rejects missing, ambiguous, and syntax-breaking edits with actionable errors', async () => {
+    const h = createAppToolsHarness();
+    const created = await h.tools.createApp.execute(
+      { name: 'Strict', files: { ...MINIMAL_APP_FILES, 'app.js': 'let a = 1;\nlet b = 1;' } },
+      { toolCallId: 'tc', messages: [] },
+    );
+    const run = (edits) => h.tools.editApp.execute({ appId: created.appId, edits }, { toolCallId: 'tc', messages: [] });
+    await assert.rejects(run([{ file: 'app.js', find: 'let c', replace: 'x' }]), /not found in app\.js/);
+    await assert.rejects(run([{ file: 'app.js', find: 'let   a', replace: 'x' }].map((e) => ({ ...e, find: '= 1;' }))), /more than once/);
+    await assert.rejects(run([{ file: 'app.js', find: '= 1;', replace: '= 2;' }]), /more than once/);
+    await assert.rejects(run([{ file: 'nope.js', find: 'x', replace: 'y' }]), /does not exist/);
+    await assert.rejects(run([{ file: 'app.js', find: 'let a = 1;', replace: 'let a = ;' }]), /syntax error/i);
+    assert.equal((await h.kv.get(`app:${created.appId}`, 'json')).version, 1, 'no failed edit may install');
+  });
+
+  it('createApp accepts files sent as a JSON string, including a wrapped { files } object', () => {
+    const h = createAppToolsHarness();
+    const flat = h.tools.createApp.inputSchema.parse({ name: 'A', files: JSON.stringify(MINIMAL_APP_FILES) });
+    assert.deepEqual(flat.files, MINIMAL_APP_FILES);
+    const wrapped = h.tools.createApp.inputSchema.parse({ name: 'A', files: JSON.stringify({ files: MINIMAL_APP_FILES }) });
+    assert.deepEqual(wrapped.files, MINIMAL_APP_FILES);
   });
 
   it('updateApp appends agent revisions and records invalid ones without touching the installed bundle', async () => {

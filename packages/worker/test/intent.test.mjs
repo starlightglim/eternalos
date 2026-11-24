@@ -249,6 +249,11 @@ describe('intent routing (classifyRoute)', () => {
       { text: "what's in my Guestlog?", route: 'app-read' },
       { text: 'show my habit tracker streaks', route: 'app-read', note: 'multi-word name' },
       { text: 'delete the oldest entry from my guestlog', route: 'app-build' },
+      {
+        text: "my Streak app now shows a blank screen under the header. The browser console says: Uncaught SyntaxError: Unexpected identifier 'save'. Please fix it.",
+        route: 'app-build',
+        note: 'live run: bug details between noun and verb used to route to chat',
+      },
       { text: 'save a note about lunch', route: 'desktop-write', note: 'app named "Notes" must not hijack notes' },
       { text: 'find my photos from the trip', route: 'desktop-read', note: 'app named "Photos" is unsafe as an app noun' },
       { text: "let's go for a walk", route: 'chat', note: 'names under 3 chars ignored' },

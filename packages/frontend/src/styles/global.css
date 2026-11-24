@@ -51,7 +51,11 @@
   --control-border: var(--appearance-button-border, var(--border));
   --danger: #990000;
   --success: #006600;
-  --title-bar-active: #000000;
+  /* Must match tokenSchema's window.titleBar.background default (#C0C0C0).
+     Chrome outside .user-desktop (the menu bar) reads this root value via
+     --surface-chrome; #000000 here painted the default menu bar black on
+     black, hiding every menu. */
+  --title-bar-active: #C0C0C0;
   --title-bar-inactive: #888888;
   --border: #000000;
 

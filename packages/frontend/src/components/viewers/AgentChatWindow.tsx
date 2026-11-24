@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { useAgent } from 'agents/react';
 import { useAgentChat } from '@cloudflare/ai-chat/react';
@@ -129,7 +129,7 @@ type ListAppsOutput = {
 function syncOpenAppWindows(part: MessagePart): void {
   const input = (part.input ?? {}) as { appId?: unknown; method?: unknown };
   const output = (part.output ?? {}) as { appId?: unknown; ok?: unknown; changedApps?: unknown };
-  if (part.type === 'tool-updateApp' || part.type === 'tool-installAppPreview') {
+  if (part.type === 'tool-updateApp' || part.type === 'tool-editApp' || part.type === 'tool-installAppPreview') {
     if (typeof output.appId === 'string') reloadAppWindows(output.appId);
     return;
   }
@@ -646,6 +646,28 @@ function AgentChatThreadPane({
     body: { threadId: activeThread.id },
   });
 
+  // Stick-to-bottom: follow streaming replies, tool cards and approval cards
+  // while the reader is at the bottom; stop following once they scroll up to
+  // read, and jump back down when they send a message or switch threads.
+  // (There was no auto-scroll at all: approval cards landed below the fold.)
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesRef.current;
+    if (!el) return;
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }, []);
+  const lastMessageRole = messages.at(-1)?.role;
+  useEffect(() => {
+    stickToBottom.current = true;
+  }, [activeThread.id]);
+  useLayoutEffect(() => {
+    const el = messagesRef.current;
+    if (!el) return;
+    if (lastMessageRole === 'user') stickToBottom.current = true;
+    if (stickToBottom.current) el.scrollTop = el.scrollHeight;
+  }, [messages, status, lastMessageRole]);
+
   // Socket lifecycle for disconnect recovery. partysocket reconnects on its
   // own, but the chat transport has no close handling: without the stop()
   // below, a request that was mid-flight when the socket dropped spins
@@ -665,6 +687,27 @@ function AgentChatThreadPane({
   // ACKed — the replay must be driven explicitly via resumeStream()
   // (shouldResumeStreamAfterReconnect pins the exact rule).
   const pendingStreamResume = useRef(false);
+
+  // The chat socket authenticates with a ONE-TIME wsToken (60s expiry), and
+  // partysocket reconnects with the same URL — so after any drop (a deploy,
+  // a network blip) every reconnect was rejected 401 and the pane sat on
+  // "Reconnecting..." until a page reload. Mint a fresh token on each drop;
+  // a changed query makes useAgent open a new socket with it. Throttled so a
+  // server that is genuinely down is not asked for a token every second.
+  const lastWsTokenRefresh = useRef(0);
+  const refreshWsToken = useCallback(() => {
+    if (!userId) return;
+    const now = Date.now();
+    if (now - lastWsTokenRefresh.current < 5_000) return;
+    lastWsTokenRefresh.current = now;
+    void mintAgentChatWebSocketToken()
+      .then((token) => {
+        setWsSession((current) => (current.userId === userId ? { ...current, token } : current));
+      })
+      .catch((mintError) => {
+        console.error('Failed to refresh agent chat websocket token:', mintError);
+      });
+  }, [userId]);
 
   const reloadThreadHistory = useCallback(async (): Promise<AgentChatMessage[] | null> => {
     if (!authToken) return null;
@@ -719,6 +762,7 @@ function AgentChatThreadPane({
       if (target?.shouldReconnect === false) return;
       setSocketOnline(false);
       setSawDrop(true);
+      refreshWsToken();
       // Abort the in-flight request so the pane is not stuck — and strip the
       // cancel frame the abort just queued: the socket is down, so party-
       // socket would flush that frame on reconnect, where it would cancel
@@ -741,7 +785,7 @@ function AgentChatThreadPane({
       agent.removeEventListener('open', handleSocketOpen);
       agent.removeEventListener('close', handleSocketClose);
     };
-  }, [agent, reloadThreadHistory, resumeStream, sawDrop, setMessages, status, stop]);
+  }, [agent, refreshWsToken, reloadThreadHistory, resumeStream, sawDrop, setMessages, status, stop]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -759,6 +803,7 @@ function AgentChatThreadPane({
       'tool-buildAppFromPrompt',
       'tool-createApp',
       'tool-updateApp',
+      'tool-editApp',
       'tool-deleteApp',
     ];
     for (const message of messages) {
@@ -1307,6 +1352,7 @@ function AgentChatThreadPane({
       || part.type === 'tool-buildAppFromPrompt'
       || part.type === 'tool-createApp'
       || part.type === 'tool-updateApp'
+      || part.type === 'tool-editApp'
       || part.type === 'tool-deleteApp'
     ) {
       const toolInput = (part.input as {
@@ -1314,6 +1360,7 @@ function AgentChatThreadPane({
         name?: string;
         appId?: string;
         previewId?: string;
+        edits?: Array<{ file?: string; find?: string; replace?: string }>;
       } | undefined) ?? {};
 
       const label = part.type === 'tool-previewAppFromPrompt'
@@ -1326,7 +1373,9 @@ function AgentChatThreadPane({
           ? 'Create app'
           : part.type === 'tool-updateApp'
             ? 'Update app'
-            : 'Delete app';
+            : part.type === 'tool-editApp'
+              ? 'Edit app'
+              : 'Delete app';
 
       const targetName = toolInput.name || toolInput.appId || toolInput.previewId || 'this app';
 
@@ -1336,6 +1385,18 @@ function AgentChatThreadPane({
             <>
               Eternal wants to generate an app preview without installing it yet.
               {toolInput.prompt ? <> <span className={styles.resultSummary}>Request: “{toolInput.prompt}”</span></> : null}
+            </>
+          )
+          : part.type === 'tool-editApp'
+          ? (
+            <>
+              Eternal wants to edit <strong>{targetName}</strong>:
+              {(toolInput.edits ?? []).map((edit, editIndex) => (
+                <details key={editIndex} className={styles.codeDetails} open={editIndex === 0}>
+                  <summary>{edit.file ?? 'file'}</summary>
+                  <pre className={styles.codeBlock}>{`- ${edit.find ?? ''}\n+ ${edit.replace ?? ''}`}</pre>
+                </details>
+              ))}
             </>
           )
           : part.type === 'tool-buildAppFromPrompt'
@@ -1442,7 +1503,7 @@ function AgentChatThreadPane({
           );
         }
 
-        if (part.type === 'tool-updateApp') {
+        if (part.type === 'tool-updateApp' || part.type === 'tool-editApp') {
           return (
             <AppBuildProgressCard
               key={`app-tool-progress-${index}`}
@@ -1547,13 +1608,13 @@ function AgentChatThreadPane({
         );
       }
 
-      if (part.type === 'tool-updateApp') {
+      if (part.type === 'tool-updateApp' || part.type === 'tool-editApp') {
         const output = part.output as AppUpdateOutput;
         return (
           <div key={`app-tool-updated-${index}`} className={styles.toolCard}>
-            <div className={styles.toolTitle}>App updated</div>
+            <div className={styles.toolTitle}>{part.type === 'tool-editApp' ? 'App edited' : 'App updated'}</div>
             <div className={styles.toolBody}>
-              App updated to version {output.version}. Reopen the app window if it is already open.
+              Now on version {output.version}. Open windows of this app reload automatically.
             </div>
             <BuildStageSummary build={output.build} />
           </div>
@@ -1798,6 +1859,7 @@ function AgentChatThreadPane({
         || latestPendingToolPart?.type === 'tool-installAppPreview'
         || latestPendingToolPart?.type === 'tool-createApp'
         || latestPendingToolPart?.type === 'tool-updateApp'
+        || latestPendingToolPart?.type === 'tool-editApp'
           ? 'Building your app...'
           : latestPendingToolPart?.type === 'tool-codemode'
             ? 'Running code...'
@@ -1974,7 +2036,7 @@ function AgentChatThreadPane({
                 </div>
               </div>
             ) : (
-              <div className={styles.messages}>
+              <div className={styles.messages} ref={messagesRef} onScroll={handleMessagesScroll}>
                 {messages.map((message) => {
                   const parts = (message.parts as MessagePart[] | undefined) ?? [];
 

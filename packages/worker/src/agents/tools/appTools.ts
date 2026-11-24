@@ -22,6 +22,7 @@ import {
   isBackendFile,
   splitBackendFiles,
   formatAppValidationIssues,
+  javaScriptSyntaxError,
   type AppValidationIssue,
 } from '../../utils/appBundleValidation';
 import { extractBackendBodyFields, extractBackendRoutes } from '../../utils/backendRoutes';
@@ -197,6 +198,28 @@ const permissionsSchema = z.object({
     extensions: z.array(z.string().min(1).max(30)).max(20).optional(),
   }).optional(),
 }).optional();
+
+/**
+ * Source files as a tool argument. Models often send the map JSON-encoded as
+ * a string ("files": "{\"index.html\": ...}") — seen live with createApp and
+ * updateApp, which then failed validation and made the model give up and
+ * rebuild from scratch. Accept that shape too.
+ */
+export function coerceFilesArgument(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed && typeof parsed === 'object' && 'files' in parsed && typeof (parsed as { files: unknown }).files === 'object') {
+      return (parsed as { files: unknown }).files;
+    }
+    return parsed;
+  } catch {
+    return value;
+  }
+}
+
+const toolFilesSchema = (description: string) =>
+  z.preprocess(coerceFilesArgument, z.record(z.string(), z.string())).describe(description);
 
 // `z.object({}).catchall()` rather than `z.record()`: zod v4 emits
 // `propertyNames` for records, which Workers AI's JSON grammar rejects
@@ -3060,8 +3083,81 @@ export default {
 /**
  * Create the app tools that are exposed to the OrchestratorAgent.
  */
+export interface FindReplaceEdit {
+  file: string;
+  find: string;
+  replace: string;
+}
+
+/**
+ * Apply exact find/replace edits. Rewriting a whole 30KB file inside a tool
+ * call ran the chat model out of output (live: it found a one-word typo, then
+ * spent 5 minutes and never managed the updateApp call). Each `find` must
+ * match exactly once so an edit can never land in the wrong place; failures
+ * say what to send instead, so the model can correct itself.
+ */
+export function applyFindReplaceEdits(
+  files: Record<string, string>,
+  edits: readonly FindReplaceEdit[],
+): Record<string, string> {
+  const next = { ...files };
+  for (const [index, edit] of edits.entries()) {
+    const content = next[edit.file];
+    if (typeof content !== 'string') {
+      throw new Error(`Edit ${index + 1}: file "${edit.file}" does not exist. Files: ${Object.keys(next).join(', ')}`);
+    }
+    let start = content.indexOf(edit.find);
+    let end = start + edit.find.length;
+    if (start !== -1 && content.indexOf(edit.find, start + 1) !== -1) {
+      throw new Error(`Edit ${index + 1}: the find text occurs more than once in ${edit.file}. Include more surrounding text so it is unique.`);
+    }
+    if (start === -1) {
+      // Models rarely reproduce indentation exactly (seen live: three
+      // approvals burned on whitespace alone). Fall back to matching with
+      // every whitespace run treated as equivalent — still exactly once.
+      const span = findWhitespaceInsensitive(content, edit.find);
+      if (span === 'ambiguous') {
+        throw new Error(`Edit ${index + 1}: the find text occurs more than once in ${edit.file}. Include more surrounding text so it is unique.`);
+      }
+      if (!span) {
+        throw new Error(`Edit ${index + 1}: the find text was not found in ${edit.file}. Copy it from getAppSource.`);
+      }
+      [start, end] = span;
+    }
+    next[edit.file] = content.slice(0, start) + edit.replace + content.slice(end);
+  }
+  return next;
+}
+
+function findWhitespaceInsensitive(content: string, find: string): [number, number] | 'ambiguous' | null {
+  const tokens = find.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return null;
+  const escaped = tokens.map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const pattern = new RegExp(escaped.join('\\s+'), 'g');
+  const matches = [...content.matchAll(pattern)];
+  if (matches.length > 1) return 'ambiguous';
+  if (matches.length === 0) return null;
+  const match = matches[0];
+  return [match.index, match.index + match[0].length];
+}
+
 export function createAppTools(ctx: AppToolsContext) {
   const { env, sql, agentName: uid } = ctx;
+
+  /** updateApp's patch semantics: changed files over the installed source. */
+  async function mergeOverCurrentSource(
+    appId: string,
+    changed: Record<string, string>,
+    remove: readonly string[] = [],
+  ): Promise<Record<string, string>> {
+    const registered = await getRegisteredDesktopApp(env, uid, appId);
+    const r2Prefix = registered.metadata.r2Prefix || `apps/${uid}/${appId}`;
+    const obj = await env.ETERNALOS_FILES.get(`${r2Prefix}/source.json`);
+    const current = obj ? await obj.json<Record<string, string>>() : {};
+    const merged: Record<string, string> = { ...current, ...changed };
+    for (const name of remove) delete merged[name];
+    return merged;
+  }
 
   return {
     previewAppFromPrompt: tool({
@@ -3097,7 +3193,7 @@ export function createAppTools(ctx: AppToolsContext) {
       inputSchema: z.object({
         name: z.string().min(1).max(80).describe('App name'),
         description: z.string().max(500).optional().describe('Short description'),
-        files: z.record(z.string(), z.string()).describe('App source files: { "index.html": "...", "styles.css": "...", "app.js": "..." }'),
+        files: toolFilesSchema('App source files: { "index.html": "...", "styles.css": "...", "app.js": "..." }'),
         width: z.number().int().min(360).max(1600).optional().default(600).describe('Default window width'),
         height: z.number().int().min(320).max(1200).optional().default(500).describe('Default window height'),
         permissions: permissionsSchema,
@@ -3115,11 +3211,34 @@ export function createAppTools(ctx: AppToolsContext) {
       }),
     }),
 
+    editApp: tool({
+      description: 'Make small, targeted changes to an existing app: exact find/replace edits on its files. Prefer this over updateApp for fixes (a typo, a wrong field name, one function) — you send only the changed snippet, not whole files. Each `find` must match the current file text exactly once (copy it from getAppSource, with enough surrounding text to be unique).',
+      inputSchema: z.object({
+        appId: z.string().describe('The app ID to edit'),
+        edits: z.array(z.object({
+          file: z.string().min(1).describe('File to edit, e.g. "app.js"'),
+          find: z.string().min(1).max(20_000).describe('Exact current text to replace (must occur exactly once)'),
+          replace: z.string().max(60_000).describe('Replacement text'),
+        })).min(1).max(30),
+      }),
+      needsApproval: true,
+      execute: async (input, { toolCallId }) => {
+        const current = await mergeOverCurrentSource(input.appId, {});
+        const edited = applyFindReplaceEdits(current, input.edits);
+        return applyRegisteredAppUpdate({ ...ctx, toolCallId }, {
+          appId: input.appId,
+          files: edited,
+          revisionSummary: (version) => `Agent edit (v${version})`,
+        });
+      },
+    }),
+
     updateApp: tool({
-      description: 'Update an existing app\'s code. Provide the full updated files.',
+      description: 'Update an existing app\'s code. Pass ONLY the files you changed (full contents of each); every other file is kept as-is. To delete a file, list it in removeFiles.',
       inputSchema: z.object({
         appId: z.string().describe('The app ID to update'),
-        files: z.record(z.string(), z.string()).describe('Updated source files'),
+        files: toolFilesSchema('Changed source files only, each with its full new content: { "app.js": "..." }'),
+        removeFiles: z.array(z.string()).max(50).optional().describe('Files to delete from the app'),
         name: z.string().optional().describe('Updated name'),
         description: z.string().max(500).optional().describe('Updated description'),
         width: z.number().int().min(360).max(1600).optional().describe('Updated default window width'),
@@ -3128,7 +3247,10 @@ export function createAppTools(ctx: AppToolsContext) {
       needsApproval: true,
       execute: async (input, { toolCallId }) => applyRegisteredAppUpdate({ ...ctx, toolCallId }, {
         appId: input.appId,
-        files: input.files,
+        // Patch semantics: models naturally send only the file they edited,
+        // and replacing the whole bundle with it failed ("must include at
+        // least one HTML file"). Merge over the current source instead.
+        files: await mergeOverCurrentSource(input.appId, input.files, input.removeFiles),
         name: input.name,
         description: input.description,
         width: input.width,
@@ -3173,7 +3295,7 @@ export function createAppTools(ctx: AppToolsContext) {
     }),
 
     getAppSource: tool({
-      description: 'Get the source files of an existing app so you can see or modify its code.',
+      description: 'Get the source files of an existing app so you can see or modify its code. If any JavaScript file does not parse, `syntaxErrors` lists the exact file, line:column and offending line — fix those first.',
       inputSchema: z.object({
         appId: z.string().describe('The app ID to read source from'),
       }),
@@ -3189,11 +3311,24 @@ export function createAppTools(ctx: AppToolsContext) {
         const workspaceManifest = workspaceObj
           ? await workspaceObj.json<AppWorkspaceManifest>().catch(() => null)
           : null;
+        // Exact syntax diagnostics, so a "blank screen / SyntaxError" report
+        // is fixed at the right line instead of guessed (seen live: the model
+        // "fixed" a different suspicious line and left the real error).
+        const syntaxErrors = Object.entries(files)
+          .filter(([name, content]) => /\.m?js$/i.test(name) && typeof content === 'string')
+          .flatMap(([name, content]) => {
+            const error = javaScriptSyntaxError(content);
+            if (!error) return [];
+            const at = /\((\d+):(\d+)\)/.exec(error);
+            const line = at ? content.split('\n')[Number(at[1]) - 1] : undefined;
+            return [{ file: name, error, ...(line !== undefined ? { line: line.trim().slice(0, 300) } : {}) }];
+          });
         return {
           appId: input.appId,
           name: registered.item.appManifest?.name || registered.item.name,
           files,
           workspaceManifest,
+          ...(syntaxErrors.length ? { syntaxErrors } : {}),
         };
       },
     }),

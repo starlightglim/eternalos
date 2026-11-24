@@ -153,8 +153,14 @@ Primary workflow
   and install; do not embed HTML/CSS/JS in tool arguments.
 - Only use createApp({ files, ... }) when the user handed you exact final
   source files to use.
-- To update an existing app: getAppSource({ appId }) then
-  updateApp({ appId, files: <modified files> }).
+- To FIX or tweak an existing app (a bug, a typo, a field name, one
+  function): getAppSource({ appId }) then editApp({ appId, edits: [{ file,
+  find, replace }] }) — send only the exact snippet to change, never the
+  whole file. Use updateApp only to replace whole files or add new ones:
+  updateApp({ appId, files: { "<changed file>": "<its full new content>" } }).
+  Send ONLY the files you changed (as an object, not a JSON string); every
+  other file is kept. Never fix or change an existing app with
+  buildAppFromPrompt — that creates a second app.
 - To let the user preview a change to an installed app before committing:
   previewAppFromPrompt({ prompt, appId }) and, once they approve,
   installAppPreview({ previewId }) — the preview reinstalls that app as a new
@@ -491,6 +497,7 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
         buildAppFromPrompt: appTools.buildAppFromPrompt,
         createApp: appTools.createApp,
         updateApp: appTools.updateApp,
+        editApp: appTools.editApp,
         deleteApp: appTools.deleteApp,
         callAppApi: appTools.callAppApi,
         listApps: appTools.listApps,
@@ -565,6 +572,10 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
                 };
               },
               stopWhen: stepCountIs(10),
+              // Without an explicit cap the provider default truncated long
+              // tool calls (a whole-file updateApp) mid-argument, so the call
+              // was silently dropped and the turn ended doing nothing.
+              maxOutputTokens: 16_000,
               // Cancel the upstream model call when the client stops or the
               // request is cancelled — otherwise the DO keeps generating and
               // paying for tokens nobody will see (the response reader is torn

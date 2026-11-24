@@ -58,6 +58,7 @@
  *     obtained from fs.list, so there is no literal scope argument to check.
  */
 
+import { parse as parseJavaScript } from 'acorn';
 import type { AppPermissions } from '../types';
 import { pathMatchesGlob } from './fsPolicy';
 
@@ -204,6 +205,7 @@ export function collectAppBundleIssues(input: AppBundleValidationInput): AppVali
   const scans = scanAppFiles(frontend);
 
   checkEntryHtml(frontendInput, issues);
+  checkJavaScriptSyntax(input.files, issues);
   checkUndeclaredUsage(scans, input.permissions, issues);
   checkBridgeApi(scans, issues);
   checkPermissionCoverage(scans, input.permissions, issues);
@@ -217,6 +219,45 @@ export function collectAppBundleIssues(input: AppBundleValidationInput): AppVali
   }
 
   return dedupeIssues(issues);
+}
+
+/**
+ * Every JavaScript file must actually parse. The other checks are regex
+ * scans and never noticed a syntax error, so a one-character slip in a
+ * generated or assistant-edited app.js installed fine and rendered a blank
+ * app (seen live: "Uncaught SyntaxError: Unexpected identifier 'save'" after
+ * an updateApp). As an issue it feeds the targeted repair loop, and gives
+ * updateApp an exact line/column to fix.
+ */
+function checkJavaScriptSyntax(files: Record<string, string>, issues: AppValidationIssue[]): void {
+  for (const [name, content] of Object.entries(files)) {
+    if (!/\.m?js$/i.test(name) || typeof content !== 'string') continue;
+    const error = javaScriptSyntaxError(content);
+    if (error) {
+      issues.push({
+        code: 'source/syntax-error',
+        file: name,
+        message: `JavaScript syntax error in ${name}: ${error}`,
+        hint: 'Fix the syntax error at the reported line and column (an unbalanced bracket, a missing comma or quote, or a stray token) and return the complete corrected file.',
+      });
+    }
+  }
+}
+
+/** Parse as a module first (generated apps use ESM), then as a classic script. */
+export function javaScriptSyntaxError(source: string): string | null {
+  const options = { ecmaVersion: 'latest' as const, allowHashBang: true, allowAwaitOutsideFunction: true };
+  try {
+    parseJavaScript(source, { ...options, sourceType: 'module' });
+    return null;
+  } catch (moduleError) {
+    try {
+      parseJavaScript(source, { ...options, sourceType: 'script' });
+      return null;
+    } catch {
+      return moduleError instanceof Error ? moduleError.message : String(moduleError);
+    }
+  }
 }
 
 /**
