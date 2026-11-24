@@ -298,20 +298,74 @@ export function dryRunResult(tool: string, rawInput: unknown): unknown {
   }
 }
 
+const TIME_FIELD_RE = /(?:_at|At|date|Date|time|Time|timestamp|Timestamp)$/;
+
+/** Deterministic JSON with sorted keys, time-like fields dropped. */
+function canonicalBody(value: unknown): string {
+  if (value === undefined) return '';
+  const walk = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') {
+      return Object.fromEntries(Object.keys(v as Record<string, unknown>)
+        .filter((key) => !TIME_FIELD_RE.test(key))
+        .sort()
+        .map((key) => [key, walk((v as Record<string, unknown>)[key])]));
+    }
+    return v;
+  };
+  return JSON.stringify(walk(value));
+}
+
+/** Key for a record or item created during a run: `${scope} ${id}`. */
+export function createdKey(scope: string, id: string): string {
+  return `${scope} ${id}`;
+}
+
 /**
- * What kind of write a call is, for holding a real run to its approved
- * preview: tool + method + collection (record ids are left out, since a
- * record created during the run gets a different id than in the practice
- * run). An approved run may only make writes whose signatures the preview
- * showed, at most as many times as it showed them.
+ * Exactly which write a call is, for holding an approved run to its preview:
+ * tool, target (app, method, path with query, record id) and body. Ids of
+ * records/items the run itself created are written as <new>, since they
+ * differ between the practice run and the real one. Time-like body fields
+ * are ignored. An approved run may only make writes whose signatures the
+ * preview showed, at most as many times as it showed them.
  */
-export function writeSignature(tool: string, rawInput: unknown): string {
+export function writeSignature(tool: string, rawInput: unknown, created: ReadonlySet<string> = new Set()): string {
   const input = (rawInput ?? {}) as Record<string, unknown>;
+  const newOr = (scope: string, id: string) => (created.has(createdKey(scope, id)) ? '<new>' : id);
   if (tool === 'callAppApi') {
     const method = String(input.method ?? 'GET').toUpperCase();
-    return `${tool} ${String(input.appId ?? '')} ${method} ${parseResourcePath(String(input.path ?? '/')).collection}`;
+    const appId = String(input.appId ?? '');
+    const rawPath = String(input.path ?? '/');
+    const query = rawPath.includes('?') ? `?${rawPath.split('?').slice(1).join('?')}` : '';
+    const { collection, id } = parseResourcePath(rawPath);
+    const target = id === undefined ? collection : `${collection}/${newOr(`${appId} ${collection}`, id)}`;
+    return [tool, appId, method, target + query, canonicalBody(input.body)].join(' ');
   }
-  return tool;
+  const ids = (value: unknown) => (Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [])
+    .map((id) => newOr('desktop', id))
+    .sort()
+    .join(',');
+  const single = (value: unknown) => (typeof value === 'string' ? newOr('desktop', value) : String(value ?? ''));
+  switch (tool) {
+    case 'moveItems': return `${tool} [${ids(input.itemIds)}] -> ${single(input.targetFolderId)}`;
+    case 'createFolder': return `${tool} ${JSON.stringify(String(input.folderName ?? ''))} [${ids(input.itemIds)}]`;
+    case 'createTextNote': return `${tool} ${JSON.stringify(String(input.name ?? ''))} in ${single(input.folderId)}`;
+    default: return `${tool} ${canonicalBody(input)}`;
+  }
+}
+
+/** Ids a write created (to register as <new> for later signatures). */
+export function createdIdsOf(tool: string, rawInput: unknown, result: unknown): string[] {
+  const input = (rawInput ?? {}) as Record<string, unknown>;
+  const res = (result ?? {}) as Record<string, any>;
+  if (tool === 'callAppApi' && String(input.method ?? '').toUpperCase() === 'POST') {
+    const id = createdRecordId(res.data);
+    const { collection } = parseResourcePath(String(input.path ?? '/'));
+    return id ? [createdKey(`${String(input.appId ?? '')} ${collection}`, id)] : [];
+  }
+  if (tool === 'createFolder' && typeof res.folder?.id === 'string') return [createdKey('desktop', res.folder.id)];
+  if (tool === 'createTextNote' && typeof res.note?.id === 'string') return [createdKey('desktop', res.note.id)];
+  return [];
 }
 
 /* ------------------------------------------------------------------ *

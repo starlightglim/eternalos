@@ -197,6 +197,25 @@ describe('Code Mode approved runs are held to their preview', () => {
     assert.deepEqual(backend.state.writes, ['DELETE /api/books/1'], 'only the previewed delete happened');
   });
 
+  it('refuses a different target or body than the preview showed', async () => {
+    const { code, fresh, backend } = makeTool();
+    const MARK = `async () => {
+      const books = await apps.readAppApi({ appId: "shelf-id", path: "/api/books" });
+      const target = books.data.at(-1);
+      return apps.callAppApi({ appId: "shelf-id", method: "PATCH", path: "/api/books/" + target.id, body: { is_read: 1 } });
+    }`;
+    assert.equal(await code.needsApproval({ code: MARK }, { toolCallId: 'p4' }), true); // previewed: book #1
+    backend.state.books.push({ id: 9, title: 'Other', is_read: 0 }); // now the last book is #9
+    await assert.rejects(fresh().execute({ code: MARK }, { toolCallId: 'p4' }), /not in the preview/);
+    assert.deepEqual(backend.state.writes, []);
+  });
+
+  it('lets an approved run with no saved preview write nothing (fail closed)', async () => {
+    const { fresh, backend } = makeTool();
+    await assert.rejects(fresh().execute({ code: ADD_BOOK }, { toolCallId: 'never-previewed' }), /not in the preview/);
+    assert.deepEqual(backend.state.writes, []);
+  });
+
   it('never executes a write outside a run', async () => {
     const backend = booksBackend();
     let leaked = null;
@@ -215,8 +234,9 @@ describe('Code Mode approved runs are held to their preview', () => {
 
 describe('Code Mode real runs: live steps and undo', () => {
   it('streams one step per tool call with results', async () => {
-    const { code, last } = makeTool();
-    const output = await code.execute({ code: ADD_BOOK }, { toolCallId: 'run-1' });
+    const { code, fresh, last } = makeTool();
+    assert.equal(await code.needsApproval({ code: ADD_BOOK }, { toolCallId: 'run-1' }), true);
+    const output = await fresh().execute({ code: ADD_BOOK }, { toolCallId: 'run-1' });
     assert.equal(output.result.added, 2);
     const steps = last('data-codemode-steps');
     assert.equal(steps.id, 'run-1');
@@ -232,16 +252,16 @@ describe('Code Mode real runs: live steps and undo', () => {
   });
 
   it('records how to reverse every write, and undoing restores the data', async () => {
-    const { code, backend, saved, last } = makeTool();
+    const { code, fresh, backend, saved, last } = makeTool();
     const before = JSON.parse(JSON.stringify(backend.state.books));
-    await code.execute({
-      code: `async () => {
-        await apps.callAppApi({ appId: "shelf-id", method: "POST", path: "/api/books", body: { title: "Hail Mary", author: "Andy Weir" } });
-        await apps.callAppApi({ appId: "shelf-id", method: "PATCH", path: "/api/books/1", body: { is_read: 1 } });
-        await apps.callAppApi({ appId: "shelf-id", method: "DELETE", path: "/api/books/2" });
-        return "ok";
-      }`,
-    }, { toolCallId: 'run-2' });
+    const SCRIPT = `async () => {
+      const made = await apps.callAppApi({ appId: "shelf-id", method: "POST", path: "/api/books", body: { title: "Hail Mary", author: "Andy Weir" } });
+      await apps.callAppApi({ appId: "shelf-id", method: "PATCH", path: "/api/books/1", body: { is_read: 1 } });
+      await apps.callAppApi({ appId: "shelf-id", method: "DELETE", path: "/api/books/" + made.data.id });
+      return "ok";
+    }`;
+    assert.equal(await code.needsApproval({ code: SCRIPT }, { toolCallId: 'run-2' }), true);
+    await fresh().execute({ code: SCRIPT }, { toolCallId: 'run-2' });
     const plan = saved.get('run-2');
     assert.equal(plan.writes, 3);
     assert.deepEqual(plan.ops.map((op) => [op.method, op.path]), [

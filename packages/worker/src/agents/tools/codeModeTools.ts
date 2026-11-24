@@ -42,6 +42,7 @@ import {
   findRecord,
   planAppInverse,
   planDesktopInverse,
+  createdIdsOf,
   writeSignature,
   type DescribeContext,
   type DesktopItemLike,
@@ -206,7 +207,9 @@ interface RunState {
   steps: RunStep[];
   actions: PlannedAction[];
   signatures: string[];
-  /** Writes the approved preview allows (signature → remaining count); null = no preview to enforce. */
+  /** Records/items this run created (their ids read as <new> in signatures). */
+  created: Set<string>;
+  /** Writes the approved preview allows (signature → remaining count); null = not enforced (routines). */
   allowance: Map<string, number> | null;
   undo: UndoRecord;
   changedApps: Set<string>;
@@ -315,15 +318,17 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
           }
           await ensureNames(name, input);
           run.actions.push(describeAction(name, input, describeCtx));
-          run.signatures.push(writeSignature(name, input));
-          return dryRunResult(name, input);
+          run.signatures.push(writeSignature(name, input, run.created));
+          const stand = dryRunResult(name, input);
+          for (const key of createdIdsOf(name, input, stand)) run.created.add(key);
+          return stand;
         }
 
         if (write && !run.approved) {
           throw new Error(`${name} changes data, so it needs the user's approval: call it in a run whose code names ${name} directly.`);
         }
         if (write && run.allowance) {
-          const signature = writeSignature(name, input);
+          const signature = writeSignature(name, input, run.created);
           const remaining = run.allowance.get(signature) ?? 0;
           if (remaining <= 0) {
             throw new Error(`This change was not in the preview the user approved, so it was not made (${describeAction(name, input, describeCtx).summary}). Show the user the new plan and ask again.`);
@@ -345,6 +350,7 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
           const result = await execute(input, toolOptions);
           learn(name, result);
           if (write) {
+            for (const key of createdIdsOf(name, input, result)) run.created.add(key);
             const failed = (result as { ok?: unknown } | undefined)?.ok === false;
             if (name === 'callAppApi' && !failed) run.changedApps.add(input.appId);
             if (!failed) run.undo.writes += 1;
@@ -396,6 +402,7 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
     steps: [],
     actions: [],
     signatures: [],
+    created: new Set(),
     allowance: null,
     undo: { ops: [], skipped: [], writes: 0 },
     changedApps: new Set(),
@@ -430,12 +437,11 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
         || (!unapprovedRuns.has(runId) && codeNeedsApproval(input?.code, mutating));
       const run = newRun('real', runId, approved);
       if (approved && !options.preApproved && options.loadPreview) {
-        // Hold the run to what the approval card showed.
-        const signatures = await options.loadPreview(runId);
-        if (signatures) {
-          run.allowance = new Map();
-          for (const signature of signatures) run.allowance.set(signature, (run.allowance.get(signature) ?? 0) + 1);
-        }
+        // Hold the run to what the approval card showed. Fail closed: with
+        // no saved preview, the run may not write at all.
+        const signatures = (await options.loadPreview(runId)) ?? [];
+        run.allowance = new Map();
+        for (const signature of signatures) run.allowance.set(signature, (run.allowance.get(signature) ?? 0) + 1);
       }
       current = run;
       try {
@@ -478,7 +484,9 @@ export function createCodeModeTool(options: CodeModeOptions): AnyTool {
       const runId = approvalOptions?.toolCallId ?? crypto.randomUUID();
       const { signatures, ...result } = await preview(input, runId);
       options.emit?.({ type: 'data-codemode-preview', id: runId, data: result });
-      if (result.ok && signatures.length) await options.savePreview?.(runId, signatures);
+      // Always saved — even empty or after a failed practice run — so the
+      // approved run is held to exactly what the card showed.
+      await options.savePreview?.(runId, signatures);
       if (result.ok && result.actions.length === 0) {
         unapprovedRuns.add(runId);
         return false;
