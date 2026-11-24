@@ -22,7 +22,7 @@ import {
 import { useAuthStore } from '../../stores/authStore';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { useWindowStore } from '../../stores/windowStore';
-import { getTextFileContentType, type DesktopItem } from '../../types';
+import { getTextFileContentType, type AppPermissions, type DesktopItem } from '../../types';
 import { AlertDialog } from '../ui/AlertDialog';
 import { notifyAppDataChanged, openAppIds, reloadAppWindows } from '../../utils/appWindowBus';
 import styles from './AgentChatWindow.module.css';
@@ -186,15 +186,6 @@ type GetAppSourceOutput = {
   } | null;
 };
 
-type AppPermissions = {
-  fs?: {
-    read?: string[];
-    mimeTypes?: string[];
-  };
-  profile?: {
-    read?: Array<'username' | 'displayName' | 'bio' | 'avatar'>;
-  };
-};
 
 type AppCreateOutput = {
   appId: string;
@@ -446,8 +437,17 @@ function summarizePermissions(permissions: AppPermissions | undefined): string[]
   if (permissions.fs?.read?.length) {
     parts.push(`desktop paths: ${permissions.fs.read.join(', ')}`);
   }
+  if (permissions.fs?.write?.length) {
+    parts.push(`save to: ${permissions.fs.write.join(', ')}`);
+  }
+  if (permissions.fs?.delete?.length) {
+    parts.push(`delete in: ${permissions.fs.delete.join(', ')}`);
+  }
   if (permissions.profile?.read?.length) {
     parts.push(`profile: ${permissions.profile.read.join(', ')}`);
+  }
+  if (permissions.network?.outbound?.length) {
+    parts.push(`internet: ${permissions.network.outbound.join(', ')}`);
   }
 
   return parts;
@@ -1516,7 +1516,14 @@ function AgentChatThreadPane({
         appId?: string;
         previewId?: string;
         edits?: Array<{ file?: string; find?: string; replace?: string }>;
+        permissions?: AppPermissions;
+        rationale?: string;
       } | undefined) ?? {};
+      // An update that declares new access: say so on the approval card.
+      // Nothing is granted here — the app asks when it next opens.
+      const requestedAccess = (part.type === 'tool-updateApp' || part.type === 'tool-editApp')
+        ? summarizePermissions(toolInput.permissions)
+        : [];
 
       const label = part.type === 'tool-previewAppFromPrompt'
         ? 'Preview app'
@@ -1568,7 +1575,14 @@ function AgentChatThreadPane({
         return (
           <div key={`app-tool-approval-${index}`} className={styles.toolCard}>
             <div className={styles.toolTitle}>Approval required</div>
-            <div className={styles.toolBody}>{body}</div>
+            <div className={styles.toolBody}>
+              {body}
+              {requestedAccess.length > 0 ? (
+                <div className={styles.resultSummary}>
+                  Asks for access: {requestedAccess.join('; ')}.{toolInput.rationale ? ` ${toolInput.rationale}` : ''} The app will ask you to allow it the next time it opens.
+                </div>
+              ) : null}
+            </div>
             <div className={styles.approvalRow}>
               <button
                 type="button"

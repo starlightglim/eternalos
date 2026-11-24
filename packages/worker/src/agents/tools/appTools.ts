@@ -200,6 +200,8 @@ const permissionsSchema = z.object({
   }).optional(),
 }).optional();
 
+const UPDATE_PERMISSIONS_HINT = "Only when the change needs new access (e.g. saving drawings to the desktop needs fs.write, like { fs: { write: ['/Pixel Drawings/**'], mimeTypes: ['image/png'] } }). Pass the app's FULL permission set (existing plus new): it replaces the declared set. New permissions are not granted automatically; the app asks the user to allow them the next time it opens.";
+
 /**
  * Source files as a tool argument. Models often send the map JSON-encoded as
  * a string ("files": "{\"index.html\": ...}") — seen live with createApp and
@@ -1197,7 +1199,14 @@ const APP_BRIDGE_API_PROMPT = `Available in window.eternal (platform-injected �
                               URL to <img src>/<audio src>/<video src> (a blob:
                               object URL in installed apps, a plain URL in
                               previews)
-  eternal.fs.write(options), fs.patch(id, updates), fs.delete(id)
+  eternal.fs.write({ path, content, mimeType? }) -> the new item. Text:
+                              content is a string. Images/audio/video:
+                              content is a Blob (canvas.toBlob) or a data URL
+                              (canvas.toDataURL('image/png')); it is saved as
+                              a real file that opens like an upload. path
+                              like '/Pixel Drawings/cat.png' (the folder is
+                              created if missing). Throws when not permitted.
+  eternal.fs.patch(id, updates), fs.delete(id)
   eternal.profile.get()     -> { username?, displayName?, bio?, avatar? }
   eternal.fetch(url, init?) -> allowlisted proxy response
   eternal.ipc.emit(topic, payload), ipc.on(topic, callback)
@@ -2465,10 +2474,23 @@ const ETERNAL_RUNTIME_JS = `(() => {
       return pending;
     },
     async write(opts) {
+      // Images/audio/video: pass a Blob (canvas.toBlob, MediaRecorder) or a
+      // data URL (canvas.toDataURL) as content; it is stored as a real file.
+      let payload = opts || {};
+      const content = payload.content;
+      if (typeof Blob !== 'undefined' && content instanceof Blob) {
+        const dataUrl = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(reader.error || new Error('Could not read the file'));
+          reader.readAsDataURL(content);
+        });
+        payload = { ...payload, content: dataUrl, mimeType: payload.mimeType || content.type || undefined };
+      }
       const res = await request('/fs/write', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(opts),
+        body: JSON.stringify(payload),
       });
       return res.json();
     },
@@ -3222,6 +3244,8 @@ export function createAppTools(ctx: AppToolsContext) {
           find: z.string().min(1).max(20_000).describe('Exact current text to replace (must occur exactly once)'),
           replace: z.string().max(60_000).describe('Replacement text'),
         })).min(1).max(30),
+        permissions: permissionsSchema.describe(UPDATE_PERMISSIONS_HINT),
+        rationale: z.string().max(500).optional().describe('Why the app needs the permissions (shown to the user)'),
       }),
       needsApproval: true,
       execute: async (input, { toolCallId }) => {
@@ -3230,6 +3254,8 @@ export function createAppTools(ctx: AppToolsContext) {
         return applyRegisteredAppUpdate({ ...ctx, toolCallId }, {
           appId: input.appId,
           files: edited,
+          permissions: input.permissions,
+          rationale: input.rationale,
           revisionSummary: (version) => `Agent edit (v${version})`,
         });
       },
@@ -3245,6 +3271,8 @@ export function createAppTools(ctx: AppToolsContext) {
         description: z.string().max(500).optional().describe('Updated description'),
         width: z.number().int().min(360).max(1600).optional().describe('Updated default window width'),
         height: z.number().int().min(320).max(1200).optional().describe('Updated default window height'),
+        permissions: permissionsSchema.describe(UPDATE_PERMISSIONS_HINT),
+        rationale: z.string().max(500).optional().describe('Why the app needs the permissions (shown to the user)'),
       }),
       needsApproval: true,
       execute: async (input, { toolCallId }) => applyRegisteredAppUpdate({ ...ctx, toolCallId }, {
@@ -3257,9 +3285,11 @@ export function createAppTools(ctx: AppToolsContext) {
         description: input.description,
         width: input.width,
         height: input.height,
-        // updateApp edits the app's code as-is: with no permissions passed,
-        // the release keeps the app's current declared set, so grants
-        // cannot change.
+        // With no permissions passed the release keeps the app's declared
+        // set. New permissions are declared only: grants never widen here —
+        // the app asks the user the next time it opens.
+        permissions: input.permissions,
+        rationale: input.rationale,
         revisionSummary: (version) => `Agent update (v${version})`,
       }),
     }),

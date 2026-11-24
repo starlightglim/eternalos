@@ -309,3 +309,88 @@ describe('full-stack app backends (Dynamic Worker facets)', () => {
     assert.match(JSON.stringify(res.body), /no server\.js backend/);
   });
 });
+
+// A real 1×1 PNG (magic bytes and all), as canvas.toDataURL would produce.
+const PNG_1X1 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYPj/HwADAgH/eL9GtQAAAABJRU5ErkJggg==';
+
+describe('apps saving files to the desktop (eternal.fs.write)', () => {
+  it('serves app files so a sandboxed (null-origin) iframe can run its module scripts', async () => {
+    const user = await signup();
+    const app = await expectStatus('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: auth(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: { name: 'Mod', version: '1', windowConfig: { defaultWidth: 400, defaultHeight: 400 } },
+        files: { 'index.html': '<!doctype html><script type="module" src="./app.js"></script>', 'app.js': 'document.title = "ran";' },
+      }),
+    });
+    const res = await call(`/api/apps/${encodeURIComponent(app.appId)}/app.js`, { headers: { Origin: 'null' } });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('access-control-allow-origin'), '*');
+  });
+
+  it('saves a drawing as a real image file, in a folder it creates, on visible grid cells', async () => {
+    const user = await signup();
+    const app = await expectStatus('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: auth(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: {
+          name: 'Pixel Pad',
+          version: '1',
+          windowConfig: { defaultWidth: 400, defaultHeight: 400 },
+          permissions: { fs: { write: ['/Pixel Drawings/**'] } },
+        },
+        files: { 'index.html': '<!doctype html><p>draw</p>', 'app.js': "window.eternal.fs.write({ path: '/Pixel Drawings/a.png', content: '' });" },
+      }),
+    });
+    const appId = encodeURIComponent(app.appId);
+    await expectStatus(`/api/apps/${appId}/permissions`, {
+      method: 'PATCH',
+      headers: auth(user.token, JSON_HEADERS),
+      body: JSON.stringify({ granted: { fs: { write: ['/Pixel Drawings/**'] } }, broadApprovals: [] }),
+    });
+    const capability = await expectStatus(`/api/apps/${appId}/capability`, { method: 'POST', headers: auth(user.token, JSON_HEADERS), body: '{}' });
+    const write = (body) => call(`/api/apps/${appId}/_eternal/fs/write`, {
+      method: 'POST',
+      headers: auth(capability.token, { ...JSON_HEADERS, Origin: 'null' }),
+      body: JSON.stringify(body),
+    });
+
+    const saved = await write({ path: '/Pixel Drawings/cat', content: PNG_1X1 });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.equal(saved.body.type, 'image');
+    assert.equal(saved.body.mimeType, 'image/png');
+    assert.equal(saved.body.name, 'cat.png', 'the real extension is added');
+    assert.ok(saved.body.fileSize > 0);
+
+    const desktop = await expectStatus('/api/desktop', { headers: auth(user.token) });
+    const folder = desktop.items.find((item) => item.type === 'folder' && item.name === 'Pixel Drawings');
+    const image = desktop.items.find((item) => item.id === saved.body.id);
+    assert.ok(folder, 'the folder is created on the desktop');
+    assert.equal(image.parentId, folder.id);
+    for (const item of [folder, image]) {
+      assert.ok(item.position.x < 14 && item.position.y < 7, `${item.name} lands on a visible cell`);
+    }
+    const rootCells = desktop.items.filter((item) => !item.parentId && !item.isTrashed).map((item) => `${item.position.x},${item.position.y}`);
+    assert.equal(new Set(rootCells).size, rootCells.length, 'no two desktop icons share a cell');
+
+    // A second save in the same folder takes the next cell there.
+    const second = await write({ path: '/Pixel Drawings/dog.png', content: PNG_1X1.split(',')[1], encoding: 'base64' });
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    const after = await expectStatus('/api/desktop', { headers: auth(user.token) });
+    const inFolder = after.items.filter((item) => item.parentId === folder.id).map((item) => `${item.position.x},${item.position.y}`);
+    assert.equal(new Set(inFolder).size, 2);
+
+    // Not an image after all: refused, nothing stored.
+    const fake = await write({ path: '/Pixel Drawings/fake.png', content: 'data:image/png;base64,' + Buffer.from('hello').toString('base64') });
+    assert.ok(fake.status >= 400, 'content that is not a real image is refused');
+    // Outside the granted folder: refused.
+    const outside = await write({ path: '/Elsewhere/x.png', content: PNG_1X1 });
+    assert.equal(outside.status, 403);
+    // Text still saves as a text file.
+    const note = await write({ path: '/Pixel Drawings/notes.txt', content: 'palette: #fff' });
+    assert.equal(note.status, 200, JSON.stringify(note.body));
+    assert.equal(note.body.type, 'text');
+  });
+});

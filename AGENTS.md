@@ -218,6 +218,19 @@ truth for all tokens).
   UI in a normal browser or read its data through the API.
 - `test/appBackend.integration.test.mjs` exercises facets end to end under
   `unstable_dev`; it works without Cloudflare credentials.
+- `test/appBrowser.test.mjs` loads an app in real headless Chrome the way
+  the desktop does (sandboxed iframe, origin `null`, capability by
+  postMessage): module script runs, `eternal.api` reads the backend,
+  `eternal.fs.write` saves a canvas PNG. Skips without Chrome (`CHROME_PATH`).
+  It exists because app files once lacked `Access-Control-Allow-Origin` and
+  no installed app ran its code in production while every other test passed
+  (`allowOpaqueOriginAssets` in `utils/appFraming.ts`).
+- `eternal.fs.write` saves images/audio/video given a Blob or data URL
+  (type checked from the bytes, 10MB, quota, stored in R2 like an upload);
+  new items and auto-created folders take the first free grid cell
+  (`utils/desktopGrid.ts`).
+- `editApp`/`updateApp` accept `permissions` (the app's full declared set).
+  Grants never widen on an update: AppViewer re-checks on reload and asks.
 - Shipping: `AppRunner` is a new DO class (migration `v8`) — per the
   DO-migration deploy note, run `wrangler deploy` once before relying on
   Workers Builds (`versions upload`).

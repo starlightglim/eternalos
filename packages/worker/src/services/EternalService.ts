@@ -18,6 +18,11 @@ import type { DesktopItem, UserProfile } from '../types';
 import type { AppGrantedPermissions, GameCapabilityPayload } from '../utils/jwt';
 import { verifyAppCapabilityToken, verifyGameCapabilityToken } from '../utils/jwt';
 import { buildItemPath, canReadItem, mimeMatches, canWriteItem, canDeleteItem } from '../utils/fsPolicy';
+import { fileTypeFromBuffer } from 'file-type';
+import { decodeBinaryContent, itemTypeForMime } from '../utils/appFileContent';
+import { nextFreeDesktopCell } from '../utils/desktopGrid';
+import { ALLOWED_TYPES, MAX_FILE_SIZE } from '../utils/fileTypes';
+import { sanitizeFilename } from '../utils/sanitize';
 
 /**
  * Per-instance context baked into the service binding at Dynamic Worker load
@@ -315,14 +320,18 @@ export class EternalService extends WorkerEntrypoint<Env> {
    * Write content to a file path. Will create any directories in the path if they do not exist.
    * Resolves paths relative to the desktop root.
    */
-  async write(options: { path: string; content: string; mimeType?: string; type?: DesktopItem['type']; parentId?: string | null }): Promise<EternalItem> {
+  async write(options: { path: string; content: string; mimeType?: string; type?: DesktopItem['type']; parentId?: string | null; encoding?: 'base64' }): Promise<EternalItem> {
     const { granted } = this.props;
     if (!granted.fs) {
       throw new Error('Not permitted: fs access not granted');
     }
 
     const path = options.path;
-    const mimeType = options.mimeType || 'text/plain';
+    // Binary content (data URL / base64) is decoded up front so the grant
+    // check below uses its declared type; the real type is verified from
+    // the bytes before anything is stored.
+    const binary = decodeBinaryContent(options.content, options.encoding, options.mimeType);
+    const mimeType = binary?.declaredMime || options.mimeType || 'text/plain';
     const type = options.type || 'text';
 
     let parentId = options.parentId || null;
@@ -382,6 +391,7 @@ export class EternalService extends WorkerEntrypoint<Env> {
                     type: 'folder',
                     name: segment,
                     parentId: currentParentId,
+                    position: nextFreeDesktopCell(snapshot.items, currentParentId),
                   }),
                 })
               );
@@ -399,6 +409,15 @@ export class EternalService extends WorkerEntrypoint<Env> {
       }
     }
 
+    // New items go on the first free cell of their folder; without a
+    // position they all landed on (0,0), hidden under the first icon.
+    const placement = await this.loadSnapshot();
+    const position = nextFreeDesktopCell(placement.items, parentId);
+
+    if (binary) {
+      return this.writeBinaryFile({ name, parentId, position, effectivePath, bytes: binary.bytes });
+    }
+
     const response = await this.getDesktopStub().fetch(
       new Request('http://internal/items', {
         method: 'POST',
@@ -406,6 +425,7 @@ export class EternalService extends WorkerEntrypoint<Env> {
           type,
           name,
           parentId,
+          position,
           textContent: options.content,
           mimeType,
         }),
@@ -419,6 +439,86 @@ export class EternalService extends WorkerEntrypoint<Env> {
 
     const newItem = await response.json<DesktopItem>();
     return toEternalItem(newItem, effectivePath);
+  }
+
+  /**
+   * Store an image/audio/video file an app saved (e.g. a canvas drawing):
+   * same rules as a user upload — 10MB cap, the real type is detected from
+   * the bytes (never trusted from the app), storage quota reserved, file in
+   * R2 — then a normal desktop item that opens like any uploaded file.
+   */
+  private async writeBinaryFile(input: {
+    name: string;
+    parentId: string | null;
+    position: { x: number; y: number };
+    effectivePath: string;
+    bytes: Uint8Array;
+  }): Promise<EternalItem> {
+    const { bytes } = input;
+    if (bytes.byteLength === 0) throw new Error('File is empty');
+    if (bytes.byteLength > MAX_FILE_SIZE) {
+      throw new Error(`File too large. Maximum size: ${MAX_FILE_SIZE / 1024 / 1024}MB`);
+    }
+    const detected = await fileTypeFromBuffer(bytes);
+    const mime = detected?.mime;
+    const itemType = mime ? itemTypeForMime(mime) : null;
+    if (!mime || !ALLOWED_TYPES[mime] || !itemType) {
+      throw new Error('Unsupported file: save PNG, JPEG, GIF or WebP images, MP3/WAV/OGG/M4A audio, or MP4/WebM/MOV video');
+    }
+    if (!canWriteItem(this.props.granted, input.effectivePath, mime)) {
+      throw new Error(`Not permitted: write access to ${input.effectivePath} denied`);
+    }
+
+    const stub = this.getDesktopStub();
+    const reserve = await stub.fetch(new Request('http://internal/quota/reserve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileSize: bytes.byteLength }),
+    }));
+    if (!reserve.ok) throw new Error('Failed to check storage quota');
+    const quota = await reserve.json<{ reserved: boolean }>();
+    if (!quota.reserved) throw new Error('Storage quota exceeded. Delete some files or empty the Trash to free up space.');
+    const release = () => stub.fetch(new Request('http://internal/quota/release', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileSize: bytes.byteLength }),
+    })).catch(() => undefined);
+
+    const itemId = crypto.randomUUID();
+    const extension = ALLOWED_TYPES[mime];
+    const baseName = sanitizeFilename(input.name || `file.${extension}`) || `file.${extension}`;
+    const fileName = /\.[a-z0-9]{2,5}$/i.test(baseName) ? baseName : `${baseName}.${extension}`;
+    const r2Key = `${this.props.uid}/${itemId}/${fileName}`;
+    try {
+      await this.env.ETERNALOS_FILES.put(r2Key, bytes, {
+        httpMetadata: { contentType: mime },
+        customMetadata: { originalName: fileName, uploadedBy: this.props.uid, itemId, savedByApp: this.props.appId },
+      });
+      const response = await stub.fetch(new Request('http://internal/items-internal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: itemId,
+          type: itemType,
+          name: fileName,
+          parentId: input.parentId,
+          position: input.position,
+          isPublic: false,
+          r2Key,
+          mimeType: mime,
+          fileSize: bytes.byteLength,
+        }),
+      }));
+      if (!response.ok) {
+        await this.env.ETERNALOS_FILES.delete(r2Key).catch(() => undefined);
+        throw new Error(`Failed to save file (${response.status})`);
+      }
+      const item = await response.json<DesktopItem>();
+      const folderPath = input.effectivePath.split('/').slice(0, -1).join('/');
+      return toEternalItem(item, `${folderPath}/${fileName}`);
+    } finally {
+      await release();
+    }
   }
 
   /**

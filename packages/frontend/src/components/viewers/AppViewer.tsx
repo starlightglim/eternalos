@@ -88,7 +88,9 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
     return () => {
       cancelled = true;
     };
-  }, [appId, previewId, src, sendCapability]);
+    // reloadKey: an update reloads the app; it may now declare new
+    // permissions, so check again (and ask) instead of reusing old state.
+  }, [appId, previewId, src, sendCapability, reloadKey]);
 
   const handlePermissionAllow = useCallback(async (granted: Record<string, unknown>, broadApprovals: string[]) => {
     if (!appId || !permissionPrompt) return;

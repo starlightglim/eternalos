@@ -8,6 +8,7 @@
  */
 
 import { fileTypeFromBuffer } from 'file-type';
+import { ALLOWED_TYPES, MAX_FILE_SIZE } from '../utils/fileTypes';
 import type { Env } from '../index';
 import type { AuthContext } from '../middleware/auth';
 import { acquireAiRequest } from '../middleware/aiUsage';
@@ -15,25 +16,6 @@ import type { DesktopItem, ImageAnalysisMetadata } from '../types';
 import { sanitizeFilename, sanitizeText } from '../utils/sanitize';
 
 // Allowed MIME types for regular file uploads
-const ALLOWED_TYPES: Record<string, string> = {
-  // Images
-  'image/jpeg': 'jpg',
-  'image/png': 'png',
-  'image/gif': 'gif',
-  'image/webp': 'webp',
-  // Text
-  'text/plain': 'txt',
-  'text/markdown': 'md',
-  // Video
-  'video/mp4': 'mp4',
-  'video/webm': 'webm',
-  'video/quicktime': 'mov',
-  // Audio
-  'audio/mpeg': 'mp3',
-  'audio/wav': 'wav',
-  'audio/ogg': 'ogg',
-  'audio/mp4': 'm4a',
-};
 
 // Allowed MIME types for wallpaper uploads (images only)
 const WALLPAPER_ALLOWED_TYPES: Record<string, string> = {
@@ -55,8 +37,6 @@ const MAX_CSS_ASSET_SIZE = 500 * 1024;
 // Max CSS assets per user
 const MAX_CSS_ASSETS_PER_USER = 25; // Increased for sprite chrome (frame + titlebar + buttons + resize)
 
-// Max file size: 10MB for regular files
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 // Max wallpaper size: 2MB
 const MAX_WALLPAPER_SIZE = 2 * 1024 * 1024;

@@ -212,6 +212,13 @@ Primary workflow
   Send ONLY the files you changed (as an object, not a JSON string); every
   other file is kept. Never fix or change an existing app with
   buildAppFromPrompt — that creates a second app.
+- When a change needs access the app doesn't have yet (saving files or
+  drawings to the desktop, reading desktop files, the network), pass
+  permissions to editApp/updateApp with the app's FULL set (existing plus
+  new), e.g. { fs: { write: ["/Pixel Drawings/**"] } } and a short
+  rationale. Save images with eternal.fs.write({ path: "/Pixel Drawings/x.png",
+  content: canvasBlobOrDataUrl }). Tell the user the app will ask them to
+  allow the new access the next time it opens.
 - To let the user preview a change to an installed app before committing:
   previewAppFromPrompt({ prompt, appId }) and, once they approve,
   installAppPreview({ previewId }) — the preview reinstalls that app as a new
