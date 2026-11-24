@@ -38,6 +38,8 @@ import {
   type UndoData,
 } from './CodeRunViews';
 import type { UndoRunResult } from '../../services/agent';
+import { ChatMarkdown } from './ChatMarkdown';
+import { describeAppChange } from '../../utils/codeRunText';
 
 const STARTER_PROMPTS = [
   'What is on my desktop right now?',
@@ -997,7 +999,7 @@ function AgentChatThreadPane({
     if (part.type === 'text') {
       const text = String(part.text ?? '').trim();
       if (!text) return null;
-      return <div key={`text-${index}`} className={styles.messageText}>{text}</div>;
+      return <ChatMarkdown key={`text-${index}`} text={text} className={styles.messageText} />;
     }
 
     if (part.type === 'tool-getDesktopOverview') {
@@ -1987,15 +1989,15 @@ function AgentChatThreadPane({
       const target = `${method} ${input?.path ?? ''}`.trim();
 
       if (part.state === 'approval-requested') {
+        const appName = items.find((item) => item.type === 'app' && item.appManifest?.appId === input?.appId)?.appManifest?.name;
         return (
           <div key={`app-api-${index}`} className={styles.toolCard}>
-            <div className={styles.toolTitle}>Change app data?</div>
-            <div className={styles.toolBody}>
-              Eternal wants to send <strong>{target}</strong> to one of your apps.
-            </div>
-            {input?.body !== undefined ? (
-              <pre className={styles.codeBlock}>{JSON.stringify(input.body, null, 2)}</pre>
-            ) : null}
+            <div className={styles.toolTitle}>Make this change?</div>
+            <ChangePreview preview={{ ok: true, actions: [describeAppChange(method, input?.path ?? '/', input?.body, appName)] }} />
+            <details className={styles.codeDetails}>
+              <summary>Request</summary>
+              <pre className={styles.codeBlock}>{target}{input?.body !== undefined ? `\n${JSON.stringify(input.body, null, 2)}` : ''}</pre>
+            </details>
             <div className={styles.approvalRow}>
               <button
                 type="button"

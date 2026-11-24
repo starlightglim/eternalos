@@ -22,12 +22,9 @@ import {
   type UndoRunResult,
 } from '../../services/agent';
 import styles from './CodeRunViews.module.css';
+import type { PlannedAction } from '../../utils/codeRunText';
 
-export interface PlannedAction {
-  tool: string;
-  summary: string;
-  detail?: string;
-}
+export type { PlannedAction };
 
 export interface CodePreviewData {
   ok: boolean;

@@ -1,0 +1,45 @@
+.markdown {
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.paragraph,
+.heading,
+.list,
+.codeBlock {
+  margin: 0 0 6px;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.heading {
+  font-weight: 700;
+}
+
+.list {
+  padding-left: 18px;
+}
+
+.list li + li {
+  margin-top: 2px;
+}
+
+.inlineCode,
+.codeBlock {
+  font-family: var(--font-monaco, ui-monospace, Menlo, monospace);
+  font-size: 0.95em;
+  background: var(--chat-panel, color-mix(in srgb, currentColor 6%, transparent));
+  border-radius: 4px;
+}
+
+.inlineCode {
+  padding: 0 3px;
+}
+
+.codeBlock {
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
