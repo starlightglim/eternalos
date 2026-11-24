@@ -15,6 +15,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AppGrantedPermissions, AppCapabilityPayload } from '../utils/jwt';
 import type { DesktopItem } from '../types';
 import { signAppCapabilityToken, verifyAppCapabilityToken } from '../utils/jwt';
+import { nextFreeDesktopCell } from '../utils/desktopGrid';
 import { buildItemPath, pathMatchesGlob as sharedPathMatchesGlob, canReadItem as sharedCanReadItem } from '../utils/fsPolicy';
 import {
   broadScopeIds,
@@ -867,7 +868,11 @@ export async function handleAppDevDeploy(
       }
     } else {
       // Create new Desktop Item
-      const position = { x: 2 + Math.floor(Math.random() * 4), y: 2 + Math.floor(Math.random() * 4) }; // place it around the middle
+      // First free grid cell, like every other new item (a random middle
+      // cell often landed under an open window or on top of another icon).
+      const snapshotResponse = await stub.fetch(new Request('http://internal/items'));
+      const snapshotItems = snapshotResponse.ok ? ((await snapshotResponse.json()) as { items: DesktopItem[] }).items : [];
+      const position = nextFreeDesktopCell(snapshotItems, null);
       const createResponse = await stub.fetch(
         new Request('http://internal/items', {
           method: 'POST',

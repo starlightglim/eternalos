@@ -5,6 +5,7 @@
  * These run inline (no Dynamic Worker sandbox) for speed.
  */
 
+import { nextFreeDesktopCell } from '../../utils/desktopGrid';
 import { tool } from 'ai';
 import { z } from 'zod';
 import type { DesktopItem, UserProfile } from '../../types';
@@ -46,27 +47,7 @@ function getItemSummary(item: DesktopItem): string {
 
 const MAX_TEXT_FILE_CHARS = 8000;
 
-/**
- * Desktop icon positions are GRID CELLS (80px each in the frontend), not
- * pixels. Agent-created items used { x: 60, y: 60 } — 4,800px off-screen,
- * so new notes and folders were invisible. Pick the first free cell,
- * column by column from the top-left, like the desktop's own layout.
- */
-const GRID_ROWS = 7;
-const GRID_COLUMNS = 14;
-export function nextFreeDesktopCell(items: DesktopItem[], parentId: string | null = null): { x: number; y: number } {
-  const taken = new Set(
-    items
-      .filter((item) => !item.isTrashed && (item.parentId ?? null) === parentId && item.position)
-      .map((item) => `${Math.round(item.position.x)},${Math.round(item.position.y)}`),
-  );
-  for (let x = 0; x < GRID_COLUMNS; x++) {
-    for (let y = 0; y < GRID_ROWS; y++) {
-      if (!taken.has(`${x},${y}`)) return { x, y };
-    }
-  }
-  return { x: 0, y: 0 };
-}
+export { nextFreeDesktopCell };
 
 function formatTextFileResult(item: DesktopItem, items: DesktopItem[]) {
   const content = item.textContent ?? '';
@@ -303,17 +284,17 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
     }),
 
     createFolder: tool({
-      description: 'Create a folder on the desktop and optionally move items into it. Use after searching to group matches.',
+      description: 'Create a folder on the desktop: empty (e.g. somewhere to save things), or with items moved into it (pass their ids from searchDesktop / getDesktopOverview).',
       inputSchema: z.object({
         folderName: z.string().min(1).max(80).describe('Name for the new folder.'),
-        itemIds: z.array(z.string()).optional().describe('Item IDs to move into the folder. Omit to use the last search results.'),
+        itemIds: z.array(z.string()).optional().describe('Ids of items to move into the folder. Omit (or pass []) for an empty folder.'),
       }),
       needsApproval: true,
       execute: async (input) => {
-        const sourceIds = input.itemIds?.filter(Boolean) ?? ctx.getState().lastMatchedItemIds;
-        if (sourceIds.length === 0) {
-          throw new Error('No items to group. Search for files first, or provide item IDs.');
-        }
+        // Only the ids the model names (and the approval card shows) move.
+        // There used to be a fallback to the last search's results, which
+        // the card never showed — and it made an empty folder impossible.
+        const sourceIds = (input.itemIds ?? []).filter(Boolean);
 
         const stub = ctx.getUserDesktopStub();
         const snapshot = await loadSnapshot(ctx);
@@ -338,6 +319,10 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
         }));
         if (!createRes.ok) throw new Error(`Failed to create folder (${createRes.status})`);
         const folder = await createRes.json<DesktopItem>();
+
+        if (sourceIds.length === 0) {
+          return { folder: { id: folder.id, name: folder.name, type: folder.type }, movedCount: 0, movedItems: [] };
+        }
 
         // Move items into the folder
         const patches = sourceIds.map((id: string) => ({ id, updates: { parentId: folder.id } }));

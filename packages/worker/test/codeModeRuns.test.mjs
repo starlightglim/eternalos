@@ -372,3 +372,42 @@ describe('run results in text', () => {
     assert.equal(runs.modelNoteForDataPart({ type: 'data-codemode-steps', data: { undoneAt: 1 } }), undefined);
   });
 });
+
+describe('Code Mode empty folders', () => {
+  it('createFolder without itemIds previews and creates an empty folder', async () => {
+    const created = [];
+    const desktop = {
+      createFolder: tool({
+        description: 'folder',
+        inputSchema: z.object({ folderName: z.string(), itemIds: z.array(z.string()).optional() }),
+        needsApproval: true,
+        execute: async (input) => {
+          created.push(input);
+          return { folder: { id: 'f1', name: input.folderName, type: 'folder' }, movedCount: 0, movedItems: [] };
+        },
+      }),
+    };
+    const previews = new Map();
+    const events = [];
+    const make = () => createCodeModeTool({
+      loader: /** @type {any} */ ({}),
+      desktop,
+      apps: {},
+      mutating: true,
+      executor: fakeExecutor,
+      emit: (chunk) => events.push(chunk),
+      saveUndo: () => {},
+      savePreview: (runId, signatures) => previews.set(runId, signatures),
+      loadPreview: (runId) => previews.get(runId) ?? null,
+      loadDesktopItems: async () => [],
+    });
+    const CODE = 'async () => { const r = await desktop.createFolder({ folderName: "Drawings" }); return r.folder.name; }';
+    assert.equal(await make().needsApproval({ code: CODE }, { toolCallId: 'f-1' }), true);
+    const preview = events.filter((e) => e.type === 'data-codemode-preview').at(-1);
+    assert.equal(preview.data.actions[0].summary, 'Create folder “Drawings”');
+    assert.equal(created.length, 0, 'the practice run creates nothing');
+    const output = await make().execute({ code: CODE }, { toolCallId: 'f-1' });
+    assert.equal(output.result, 'Drawings');
+    assert.deepEqual(created, [{ folderName: 'Drawings', itemIds: [] }]);
+  });
+});

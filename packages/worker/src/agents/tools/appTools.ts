@@ -8,6 +8,7 @@
  * Apps are compiled via @cloudflare/worker-bundler and run as Dynamic Workers.
  */
 
+import { nextFreeDesktopCell } from '../../utils/desktopGrid';
 import { generateObject, generateText, tool } from 'ai';
 import { z } from 'zod';
 import { createWorker } from '@cloudflare/worker-bundler';
@@ -529,12 +530,7 @@ async function getNextDesktopGridPosition(stub: DurableObjectStub): Promise<{ x:
   }
 
   const snapshot = await snapshotRes.json<{ items: DesktopItem[] }>();
-  const rootItems = snapshot.items.filter((item) => item.parentId === null && !item.isTrashed);
-  const nextY = rootItems.length > 0
-    ? Math.max(...rootItems.map((item) => Number(item.position?.y) || 0)) + 1
-    : 0;
-
-  return { x: 0, y: nextY };
+  return nextFreeDesktopCell(snapshot.items, null);
 }
 
 interface RegisteredDesktopApp {

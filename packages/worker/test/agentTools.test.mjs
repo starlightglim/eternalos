@@ -799,7 +799,10 @@ describe('desktopTools', () => {
     assert.equal(desktop.get('i2').parentId, folder.id);
   });
 
-  it('createFolder uses the last search results when itemIds is omitted', async () => {
+  it('createFolder without itemIds makes an empty folder, even right after a search', async () => {
+    // Users ask for "a folder to save my drawings in". The old fallback to
+    // the last search's results made that impossible, and moved items the
+    // approval card never showed.
     const desktop = createFakeDesktop({
       items: [{ id: 'i1', type: 'image', name: 'a.png', parentId: null, isPublic: false, updatedAt: 1 }],
     });
@@ -810,9 +813,17 @@ describe('desktopTools', () => {
       getState: () => state,
     });
 
-    const result = await tools.createFolder.execute({ folderName: 'Group' }, { toolCallId: 'tc', messages: [] });
-    assert.equal(result.movedCount, 1);
-    assert.equal(desktop.get('i1').parentId, result.folder.id);
+    const result = await tools.createFolder.execute({ folderName: 'Drawings' }, { toolCallId: 'tc', messages: [] });
+    assert.equal(result.movedCount, 0);
+    assert.equal(desktop.get('i1').parentId, null, 'nothing moves unless named');
+    const folder = desktop.get(result.folder.id);
+    assert.equal(folder.type, 'folder');
+    assert.equal(folder.name, 'Drawings');
+    assert.equal(folder.parentId, null);
+    assert.ok(folder.position.x < 14 && folder.position.y < 7, 'lands on a visible grid cell');
+
+    const empty = await tools.createFolder.execute({ folderName: 'Empty', itemIds: [] }, { toolCallId: 'tc2', messages: [] });
+    assert.equal(empty.movedCount, 0);
   });
 
   it('createFolder failure paths return clear errors', async () => {
@@ -824,12 +835,6 @@ describe('desktopTools', () => {
       setState: () => {},
       getState: () => ({ lastMatchedItemIds: [], lastQuery: null, memories: [] }),
     });
-
-    // Nothing to group and no previous search.
-    await assert.rejects(
-      tools.createFolder.execute({ folderName: 'X' }, { toolCallId: 'tc', messages: [] }),
-      /No items to group/,
-    );
 
     // Move fails after the folder was created: the tool reports the failure
     // as before (nothing is silently half-moved) AND no longer leaves the

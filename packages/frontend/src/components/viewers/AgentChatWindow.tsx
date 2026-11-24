@@ -1272,8 +1272,12 @@ function AgentChatThreadPane({
     }
 
     if (part.type === 'tool-createFolder' || part.type === 'tool-moveItems') {
-      const input = (part.input as { folderName?: string } | undefined) ?? {};
+      const input = (part.input as { folderName?: string; itemIds?: unknown } | undefined) ?? {};
       const label = part.type === 'tool-createFolder' ? 'Create folder' : 'Move items';
+      const movingCount = Array.isArray(input.itemIds) ? input.itemIds.length : 0;
+      const movingNames = Array.isArray(input.itemIds)
+        ? input.itemIds.map((id) => items.find((item) => item.id === id)?.name).filter(Boolean).slice(0, 4).join(', ')
+        : '';
 
       if (part.state === 'approval-requested') {
         return (
@@ -1281,6 +1285,13 @@ function AgentChatThreadPane({
             <div className={styles.toolTitle}>Approval required</div>
             <div className={styles.toolBody}>
               {label}: <strong>{input.folderName || ''}</strong>
+              {part.type === 'tool-createFolder' ? (
+                <div>
+                  {movingCount === 0
+                    ? 'An empty folder on your desktop.'
+                    : `Moves ${movingCount} item${movingCount === 1 ? '' : 's'} into it${movingNames ? `: ${movingNames}${movingCount > 4 ? '…' : ''}` : ''}.`}
+                </div>
+              ) : null}
             </div>
             <div className={styles.approvalRow}>
               <button
