@@ -253,7 +253,7 @@ async function runTurn(text, { timeoutMs = 300_000, maxApprovalRounds = 6, threa
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
 
   const started = Date.now();
-  const trace = { tools: [], toolErrors: [], approvals: 0, text: '', streamErrors: [] };
+  const trace = { tools: [], toolErrors: [], approvals: 0, text: '', streamErrors: [], data: [] };
   const toolNames = new Map();
   const priorHistory = existingThread
     ? await api(`/api/agent/chat/get-messages?threadId=${encodeURIComponent(threadId)}`)
@@ -280,7 +280,7 @@ async function runTurn(text, { timeoutMs = 300_000, maxApprovalRounds = 6, threa
         if (chunk?.type === 'text-delta') trace.text += chunk.delta;
         else if (chunk?.type === 'tool-input-available') {
           toolNames.set(chunk.toolCallId, chunk.toolName);
-          trace.tools.push({ name: chunk.toolName, input: chunk.input });
+          trace.tools.push({ name: chunk.toolName, input: chunk.input, toolCallId: chunk.toolCallId });
         } else if (chunk?.type === 'tool-output-error') {
           trace.toolErrors.push({ name: toolNames.get(chunk.toolCallId), error: String(chunk.errorText).slice(0, 300) });
         } else if (chunk?.type === 'tool-input-error') {
@@ -289,6 +289,7 @@ async function runTurn(text, { timeoutMs = 300_000, maxApprovalRounds = 6, threa
           const t = trace.tools.findLast((x) => x.name === toolNames.get(chunk.toolCallId));
           if (t) t.output = chunk.output;
         } else if (chunk?.type === 'tool-approval-request') pending += 1;
+        else if (typeof chunk?.type === 'string' && chunk.type.startsWith('data-')) trace.data.push({ type: chunk.type, id: chunk.id, data: chunk.data });
         else if (chunk?.type === 'error') trace.streamErrors.push(String(chunk.errorText).slice(0, 300));
       }
       if (frame.done) { clearTimeout(timer); resolve({ pending, timedOut: false }); }
@@ -319,13 +320,14 @@ async function runTurn(text, { timeoutMs = 300_000, maxApprovalRounds = 6, threa
 /** Several user turns on ONE thread; returns the merged trace (last turn's text). */
 async function runConversation(prompts, options = {}) {
   let threadId;
-  const merged = { tools: [], toolErrors: [], approvals: 0, text: '', streamErrors: [], ms: 0, turns: [] };
+  const merged = { tools: [], toolErrors: [], approvals: 0, text: '', streamErrors: [], data: [], ms: 0, turns: [] };
   for (const prompt of prompts) {
     const trace = await runTurn(prompt, { ...options, threadId });
     threadId = trace.threadId;
     merged.tools.push(...trace.tools);
     merged.toolErrors.push(...trace.toolErrors);
     merged.streamErrors.push(...trace.streamErrors);
+    merged.data.push(...trace.data);
     merged.approvals += trace.approvals;
     merged.ms += trace.ms;
     merged.text = trace.text;
@@ -519,6 +521,58 @@ function scenarios(ctx) {
         return { pass: true };
       },
     },
+    // Code Mode previews, undo, cross-app runs and routines.
+    {
+      id: 'preview-two-writes',
+      prompt: `add two entries to my Evalog: 'pv-a-${marker}' and 'pv-b-${marker}'`,
+      check: async (trace) => {
+        const texts = ((await appApi(ctx.evalog, '/entries')).data ?? []).map((r) => r.text);
+        const missing = [`pv-a-${marker}`, `pv-b-${marker}`].filter((t) => !texts.includes(t));
+        if (missing.length) return { pass: false, reason: `missing: ${missing.join(', ')}` };
+        if (trace.approvals !== 1) return { pass: false, reason: `${trace.approvals} approvals (want one preview)` };
+        const preview = trace.data.find((d) => d.type === 'data-codemode-preview' && d.data?.ok);
+        if (!preview || preview.data.actions.length !== 2) return { pass: false, reason: `preview: ${JSON.stringify(preview?.data?.actions?.map((a) => a.summary))}` };
+        return { pass: true };
+      },
+    },
+    {
+      id: 'undo-run',
+      prompt: `add entries 'un-1-${marker}' and 'un-2-${marker}' to my Evalog`,
+      check: async (trace) => {
+        const undo = trace.data.findLast((d) => d.type === 'data-codemode-undo' && d.data?.available);
+        if (!undo) return { pass: false, reason: 'no undoable run' };
+        const before = ((await appApi(ctx.evalog, '/entries')).data ?? []).filter((r) => r.text.startsWith(`un-`) && r.text.endsWith(marker));
+        if (before.length !== 2) return { pass: false, reason: `expected 2 entries before undo, saw ${before.length}` };
+        const res = await api(`/api/agent/runs/${encodeURIComponent(undo.data.runId)}/undo?threadId=${encodeURIComponent(trace.threadId)}`, { method: 'POST', body: {} });
+        if (!res.ok || res.data?.status !== 'undone') return { pass: false, reason: `undo: ${res.status} ${JSON.stringify(res.data).slice(0, 160)}` };
+        const after = ((await appApi(ctx.evalog, '/entries')).data ?? []).filter((r) => r.text.startsWith(`un-`) && r.text.endsWith(marker));
+        if (after.length) return { pass: false, reason: `${after.length} entries left after undo` };
+        const again = await api(`/api/agent/runs/${encodeURIComponent(undo.data.runId)}/undo?threadId=${encodeURIComponent(trace.threadId)}`, { method: 'POST', body: {} });
+        return again.status === 409 ? { pass: true } : { pass: false, reason: `second undo answered ${again.status}` };
+      },
+    },
+    {
+      id: 'cross-app-file',
+      prompt: `add each line of ${ctx.listFile} as its own entry in my Evalog`,
+      check: async () => {
+        const texts = ((await appApi(ctx.evalog, '/entries')).data ?? []).map((r) => String(r.text).trim());
+        const missing = [`cx-1-${ctx.listMarker}`, `cx-2-${ctx.listMarker}`].filter((t) => !texts.includes(t));
+        return missing.length ? { pass: false, reason: `missing: ${missing.join(', ')}` } : { pass: true };
+      },
+    },
+    {
+      id: 'save-routine',
+      prompt: `every day at 7:00, add an entry 'daily-${marker}' to my Evalog`,
+      check: async (trace) => {
+        const list = await api(`/api/agent/routines?threadId=${encodeURIComponent(trace.threadId)}`);
+        const routines = list.data?.routines ?? [];
+        for (const r of routines) await api(`/api/agent/routines/${r.id}?threadId=${encodeURIComponent(trace.threadId)}`, { method: 'DELETE' });
+        if (routines.length !== 1) return { pass: false, reason: `${routines.length} routines saved` };
+        if (!/07:00|7:00/.test(routines[0].schedule)) return { pass: false, reason: `schedule: ${routines[0].schedule}` };
+        if (!routines[0].code.includes('callAppApi')) return { pass: false, reason: 'routine code does not write to the app' };
+        return { pass: true };
+      },
+    },
     ...(WITH_BUILD ? [{
       id: 'build-fullstack',
       prompt: 'build me a simple notes app with a backend: add a note, list notes, delete a note',
@@ -554,6 +608,14 @@ for (let rep = 0; rep < REPEAT; rep += 1) {
   await appApi(ctx.scores, '/stats'); // populate backend logs with the crash
   await appApi(ctx.evalog, '/entries', { method: 'POST', body: { text: 'first seeded entry' } });
   await appApi(ctx.evalog, '/entries', { method: 'POST', body: { text: 'second seeded entry' } });
+  // A desktop text file for the cross-app scenario.
+  ctx.listMarker = Math.random().toString(36).slice(2, 7);
+  ctx.listFile = `eval-list-${ctx.listMarker}.txt`;
+  const listItem = await api('/api/desktop/items', {
+    method: 'POST',
+    body: { type: 'text', name: ctx.listFile, textContent: `cx-1-${ctx.listMarker}\ncx-2-${ctx.listMarker}\n`, parentId: null, position: { x: 1, y: 1 }, isPublic: false },
+  });
+  ctx.listItemId = listItem.data?.id;
 
   for (const s of scenarios(ctx).filter((x) => !ONLY.length || ONLY.includes(x.id))) {
     if (budgetExhausted) break;
@@ -587,6 +649,7 @@ for (let rep = 0; rep < REPEAT; rep += 1) {
   }
 
   for (const id of [ctx.evalog, ctx.tally, ctx.ledger, ctx.scores, ctx.counter, ...ctx.cleanup]) await api(`/api/apps/${id}`, { method: 'DELETE' });
+  if (ctx.listItemId) await api('/api/desktop/items', { method: 'PATCH', body: [{ id: ctx.listItemId, updates: { isTrashed: true, trashedAt: Date.now() } }] });
   if (budgetExhausted) break;
 }
 

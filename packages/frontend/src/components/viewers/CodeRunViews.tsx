@@ -127,7 +127,7 @@ export function RunSteps({ data, running }: { data?: RunStepsData; running: bool
   }
   const hidden = data.total - data.steps.length;
   return (
-    <div className={styles.steps}>
+    <div className={styles.steps} aria-live={running ? 'polite' : undefined}>
       {hidden > 0 ? <div className={styles.stepsMore}>{hidden} earlier step{hidden === 1 ? '' : 's'}</div> : null}
       <ol className={styles.stepList}>
         {data.steps.map((step) => (
@@ -196,7 +196,7 @@ export function UndoControl({
           : `Undone — ${result.done.length === 1 ? '1 change' : `${result.done.length} changes`} reversed.`;
     return (
       <div className={styles.undoRow}>
-        <span className={styles.undoDone}>↶ {text}</span>
+        <span className={styles.undoDone} role="status">↶ {text}</span>
         {result.failed.length ? (
           <ul className={styles.undoFailures}>
             {result.failed.map((failure, index) => <li key={index}>{failure.summary}: {failure.error}</li>)}

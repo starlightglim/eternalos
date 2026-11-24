@@ -178,6 +178,30 @@ truth for all tokens).
   exposes its own tools as `desktop.*` / `apps.*`; mutating variants strip
   inner `needsApproval` (codemode drops such tools otherwise) and gate the
   whole code tool behind one approval.
+- Code Mode runs are previewed, legible and reversible
+  (`codeModeRuns.ts` = pure helpers, `codeModeTools.ts` = run engine):
+  - Preview: a run that names a write tool first runs as a practice run
+    inside `needsApproval` (real reads; writes recorded and answered with
+    stand-in results). The approval card lists the writes in plain words
+    (`data-codemode-preview`). No writes → no approval at all.
+  - The approved run (a later request) is held to that preview: each write's
+    signature (tool, target incl. record id/query, body minus top-level
+    timestamps; ids the run created read as `<new>`) must have been shown,
+    at most as many times. Signatures live in the agent's SQLite
+    (`code_previews`); a missing preview means no writes (fail closed). A
+    write outside an active run is refused.
+  - Steps stream as `data-codemode-steps`; every successful write records
+    its inverse (state read just before it) → `code_runs` + the
+    `data-codemode-undo` part → Undo via `POST /api/agent/runs/:id/undo`
+    (`applyUndoPlan` remaps ids when a deleted record is re-added).
+  - Every tool route's Code Mode has BOTH `desktop.*` and `apps.*`.
+  - Routines (`saveRoutine`/`listRoutines`/`deleteRoutine`, table
+    `routines`): approved Code Mode code run by `this.schedule` →
+    `runRoutine` with `preApproved` (no AI calls, no per-run approval), each
+    run posted into the thread as a `data-routine-run` part with steps and
+    Undo. Daily-at-time uses the browser time zone sent in the chat body.
+    REST: `GET/POST/DELETE /api/agent/routines[...]?threadId=`.
+- Chat replies render through `ChatMarkdown` (safe subset → React nodes).
 - `test/appBackend.integration.test.mjs` exercises facets end to end under
   `unstable_dev`; it works without Cloudflare credentials.
 - Shipping: `AppRunner` is a new DO class (migration `v8`) — per the
@@ -200,7 +224,9 @@ EVAL_EMAIL=... EVAL_PASSWORD=... npm run eval:agent -- --api http://localhost:87
   known bugs, then deletes them.
 - Scenarios come from real failures: app data without the word "app", batch
   writes, small fixes in a big file, backend logic bugs, diagnosing from
-  backend logs, honesty when a write is rejected or no app exists.
+  backend logs, honesty when a write is rejected or no app exists — plus
+  Code Mode features: one preview for two writes, REST undo, a desktop file
+  imported into an app, and saving a routine.
 - Compare models without editing config: start extra workers with
   `--var AGENT_CHAT_MODEL:<model> --persist-to <dir>` (separate state, separate
   account) and point `--api` at each.
