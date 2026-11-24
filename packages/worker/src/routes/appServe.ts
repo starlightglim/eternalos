@@ -18,6 +18,7 @@
 
 import type { AppGrantedPermissions } from '../utils/jwt';
 import { withCors } from '../middleware/http';
+import { allowFramingByFrontend } from '../utils/appFraming';
 import { appRunnerName, type AppBackendConfig } from '../durable-objects/AppRunner';
 import type { RouteContext } from './router';
 import type { Env } from '../index';
@@ -233,7 +234,7 @@ export async function handleServeAppPreview(c: RouteContext): Promise<Response> 
     },
   }));
 
-  return worker.getEntrypoint().fetch(c.request);
+  return allowFramingByFrontend(await worker.getEntrypoint().fetch(c.request), c.env);
 }
 
 /** ANY /api/apps/:appId[/...] */
@@ -302,6 +303,6 @@ export async function handleServeApp(c: RouteContext): Promise<Response> {
   }));
 
   const entrypoint = worker.getEntrypoint();
-  return entrypoint.fetch(c.request);
+  return allowFramingByFrontend(await entrypoint.fetch(c.request), c.env);
 }
 
