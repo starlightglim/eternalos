@@ -51,3 +51,90 @@ export function describeAppChange(method: string, path: string, body: unknown, a
   if (upper === 'DELETE') return { tool: 'callAppApi', summary: `Delete ${target} from ${app}` };
   return { tool: 'callAppApi', summary: `Update ${target} in ${app}`, detail };
 }
+
+/* ------------------------------------------------------------------ *
+ * Activity lines: lookups the assistant did on the way to an answer.
+ * They used to be full cards ("Your apps · 1 app found", "App data · GET
+ * /api/books → 200"); now consecutive lookups fold into one quiet line.
+ * ------------------------------------------------------------------ */
+
+/** Lookup tools shown as activity lines instead of cards. */
+export const QUIET_TOOL_TYPES = new Set([
+  'tool-listApps',
+  'tool-getAppSource',
+  'tool-readAppApi',
+  'tool-getAppBackendLogs',
+  'tool-getDesktopOverview',
+  'tool-readTextFile',
+  'tool-listMemories',
+  'tool-listRoutines',
+]);
+
+export interface ActivityPartLike {
+  type: string;
+  state?: string;
+  input?: unknown;
+  output?: unknown;
+}
+
+/** A tool part that is a read-only lookup (callAppApi counts only for GET). */
+export function isQuietToolPart(part: ActivityPartLike): boolean {
+  if (part.state === 'approval-requested' || part.state === 'output-error' || part.state === 'output-denied') return false;
+  if (QUIET_TOOL_TYPES.has(part.type)) return true;
+  if (part.type === 'tool-callAppApi') {
+    const method = String((part.input as { method?: unknown } | undefined)?.method ?? 'GET').toUpperCase();
+    return method === 'GET';
+  }
+  return false;
+}
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+function readNoun(path: string): string {
+  const segments = path.split('?')[0].split('/').filter(Boolean);
+  const last = segments.at(-1) ?? '';
+  if (segments.length > 1 && (/^\d+$/.test(last) || /^[0-9a-f-]{8,}$/i.test(last))) {
+    return `${singularWord((segments.at(-2) ?? 'entry').replace(/[-_]+/g, ' '))} #${last}`;
+  }
+  return last && last !== 'api' ? last.replace(/[-_]+/g, ' ') : 'data';
+}
+
+/** One short line for a lookup, e.g. "Read books from Books · 3 records". */
+export function activityLabel(part: ActivityPartLike, appName: (appId: string) => string | undefined): { label: string; detail?: string } {
+  const input = (part.input ?? {}) as Record<string, unknown>;
+  const output = (part.output ?? {}) as Record<string, unknown>;
+  const done = part.state === 'output-available';
+  const app = typeof input.appId === 'string' ? (appName(input.appId) ?? 'an app') : 'an app';
+  switch (part.type) {
+    case 'tool-listApps':
+      return { label: done ? 'Checked your apps' : 'Checking your apps', detail: done && Array.isArray(output.apps) ? `${plural(output.apps.length, 'app')} found` : undefined };
+    case 'tool-getAppSource':
+      return { label: `${done ? 'Read' : 'Reading'} the code of ${app}`, detail: done && output.files && typeof output.files === 'object' ? plural(Object.keys(output.files).length, 'file') : undefined };
+    case 'tool-readAppApi':
+    case 'tool-callAppApi': {
+      const status = typeof output.status === 'number' ? output.status : undefined;
+      const count = Array.isArray(output.data) ? plural(output.data.length, 'record') : undefined;
+      return {
+        label: `${done ? 'Read' : 'Reading'} ${readNoun(String(input.path ?? '/'))} from ${app}`,
+        detail: done ? (output.ok === false ? `failed (${status ?? 'error'})` : count) : undefined,
+      };
+    }
+    case 'tool-getAppBackendLogs':
+      return { label: `${done ? 'Read' : 'Reading'} the logs of ${app}`, detail: done && Array.isArray(output.logs) ? plural(output.logs.length, 'line') : undefined };
+    case 'tool-getDesktopOverview':
+      return { label: done ? 'Looked over your desktop' : 'Looking over your desktop', detail: done && typeof output.totalActiveItems === 'number' ? plural(output.totalActiveItems, 'item') : undefined };
+    case 'tool-readTextFile':
+      return {
+        label: `${done ? 'Read' : 'Reading'} “${String(input.name ?? input.id ?? 'a file')}”`,
+        detail: done && output.found === false ? 'not found' : undefined,
+      };
+    case 'tool-listMemories':
+      return { label: done ? 'Checked saved memories' : 'Checking saved memories' };
+    case 'tool-listRoutines':
+      return { label: done ? 'Checked routines' : 'Checking routines' };
+    default:
+      return { label: part.type.replace(/^tool-/, '') };
+  }
+}

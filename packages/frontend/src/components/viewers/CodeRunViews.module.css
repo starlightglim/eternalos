@@ -23,9 +23,74 @@
   color: var(--chat-muted, inherit);
 }
 
-.previewMore {
-  margin-top: 4px;
+.previewRest {
+  margin-top: 6px;
+}
+
+.previewRest > summary {
+  cursor: pointer;
+  color: var(--chat-accent, inherit);
+  margin-bottom: 5px;
+}
+
+/* ── Activity (folded lookups) ─────────────────────── */
+
+.activity {
+  margin: 2px 0;
+}
+
+.activityToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--chat-border-soft, color-mix(in srgb, currentColor 10%, transparent));
+  border-radius: 999px;
+  background: transparent;
   color: var(--chat-muted, inherit);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.activityToggle:hover {
+  background: var(--chat-hover, color-mix(in srgb, currentColor 6%, transparent));
+  color: var(--chat-text, inherit);
+}
+
+.activityIcon {
+  display: inline-grid;
+  place-items: center;
+  width: 12px;
+  color: color-mix(in srgb, #2f9e58 80%, var(--chat-text, currentColor));
+  font-weight: 700;
+}
+
+.activitySummary {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.activityChevron {
+  font-size: 9px;
+}
+
+.activityDetails {
+  margin: 6px 0 2px 10px;
+  padding-left: 10px;
+  border-left: 2px solid var(--chat-border-soft, color-mix(in srgb, currentColor 10%, transparent));
+}
+
+.activityList {
+  margin: 0 0 6px;
+  padding-left: 14px;
+  color: var(--chat-muted, inherit);
+}
+
+.activityFailed {
+  color: color-mix(in srgb, #d0453a 85%, var(--chat-text, currentColor));
 }
 
 .changeList {

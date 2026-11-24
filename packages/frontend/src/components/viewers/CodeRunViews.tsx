@@ -12,7 +12,7 @@
  * (`data-codemode-preview|steps|undo`, keyed by tool call id).
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import {
   deleteAgentRoutine,
   listAgentRoutines,
@@ -55,6 +55,8 @@ export interface UndoData {
   steps: string[];
   skipped: string[];
   changedApps: string[];
+  /** Set by the agent once the run was undone (survives reloads). */
+  undoneAt?: number;
 }
 
 export interface RoutineRunData {
@@ -80,7 +82,28 @@ function changeKind(summary: string): 'add' | 'remove' | 'edit' {
 
 const KIND_ICON = { add: '+', remove: '−', edit: '✎' } as const;
 
-/** What a run would change — shown in the approval card. */
+const KIND_ORDER = { remove: 0, edit: 1, add: 2 } as const;
+const KIND_WORD = { add: ['add', 'adds'], edit: ['update', 'updates'], remove: ['delete', 'deletes'] } as const;
+
+function ChangeRow({ action }: { action: PlannedAction }) {
+  const kind = changeKind(action.summary);
+  return (
+    <li className={styles.changeItem}>
+      <span className={`${styles.changeIcon} ${styles[`change_${kind}`]}`} aria-hidden="true">{KIND_ICON[kind]}</span>
+      <span className={styles.changeText}>
+        <span className={styles.changeSummary}>{action.summary}</span>
+        {action.detail ? <span className={styles.changeDetail}>{action.detail}</span> : null}
+      </span>
+    </li>
+  );
+}
+
+/**
+ * What a run would change — shown in the approval card. Every change stays
+ * reachable: deletions are listed first so they can never fall below the
+ * fold, a long list states exact counts by kind, and the rest is one click
+ * away in the same card.
+ */
 export function ChangePreview({ preview }: { preview?: CodePreviewData }) {
   if (!preview) return null;
   if (!preview.ok) {
@@ -93,28 +116,76 @@ export function ChangePreview({ preview }: { preview?: CodePreviewData }) {
   if (preview.actions.length === 0) {
     return <div className={styles.previewNote}>This run won’t change anything.</div>;
   }
-  const shown = preview.actions.slice(0, MAX_PREVIEW_ROWS);
+  const sorted = [...preview.actions].sort((a, b) => KIND_ORDER[changeKind(a.summary)] - KIND_ORDER[changeKind(b.summary)]);
+  const shown = sorted.slice(0, MAX_PREVIEW_ROWS);
+  const rest = sorted.slice(MAX_PREVIEW_ROWS);
+  const counts = (['remove', 'edit', 'add'] as const)
+    .map((kind) => [kind, sorted.filter((a) => changeKind(a.summary) === kind).length] as const)
+    .filter(([, n]) => n > 0)
+    .map(([kind, n]) => `${n} ${KIND_WORD[kind][n === 1 ? 0 : 1]}`);
   return (
     <div className={styles.preview}>
       <div className={styles.previewHeading}>
-        {preview.actions.length === 1 ? 'It will make 1 change:' : `It will make ${preview.actions.length} changes:`}
+        {sorted.length === 1 ? 'It will make 1 change:' : `It will make ${sorted.length} changes${counts.length > 1 ? ` (${counts.join(', ')})` : ''}:`}
       </div>
       <ul className={styles.changeList}>
-        {shown.map((action, index) => {
-          const kind = changeKind(action.summary);
-          return (
-            <li key={index} className={styles.changeItem}>
-              <span className={`${styles.changeIcon} ${styles[`change_${kind}`]}`} aria-hidden="true">{KIND_ICON[kind]}</span>
-              <span className={styles.changeText}>
-                <span className={styles.changeSummary}>{action.summary}</span>
-                {action.detail ? <span className={styles.changeDetail}>{action.detail}</span> : null}
-              </span>
-            </li>
-          );
-        })}
+        {shown.map((action, index) => <ChangeRow key={index} action={action} />)}
       </ul>
-      {preview.actions.length > shown.length ? (
-        <div className={styles.previewMore}>…and {preview.actions.length - shown.length} more like these</div>
+      {rest.length ? (
+        <details className={styles.previewRest}>
+          <summary>Show the other {rest.length} change{rest.length === 1 ? '' : 's'}</summary>
+          <ul className={styles.changeList}>
+            {rest.map((action, index) => <ChangeRow key={index} action={action} />)}
+          </ul>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+export interface ActivityItem {
+  key: string;
+  label: string;
+  detail?: string;
+  running: boolean;
+  failed?: boolean;
+  details: ReactNode;
+}
+
+/**
+ * Lookups the assistant made on the way to an answer, folded into one quiet
+ * line instead of a stack of cards. The full cards are one click away.
+ */
+export function ActivityGroup({ items }: { items: ActivityItem[] }) {
+  const [open, setOpen] = useState(false);
+  if (!items.length) return null;
+  const running = items.some((item) => item.running);
+  const summary = items.map((item) => item.label).join(' · ');
+  return (
+    <div className={styles.activity}>
+      <button
+        type="button"
+        className={styles.activityToggle}
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+      >
+        <span className={styles.activityIcon} aria-hidden="true">
+          {running ? <span className={styles.spinner} /> : '✓'}
+        </span>
+        <span className={styles.activitySummary}>{summary}{running ? '…' : ''}</span>
+        <span className={styles.activityChevron} aria-hidden="true">{open ? '▾' : '▸'}</span>
+      </button>
+      {open ? (
+        <div className={styles.activityDetails}>
+          <ul className={styles.activityList}>
+            {items.map((item) => (
+              <li key={item.key} className={item.failed ? styles.activityFailed : undefined}>
+                {item.label}{item.detail ? <span className={styles.stepDetail}> · {item.detail}</span> : null}
+              </li>
+            ))}
+          </ul>
+          {items.map((item) => <div key={`${item.key}-card`}>{item.details}</div>)}
+        </div>
       ) : null}
     </div>
   );
@@ -184,6 +255,14 @@ export function UndoControl({
   ) : null;
 
   if (!undo.available) return skipped;
+
+  if (undo.undoneAt && state.phase === 'idle') {
+    return (
+      <div className={styles.undoRow}>
+        <span className={styles.undoDone}>↶ Undone {new Date(undo.undoneAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.</span>
+      </div>
+    );
+  }
 
   if (state.phase === 'done') {
     const { result } = state;

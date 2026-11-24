@@ -46,6 +46,28 @@ function getItemSummary(item: DesktopItem): string {
 
 const MAX_TEXT_FILE_CHARS = 8000;
 
+/**
+ * Desktop icon positions are GRID CELLS (80px each in the frontend), not
+ * pixels. Agent-created items used { x: 60, y: 60 } — 4,800px off-screen,
+ * so new notes and folders were invisible. Pick the first free cell,
+ * column by column from the top-left, like the desktop's own layout.
+ */
+const GRID_ROWS = 7;
+const GRID_COLUMNS = 14;
+export function nextFreeDesktopCell(items: DesktopItem[], parentId: string | null = null): { x: number; y: number } {
+  const taken = new Set(
+    items
+      .filter((item) => !item.isTrashed && (item.parentId ?? null) === parentId && item.position)
+      .map((item) => `${Math.round(item.position.x)},${Math.round(item.position.y)}`),
+  );
+  for (let x = 0; x < GRID_COLUMNS; x++) {
+    for (let y = 0; y < GRID_ROWS; y++) {
+      if (!taken.has(`${x},${y}`)) return { x, y };
+    }
+  }
+  return { x: 0, y: 0 };
+}
+
 function formatTextFileResult(item: DesktopItem, items: DesktopItem[]) {
   const content = item.textContent ?? '';
   const truncated = content.length > MAX_TEXT_FILE_CHARS;
@@ -246,8 +268,8 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
 
         let parentId: string | null = null;
         let locationName = 'Desktop';
+        const snapshot = await loadSnapshot(ctx);
         if (input.folderId) {
-          const snapshot = await loadSnapshot(ctx);
           const folder = snapshot.items.find((i) => i.id === input.folderId && !i.isTrashed);
           if (!folder) throw new Error(`No folder with ID ${input.folderId}.`);
           if (folder.type !== 'folder') throw new Error(`"${folder.name}" is not a folder.`);
@@ -265,7 +287,7 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
             name: input.name.trim(),
             textContent: input.content,
             parentId,
-            position: { x: 60, y: 60 },
+            position: nextFreeDesktopCell(snapshot.items, parentId),
             isPublic: false,
           }),
         }));
@@ -294,6 +316,7 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
         }
 
         const stub = ctx.getUserDesktopStub();
+        const snapshot = await loadSnapshot(ctx);
 
         // Create the folder
         // SECURITY: Default to private. The server's `createItemInternal` also
@@ -309,7 +332,7 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
             type: 'folder',
             name: input.folderName.trim(),
             parentId: null,
-            position: { x: 60, y: 60 },
+            position: nextFreeDesktopCell(snapshot.items, null),
             isPublic: false,
           }),
         }));

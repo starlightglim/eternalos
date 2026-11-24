@@ -27,8 +27,10 @@ import { AlertDialog } from '../ui/AlertDialog';
 import { notifyAppDataChanged, openAppIds, reloadAppWindows } from '../../utils/appWindowBus';
 import styles from './AgentChatWindow.module.css';
 import {
+  ActivityGroup,
   ChangePreview,
   RoutineRunCard,
+  type ActivityItem,
   RoutinesPanel,
   RunSteps,
   UndoControl,
@@ -39,13 +41,13 @@ import {
 } from './CodeRunViews';
 import type { UndoRunResult } from '../../services/agent';
 import { ChatMarkdown } from './ChatMarkdown';
-import { describeAppChange } from '../../utils/codeRunText';
+import { activityLabel, describeAppChange, isQuietToolPart } from '../../utils/codeRunText';
 
 const STARTER_PROMPTS = [
   'What is on my desktop right now?',
-  'Find images related to roads.',
-  'Build me a pomodoro timer app',
-  'Create a pixel art canvas',
+  'Build me a habit tracker with a backend',
+  'Summarize my text files into one note',
+  'Every morning, list my newest files in a note',
 ];
 
 type MessagePart = {
@@ -587,7 +589,7 @@ function AgentChatThreadPane({
   const items = useDesktopStore((state) => state.items);
   const loadDesktop = useDesktopStore((state) => state.loadDesktop);
   const openWindow = useWindowStore((state) => state.openWindow);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const refreshedToolCalls = useRef(new Set<string>());
   const [draft, setDraft] = useState('');
   const [wsSession, setWsSession] = useState<{ userId: string | null; token: string | null; ready: boolean }>({
@@ -938,6 +940,9 @@ function AgentChatThreadPane({
     );
   }
 
+  const appNameOf = (appId: string) =>
+    items.find((item) => item.type === 'app' && item.appManifest?.appId === appId)?.appManifest?.name;
+
   const submitPrompt = (prompt: string) => {
     void sendMessage({
       text: prompt,
@@ -949,8 +954,10 @@ function AgentChatThreadPane({
     const trimmed = draft.trim();
     if (!trimmed) return;
 
+    if (isBusy) return;
     void sendMessage({ text: trimmed });
     setDraft('');
+    if (inputRef.current) inputRef.current.style.height = 'auto';
   };
 
   const openItemById = (itemId: string) => {
@@ -2122,13 +2129,6 @@ function AgentChatThreadPane({
   const currentRequestLabel = activeThread.title.length > 42
     ? `${activeThread.title.slice(0, 39)}...`
     : activeThread.title;
-  const capabilityNotes = [
-    'Search files, images, OCR text, and desktop metadata',
-    'Build and update apps directly on the desktop',
-    'Preview every change before it happens, and undo it after',
-    'Run routines on a schedule (“every morning…”)',
-    'Remember stable preferences and project context',
-  ];
 
   const isBusy = status === 'submitted' || status === 'streaming';
 
@@ -2270,7 +2270,7 @@ function AgentChatThreadPane({
                 <div className={styles.emptyCard}>
                   <div className={styles.emptyTitle}>Start with a natural-language request</div>
                   <div className={styles.emptyCopy}>
-                    Ask for a desktop search, a new app, or something you want Eternal to remember.
+                    Search your desktop, change your apps’ data, build new apps, or set up routines that run on their own. You’ll see every change before it happens, and can undo it after.
                   </div>
                   <div className={styles.emptyPrompts}>
                     {STARTER_PROMPTS.map((prompt) => (
@@ -2287,7 +2287,7 @@ function AgentChatThreadPane({
                 </div>
               </div>
             ) : (
-              <div className={styles.messages} ref={messagesRef} onScroll={handleMessagesScroll}>
+              <div className={styles.messages} ref={messagesRef} onScroll={handleMessagesScroll} data-theme-immune>
                 {messages.map((message) => {
                   const parts = (message.parts as MessagePart[] | undefined) ?? [];
 
@@ -2302,9 +2302,35 @@ function AgentChatThreadPane({
                     );
                   }
 
-                  const renderedParts = parts
-                    .map((part, index) => renderAssistantPart(part, index, parts))
-                    .filter((part): part is ReactNode => part !== null);
+                  // Lookups (listing apps, reading data, reading files) fold
+                  // into one quiet activity line; changes, approvals and the
+                  // answer itself stay as full cards.
+                  const renderedParts: ReactNode[] = [];
+                  let activity: ActivityItem[] = [];
+                  const flushActivity = (key: string) => {
+                    if (!activity.length) return;
+                    renderedParts.push(<ActivityGroup key={key} items={activity} />);
+                    activity = [];
+                  };
+                  parts.forEach((part, index) => {
+                    if (part.type.startsWith('tool-') && isQuietToolPart(part)) {
+                      const { label, detail } = activityLabel(part, appNameOf);
+                      activity.push({
+                        key: part.toolCallId ?? `p${index}`,
+                        label,
+                        detail,
+                        running: part.state !== 'output-available',
+                        failed: (part.output as { ok?: unknown } | undefined)?.ok === false,
+                        details: renderAssistantPart(part, index, parts),
+                      });
+                      return;
+                    }
+                    const node = renderAssistantPart(part, index, parts);
+                    if (node === null) return; // data parts, step markers: invisible, keep the group going
+                    flushActivity(`activity-${index}`);
+                    renderedParts.push(node);
+                  });
+                  flushActivity('activity-end');
 
                   if (renderedParts.length === 0) {
                     return null;
@@ -2322,19 +2348,31 @@ function AgentChatThreadPane({
             <div className={styles.composerArea}>
               {error ? <div className={styles.composerError}>{error.message}</div> : null}
               <form className={styles.composer} data-theme-immune onSubmit={handleSend}>
-                <input
+                <textarea
                   ref={inputRef}
                   className={styles.composerInput}
+                  rows={1}
                   value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
-                  placeholder={wsReady ? 'Ask Eternal anything...' : 'Connecting to Eternal...'}
+                  aria-label="Message Eternal"
+                  onChange={(event) => {
+                    setDraft(event.target.value);
+                    // Grow with the text, up to about six lines.
+                    const el = event.target;
+                    el.style.height = 'auto';
+                    el.style.height = `${Math.min(el.scrollHeight, 132)}px`;
+                  }}
+                  onKeyDown={(event) => {
+                    // Enter sends; Shift+Enter adds a line; never mid-IME-composition.
+                    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      event.currentTarget.form?.requestSubmit();
+                    }
+                  }}
+                  placeholder={wsReady ? 'Ask Eternal anything…' : 'Connecting to Eternal…'}
                 />
                 <div className={styles.composerRow}>
-                  <div className={styles.composerChips}>
-                    <span className={styles.composerChip}>Workers AI</span>
-                    <span className={styles.composerChip}>
-                      {isBusy ? 'Working...' : status === 'error' ? 'Error' : 'Ready'}
-                    </span>
+                  <div className={styles.composerHint}>
+                    {isBusy ? 'Working…' : status === 'error' ? 'Something went wrong — try again' : 'Enter to send · Shift+Enter for a new line'}
                   </div>
                   {isBusy ? (
                     <button
@@ -2358,17 +2396,18 @@ function AgentChatThreadPane({
           </section>
         )}
 
-        <aside className={styles.inspector}>
+        <aside className={styles.inspector} data-theme-immune>
           <div className={styles.inspectorSection}>
-            <div className={styles.sidebarHeading}>Status</div>
-            <div className={styles.statusCard}>
-              <div className={styles.statusCardTitle}>{statusText}</div>
-              <div className={styles.statusCardMeta}>
-                {wsReady && socketOnline
-                  ? 'Realtime connection active'
-                  : sawDrop ? 'Reconnecting to agent transport' : 'Connecting to agent transport'}
-              </div>
-            </div>
+            <div className={styles.sidebarHeading}>Routines</div>
+            <RoutinesPanel
+              threadId={activeThread.id}
+              refreshKey={routinesRefresh}
+              onRan={(changedApps) => {
+                void loadDesktop();
+                const open = new Set(openAppIds());
+                for (const appId of changedApps) if (open.has(appId)) notifyAppDataChanged(appId);
+              }}
+            />
           </div>
 
           <div className={styles.inspectorSection}>
@@ -2389,45 +2428,6 @@ function AgentChatThreadPane({
             </div>
           </div>
 
-          <div className={styles.inspectorSection}>
-            <div className={styles.sidebarHeading}>Routines</div>
-            <RoutinesPanel
-              threadId={activeThread.id}
-              refreshKey={routinesRefresh}
-              onRan={(changedApps) => {
-                void loadDesktop();
-                const open = new Set(openAppIds());
-                for (const appId of changedApps) if (open.has(appId)) notifyAppDataChanged(appId);
-              }}
-            />
-          </div>
-
-          <div className={styles.inspectorSection}>
-            <div className={styles.sidebarHeading}>Quick Starts</div>
-            <div className={styles.promptGrid}>
-              {STARTER_PROMPTS.map((prompt) => (
-                <button
-                  key={prompt}
-                  type="button"
-                  className={styles.promptButton}
-                  onClick={() => submitPrompt(prompt)}
-                >
-                  {prompt}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className={styles.inspectorSection}>
-            <div className={styles.sidebarHeading}>Capabilities</div>
-            <div className={styles.capabilityList}>
-              {capabilityNotes.map((note) => (
-                <div key={note} className={styles.capabilityItem}>
-                  {note}
-                </div>
-              ))}
-            </div>
-          </div>
         </aside>
       </div>
     </div>

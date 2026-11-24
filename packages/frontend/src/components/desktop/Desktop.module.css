@@ -10,8 +10,11 @@
   background-color: var(--custom-desktop-color, var(--platinum));
   /* The desktop is the base layer */
   z-index: 0;
-  /* Allow windows and icons to be positioned */
+  /* Allow windows and icons to be positioned. `clip` (not just `hidden`)
+     so focusing something inside can't scroll the whole desktop: with an
+     icon placed far off-screen, every focus change made the desktop jump. */
   overflow: hidden;
+  overflow: clip;
   /* Prevent browser touch gestures that interfere with drag */
   touch-action: none;
 }

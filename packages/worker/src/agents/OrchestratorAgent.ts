@@ -438,7 +438,42 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
     const ownerUid = this.getOwnerUid();
     const outcome = await applyUndoPlan(lookup.plan.ops, (op) => this.executeInverse(ownerUid, op));
     markUndone(sql, runId);
+    await this.markRunUndoneInThread(runId);
     return { status: outcome.failed.length ? 'partial' : 'undone', ...outcome };
+  }
+
+  /**
+   * Record the undo on the run's card in the stored thread, so it reads
+   * "Undone" after a reload or on another device (the card's own state is
+   * per page). Best effort: the undo itself already happened.
+   */
+  private async markRunUndoneInThread(runId: string): Promise<void> {
+    const undoneAt = Date.now();
+    let changed = false;
+    const messages = this.messages.map((message) => {
+      let touched = false;
+      const parts = message.parts.map((part) => {
+        const candidate = part as { type: string; id?: string; data?: Record<string, any> };
+        if (candidate.type === 'data-codemode-undo' && candidate.id === runId) {
+          touched = true;
+          return { ...candidate, data: { ...candidate.data, undoneAt } } as typeof part;
+        }
+        if (candidate.type === 'data-routine-run' && candidate.data?.undo?.runId === runId) {
+          touched = true;
+          return { ...candidate, data: { ...candidate.data, undo: { ...candidate.data.undo, undoneAt } } } as typeof part;
+        }
+        return part;
+      });
+      if (!touched) return message;
+      changed = true;
+      return { ...message, parts };
+    });
+    if (!changed) return;
+    try {
+      await this.persistMessages(messages);
+    } catch (error) {
+      console.error('Failed to record undo in the thread:', error);
+    }
   }
 
   /* ------------------------------ routines ------------------------------ */

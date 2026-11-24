@@ -490,6 +490,7 @@ function createAgentHarness({ items = [], profile = null } = {}) {
     loadDesktopItemsForRuns: OrchestratorAgent.prototype.loadDesktopItemsForRuns,
     executeInverse: OrchestratorAgent.prototype.executeInverse,
     undoCodeRun: OrchestratorAgent.prototype.undoCodeRun,
+    markRunUndoneInThread: OrchestratorAgent.prototype.markRunUndoneInThread,
     routineView: OrchestratorAgent.prototype.routineView,
     listRoutines: OrchestratorAgent.prototype.listRoutines,
     scheduleRoutine: OrchestratorAgent.prototype.scheduleRoutine,
@@ -579,6 +580,21 @@ function textOf(message) {
 // ---------------------------------------------------------------------------
 // desktopTools — happy paths and failure paths
 // ---------------------------------------------------------------------------
+
+describe('agent-created desktop items land in a visible grid cell', () => {
+  it('picks the first free cell, column by column (positions are grid cells, not pixels)', async () => {
+    const { nextFreeDesktopCell } = await import('../src/agents/tools/desktopTools.ts');
+    assert.deepEqual(nextFreeDesktopCell([]), { x: 0, y: 0 });
+    const items = [
+      { id: 'a', parentId: null, position: { x: 0, y: 0 } },
+      { id: 'b', parentId: null, position: { x: 0, y: 1 } },
+      { id: 'c', parentId: null, position: { x: 0, y: 2 }, isTrashed: true },
+      { id: 'd', parentId: 'f', position: { x: 0, y: 2 } },
+    ];
+    assert.deepEqual(nextFreeDesktopCell(items), { x: 0, y: 2 }, 'trashed items and items in folders do not block');
+    assert.deepEqual(nextFreeDesktopCell(items, 'f'), { x: 0, y: 0 });
+  });
+});
 
 describe('desktopTools', () => {
   it('getDesktopOverview summarizes the desktop', async () => {
@@ -3430,8 +3446,11 @@ describe('Code Mode undo (OrchestratorAgent.undoCodeRun)', () => {
       ],
     });
 
+    h.threadMessages.push({ id: 'a1', role: 'assistant', parts: [{ type: 'data-codemode-undo', id: 'run-1', data: { runId: 'run-1', available: true, writes: 2 } }] });
+    h.agent.persistMessages = async (messages) => { h.threadMessages.splice(0, h.threadMessages.length, ...messages); };
     const result = await h.agent.undoCodeRun('run-1');
     assert.equal(result.status, 'undone');
+    assert.equal(typeof h.threadMessages[0].parts[0].data.undoneAt, 'number', 'the card in the thread records the undo');
     assert.deepEqual(result.done, ['Trash the note', 'Move 2 items back'], 'newest change is undone first');
     assert.equal(h.desktop.get('a').parentId, null);
     assert.equal(h.desktop.get('b').parentId, 'f0');
