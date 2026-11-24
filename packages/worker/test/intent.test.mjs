@@ -271,6 +271,39 @@ describe('intent routing (classifyRoute)', () => {
     });
   });
 
+  describe('follow-ups inherit the previous turn\'s route', () => {
+    const cases = [
+      // after building / editing an app
+      { text: 'now make it blue', previousRoute: 'app-build', route: 'app-build' },
+      { text: 'add another one', previousRoute: 'app-build', route: 'app-build' },
+      { text: 'yes', previousRoute: 'app-build', route: 'app-build', note: 'answers "want me to install it?"' },
+      { text: 'go ahead', previousRoute: 'app-build', route: 'app-build' },
+      { text: 'also add a dark mode toggle', previousRoute: 'app-build', route: 'app-build' },
+      { text: 'can you make the text bigger too?', previousRoute: 'app-build', route: 'app-build' },
+      { text: 'what does it store?', previousRoute: 'app-build', route: 'app-read', note: 'question → read tools' },
+      // after reading app data
+      { text: 'add pizza to it', previousRoute: 'app-read', route: 'app-build' },
+      { text: 'and how many are there?', previousRoute: 'app-read', route: 'app-read' },
+      { text: 'delete the last one', previousRoute: 'app-read', route: 'app-build' },
+      // desktop
+      { text: 'move those into it too', previousRoute: 'desktop-write', route: 'desktop-write' },
+      { text: 'and which of them is newest?', previousRoute: 'desktop-read', route: 'desktop-read' },
+      // must stay chat
+      { text: 'thanks!', previousRoute: 'app-build', route: 'chat', note: 'acknowledgement' },
+      { text: 'cool, thank you', previousRoute: 'app-build', route: 'chat' },
+      { text: 'no', previousRoute: 'app-build', route: 'chat' },
+      { text: 'tell me a joke', previousRoute: 'app-build', route: 'chat', note: 'no back-reference' },
+      { text: 'now make it blue', previousRoute: 'chat', route: 'chat', note: 'nothing to inherit' },
+      { text: 'now make it blue', route: 'chat', note: 'no context' },
+      { text: "don't change it", previousRoute: 'app-build', route: 'chat', note: 'negated command' },
+    ];
+    for (const { text, previousRoute, route, note } of cases) {
+      it(`after ${previousRoute ?? 'nothing'}: ${JSON.stringify(text)} → ${route}${note ? ` (${note})` : ''}`, () => {
+        assert.equal(classifyRoute(text, { previousRoute }), route);
+      });
+    }
+  });
+
   it('treats empty and whitespace-only input as chat', () => {
     assert.equal(classifyRoute(''), 'chat');
     assert.equal(classifyRoute('   '), 'chat');

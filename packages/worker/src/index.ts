@@ -38,6 +38,8 @@ export interface Env {
 
   // Anthropic API (optional — enables Claude as primary model)
   ANTHROPIC_API_KEY?: string;
+  /** Ask Eternal: end a turn whose model produced no output for this long (ms). Default 90000. */
+  AGENT_STALL_TIMEOUT_MS?: string;
 
   // Workers AI
   AI: Ai;

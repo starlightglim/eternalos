@@ -3290,6 +3290,53 @@ describe('OrchestratorAgent approval flow', () => {
     assert.equal(h.desktop.mutations().length, 0);
   });
 
+  it('a follow-up that names nothing keeps the previous turn\'s tools (not chat)', async () => {
+    const h = createAgentHarness({
+      items: [{ id: 'i1', type: 'image', name: 'beach.png', parentId: null, isPublic: false, updatedAt: 1 }],
+    });
+    await h.runTurn('what is on my desktop right now', [modelText('You have one image, beach.png.')]);
+
+    // "and which of them is newest?" has no desktop word: alone it is chat,
+    // where searchDesktop does not exist. With context it stays desktop-read.
+    const turn = await h.runTurn('and which of them is newest?', [
+      modelToolCall('call_follow', 'searchDesktop', { query: 'beach' }),
+      modelText('beach.png is the newest.'),
+    ]);
+    assert.deepEqual(turn.errors, []);
+    const part = toolPartOf(turn.message, 'call_follow');
+    assert.equal(part.state, 'output-available', `follow-up lost its tools: ${part.errorText ?? ''}`);
+  });
+
+  it('a model that goes silent ends the turn with a clear error instead of hanging (live regression)', async () => {
+    const h = createAgentHarness();
+    h.env.AGENT_STALL_TIMEOUT_MS = '200';
+    const started = Date.now();
+    const turn = await h.runTurn('hello there, how are you?', [() => new Promise(() => {})]);
+    assert.ok(Date.now() - started < 5_000, 'the stalled turn must end promptly');
+    const errorText = [...turn.errors, ...turn.chunks.filter((c) => c.type === 'error').map((c) => c.errorText)].join(' ');
+    assert.match(errorText, /stopped responding/i);
+  });
+
+  it('a slow tool does not trip the stall watchdog', async () => {
+    const h = createAgentHarness({
+      items: [{ id: 'i1', type: 'image', name: 'beach.png', parentId: null, isPublic: false, updatedAt: 1 }],
+    });
+    h.env.AGENT_STALL_TIMEOUT_MS = '150';
+    // Slow the desktop read (the tool's own I/O) well past the stall timeout.
+    const originalFetch = h.desktop.stub.fetch;
+    h.desktop.stub.fetch = async (...args) => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return originalFetch.apply(h.desktop.stub, args);
+    };
+    const turn = await h.runTurn('what is on my desktop right now', [
+      modelToolCall('call_slow', 'getDesktopOverview', {}),
+      modelText('You have one image.'),
+    ]);
+    const part = toolPartOf(turn.message, 'call_slow');
+    assert.equal(part.state, 'output-available', `slow tool was cut off: ${part.errorText ?? ''}`);
+    assert.equal(textOf(turn.message), 'You have one image.');
+  });
+
   it('memory tools run without approval, persist state, and feed later turns', async () => {
     const h = createAgentHarness();
 

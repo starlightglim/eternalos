@@ -281,6 +281,48 @@ export interface RouteContext {
    * routes even without the word "app".
    */
   appNames?: readonly string[];
+  /**
+   * Route of the previous user turn in this thread. A follow-up that names
+   * nothing ("now make it blue", "add another one", "yes, install it")
+   * inherits it instead of falling to chat, which cannot touch apps or files.
+   */
+  previousRoute?: ChatRoute;
+}
+
+/** Back-references and continuations that mark a message as a follow-up. */
+const FOLLOW_UP_RE =
+  /\b(?:it|its|it's|that|this|those|these|them|they|there|another|ones?|the same|again|too|also|instead|as well|more)\b|^(?:now|then|and|also|next|ok|okay|yes|yeah|yep|sure|please|go ahead|do it|do that|great|perfect|nice|cool)\b/;
+
+/** Bare acknowledgements: no action requested, even after an app turn. */
+const ACK_ONLY_RE =
+  /^(?:thanks|thank you|thx|ty|cool|nice|great|awesome|perfect|lovely|neat|got it|no|nope|no thanks|never mind|nevermind)(?:[ ,!.]+(?:thanks|thank you|so much|a lot|man|dude|mate|eternal))*[!. ]*$/;
+
+/** Bare go-aheads answering the assistant's own question ("want me to install it?"). */
+const AFFIRM_RE = /^(?:yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|do that|please do|sounds good|ship it|install it)\b/;
+
+const QUESTION_START_RE = /^(?:what|which|how|why|where|when|who|does|do|is|are|can|could|show|list|tell)\b/;
+
+/**
+ * Follow-up routing: only when the message would otherwise be plain chat,
+ * the previous turn was not chat, and the message reads like a continuation.
+ */
+function followUpRoute(text: string, actionText: string, previous: ChatRoute | undefined): ChatRoute | null {
+  if (!previous || previous === 'chat') return null;
+  if (ACK_ONLY_RE.test(text)) return null;
+  if (!FOLLOW_UP_RE.test(text) && !AFFIRM_RE.test(text)) return null;
+  if (!actionText.trim()) return null; // every clause was a negated command
+  const isQuestion = QUESTION_START_RE.test(text) || /\?\s*$/.test(text);
+  const hasCommand = ANY_COMMAND_VERB_RE.test(actionText) || AFFIRM_RE.test(text)
+    || /\b(?:make|turn|set|put|use|show|hide|move|rename|remove|delete|add|change|fix|install)\b/.test(actionText);
+
+  if (previous.startsWith('app-')) {
+    if (INSTALL_RE.test(actionText) && previous === 'app-install-preview') return 'app-install-preview';
+    if (isQuestion && !hasCommand) return 'app-read';
+    return 'app-build';
+  }
+  // desktop-read / desktop-write
+  if (isQuestion && !hasCommand) return 'desktop-read';
+  return DESKTOP_WRITE_RE.test(actionText) || hasCommand ? 'desktop-write' : previous;
 }
 
 /** Names that would hijack ordinary desktop/chat phrasing if treated as apps. */
@@ -385,5 +427,5 @@ export function classifyRoute(rawText: string, context: RouteContext = {}): Chat
     return 'desktop-read';
   }
 
-  return 'chat';
+  return followUpRoute(text, actionText, context.previousRoute) ?? 'chat';
 }

@@ -245,8 +245,8 @@ async function deployFixture(name, files) {
 // Chat turn runner (auto-approves every approval card)
 // ---------------------------------------------------------------------------
 
-async function runTurn(text, { timeoutMs = 300_000, maxApprovalRounds = 6 } = {}) {
-  const threadId = `eval-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+async function runTurn(text, { timeoutMs = 300_000, maxApprovalRounds = 6, threadId: existingThread } = {}) {
+  const threadId = existingThread ?? `eval-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const mint = await api('/api/agent/chat/ws-token', { method: 'POST', body: {} });
   const wsToken = mint.data?.token ?? mint.data?.wsToken;
   const ws = new WebSocket(`${API.replace(/^http/, 'ws')}/api/agent/chat?wsToken=${encodeURIComponent(wsToken)}&threadId=${encodeURIComponent(threadId)}`);
@@ -255,7 +255,11 @@ async function runTurn(text, { timeoutMs = 300_000, maxApprovalRounds = 6 } = {}
   const started = Date.now();
   const trace = { tools: [], toolErrors: [], approvals: 0, text: '', streamErrors: [] };
   const toolNames = new Map();
-  let messages = [{ id: `u-${Date.now()}`, role: 'user', parts: [{ type: 'text', text }] }];
+  const priorHistory = existingThread
+    ? await api(`/api/agent/chat/get-messages?threadId=${encodeURIComponent(threadId)}`)
+    : null;
+  const prior = Array.isArray(priorHistory?.data) ? priorHistory.data : [];
+  let messages = [...prior, { id: `u-${Date.now()}`, role: 'user', parts: [{ type: 'text', text }] }];
 
   const send = (id) => ws.send(JSON.stringify({
     id,
@@ -309,6 +313,28 @@ async function runTurn(text, { timeoutMs = 300_000, maxApprovalRounds = 6 } = {}
   trace.timedOut = result.timedOut;
   trace.threadId = threadId;
   return trace;
+}
+
+
+/** Several user turns on ONE thread; returns the merged trace (last turn's text). */
+async function runConversation(prompts, options = {}) {
+  let threadId;
+  const merged = { tools: [], toolErrors: [], approvals: 0, text: '', streamErrors: [], ms: 0, turns: [] };
+  for (const prompt of prompts) {
+    const trace = await runTurn(prompt, { ...options, threadId });
+    threadId = trace.threadId;
+    merged.tools.push(...trace.tools);
+    merged.toolErrors.push(...trace.toolErrors);
+    merged.streamErrors.push(...trace.streamErrors);
+    merged.approvals += trace.approvals;
+    merged.ms += trace.ms;
+    merged.text = trace.text;
+    merged.turns.push({ prompt, tools: trace.tools.map((t) => t.name), text: trace.text });
+    merged.timedOut = trace.timedOut;
+    merged.threadId = threadId;
+    if (trace.timedOut) break;
+  }
+  return merged;
 }
 
 // ---------------------------------------------------------------------------
@@ -401,7 +427,7 @@ function scenarios(ctx) {
       id: 'list-apps',
       prompt: 'which apps do I have?',
       check: async (trace) => {
-        const missing = ['Evalog', 'Tally', 'Ledger', 'Scores'].filter((n) => !trace.text.includes(n));
+        const missing = ['Evalog', 'Tally', 'Ledger', 'Scores', 'Counter'].filter((n) => !trace.text.includes(n));
         return missing.length ? { pass: false, reason: `reply missing ${missing.join(', ')}` } : { pass: true };
       },
     },
@@ -454,6 +480,45 @@ function scenarios(ctx) {
         return missing.length ? { pass: false, reason: `missing ${missing.join(',')}` } : { pass: true };
       },
     },
+    {
+      id: 'followup-write',
+      prompts: ['what entries are in my Evalog?', `ok, add '${marker}-followup' to it`],
+      check: async () => {
+        const rows = (await appApi(ctx.evalog, '/entries')).data ?? [];
+        return rows.some((r) => r.text === `${marker}-followup`) ? { pass: true } : { pass: false, reason: 'follow-up write not stored' };
+      },
+    },
+    {
+      id: 'followup-edit',
+      prompts: ['what does my Counter app do?', "change its heading to say 'Counter Pro'"],
+      check: async () => {
+        const html = await appFile(ctx.counter, 'index.html');
+        return /<h1[^>]*>\s*Counter Pro\s*<\/h1>/.test(html ?? '') ? { pass: true } : { pass: false, reason: 'heading not changed' };
+      },
+    },
+    {
+      id: 'followup-affirm',
+      prompts: [
+        "the + button in my Counter app makes the number go down. What's wrong? Don't change anything yet.",
+        'ok, go ahead and fix it',
+      ],
+      check: async (trace) => {
+        if (trace.turns[0]?.tools.some((t) => ['editApp', 'updateApp'].includes(t))) return { pass: false, reason: 'changed the app in the diagnose-only turn' };
+        const js = await appFile(ctx.counter, 'app.js');
+        const body = /function increment\(\)\s*\{([\s\S]*?)\n\}/.exec(js ?? '')?.[1] ?? '';
+        if (!/\+\s*1|\+\+|\+=\s*1/.test(body) || /-\s*1|--/.test(body)) return { pass: false, reason: `increment still wrong: ${body.trim().slice(0, 80)}` };
+        return { pass: true };
+      },
+    },
+    {
+      id: 'followup-thanks-stays-chat',
+      prompts: ['which apps do I have?', 'thanks!'],
+      check: async (trace) => {
+        const second = trace.turns[1];
+        if (second?.tools.some((t) => !['listApps', 'listMemories'].includes(t))) return { pass: false, reason: `acted on "thanks": ${second.tools.join(',')}` };
+        return { pass: true };
+      },
+    },
     ...(WITH_BUILD ? [{
       id: 'build-fullstack',
       prompt: 'build me a simple notes app with a backend: add a note, list notes, delete a note',
@@ -475,11 +540,13 @@ function scenarios(ctx) {
 
 await login();
 const results = [];
+let budgetExhausted = false;
 for (let rep = 0; rep < REPEAT; rep += 1) {
   const ctx = { cleanup: [] };
   ctx.evalog = await deployFixture('Evalog', EVALOG_FILES);
   ctx.tally = await deployFixture('Tally', TALLY_FILES);
   ctx.ledger = await deployFixture('Ledger', LEDGER_FILES);
+  ctx.counter = await deployFixture('Counter', Object.fromEntries(Object.entries(TALLY_FILES).map(([name, body]) => [name, body.replaceAll('Tally', 'Counter')])));
   ctx.scores = await deployFixture('Scores', SCORES_FILES);
   for (const [player, score] of [['ana', 12], ['bo', 40], ['cy', 25], ['di', 7]]) {
     await appApi(ctx.scores, '/scores', { method: 'POST', body: { player, score } });
@@ -489,10 +556,21 @@ for (let rep = 0; rep < REPEAT; rep += 1) {
   await appApi(ctx.evalog, '/entries', { method: 'POST', body: { text: 'second seeded entry' } });
 
   for (const s of scenarios(ctx).filter((x) => !ONLY.length || ONLY.includes(x.id))) {
+    if (budgetExhausted) break;
     let trace;
     let verdict;
     try {
-      trace = await runTurn(s.prompt, { timeoutMs: s.timeoutMs });
+      trace = s.prompts
+        ? await runConversation(s.prompts, { timeoutMs: s.timeoutMs })
+        : await runTurn(s.prompt, { timeoutMs: s.timeoutMs });
+      const limitError = trace.streamErrors.find((e) => /Daily AI limit reached/i.test(e));
+      if (limitError) {
+        // The account's daily AI budget is spent: later scenarios would all
+        // "fail" in 0s. Stop and say so instead of reporting agent failures.
+        budgetExhausted = true;
+        console.log(`STOP  daily AI budget exhausted for this account — use a fresh local account. (${limitError.slice(0, 120)})`);
+        break;
+      }
       verdict = trace.timedOut ? { pass: false, reason: 'timed out' } : await s.check(trace);
     } catch (error) {
       verdict = { pass: false, reason: `harness error: ${error.message}` };
@@ -505,9 +583,11 @@ for (let rep = 0; rep < REPEAT; rep += 1) {
     results.push(row);
     console.log(`${row.pass ? 'PASS' : 'FAIL'}  ${s.id.padEnd(20)} ${String(Math.round((row.ms ?? 0) / 1000)).padStart(4)}s  approvals=${row.approvals ?? '-'}  tools=${(row.tools ?? []).join('>')}${row.pass ? '' : `  <- ${row.reason}`}`);
     for (const e of row.toolErrors ?? []) console.log(`        tool error ${e.name}: ${e.error.slice(0, 160)}`);
+    if (!row.pass) for (const e of trace?.streamErrors ?? []) console.log(`        stream error: ${e.slice(0, 200)}`);
   }
 
-  for (const id of [ctx.evalog, ctx.tally, ctx.ledger, ctx.scores, ...ctx.cleanup]) await api(`/api/apps/${id}`, { method: 'DELETE' });
+  for (const id of [ctx.evalog, ctx.tally, ctx.ledger, ctx.scores, ctx.counter, ...ctx.cleanup]) await api(`/api/apps/${id}`, { method: 'DELETE' });
+  if (budgetExhausted) break;
 }
 
 const passed = results.filter((r) => r.pass).length;

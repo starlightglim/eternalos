@@ -451,13 +451,27 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
         console.error('Failed to update agent thread registry entry:', registryError);
       }
 
-      let route = classifyRoute(lastUserText);
-      // Only consult the user's app names when the plain text did not already
-      // pick an app route — saves a desktop read on most turns.
-      if (!route.startsWith('app-')) {
-        const appNames = await this.listInstalledAppNames();
-        if (appNames.length) route = classifyRoute(lastUserText, { appNames });
-      }
+      // Route with conversation context: replay the last few user turns
+      // through the same deterministic router so a follow-up ("now make it
+      // blue", "yes, install it") inherits the previous turn's route instead
+      // of landing in chat, which has no app or desktop tools. App names are
+      // fetched at most once, and only when plain text did not already pick
+      // an app route.
+      let appNames: string[] | undefined;
+      const classifyWithContext = async (text: string, previousRoute?: ChatRoute): Promise<ChatRoute> => {
+        const plain = classifyRoute(text, { previousRoute });
+        if (plain.startsWith('app-')) return plain;
+        appNames ??= await this.listInstalledAppNames();
+        return appNames.length ? classifyRoute(text, { appNames, previousRoute }) : plain;
+      };
+      const earlierUserTexts = this.messages
+        .filter((message) => message.role === 'user')
+        .map((message) => extractMessageText(message))
+        .slice(0, -1)
+        .slice(-4);
+      let previousRoute: ChatRoute | undefined;
+      for (const text of earlierUserTexts) previousRoute = await classifyWithContext(text, previousRoute);
+      const route = await classifyWithContext(lastUserText, previousRoute);
       const memoryTools = createMemoryTools({
         setState: (state) => this.setState(state),
         getState: () => this.state,
@@ -563,6 +577,29 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
         execute: async ({ writer }) => {
           stageEmitter.write = (chunk) => writer.write(chunk as any);
           let usage: LanguageModelUsage | null = null;
+          // Stall watchdog. A provider call that hangs without erroring (seen
+          // in the eval: a dropped upstream stream left the client waiting
+          // 5 minutes with no error and no end) must still end the turn with
+          // a legible message. Armed only while waiting on the MODEL: re-armed
+          // at each step and on every chunk, paused while tools run (an app
+          // build can take minutes). It closes the response itself rather
+          // than trusting abort to reach a hung binding call.
+          const stallMs = Number(this.env.AGENT_STALL_TIMEOUT_MS) || 90_000;
+          const watchdog = new AbortController();
+          let armed = false;
+          let lastActivity = Date.now();
+          let endStream: ((message: string) => void) | null = null;
+          let onStall: () => void = () => {};
+          const stalled = new Promise<void>((resolve) => { onStall = resolve; });
+          const stallTimer = setInterval(() => {
+            if (!armed || Date.now() - lastActivity < stallMs) return;
+            armed = false;
+            const message = `The AI model stopped responding (no output for ${Math.round(stallMs / 1000)}s). Please try again.`;
+            console.error('Agent chat turn stalled:', message);
+            endStream?.(message);
+            watchdog.abort(new Error(message));
+            onStall();
+          }, Math.max(50, Math.min(5_000, Math.floor(stallMs / 4))));
           try {
             const result = streamText({
               model: this.getModel(),
@@ -572,7 +609,14 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
                 toolCalls: 'before-last-10-messages',
               }),
               tools: activeRouteTools as any,
+              onChunk: ({ chunk }) => {
+                lastActivity = Date.now();
+                // Tools run after a tool-call chunk; that is not a stall.
+                if (chunk.type === 'tool-call') armed = false;
+              },
               prepareStep: async ({ stepNumber }) => {
+                armed = true;
+                lastActivity = Date.now();
                 if (activeToolNames.length === 0) {
                   return {
                     activeTools: [],
@@ -594,7 +638,9 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
               // request is cancelled — otherwise the DO keeps generating and
               // paying for tokens nobody will see (the response reader is torn
               // down on abort either way).
-              abortSignal: options?.abortSignal,
+              abortSignal: options?.abortSignal
+                ? AbortSignal.any([options.abortSignal, watchdog.signal])
+                : watchdog.signal,
             });
             // Map ONLY the provider-level error part to the legible message —
             // it flows through toUIMessageStream's default onError as raw
@@ -604,6 +650,16 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
             const uiStream = result.toUIMessageStream() as ReadableStream<Record<string, unknown>>;
             const legibleProviderErrors = uiStream.pipeThrough(
               new TransformStream({
+                start(controller) {
+                  endStream = (message) => {
+                    try {
+                      controller.enqueue({ type: 'error', errorText: message });
+                      controller.terminate();
+                    } catch {
+                      // already closed
+                    }
+                  };
+                },
                 transform(chunk, controller) {
                   if (chunk.type === 'error') {
                     console.error('Agent chat provider error:', chunk.errorText);
@@ -621,8 +677,12 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
             // Await the turn's completion — success, provider error, or
             // abort all settle this promise — so the slot is held for
             // exactly the turn's lifetime.
-            usage = await Promise.resolve(result.usage).catch(() => null);
+            usage = await Promise.race([
+              Promise.resolve(result.usage).catch(() => null),
+              stalled.then(() => null),
+            ]);
           } finally {
+            clearInterval(stallTimer);
             // Always settle: record reported tokens, then release the slot.
             // A hard crash before this runs (the DO evicted mid-turn) is
             // backstopped by the slot's lease expiring in the guard.
