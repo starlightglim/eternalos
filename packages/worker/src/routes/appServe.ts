@@ -18,7 +18,7 @@
 
 import type { AppGrantedPermissions } from '../utils/jwt';
 import { withCors } from '../middleware/http';
-import { allowFramingByFrontend } from '../utils/appFraming';
+import { allowFramingByFrontend, allowOpaqueOriginAssets } from '../utils/appFraming';
 import { appRunnerName, type AppBackendConfig } from '../durable-objects/AppRunner';
 import type { RouteContext } from './router';
 import type { Env } from '../index';
@@ -234,7 +234,8 @@ export async function handleServeAppPreview(c: RouteContext): Promise<Response> 
     },
   }));
 
-  return allowFramingByFrontend(await worker.getEntrypoint().fetch(c.request), c.env);
+  const previewResponse = allowFramingByFrontend(await worker.getEntrypoint().fetch(c.request), c.env);
+  return allowOpaqueOriginAssets(previewResponse, c.request.method, previewPath.slice(previewId.length + 1));
 }
 
 /** ANY /api/apps/:appId[/...] */
@@ -303,6 +304,7 @@ export async function handleServeApp(c: RouteContext): Promise<Response> {
   }));
 
   const entrypoint = worker.getEntrypoint();
-  return allowFramingByFrontend(await entrypoint.fetch(c.request), c.env);
+  const response = allowFramingByFrontend(await entrypoint.fetch(c.request), c.env);
+  return allowOpaqueOriginAssets(response, c.request.method, appPath.slice(appId.length + 1));
 }
 

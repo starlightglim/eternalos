@@ -37,3 +37,21 @@ describe('app document framing', () => {
     assert.equal(allowFramingByFrontend(plain, PROD), plain);
   });
 });
+
+describe('app static files under an opaque origin', async () => {
+  const { allowOpaqueOriginAssets } = await import('../src/utils/appFraming.ts');
+  const js = () => new Response('export {}', { headers: { 'content-type': 'text/javascript' } });
+
+  it('lets the sandboxed app load its own module scripts', () => {
+    assert.equal(allowOpaqueOriginAssets(js(), 'GET', 'app.js').headers.get('access-control-allow-origin'), '*');
+    assert.equal(allowOpaqueOriginAssets(js(), 'GET', '').headers.get('access-control-allow-origin'), '*');
+  });
+
+  it('leaves the bridge, the backend, writes and existing policies alone', () => {
+    assert.equal(allowOpaqueOriginAssets(js(), 'GET', '_eternal/fs/list').headers.get('access-control-allow-origin'), null);
+    assert.equal(allowOpaqueOriginAssets(js(), 'GET', 'api/books').headers.get('access-control-allow-origin'), null);
+    assert.equal(allowOpaqueOriginAssets(js(), 'POST', 'app.js').headers.get('access-control-allow-origin'), null);
+    const chosen = new Response('', { headers: { 'access-control-allow-origin': 'https://eternalos.me' } });
+    assert.equal(allowOpaqueOriginAssets(chosen, 'GET', 'app.js').headers.get('access-control-allow-origin'), 'https://eternalos.me');
+  });
+});

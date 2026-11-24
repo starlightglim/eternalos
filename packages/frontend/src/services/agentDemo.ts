@@ -158,7 +158,13 @@ function row(book, changed) {
 }
 
 async function load() {
-  const books = await window.eternal.api.get('/books');
+  let books;
+  try {
+    books = await window.eternal.api.get('/books');
+  } catch (error) {
+    progress.textContent = 'Couldn’t load your books — ' + (error && error.message ? error.message : 'try reopening the app') + '.';
+    return;
+  }
   const before = previous;
   previous = new Map(books.map((book) => [book.id, JSON.stringify(book)]));
   list.replaceChildren(...books.map((book) => row(book, before !== null && before.get(book.id) !== JSON.stringify(book))));
