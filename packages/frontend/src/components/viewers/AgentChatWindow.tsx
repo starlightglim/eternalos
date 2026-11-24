@@ -41,7 +41,7 @@ import {
 } from './CodeRunViews';
 import type { UndoRunResult } from '../../services/agent';
 import { ChatMarkdown } from './ChatMarkdown';
-import { activityLabel, describeAppChange, isQuietToolPart } from '../../utils/codeRunText';
+import { activityLabel, describeAppChange, isQuietToolPart, readOnlyRunSteps } from '../../utils/codeRunText';
 
 const STARTER_PROMPTS = [
   'What is on my desktop right now?',
@@ -2313,6 +2313,29 @@ function AgentChatThreadPane({
                     activity = [];
                   };
                   parts.forEach((part, index) => {
+                    // A Code Mode run that only read things is a lookup too:
+                    // its steps join the activity line instead of a card.
+                    if (part.type === 'tool-codemode') {
+                      const stepsData = dataPartFor<RunStepsData>(parts, 'data-codemode-steps', part.toolCallId);
+                      const preview = dataPartFor<CodePreviewData>(parts, 'data-codemode-preview', part.toolCallId);
+                      const lookupSteps = readOnlyRunSteps(part.state, stepsData, preview);
+                      if (lookupSteps) {
+                        const details = renderAssistantPart(part, index, parts);
+                        lookupSteps.forEach((step, stepIndex) => {
+                          activity.push({
+                            key: `${part.toolCallId ?? `p${index}`}-${stepIndex}`,
+                            label: step.label,
+                            detail: step.detail,
+                            running: step.status === 'running',
+                            details: stepIndex === lookupSteps.length - 1 ? details : null,
+                          });
+                        });
+                        if (!lookupSteps.length) {
+                          activity.push({ key: part.toolCallId ?? `p${index}`, label: 'Looking things up', running: true, details });
+                        }
+                        return;
+                      }
+                    }
                     if (part.type.startsWith('tool-') && isQuietToolPart(part)) {
                       const { label, detail } = activityLabel(part, appNameOf);
                       activity.push({

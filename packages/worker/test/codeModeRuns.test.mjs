@@ -355,3 +355,20 @@ describe('routine schedules', () => {
     assert.equal(runs.describeSchedule({ every: 'day', at: '08:00', timeZone: 'America/Toronto' }), 'every day at 08:00 (America/Toronto)');
   });
 });
+
+describe('run results in text', () => {
+  it('turns routine results into a sentence', () => {
+    assert.equal(runs.summarizeRoutineResult({ ok: true, message: 'Marked Neuromancer as read' }), 'Marked Neuromancer as read');
+    assert.equal(runs.summarizeRoutineResult({ ok: false, reason: 'Not found' }), 'Not found');
+    assert.equal(runs.summarizeRoutineResult(undefined), 'Done.');
+    assert.equal(runs.summarizeRoutineResult('  hi '), 'hi');
+    assert.equal(runs.summarizeRoutineResult({ count: 2 }), '{"count":2}');
+  });
+
+  it('tells the model only about undone runs', () => {
+    assert.equal(runs.modelNoteForDataPart({ type: 'data-codemode-undo', data: { runId: 'r1' } }), undefined);
+    assert.match(runs.modelNoteForDataPart({ type: 'data-codemode-undo', data: { runId: 'r1', undoneAt: 0 } }), /pressed Undo/);
+    assert.match(runs.modelNoteForDataPart({ type: 'data-routine-run', data: { undo: { undoneAt: 1 } } }), /no longer in effect/);
+    assert.equal(runs.modelNoteForDataPart({ type: 'data-codemode-steps', data: { undoneAt: 1 } }), undefined);
+  });
+});

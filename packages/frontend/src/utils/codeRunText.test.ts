@@ -1,5 +1,5 @@
-import { expect, test } from 'vitest';
-import { describeAppChange } from './codeRunText';
+import { describe, expect, test } from 'vitest';
+import { describeAppChange, readOnlyRunSteps } from './codeRunText';
 
 test('describes single app-data changes in plain words', () => {
   expect(describeAppChange('PATCH', '/api/books/1', { is_read: 1 }, 'Books')).toEqual({
@@ -24,4 +24,26 @@ test('folds lookups into short activity lines', async () => {
   expect(isQuietToolPart({ type: 'tool-callAppApi', state: 'output-available', input: { method: 'POST' } })).toBe(false);
   expect(isQuietToolPart({ type: 'tool-callAppApi', state: 'output-available', input: { method: 'GET' } })).toBe(true);
   expect(isQuietToolPart({ type: 'tool-listApps', state: 'output-error' })).toBe(false);
+});
+
+describe('readOnlyRunSteps', () => {
+  const read = { label: 'Read books from Books', status: 'done' as const, write: false };
+  const write = { label: 'Update book #1 in Books', status: 'done' as const, write: true };
+  test('folds a finished run that only read', () => {
+    expect(readOnlyRunSteps('output-available', { steps: [read], total: 1, failed: 0 }, undefined)).toEqual([read]);
+  });
+  test('keeps runs that wrote or failed as cards', () => {
+    expect(readOnlyRunSteps('output-available', { steps: [read, write], total: 2, failed: 0 }, undefined)).toBeNull();
+    expect(readOnlyRunSteps('output-available', { steps: [read], total: 1, failed: 1 }, undefined)).toBeNull();
+    expect(readOnlyRunSteps('output-available', undefined, undefined)).toBeNull();
+  });
+  test('trimmed steps need the preview to vouch for them', () => {
+    expect(readOnlyRunSteps('output-available', { steps: [read], total: 5, failed: 0 }, undefined)).toBeNull();
+    expect(readOnlyRunSteps('output-available', { steps: [read], total: 5, failed: 0 }, { ok: true, actions: [] })).toEqual([read]);
+  });
+  test('a running run folds only when the practice run found no writes', () => {
+    expect(readOnlyRunSteps('input-available', undefined, { ok: true, actions: [] })).toEqual([]);
+    expect(readOnlyRunSteps('input-available', undefined, undefined)).toBeNull();
+    expect(readOnlyRunSteps('approval-requested', undefined, { ok: true, actions: [{}] })).toBeNull();
+  });
 });

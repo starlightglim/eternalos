@@ -160,7 +160,8 @@ export function ActivityGroup({ items }: { items: ActivityItem[] }) {
   const [open, setOpen] = useState(false);
   if (!items.length) return null;
   const running = items.some((item) => item.running);
-  const summary = items.map((item) => item.label).join(' · ');
+  // The same lookup twice (a check, then a re-check) reads as one.
+  const summary = [...new Set(items.map((item) => item.label))].join(' · ');
   return (
     <div className={styles.activity}>
       <button

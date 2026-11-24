@@ -22,3 +22,16 @@ test('handles headings, ordered lists and fenced code', () => {
 test('keeps consecutive lines in one paragraph (rendered with line breaks)', () => {
   expect(parseMarkdownBlocks('line one\nline two')).toEqual([{ kind: 'paragraph', lines: ['line one', 'line two'] }]);
 });
+
+test('parses pipe tables', () => {
+  const blocks = parseMarkdownBlocks('Your books:\n\n| Book | Status |\n|---|---|\n| Dune | Unread |\n| Neuromancer |\n\nDone.');
+  expect(blocks).toEqual([
+    { kind: 'paragraph', lines: ['Your books:'] },
+    { kind: 'table', header: ['Book', 'Status'], rows: [['Dune', 'Unread'], ['Neuromancer', '']] },
+    { kind: 'paragraph', lines: ['Done.'] },
+  ]);
+});
+
+test('a lone pipe line is not a table', () => {
+  expect(parseMarkdownBlocks('| not a table |\nreally')).toEqual([{ kind: 'paragraph', lines: ['| not a table |', 'really'] }]);
+});

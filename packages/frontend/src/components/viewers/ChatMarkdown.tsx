@@ -6,7 +6,7 @@
  *
  * Supported: paragraphs, line breaks, # headings (rendered as bold lines),
  * - / * / 1. lists, ``` fenced code, `inline code`, **bold**, *italic*,
- * _italic_.
+ * _italic_, and | pipe | tables |.
  */
 
 import type { ReactNode } from 'react';
@@ -40,6 +40,22 @@ export function ChatMarkdown({ text, className }: { text: string; className?: st
       {blocks.map((block, blockIndex) => {
         const key = `b${blockIndex}`;
         if (block.kind === 'heading') return <p key={key} className={styles.heading}>{renderInline(block.text, key)}</p>;
+        if (block.kind === 'table') {
+          return (
+            <div key={key} className={styles.tableWrap}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>{block.header.map((cell, cellIndex) => <th key={cellIndex}>{renderInline(cell, `${key}-h${cellIndex}`)}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {block.rows.map((row, rowIndex) => (
+                    <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{renderInline(cell, `${key}-${rowIndex}-${cellIndex}`)}</td>)}</tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        }
         if (block.kind === 'code') return <pre key={key} className={styles.codeBlock}>{block.text}</pre>;
         if (block.kind === 'list') {
           const items = block.items.map((item, itemIndex) => <li key={`${key}-${itemIndex}`}>{renderInline(item, `${key}-${itemIndex}`)}</li>);

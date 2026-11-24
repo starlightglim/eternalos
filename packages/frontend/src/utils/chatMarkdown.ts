@@ -7,11 +7,23 @@ export type Block =
   | { kind: 'paragraph'; lines: string[] }
   | { kind: 'heading'; text: string }
   | { kind: 'list'; ordered: boolean; items: string[] }
-  | { kind: 'code'; text: string };
+  | { kind: 'code'; text: string }
+  | { kind: 'table'; header: string[]; rows: string[][] };
 
 const BULLET_RE = /^\s*[-*•]\s+(.*)$/;
 const ORDERED_RE = /^\s*\d+[.)]\s+(.*)$/;
 const HEADING_RE = /^\s{0,3}#{1,6}\s+(.*)$/;
+const TABLE_ROW_RE = /^\s*\|.*\|\s*$/;
+const TABLE_RULE_RE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+
+function tableCells(line: string): string[] {
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim());
+}
+
+/** A pipe table starts with a | row followed by a |---|---| rule. */
+function isTableStart(lines: string[], index: number): boolean {
+  return TABLE_ROW_RE.test(lines[index] ?? '') && TABLE_RULE_RE.test(lines[index + 1] ?? '');
+}
 
 export function parseMarkdownBlocks(text: string): Block[] {
   const blocks: Block[] = [];
@@ -29,6 +41,17 @@ export function parseMarkdownBlocks(text: string): Block[] {
     }
     if (!line.trim()) {
       index += 1;
+      continue;
+    }
+    if (isTableStart(lines, index)) {
+      const header = tableCells(line);
+      const rows: string[][] = [];
+      index += 2;
+      while (index < lines.length && TABLE_ROW_RE.test(lines[index])) {
+        const cells = tableCells(lines[index++]);
+        rows.push(header.map((_, column) => cells[column] ?? ''));
+      }
+      blocks.push({ kind: 'table', header, rows });
       continue;
     }
     const heading = HEADING_RE.exec(line);
@@ -59,6 +82,7 @@ export function parseMarkdownBlocks(text: string): Block[] {
       && !BULLET_RE.test(lines[index])
       && !ORDERED_RE.test(lines[index])
       && !/^\s*```/.test(lines[index])
+      && !isTableStart(lines, index)
     ) {
       paragraph.push(lines[index]);
       index += 1;

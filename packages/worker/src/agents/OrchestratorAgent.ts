@@ -49,6 +49,8 @@ import {
   type InverseOp,
   type RoutineSchedule,
   type RunStep,
+  summarizeRoutineResult,
+  modelNoteForDataPart,
 } from './tools/codeModeRuns';
 import {
   countRoutines,
@@ -556,7 +558,8 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
       const output = await execute({ code: routine.code }, { toolCallId: runId, messages: [] });
       changedApps = output.changedApps ?? [];
       const result = output.result;
-      summary = result === undefined ? 'Done.' : typeof result === 'string' ? result : JSON.stringify(result);
+      summary = summarizeRoutineResult(result);
+      if (result && typeof result === 'object' && (result as { ok?: unknown }).ok === false) status = 'error';
     } catch (error) {
       status = 'error';
       summary = error instanceof Error ? error.message : String(error);
@@ -993,7 +996,12 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
               model: this.getModel(),
               system: `${getSystemPrompt(route)}\n\n${formatMemoryContext(this.state)}`,
               messages: pruneMessages({
-                messages: await convertToModelMessages(this.messages),
+                messages: await convertToModelMessages(this.messages, {
+                  convertDataPart: (part) => {
+                    const note = modelNoteForDataPart(part as { type: string; data?: unknown });
+                    return note ? { type: 'text', text: note } : undefined;
+                  },
+                }),
                 toolCalls: 'before-last-10-messages',
               }),
               tools: activeRouteTools as any,

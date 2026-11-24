@@ -6,7 +6,8 @@
 .paragraph,
 .heading,
 .list,
-.codeBlock {
+.codeBlock,
+.tableWrap {
   margin: 0 0 6px;
 }
 
@@ -42,4 +43,31 @@
   padding: 6px 8px;
   white-space: pre-wrap;
   overflow-x: auto;
+}
+
+.tableWrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.table {
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+
+.table th,
+.table td {
+  padding: 3px 10px 3px 0;
+  border-bottom: 1px solid var(--chat-border-soft, color-mix(in srgb, currentColor 12%, transparent));
+  text-align: left;
+  vertical-align: top;
+}
+
+.table th {
+  font-weight: 600;
+  color: var(--chat-muted, inherit);
+}
+
+.table tr:last-child td {
+  border-bottom: none;
 }

@@ -138,3 +138,38 @@ export function activityLabel(part: ActivityPartLike, appName: (appId: string) =
       return { label: part.type.replace(/^tool-/, '') };
   }
 }
+
+export interface RunStepLike {
+  label: string;
+  status: 'running' | 'done' | 'error';
+  detail?: string;
+  write: boolean;
+}
+
+/**
+ * The steps of a Code Mode run that only read things, so they can fold into
+ * the activity line like any other lookup — or null when the run should
+ * stay a full card (it changes something, failed, or might still).
+ *
+ * A finished run folds when every step was a read and nothing failed. A
+ * running one folds only when its practice run already found no writes.
+ */
+export function readOnlyRunSteps(
+  state: string | undefined,
+  steps: { steps: RunStepLike[]; total: number; failed: number } | undefined,
+  preview: { ok: boolean; actions: unknown[] } | undefined,
+): RunStepLike[] | null {
+  const noWritesPlanned = preview?.ok === true && preview.actions.length === 0;
+  if (state === 'output-available') {
+    if (!steps || steps.failed > 0 || steps.steps.length === 0) return null;
+    if (steps.steps.some((step) => step.write || step.status === 'error')) return null;
+    // Older steps can be trimmed from the stream; only the preview can vouch for them.
+    if (steps.total > steps.steps.length && !noWritesPlanned) return null;
+    return steps.steps;
+  }
+  if ((state === 'input-streaming' || state === 'input-available') && noWritesPlanned) {
+    if (steps?.steps.some((step) => step.write || step.status === 'error')) return null;
+    return steps?.steps ?? [];
+  }
+  return null;
+}

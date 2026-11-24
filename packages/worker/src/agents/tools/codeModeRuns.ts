@@ -623,3 +623,38 @@ export function describeSchedule(schedule: RoutineSchedule): string {
   }
   return `every day at ${schedule.at}${schedule.timeZone ? ` (${schedule.timeZone})` : ''}`;
 }
+
+/* --------------------------- run results in text --------------------------- */
+
+/**
+ * A routine's return value as a sentence. Generated routines usually return
+ * `{ ok, message }` / `{ ok: false, reason }`; showing that as raw JSON in the
+ * chat read like an error dump.
+ */
+export function summarizeRoutineResult(result: unknown): string {
+  if (result === undefined || result === null) return 'Done.';
+  if (typeof result === 'string') return result.trim() || 'Done.';
+  if (typeof result === 'number' || typeof result === 'boolean') return String(result);
+  if (typeof result === 'object' && !Array.isArray(result)) {
+    const record = result as Record<string, unknown>;
+    for (const key of ['message', 'summary', 'reason', 'error']) {
+      const value = record[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+  }
+  return JSON.stringify(result);
+}
+
+/**
+ * What the model should know about a stored run card. Data parts are
+ * otherwise invisible to it, so after an Undo it kept reporting the undone
+ * changes as current. Only undone runs need a note.
+ */
+export function modelNoteForDataPart(part: { type: string; data?: unknown }): string | undefined {
+  const data = (part.data ?? {}) as Record<string, any>;
+  const undoneAt = part.type === 'data-codemode-undo'
+    ? data.undoneAt
+    : part.type === 'data-routine-run' ? data.undo?.undoneAt : undefined;
+  if (typeof undoneAt !== 'number') return undefined;
+  return `[Note: the user pressed Undo on this run at ${new Date(undoneAt).toISOString()}; its changes were reversed and are no longer in effect.]`;
+}
