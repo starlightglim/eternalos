@@ -98,7 +98,7 @@ const HARD_APP_VERBS =
  * an unambiguously app-shaped noun (app/application/widget) is also present,
  * in any order: "add dark mode to my todo app", "my app's theme, change it".
  */
-const SOFT_APP_VERBS = 'change|add|mark|import|copy|tweak|improve|rename|redesign|restyle|recolor';
+const SOFT_APP_VERBS = 'change|add|save|put|log|mark|import|copy|tweak|improve|rename|redesign|restyle|recolor';
 
 /**
  * Nouns that always refer to an EternalOS app. Soft edit verbs require one of
@@ -252,8 +252,12 @@ const ANY_COMMAND_VERB_RE = new RegExp(`\\b(?:${HARD_APP_VERBS}|${SOFT_APP_VERBS
  * Normalization.
  * ------------------------------------------------------------------ */
 
+const WEB_ADDRESS_RE = /\bhttps?:\/\/[^\s<>"'`]+|\bwww\.[^\s<>"'`]+|\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}\/[^\s<>"'`]*/gi;
+
 function normalizeText(raw: string): string {
-  let text = raw.trim().toLowerCase();
+  // A web address is just "link" to the router: words inside it
+  // ("example.com/build-a-todo-app") are not the user's request.
+  let text = raw.replace(WEB_ADDRESS_RE, ' link ').trim().toLowerCase();
   // Strip diacritics so "aplicación" hits the misspelling map ("créer" → "creer"
   // is harmless — foreign verbs never match anyway).
   text = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '');

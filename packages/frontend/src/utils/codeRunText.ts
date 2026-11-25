@@ -66,6 +66,7 @@ export const QUIET_TOOL_TYPES = new Set([
   'tool-getAppBackendLogs',
   'tool-getDesktopOverview',
   'tool-readTextFile',
+  'tool-readWebPage',
   'tool-listMemories',
   'tool-listRoutines',
 ]);
@@ -101,6 +102,21 @@ function readNoun(path: string): string {
   return last && last !== 'api' ? last.replace(/[-_]+/g, ' ') : 'data';
 }
 
+/** "example.com" from a URL (no www.), or null. */
+export function webHost(url: string): string | null {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '') || null;
+  } catch {
+    return null;
+  }
+}
+
+function shortTitle(title: unknown): string | null {
+  const text = typeof title === 'string' ? title.trim() : '';
+  if (!text) return null;
+  return text.length > 60 ? `${text.slice(0, 59)}…` : text;
+}
+
 /** One short line for a lookup, e.g. "Read books from Books · 3 records". */
 export function activityLabel(part: ActivityPartLike, appName: (appId: string) => string | undefined): { label: string; detail?: string } {
   const input = (part.input ?? {}) as Record<string, unknown>;
@@ -130,6 +146,13 @@ export function activityLabel(part: ActivityPartLike, appName: (appId: string) =
         label: `${done ? 'Read' : 'Reading'} “${String(input.name ?? input.id ?? 'a file')}”`,
         detail: done && output.found === false ? 'not found' : undefined,
       };
+    case 'tool-readWebPage': {
+      const site = webHost(String(output.finalUrl ?? input.url ?? ''));
+      return {
+        label: `${done ? 'Read' : 'Reading'} ${site ?? 'a web page'}`,
+        detail: done ? (output.ok === false ? "couldn't read it" : (shortTitle(output.title) ?? undefined)) : undefined,
+      };
+    }
     case 'tool-listMemories':
       return { label: done ? 'Checked saved memories' : 'Checking saved memories' };
     case 'tool-listRoutines':

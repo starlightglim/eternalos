@@ -428,3 +428,20 @@ describe('editing the desktop and its look', () => {
     it(`${JSON.stringify(text)} → ${route}`, () => assert.equal(classifyRoute(text), route));
   }
 });
+
+describe('messages with web links', () => {
+  const ctx = { appNames: ['reading list', 'recipes'] };
+  const cases = [
+    // Words inside a link are not the request.
+    ['summarize https://example.com/how-to-build-a-todo-app', 'chat'],
+    ['what does this say? example.com/delete-my-app', 'chat'],
+    ['save this recipe to a note https://cook.example.com/pie', 'desktop-write'],
+    // Saving a page into an installed app reaches the app tools.
+    ['save https://example.com/app-design to my reading list', 'app-build', ctx],
+    ['put this in my recipes https://cook.example.com/pie', 'app-build', ctx],
+    ['add Dune to my reading list', 'app-build', ctx],
+  ];
+  for (const [text, route, context] of cases) {
+    it(`${JSON.stringify(text)} → ${route}`, () => assert.equal(classifyRoute(text, context), route));
+  }
+});

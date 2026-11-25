@@ -1111,3 +1111,12 @@
   border: 1px solid var(--chat-border);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, white 25%, transparent);
 }
+
+.webLink {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--chat-accent, var(--accent, currentColor));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}

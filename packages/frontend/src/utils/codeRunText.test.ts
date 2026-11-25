@@ -65,3 +65,14 @@ describe('desktop edit cards', () => {
     expect(describeDesktopEditDone('tool-changeAppearance', { name: 'Rainy café' })).toBe('Your desktop now has the “Rainy café” look.');
   });
 });
+
+test('labels web reads by site and title', async () => {
+  const { activityLabel, isQuietToolPart } = await import('./codeRunText');
+  const names = () => undefined;
+  const done = { type: 'tool-readWebPage', state: 'output-available', input: { url: 'https://www.example.com/a' }, output: { ok: true, finalUrl: 'https://www.example.com/a', title: 'Apple Pie' } };
+  expect(isQuietToolPart(done)).toBe(true);
+  expect(activityLabel(done, names)).toEqual({ label: 'Read example.com', detail: 'Apple Pie' });
+  expect(activityLabel({ type: 'tool-readWebPage', state: 'input-available', input: { url: 'https://x.org/' } }, names)).toEqual({ label: 'Reading x.org', detail: undefined });
+  expect(activityLabel({ type: 'tool-readWebPage', state: 'output-available', input: { url: 'https://x.org/' }, output: { ok: false, url: 'https://x.org/', error: '403' } }, names).detail).toBe("couldn't read it");
+});
+

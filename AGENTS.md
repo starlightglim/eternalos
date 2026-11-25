@@ -235,6 +235,24 @@ truth for all tokens).
   DO-migration deploy note, run `wrangler deploy` once before relying on
   Workers Builds (`versions upload`).
 
+## Web reading (`readWebPage`)
+
+- Pure helpers in `packages/worker/src/utils/webPage.ts` (URL rules, text
+  extraction), tool in `src/agents/tools/webTools.ts`, offered on every chat
+  route (not inside Code Mode). Read-only, so no approval.
+- The assistant may open ONLY URLs the user wrote in the thread or links on
+  pages it already read (`allowedWebUrlKeys` in OrchestratorAgent; exact
+  path + query match). This stops a page or note from getting the model to
+  leak data through a URL. Don't loosen it to "any public URL".
+- Public hosts only (no localhost/private IPs/odd ports/EternalOS hosts),
+  every redirect re-checked, 3MB / 12s / 8 reads per turn, 15k chars of text.
+  Results carry an "untrusted data" note; PDFs aren't read yet.
+- The router replaces web addresses with "link" so words inside a URL
+  ("…/build-a-todo-app") don't pick the route.
+- Local `wrangler dev` can't fetch some HTTPS sites (`https://example.com`
+  → "internal error"); Wikipedia, iana.org and cloudflare.com work. The
+  evals use those.
+
 ## Agent quality: eval suite (`scripts/agent-eval.mjs`)
 
 Ask Eternal changes (prompts, tools, routing, models) are judged by
@@ -253,7 +271,8 @@ EVAL_EMAIL=... EVAL_PASSWORD=... npm run eval:agent -- --api http://localhost:87
   writes, small fixes in a big file, backend logic bugs, diagnosing from
   backend logs, honesty when a write is rejected or no app exists — plus
   Code Mode features: one preview for two writes, REST undo, a desktop file
-  imported into an app, and saving a routine.
+  imported into an app, and saving a routine — plus web reading (page into an
+  app, page into a note, no reads of links the user never gave).
 - Compare models without editing config: start extra workers with
   `--var AGENT_CHAT_MODEL:<model> --persist-to <dir>` (separate state, separate
   account) and point `--api` at each.

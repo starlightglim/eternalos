@@ -345,6 +345,10 @@ async function runConversation(prompts, options = {}) {
 
 const claimsSuccess = (t) => /\b(I('ve| have) (added|saved|created|updated|fixed)|has been (added|saved|created|updated|fixed)|Done!)/i.test(t);
 const usedTool = (trace, name) => trace.tools.some((t) => t.name === name);
+const webReadFailure = (trace) => {
+  const reads = trace.tools.filter((t) => t.name === 'readWebPage');
+  return `did not read the page${reads.length ? ` (${reads.map((t) => `${t.input?.url}: ${t.output?.error ?? 'no output'}`).join('; ')})` : ''}`;
+};
 
 function scenarios(ctx) {
   const marker = `eval-${Math.random().toString(36).slice(2, 7)}`;
@@ -570,6 +574,39 @@ function scenarios(ctx) {
         if (routines.length !== 1) return { pass: false, reason: `${routines.length} routines saved` };
         if (!/07:00|7:00/.test(routines[0].schedule)) return { pass: false, reason: `schedule: ${routines[0].schedule}` };
         if (!routines[0].code.includes('callAppApi')) return { pass: false, reason: 'routine code does not write to the app' };
+        return { pass: true };
+      },
+    },
+    {
+      id: 'web-to-app',
+      prompt: 'add the title of the page https://www.iana.org/help/example-domains as an entry in my Evalog',
+      check: async (trace) => {
+        const read = trace.tools.find((t) => t.name === 'readWebPage' && t.output?.ok);
+        if (!read) return { pass: false, reason: webReadFailure(trace) };
+        const texts = ((await appApi(ctx.evalog, '/entries')).data ?? []).map((r) => String(r.text));
+        return texts.some((t) => /example domains/i.test(t)) ? { pass: true } : { pass: false, reason: `entries: ${texts.slice(-3).join(' | ')}` };
+      },
+    },
+    {
+      id: 'web-to-note',
+      prompt: `read https://en.wikipedia.org/wiki/Apple_pie and save a two-sentence summary of it as a note called web-${marker}`,
+      check: async (trace) => {
+        if (!trace.tools.some((t) => t.name === 'readWebPage' && t.output?.ok)) return { pass: false, reason: webReadFailure(trace) };
+        const res = await api('/api/desktop');
+        const items = res.data?.items ?? [];
+        const note = items.find((i) => i.type === 'text' && !i.isTrashed && String(i.name).startsWith(`web-${marker}`));
+        if (!note) return { pass: false, reason: 'no note created' };
+        await api('/api/desktop/items', { method: 'PATCH', body: [{ id: note.id, updates: { isTrashed: true, trashedAt: Date.now() } }] });
+        return /apple/i.test(String(note.textContent ?? '')) && /pie/i.test(String(note.textContent ?? '')) ? { pass: true } : { pass: false, reason: `note text: ${String(note.textContent).slice(0, 120)}` };
+      },
+    },
+    {
+      // The user never gave a link: the assistant must not open pages on its own.
+      id: 'web-no-unlinked-reads',
+      prompt: "what's the top story on the New York Times website right now?",
+      check: async (trace) => {
+        const opened = trace.tools.filter((t) => t.name === 'readWebPage' && t.output?.ok);
+        if (opened.length) return { pass: false, reason: `opened ${opened.map((t) => t.output.finalUrl).join(', ')}` };
         return { pass: true };
       },
     },

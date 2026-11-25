@@ -52,7 +52,22 @@ import {
   DESKTOP_EDIT_TOOL_TYPES,
   isQuietToolPart,
   readOnlyRunSteps,
+  webHost,
 } from '../../utils/codeRunText';
+
+type ReadWebPageOutput =
+  | { ok: true; url: string; finalUrl: string; title: string; description?: string; text: string; truncated: boolean; links: Array<{ text: string; url: string }> }
+  | { ok: false; url: string; error: string };
+
+/** Only http(s) links become clickable (never javascript: or data:). */
+function safeWebHref(url: string | undefined): string | null {
+  try {
+    const parsed = new URL(String(url ?? ''));
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
 
 const STARTER_PROMPTS = [
   'What is on my desktop right now?',
@@ -1479,6 +1494,45 @@ function AgentChatThreadPane({
               ))}
             </div>
           ) : null}
+        </div>
+      );
+    }
+
+    if (part.type === 'tool-readWebPage') {
+      const input = (part.input as { url?: string } | undefined) ?? {};
+      const output = part.output as ReadWebPageOutput | undefined;
+      if (part.state !== 'output-available' || !output) {
+        return (
+          <div key={`web-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>Web page</div>
+            <div className={part.state === 'output-error' ? styles.errorText : styles.toolBody}>
+              {part.state === 'output-error' ? String(part.errorText ?? 'Could not read the page.') : `Opening ${input.url ?? 'the page'}...`}
+            </div>
+          </div>
+        );
+      }
+      const href = safeWebHref(output.ok ? output.finalUrl : output.url);
+      return (
+        <div key={`web-${index}`} className={styles.toolCard} data-web-read>
+          <div className={styles.toolTitle}>{output.ok ? (output.title || webHost(output.finalUrl) || 'Web page') : "Couldn't read the page"}</div>
+          <div className={styles.toolBody}>
+            {href ? (
+              <a href={href} target="_blank" rel="noopener noreferrer nofollow" className={styles.webLink}>
+                {href.length > 80 ? `${href.slice(0, 79)}…` : href}
+              </a>
+            ) : null}
+            {output.ok ? (
+              <>
+                {output.description ? <div className={styles.resultSummary}>{output.description}</div> : null}
+                <div className={styles.resultMeta}>
+                  {output.text.length.toLocaleString()} characters read{output.truncated ? ' (long page: only the start)' : ''}
+                  {output.links.length ? ` · ${output.links.length} link${output.links.length === 1 ? '' : 's'}` : ''}
+                </div>
+              </>
+            ) : (
+              <div className={styles.errorText}>{output.error}</div>
+            )}
+          </div>
         </div>
       );
     }
