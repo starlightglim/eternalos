@@ -11,7 +11,7 @@ export interface AppSkinEntry {
   name: string;
   createdAt: number;
   source: 'user' | 'assistant';
-  summary: { name: string; author?: string; description?: string; parts: string[]; colors: string[]; images: number; sprites: boolean };
+  summary: { name: string; author?: string; description?: string; parts: string[]; colors: string[]; images: number; sprites: boolean; shaped?: boolean };
 }
 
 export interface AppSkinIndex {

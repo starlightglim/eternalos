@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import JSZip from 'jszip';
 import {
+  skinClipPath,
   layoutSkinTemplate,
   readSkinFile,
   replaceSheet,
@@ -91,5 +92,29 @@ describe('.eskin files', () => {
     escape.file('skin.json', JSON.stringify({ name: 'x', assets: { sheet: '../secret.png' } }));
     await expect(readSkinFile(await escape.generateAsync({ type: 'blob' }))).rejects.toThrow(SkinFileError);
     await expect(readSkinFile(new Blob(['not a skin']))).rejects.toThrow(/not a .eskin/);
+  });
+});
+
+describe('shaped windows', () => {
+  test('shapes become clip-paths built from numbers only', () => {
+    expect(skinClipPath({ type: 'rounded', radius: 24 })).toBe('inset(0 round 24px)');
+    expect(skinClipPath({ type: 'ellipse' })).toBe('ellipse(50% 50% at 50% 50%)');
+    expect(skinClipPath({ type: 'polygon', points: [[50, 0], [100, 100], [0, 100]] })).toBe('polygon(50% 0%, 100% 100%, 0% 100%)');
+    expect(skinClipPath({ type: 'polygon', points: [[50, 0], [100, 100], ['0); x' as unknown as number, 100]] })).toBeNull();
+    expect(skinClipPath({ type: 'rounded', radius: 9999 })).toBeNull();
+    expect(skinClipPath(undefined)).toBeNull();
+  });
+
+  test('a template with a window layer makes a frameless, masked, fixed-size skin', () => {
+    const layout = layoutSkinTemplate(parts, ['app'], { window: { w: 420, h: 300 } });
+    expect(layout.entries[0]).toMatchObject({ part: 'window', kind: 'window', w: 420, h: 300 });
+    const skin = skinFromTemplate('Shaped', layout, PNG_1x1);
+    expect(skin.parts.window).toBeUndefined();
+    expect(skin.window).toEqual({
+      frameless: true,
+      shape: { type: 'mask', asset: 'sheet', x: layout.entries[0].x, y: layout.entries[0].y, w: 420, h: 300 },
+      size: { w: 420, h: 300 },
+      drag: ['app'],
+    });
   });
 });

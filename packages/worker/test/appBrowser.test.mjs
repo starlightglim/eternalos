@@ -104,6 +104,10 @@ async function launchChrome() {
   });
   return {
     async goto(url) { await send('Page.navigate', { url }); },
+    /** Real mouse input (reaches out-of-process iframes like a user's would). */
+    async mouse(type, x, y) {
+      await send('Input.dispatchMouseEvent', { type, x, y, button: type === 'mouseMoved' ? 'none' : 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: type === 'mouseMoved' ? 0 : 1 });
+    },
     async evaluate(expression) {
       const reply = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
       if (reply.result?.exceptionDetails) throw new Error(reply.result.exceptionDetails.exception?.description ?? 'evaluate failed');
@@ -333,7 +337,8 @@ describe('installed apps in a real browser', { skip: chromePath ? false : 'Chrom
           'index.html': '<!doctype html><html><head><style>#play{width:30px;height:20px;background:#00f;border:1px solid #000}</style></head><body>'
             + '<button id="play" data-skin="play" data-skin-label="Play">P</button>'
             + '<span id="digit" data-skin="digit" data-skin-frames="2" data-skin-frame="0" style="display:inline-block;width:12px;height:20px"></span>'
-            + '<button id="plain">Plain</button><script src="./app.js"></script></body></html>',
+            + '<button id="plain">Plain</button><span id="closer" data-skin="closer" style="display:inline-block;width:20px;height:20px">x</span>'
+            + '<div style="height:200px"></div><script src="./app.js"></script></body></html>',
           'app.js': `
             const waitSkin = () => new Promise((resolve) => {
               const current = window.eternal.skin.get();
@@ -354,6 +359,7 @@ describe('installed apps in a real browser', { skip: chromePath ? false : 'Chrom
                 plainBg: css('plain', 'backgroundColor'),
                 plainRadius: css('plain', 'borderTopLeftRadius'),
                 accent: getComputedStyle(document.documentElement).getPropertyValue('--eternal-accent').trim(),
+                closer: (() => { const r = document.getElementById('closer').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })(),
                 framesDiffer: frame0 !== frame1 && frame0.startsWith('url("data:image/png') && frame1.startsWith('url("data:image/png'),
               } }, '*');
             });
@@ -376,6 +382,7 @@ describe('installed apps in a real browser', { skip: chromePath ? false : 'Chrom
           digit: { sprite: { asset: 'sheet', x: 0, y: 20, w: 12, h: 20, frames: 2 } },
           button: { style: { background: '#dddddd', radius: 7, bevel: 'raised' } },
         },
+        window: { frameless: true, shape: { type: 'ellipse' }, drag: ['app'], close: 'closer' },
         assets: { sheet: sheetPng },
       } }),
     });
@@ -398,6 +405,7 @@ describe('installed apps in a real browser', { skip: chromePath ? false : 'Chrom
 <script>
   window.skinReports = [];
   window.parts = null;
+  window.windowMessages = [];
   const frame = document.getElementById('app');
   const SKIN = ${JSON.stringify(active.skin)};
   addEventListener('message', (event) => {
@@ -408,6 +416,7 @@ describe('installed apps in a real browser', { skip: chromePath ? false : 'Chrom
       frame.contentWindow.postMessage({ type: 'eternal:skin:describe', requestId: 'r1' }, '*');
     }
     if (event.data.type === 'eternal:skin:parts' && event.data.requestId === 'r1') window.parts = event.data.parts;
+    if (String(event.data.type).startsWith('eternal:window:')) window.windowMessages.push(event.data);
   });
   frame.addEventListener('load', () => frame.contentWindow.postMessage({ type: 'eternal:capability', token: ${JSON.stringify(capability.token)} }, '*'));
 </script></body>`;
@@ -439,10 +448,30 @@ describe('installed apps in a real browser', { skip: chromePath ? false : 'Chrom
       assert.equal(report.framesDiffer, true, 'data-skin-frame switches sprite frames');
 
       // What the Skins panel asks for templates.
-      assert.deepEqual(result.parts.parts.map((part) => [part.name, part.w, part.h, part.frames ?? null]), [['play', 30, 20, null], ['digit', 12, 20, 2]]);
+      assert.deepEqual(result.parts.parts.map((part) => [part.name, part.w, part.h, part.frames ?? null]), [['play', 30, 20, null], ['digit', 12, 20, 2], ['closer', 20, 20, null]]);
       assert.equal(result.parts.parts[0].label, 'Play');
       assert.deepEqual(result.parts.parts[0].states, ['normal', 'hover', 'pressed', 'disabled']);
       assert.deepEqual(result.parts.universal, ['app', 'button', 'scrollbar']);
+      assert.ok(result.parts.viewport.w > 0 && result.parts.viewport.h > 0, 'reports its size for shaped templates');
+
+      // Frameless skin: an empty area drags the window, the painted close part closes it.
+      const frame = await chrome.evaluate("(() => { const r = document.getElementById('app').getBoundingClientRect(); return { x: r.left, y: r.top }; })()");
+      const start = { x: frame.x + 250, y: frame.y + 150 };
+      await chrome.mouse('mouseMoved', start.x, start.y);
+      await chrome.mouse('mousePressed', start.x, start.y);
+      for (let step = 1; step <= 4; step++) await chrome.mouse('mouseMoved', start.x + step * 10, start.y + step * 5);
+      await chrome.mouse('mouseReleased', start.x + 40, start.y + 20);
+      await chrome.mouse('mousePressed', frame.x + report.closer.x, frame.y + report.closer.y);
+      await chrome.mouse('mouseReleased', frame.x + report.closer.x, frame.y + report.closer.y);
+      const messages = await chrome.evaluate(`new Promise((resolve) => setTimeout(() => resolve(window.windowMessages), 500))`);
+      const types = messages.map((m) => m.type);
+      assert.equal(types[0], 'eternal:window:dragStart', JSON.stringify(types));
+      assert.ok(types.filter((t) => t === 'eternal:window:dragMove').length >= 2, JSON.stringify(types));
+      assert.ok(types.includes('eternal:window:dragEnd'), JSON.stringify(types));
+      const lastMove = messages.filter((m) => m.type === 'eternal:window:dragMove').at(-1);
+      assert.equal(lastMove.clientX - messages[0].clientX, 40);
+      assert.equal(lastMove.clientY - messages[0].clientY, 20);
+      assert.equal(types.at(-1), 'eternal:window:close', 'the painted close part closes the window');
     } finally {
       await chrome.close();
       host.close();

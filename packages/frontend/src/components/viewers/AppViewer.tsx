@@ -1,4 +1,5 @@
 import { useMemo, useEffect, useRef, useCallback, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useWindowStore } from '../../stores/windowStore';
 import {
   getAppPermissions,
@@ -13,7 +14,8 @@ import { activeAppListeners, notifyAppSkinChanged, type ActiveAppListener } from
 import { AppSkinsPanel, type DescribedParts } from '../apps/AppSkinsPanel';
 import skinPanelStyles from '../apps/AppSkinsPanel.module.css';
 import { getActiveAppSkin, getPublicAppSkin, installAppSkin } from '../../services/appSkins';
-import { readSkinFile } from '../../utils/appSkins';
+import { readSkinFile, skinWindowChrome } from '../../utils/appSkins';
+import { useWindowSkinStore } from '../../stores/windowSkinStore';
 import { readAppTheme } from '../../utils/appTheme';
 import { useAppearanceStore } from '../../stores/appearanceStore';
 
@@ -75,6 +77,7 @@ export function AppViewer({ appId, previewId, windowId, launchFileId, isVisitor 
   // App skins: the active skin is sent when the app asks (runtime start)
   // and whenever it changes; the Skins panel and .eskin drops live here.
   const canSkin = Boolean(appId && !previewId && !isVisitor);
+  const frameless = useWindowSkinStore((state) => Boolean(windowId && state.chrome[windowId]?.frameless));
   const [skinsOpen, setSkinsOpen] = useState(false);
   const [skinDrag, setSkinDrag] = useState(false);
   const [skinToast, setSkinToast] = useState<string | null>(null);
@@ -91,10 +94,33 @@ export function AppViewer({ appId, previewId, windowId, launchFileId, isVisitor 
     try {
       const { skin } = isVisitor ? await getPublicAppSkin(appId) : await getActiveAppSkin(appId);
       iframeRef.current?.contentWindow?.postMessage({ type: 'eternal:skin', skin }, '*');
+      // Shaped / frameless window (skin.window) is drawn by the desktop.
+      if (windowId) {
+        const chrome = await skinWindowChrome(skin);
+        useWindowSkinStore.getState().setChrome(windowId, chrome);
+        if (chrome?.size) useWindowStore.getState().resizeWindow(windowId, { width: chrome.size.w, height: chrome.size.h });
+      }
     } catch {
       // Visitors and offline: the app keeps its own look.
     }
-  }, [appId, previewId, isVisitor]);
+  }, [appId, previewId, isVisitor, windowId]);
+
+  // Forget this window's skin chrome when the viewer goes away.
+  useEffect(() => () => {
+    if (windowId) useWindowSkinStore.getState().setChrome(windowId, null);
+  }, [windowId]);
+
+  // Painted drag handles of a frameless skin move the window. Pointer
+  // positions come from inside the iframe; place them on the page with the
+  // iframe's current rect so the drag never drifts as the window moves.
+  const skinDragRef = useRef<{ pointer: { x: number; y: number }; position: { x: number; y: number } } | null>(null);
+  const pagePoint = useCallback((clientX: unknown, clientY: unknown) => {
+    const rect = iframeRef.current?.getBoundingClientRect();
+    const x = Number(clientX);
+    const y = Number(clientY);
+    if (!rect || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x: rect.left + x, y: rect.top + y };
+  }, []);
 
   const describeParts = useCallback((): Promise<DescribedParts | null> => {
     const frame = iframeRef.current;
@@ -249,6 +275,36 @@ export function AppViewer({ appId, previewId, windowId, launchFileId, isVisitor 
         case 'eternal:skin:request':
           void sendSkin();
           break;
+        case 'eternal:window:dragStart':
+        case 'eternal:window:dragMove':
+        case 'eternal:window:dragEnd':
+        case 'eternal:window:minimize': {
+          // Only for windows a skin made frameless (no title bar to use).
+          if (!windowId || !useWindowSkinStore.getState().chrome[windowId]?.frameless) break;
+          const store = useWindowStore.getState();
+          if (data.type === 'eternal:window:minimize') {
+            store.minimizeWindow(windowId);
+            break;
+          }
+          if (data.type === 'eternal:window:dragEnd') {
+            skinDragRef.current = null;
+            break;
+          }
+          const point = pagePoint(data.clientX, data.clientY);
+          const win = store.windows.find((w) => w.id === windowId);
+          if (!point || !win) break;
+          if (data.type === 'eternal:window:dragStart') {
+            store.focusWindow(windowId);
+            skinDragRef.current = { pointer: point, position: { ...win.position } };
+          } else if (skinDragRef.current) {
+            const start = skinDragRef.current;
+            store.moveWindow(windowId, {
+              x: Math.round(start.position.x + point.x - start.pointer.x),
+              y: Math.max(0, Math.round(start.position.y + point.y - start.pointer.y)),
+            });
+          }
+          break;
+        }
         case 'eternal:skin:parts': {
           const waiter = describeWaiters.current.get(String(data.requestId));
           if (waiter) {
@@ -313,7 +369,7 @@ export function AppViewer({ appId, previewId, windowId, launchFileId, isVisitor 
     return () => {
       window.removeEventListener('message', handleMessage);
     };
-  }, [windowId, appId, previewId, grantedPermissions, sendTheme, sendSkin]);
+  }, [windowId, appId, previewId, grantedPermissions, sendTheme, sendSkin, pagePoint]);
 
   // Register on the global client-side IPC event bus to receive broadcasts from other apps
   useEffect(() => {
@@ -357,7 +413,7 @@ export function AppViewer({ appId, previewId, windowId, launchFileId, isVisitor 
           width: '100%',
           height: '100%',
           border: 'none',
-          backgroundColor: 'var(--surface, var(--window-bg, #1a1a2e))',
+          backgroundColor: frameless ? 'transparent' : 'var(--surface, var(--window-bg, #1a1a2e))',
         }}
         title="App"
       />
@@ -371,16 +427,26 @@ export function AppViewer({ appId, previewId, windowId, launchFileId, isVisitor 
           <span>Drop a .eskin skin to restyle this app</span>
         </div>
       )}
-      {canSkin && skinsOpen && appId && (
-        <AppSkinsPanel
-          appId={appId}
-          appName={appName}
-          describeParts={describeParts}
-          onChanged={() => notifyAppSkinChanged(appId)}
-          onClose={() => setSkinsOpen(false)}
-        />
-      )}
-      {skinToast && <div className={skinPanelStyles.toast} role="status">{skinToast}</div>}
+      {(() => {
+        const overlays = (
+          <>
+            {canSkin && skinsOpen && appId && (
+              <AppSkinsPanel
+                appId={appId}
+                appName={appName}
+                describeParts={describeParts}
+                onChanged={() => notifyAppSkinChanged(appId)}
+                onClose={() => setSkinsOpen(false)}
+              />
+            )}
+            {skinToast && <div className={skinPanelStyles.toast} role="status">{skinToast}</div>}
+          </>
+        );
+        // A shaped window clips its content: show the panel on the window's
+        // unclipped outer box instead.
+        const outer = frameless ? iframeRef.current?.closest('.window') : null;
+        return outer ? createPortal(overlays, outer) : overlays;
+      })()}
       {permissionPrompt && (
         <AppPermissionDialog
           requested={permissionPrompt.requested || {}}

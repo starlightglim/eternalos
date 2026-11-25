@@ -42,6 +42,19 @@ export interface SkinSprite {
   pixelated?: boolean;
 }
 
+export interface SkinWindow {
+  frameless: boolean;
+  shape?:
+    | { type: 'rounded'; radius: number }
+    | { type: 'ellipse' }
+    | { type: 'polygon'; points: Array<[number, number]> }
+    | { type: 'mask'; asset: string; x?: number; y?: number; w?: number; h?: number };
+  size?: { w: number; h: number };
+  drag?: string[];
+  close?: string;
+  minimize?: string;
+}
+
 export interface AppSkin {
   format: typeof SKIN_FORMAT;
   name: string;
@@ -51,6 +64,7 @@ export interface AppSkin {
   fonts: Record<string, string>;
   parts: Record<string, { sprite?: SkinSprite; style?: SkinStyle; states?: Record<string, SkinStyle> }>;
   assets: Record<string, { type: string; width: number; height: number; data: string } | string>;
+  window?: SkinWindow;
 }
 
 const MAX_ESKIN_BYTES = 9 * 1024 * 1024;
@@ -169,7 +183,7 @@ export interface TemplateEntry {
   h: number;
   /** Cell captions, left to right (states or frame numbers). */
   cells: string[];
-  kind: 'states' | 'frames';
+  kind: 'states' | 'frames' | 'window';
   slice?: number;
 }
 
@@ -193,8 +207,18 @@ const UNIVERSAL_SPRITES: Record<string, Omit<SkinPartDescription, 'name'> & { sl
  * Deterministic sheet layout: each part gets a row of cells (one per state
  * or frame) with its caption above; rows pack left to right.
  */
-export function layoutSkinTemplate(parts: SkinPartDescription[], universal: string[] = []): TemplateLayout {
+export function layoutSkinTemplate(
+  parts: SkinPartDescription[],
+  universal: string[] = [],
+  options: { window?: { w: number; h: number } } = {},
+): TemplateLayout {
   const items: Array<Omit<TemplateEntry, 'x' | 'y'>> = [];
+  if (options.window) {
+    // Window shape: its alpha cuts the window (transparent = cut away).
+    const w = Math.max(200, Math.min(1200, Math.round(options.window.w)));
+    const h = Math.max(150, Math.min(900, Math.round(options.window.h)));
+    items.push({ part: 'window', label: 'Window shape: paint transparent where the window is cut away', w, h, cells: ['shape'], kind: 'window' });
+  }
   for (const name of universal) {
     const spec = UNIVERSAL_SPRITES[name];
     if (spec) items.push({ part: name, label: spec.label, w: spec.w, h: spec.h, cells: spec.states, kind: 'states', ...(spec.slice ? { slice: spec.slice } : {}) });
@@ -250,6 +274,21 @@ export function drawSkinTemplate(layout: TemplateLayout): HTMLCanvasElement {
     ctx.fillText(`${entry.label}  [${entry.part}]`.slice(0, 60), entry.x, entry.y - LABEL_H / 2, entry.w * entry.cells.length + PAD);
     entry.cells.forEach((cell, i) => {
       const cx = entry.x + i * entry.w;
+      if (entry.kind === 'window') {
+        // Only this cell's transparency matters (it becomes the window mask).
+        ctx.fillStyle = '#d9e2ef';
+        ctx.fillRect(cx, entry.y, entry.w, entry.h);
+        ctx.strokeStyle = '#7d8ba3';
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(cx + 0.5, entry.y + 0.5, entry.w - 1, entry.h - 1);
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#4a5568';
+        ctx.textAlign = 'center';
+        ctx.font = '12px sans-serif';
+        ctx.fillText('Erase to transparent where the window should be cut away.', cx + entry.w / 2, entry.y + entry.h / 2 - 8, entry.w - 20);
+        ctx.fillText('Colors here are ignored: only the shape counts.', cx + entry.w / 2, entry.y + entry.h / 2 + 10, entry.w - 20);
+        return;
+      }
       if (entry.part === 'app') {
         // A quiet checker tile for the background.
         for (let ty = 0; ty < entry.h; ty += 8) {
@@ -292,7 +331,17 @@ export function canvasToDataUrl(canvas: HTMLCanvasElement): string {
 /** A skin whose parts are sprites cut from `sheetDataUrl` at the template layout. */
 export function skinFromTemplate(name: string, layout: TemplateLayout, sheetDataUrl: string): AppSkin {
   const parts: AppSkin['parts'] = {};
+  let window: SkinWindow | undefined;
   for (const entry of layout.entries) {
+    if (entry.kind === 'window') {
+      window = {
+        frameless: true,
+        shape: { type: 'mask', asset: 'sheet', x: entry.x, y: entry.y, w: entry.w, h: entry.h },
+        size: { w: entry.w, h: entry.h },
+        drag: ['app'],
+      };
+      continue;
+    }
     const sprite: SkinSprite = { asset: 'sheet', x: entry.x, y: entry.y, w: entry.w, h: entry.h };
     if (entry.kind === 'frames') sprite.frames = entry.cells.length;
     else if (entry.cells.length > 1 || entry.cells[0] !== 'normal') sprite.states = entry.cells;
@@ -306,6 +355,7 @@ export function skinFromTemplate(name: string, layout: TemplateLayout, sheetData
     fonts: {},
     parts,
     assets: { sheet: sheetDataUrl },
+    ...(window ? { window } : {}),
   };
 }
 
@@ -321,6 +371,10 @@ export const TEMPLATE_README = `EternalOS app skin template
    - "9-slice" parts stretch to any size: keep the corners and edges crisp,
      the middle stretches.
    - The app background tile repeats.
+   - The big "Window shape" box (if present) cuts the window itself: erase
+     to transparent wherever the window should be cut away (round corners,
+     a circle, a guitar...). Its colors don't matter, only transparency.
+     Drag the window by any empty area; the small tab above it closes it.
    - Transparent pixels stay see-through.
 3. Save sheet.png (same name, same size), zip skin.json + sheet.png together,
    rename the zip to MySkin.eskin and drop it on the app's window.
@@ -356,4 +410,70 @@ export function replaceSheet(skin: AppSkin, sheet: { dataUrl: string; width: num
     throw new SkinFileError(`The painted image must be ${current.width}×${current.height} pixels, the same size as the template (it is ${sheet.width}×${sheet.height}).`);
   }
   return { ...skin, assets: { ...skin.assets, sheet: sheet.dataUrl } };
+}
+
+// ---------------------------------------------------------------------------
+// Shaped windows
+// ---------------------------------------------------------------------------
+
+const num = (value: unknown, min: number, max: number): number | null => {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= min && n <= max ? Math.round(n * 100) / 100 : null;
+};
+
+/** CSS clip-path for a (checked) skin window shape, or null. Numbers only. */
+export function skinClipPath(shape: SkinWindow['shape']): string | null {
+  if (!shape) return null;
+  if (shape.type === 'rounded') {
+    const radius = num(shape.radius, 0, 400);
+    return radius === null ? null : `inset(0 round ${radius}px)`;
+  }
+  if (shape.type === 'ellipse') return 'ellipse(50% 50% at 50% 50%)';
+  if (shape.type === 'polygon') {
+    const points = (shape.points ?? []).slice(0, 64).map(([x, y]) => [num(x, 0, 100), num(y, 0, 100)]);
+    if (points.length < 3 || points.some(([x, y]) => x === null || y === null)) return null;
+    return `polygon(${points.map(([x, y]) => `${x}% ${y}%`).join(', ')})`;
+  }
+  return null;
+}
+
+/** Cut a region of a PNG data URL into its own PNG data URL (for mask shapes). */
+async function cropDataUrl(dataUrl: string, region?: { x?: number; y?: number; w?: number; h?: number }): Promise<string | null> {
+  if (!/^data:image\/(png|gif|webp);base64,/.test(dataUrl)) return null;
+  if (!region || region.x === undefined || region.y === undefined || !region.w || !region.h) return dataUrl;
+  const image = await new Promise<HTMLImageElement | null>((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+  if (!image) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = region.w;
+  canvas.height = region.h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.drawImage(image, region.x, region.y, region.w, region.h, 0, 0, region.w, region.h);
+  return canvas.toDataURL('image/png');
+}
+
+/** The desktop-side window chrome a skin asks for, or null for a normal window. */
+export async function skinWindowChrome(skin: AppSkin | null): Promise<import('../stores/windowSkinStore').WindowSkinChrome | null> {
+  const win = skin?.window;
+  if (!win || (!win.frameless && !win.shape && !win.size)) return null;
+  const chrome: import('../stores/windowSkinStore').WindowSkinChrome = { frameless: win.frameless === true };
+  const clipPath = skinClipPath(win.shape);
+  if (clipPath) chrome.clipPath = clipPath;
+  if (win.shape?.type === 'mask') {
+    const asset = skin?.assets?.[win.shape.asset];
+    const data = asset ? (typeof asset === 'string' ? asset : asset.data) : null;
+    const maskUrl = data ? await cropDataUrl(data, win.shape) : null;
+    if (maskUrl) chrome.maskUrl = maskUrl;
+  }
+  if (win.size) {
+    const w = num(win.size.w, 200, 1600);
+    const h = num(win.size.h, 150, 1200);
+    if (w && h) chrome.size = { w: Math.round(w), h: Math.round(h) };
+  }
+  return chrome;
 }

@@ -1,4 +1,5 @@
 .backdrop {
+  pointer-events: auto;
   position: absolute;
   inset: 0;
   z-index: 5;
@@ -209,6 +210,7 @@
 }
 
 .toast {
+  pointer-events: auto;
   position: absolute;
   left: 8px;
   bottom: 8px;
@@ -220,4 +222,13 @@
   color: var(--window-text-color, var(--text-color, #000));
   border: 1px solid var(--border, #000);
   font-size: 12px;
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--window-text-secondary, var(--text-color-secondary, #666));
 }

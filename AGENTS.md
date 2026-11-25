@@ -258,6 +258,20 @@ backtick or dollar-brace in it), spliced into `ETERNAL_RUNTIME_JS`.
   `@cf/black-forest-labs/flux-1-schnell`), each charged to the AI budget.
   Generated textures are marked `blend` and made seamless in the runtime
   (two-pass half-offset blend). Missing theme colors are derived from styles.
+- Shaped windows (`skin.window`): `frameless`, `shape` (rounded / ellipse /
+  polygon in % / PNG `mask` region), fixed `size`, and part names for
+  `drag` ("app" = empty areas) / `close` / `minimize`. The DESKTOP draws it:
+  AppViewer → `skinWindowChrome()` → `useWindowSkinStore` → Window hides the
+  title bar, clips `.windowContent`, and the outer `.window` gets
+  `pointer-events: none` so clicks outside the shape fall through. A
+  frameless window always keeps the skin handle (app name, ×, drag,
+  right-click for skins) — don't remove it: it's what stops a shaped window
+  from posing as system UI or trapping the user. The runtime reports drags
+  as `eternal:window:dragStart/Move/End` (iframe client coords; AppViewer
+  maps them through the iframe's live rect, so no drift) and only frameless
+  windows act on them. The Skins panel portals to the outer `.window` when
+  frameless (the clip would cut it). Templates can add a window-shape layer
+  (alpha = shape); the AI designer adds shapes only when asked.
 - Visitors: `GET /api/apps/:id/public-skin` (no auth) returns the active
   skin only when the app's desktop item is public and not trashed (404
   otherwise); AppViewer uses it when `isVisitor` and hides the panel/drop.
@@ -269,8 +283,9 @@ backtick or dollar-brace in it), spliced into `ETERNAL_RUNTIME_JS`.
   words and "look" requests naming an app route there), skin card with Undo.
 - Tests: `test/appSkins.test.mjs` (format, hostile values, CSS builder via
   vm), `test/appBrowser.test.mjs` (real Chrome: sprites, states, frames,
-  styles, colors, describe), `src/utils/appSkins.test.ts`, evals `skin-app`
-  and `skin-switch-back`.
+  styles, colors, describe, real-mouse drag/close of a frameless skin),
+  `src/utils/appSkins.test.ts`, evals `skin-app`, `skin-shaped-window` and
+  `skin-switch-back`.
 - `test/appBackend.integration.test.mjs` exercises facets end to end under
   `unstable_dev`; it works without Cloudflare credentials.
 - `test/appBrowser.test.mjs` loads an app in real headless Chrome the way

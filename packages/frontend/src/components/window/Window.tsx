@@ -1,5 +1,6 @@
 import { openAppSkins } from '../../utils/appWindowBus';
-import { useRef, useCallback, useEffect } from 'react';
+import { useWindowSkinStore } from '../../stores/windowSkinStore';
+import { useRef, useCallback, useEffect, useMemo } from 'react';
 import { useWindowStore, clampWindowPosition } from '../../stores/windowStore';
 import { useSlot } from '../../variants/useSlot';
 import type { WindowButtonsSlotProps, ResizeHandleSlotProps } from '../../variants/slots';
@@ -94,6 +95,27 @@ export function Window({
   // to avoid remounting children when variant changes
   const Buttons = useSlot<WindowButtonsSlotProps>('window.buttons');
   const Resize = useSlot<ResizeHandleSlotProps>('window.resizeHandle');
+
+  // Shaped, frameless window from the app's skin (see windowSkinStore).
+  const skinChrome = useWindowSkinStore((state) => state.chrome[id]);
+  const frameless = Boolean(skinChrome?.frameless) && contentType === 'app';
+  const shapeStyle = useMemo<React.CSSProperties | undefined>(() => {
+    if (!skinChrome || contentType !== 'app') return undefined;
+    const style: React.CSSProperties = {};
+    if (skinChrome.clipPath) {
+      style.clipPath = skinChrome.clipPath;
+      style.WebkitClipPath = skinChrome.clipPath;
+    }
+    if (skinChrome.maskUrl && /^data:image\/(png|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(skinChrome.maskUrl)) {
+      const mask = `url("${skinChrome.maskUrl}")`;
+      Object.assign(style, { maskImage: mask, WebkitMaskImage: mask, maskSize: '100% 100%', WebkitMaskSize: '100% 100%', maskRepeat: 'no-repeat', WebkitMaskRepeat: 'no-repeat' });
+    }
+    if (skinChrome.frameless) {
+      style.background = 'transparent';
+      style.pointerEvents = 'auto';
+    }
+    return style;
+  }, [skinChrome, contentType]);
 
   const windowRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -479,7 +501,24 @@ export function Window({
       eosExtension={eosExtension}
       eosFolder={eosFolder}
       onPointerDown={handleWindowClick}
+      frameless={frameless}
     >
+      {frameless ? (
+        // Frameless skin: no title bar, but the window can always be moved,
+        // identified and closed from this handle (it can't hide what it is).
+        <div
+          className={styles.skinHandle}
+          eos-part="skin-handle"
+          onPointerDown={handleDragStart}
+          onPointerMove={handleDragMove}
+          onPointerUp={handleDragEnd}
+          onContextMenu={(event) => { if (openAppSkins(id)) event.preventDefault(); }}
+          title={`${title} — drag to move, right-click for skins`}
+        >
+          <span className={styles.skinHandleTitle}>{title}</span>
+          <button type="button" className={styles.skinHandleClose} onPointerDown={(event) => event.stopPropagation()} onClick={handleClose} aria-label={`Close ${title}`}>×</button>
+        </div>
+      ) : (
       <WindowTitleBar
         title={title}
         isActive={isActive}
@@ -500,6 +539,7 @@ export function Window({
           onCollapse={handleCollapse}
         />
       </WindowTitleBar>
+      )}
 
       {/* Content Area (hidden when collapsed) */}
       {!collapsed && (
@@ -514,13 +554,14 @@ export function Window({
           onPointerMove={handleBodyDragMove}
           onPointerUp={handleBodyDragEnd}
           onKeyDown={handleContentKeyDown}
+          style={shapeStyle}
         >
           {children}
         </div>
       )}
 
-      {/* Resize Handle (hidden when collapsed) */}
-      {!collapsed && (
+      {/* Resize Handle (hidden when collapsed, or a skin fixed the size) */}
+      {!collapsed && !(skinChrome?.size && contentType === 'app') && (
         <Resize
           isActive={isActive}
           onResizeStart={handleResizeStart}

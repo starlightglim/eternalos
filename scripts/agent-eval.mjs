@@ -625,6 +625,20 @@ function scenarios(ctx) {
       },
     },
     {
+      // Shaped windows: a Winamp-style request gets a frameless, shaped window.
+      id: 'skin-shaped-window',
+      prompt: 'make my Tally app a round frameless window, like an old Winamp skin',
+      timeoutMs: 240_000,
+      check: async (trace) => {
+        const made = trace.tools.find((t) => t.name === 'designAppSkin' && t.output?.ok);
+        if (!made) return { pass: false, reason: `no skin made (${trace.tools.map((t) => t.name).join(', ') || 'no tools'})` };
+        const active = await api(`/api/apps/${ctx.tally}/skins/active`);
+        const win = active.data?.skin?.window;
+        if (!win?.frameless || !win.shape) return { pass: false, reason: `window: ${JSON.stringify(win ?? null)}` };
+        return win.drag?.length ? { pass: true } : { pass: false, reason: 'frameless window cannot be dragged' };
+      },
+    },
+    {
       id: 'skin-switch-back',
       prompt: 'switch Tally back to its original look',
       check: async (trace) => {

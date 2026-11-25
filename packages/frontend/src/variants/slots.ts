@@ -28,6 +28,8 @@ export interface WindowChromeSlotProps {
   eosExtension?: string;
   eosFolder?: string;
   onPointerDown: (e: React.PointerEvent) => void;
+  /** A skin made this window frameless (no frame, no shadow, overflow visible). */
+  frameless?: boolean;
   children: React.ReactNode;
 }
 

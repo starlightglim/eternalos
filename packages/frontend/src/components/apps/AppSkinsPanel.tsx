@@ -36,6 +36,7 @@ export interface DescribedParts {
   title: string;
   parts: SkinPartDescription[];
   universal: string[];
+  viewport?: { w: number; h: number };
 }
 
 interface AppSkinsPanelProps {
@@ -64,6 +65,7 @@ export function AppSkinsPanel({ appId, appName, describeParts, onChanged, onClos
   const [busy, setBusy] = useState<string | null>(null);
   const [status, setStatus] = useState<{ text: string; error?: boolean } | null>(null);
   const [prompt, setPrompt] = useState('');
+  const [shapedTemplate, setShapedTemplate] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedSkin, setSelectedSkin] = useState<AppSkin | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
@@ -124,7 +126,7 @@ export function AppSkinsPanel({ appId, appName, describeParts, onChanged, onClos
   const template = async (): Promise<{ skin: AppSkin; sheet: string }> => {
     const described = await describeParts();
     if (!described) throw new Error('The app did not answer. Wait for it to finish loading and try again.');
-    const layout = layoutSkinTemplate(described.parts, described.universal);
+    const layout = layoutSkinTemplate(described.parts, described.universal, shapedTemplate && described.viewport ? { window: described.viewport } : {});
     const sheet = canvasToDataUrl(drawSkinTemplate(layout));
     return { skin: skinFromTemplate(`${appName} template`, layout, sheet), sheet };
   };
@@ -218,6 +220,7 @@ export function AppSkinsPanel({ appId, appName, describeParts, onChanged, onClos
                   <input type="radio" name={`skin-${appId}`} checked={index.active === entry.id} onChange={() => void activate(entry.id)} disabled={Boolean(busy)} />
                   <span className={styles.rowName}>{entry.name}</span>
                   <span className={styles.badge}>{entry.source === 'assistant' ? 'AI' : entry.summary.sprites ? 'painted' : 'imported'}</span>
+                  {entry.summary.shaped ? <span className={styles.badge}>shaped</span> : null}
                 </label>
                 <span className={styles.rowActions}>
                   <button type="button" onClick={() => void exportSkin(entry.id)} disabled={Boolean(busy)}>Export</button>
@@ -253,6 +256,10 @@ export function AppSkinsPanel({ appId, appName, describeParts, onChanged, onClos
             <button type="button" onClick={() => void downloadTemplate()} disabled={Boolean(busy)}>Download template (.eskin)</button>
             <button type="button" onClick={() => importRef.current?.click()} disabled={Boolean(busy)}>Import .eskin…</button>
           </div>
+          <label className={styles.check}>
+            <input type="checkbox" checked={shapedTemplate} onChange={(event) => setShapedTemplate(event.target.checked)} disabled={Boolean(busy)} />
+            Shaped window: the template gets a layer that cuts the window into any shape (no title bar)
+          </label>
           <input ref={importRef} type="file" accept=".eskin,.json,application/zip" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFile(file); }} />
           <input ref={sheetRef} type="file" accept="image/png,image/gif,image/webp,image/jpeg" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void replaceSheetImage(file); }} />
         </section>

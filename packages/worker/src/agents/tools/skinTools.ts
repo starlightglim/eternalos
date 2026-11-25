@@ -221,6 +221,14 @@ const recipeSchema = z.object({
   colors: z.array(z.object({ name: z.string(), value: z.string() })).optional(),
   fonts: z.object({ body: z.string().optional(), title: z.string().optional(), mono: z.string().optional() }).optional(),
   textures: z.array(z.object({ key: z.string(), prompt: z.string() })).optional(),
+  window: z.object({
+    shape: z.enum(['rect', 'rounded', 'pill', 'ellipse', 'polygon']).describe('rect = normal window'),
+    radius: z.number().optional().describe('rounded: corner radius in px'),
+    points: z.array(z.array(z.number())).optional().describe('polygon: [x%, y%] points, 0-100'),
+    frameless: z.boolean().describe('Hide the desktop title bar and frame; the skin draws the whole window'),
+    drag: z.array(z.string()).optional().describe('Parts that drag a frameless window; "app" = any empty area'),
+    close: z.string().optional().describe('A part that closes the window when clicked'),
+  }).optional().describe('Only when the user asks about the window shape or a frameless/Winamp-style window'),
   parts: z.array(z.object({
     part: z.string(),
     style: styleSchema.optional(),
@@ -252,6 +260,8 @@ Colors: plain CSS colors only (#hex, rgb(), rgba(), hsl()). Also set theme color
 Fonts: system fonts only (apps cannot load web fonts), e.g. Georgia, "Times New Roman", "Courier New", Verdana, Tahoma, "Trebuchet MS", Impact, "Comic Sans MS", system-ui, serif, sans-serif, monospace. Always end with a generic family.
 
 Textures: up to ${MAX_TEXTURES} generated images for materials the request asks for (brushed metal, wood, marble, paper, fabric, stone, carbon fiber...). Each prompt describes one seamless material up close, no objects or text. Use a texture on the app background or big panels (textureSize 128-512), never behind small text without a solid or semi-transparent background on top. Skip textures when the request is only about colors.
+
+Window shape (only when the user asks for a shaped, round, frameless or Winamp-style window): window.shape rounded (radius), pill, ellipse or polygon ([x%, y%] points), and frameless true to hide the desktop title bar. A frameless window is dragged by empty areas (drag ["app"]) or named parts, and the desktop keeps a small tab with the app's name and a close button. Keep the app's content inside the shape: ellipse and polygon cut corners, so give the app part generous padding-like backgrounds rather than putting key controls at the edges.
 
 Make it cohesive and striking: commit to the requested look on every universal part.`;
 
@@ -303,10 +313,27 @@ function recipeToSkin(recipe: SkinRecipe, textureData: Record<string, string>): 
   for (const [name, value] of Object.entries(derived)) {
     if (value && !colors[name] && isSkinColor(value)) colors[name] = value;
   }
+  let window: Record<string, unknown> | undefined;
+  if (recipe.window && recipe.window.shape !== 'rect' || recipe.window?.frameless) {
+    const w = recipe.window!;
+    const shape = w.shape === 'rounded' ? { type: 'rounded', radius: w.radius ?? 28 }
+      : w.shape === 'pill' ? { type: 'rounded', radius: 400 }
+      : w.shape === 'ellipse' ? { type: 'ellipse' }
+      : w.shape === 'polygon' && Array.isArray(w.points) && w.points.length >= 3 ? { type: 'polygon', points: w.points.map((point) => [Number(point[0]), Number(point[1])]) }
+      : undefined;
+    window = {
+      frameless: w.frameless === true,
+      ...(shape ? { shape } : {}),
+      // A frameless window must be movable: empty areas drag it by default.
+      ...(w.frameless ? { drag: w.drag?.length ? w.drag.map((part) => String(part).trim().toLowerCase()) : ['app'] } : {}),
+      ...(w.close ? { close: String(w.close).trim().toLowerCase() } : {}),
+    };
+  }
   return {
     name: recipe.name,
     description: recipe.description,
     author: 'Ask Eternal',
+    ...(window ? { window } : {}),
     colors,
     fonts: {
       ...(recipe.fonts?.body ? { font: recipe.fonts.body } : {}),
@@ -404,7 +431,7 @@ export function createSkinTools(ctx: SkinToolsContext) {
   return {
     designAppSkin: tool({
       description:
-        'Make a new skin for one of the user\'s apps from a description ("make my music app look like brushed metal", "give Tally a cozy wood look") and switch the app to it. A skin restyles the app (colors, fonts, gradients, bevels, borders and up to 3 AI-generated textures) without touching its code or data; the previous look stays one click away. Get the appId from listApps first.',
+        'Make a new skin for one of the user\'s apps from a description ("make my music app look like brushed metal", "give Tally a cozy wood look", "make my player a round frameless window like Winamp") and switch the app to it. A skin restyles the app (colors, fonts, gradients, bevels, borders, up to 3 AI-generated textures, and optionally a shaped, frameless window) without touching its code or data; the previous look stays one click away. Get the appId from listApps first.',
       inputSchema: z.object({
         appId: z.string().min(1).max(100),
         request: z.string().min(3).max(1000).describe('The look the user asked for, in their words plus any details'),

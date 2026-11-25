@@ -34,3 +34,51 @@
   outline: 2px solid var(--highlight);
   outline-offset: 1px;
 }
+
+/* Handle of a frameless skin window: always there, quiet until hovered. */
+.skinHandle {
+  position: absolute;
+  top: -22px;
+  left: 6px;
+  max-width: calc(100% - 12px);
+  height: 20px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 0 8px;
+  border-radius: 6px 6px 0 0;
+  background: color-mix(in srgb, var(--surface-chrome, #ddd) 88%, transparent);
+  color: var(--window-text-color, var(--text-color, #000));
+  border: 1px solid color-mix(in srgb, var(--border, #000) 40%, transparent);
+  border-bottom: none;
+  font-size: 11px;
+  opacity: 0.55;
+  cursor: grab;
+  touch-action: none;
+  pointer-events: auto;
+  z-index: 1;
+  transition: opacity 0.15s;
+}
+
+.skinHandle:hover,
+:global(.window):hover > div > .skinHandle,
+.skinHandle:focus-within {
+  opacity: 1;
+}
+
+.skinHandleTitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skinHandleClose {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  line-height: 14px;
+  font-size: 13px;
+  border-radius: 3px;
+  cursor: pointer;
+}

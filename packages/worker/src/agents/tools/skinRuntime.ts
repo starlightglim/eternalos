@@ -367,6 +367,9 @@ export const SKIN_RUNTIME_JS = SKIN_CSS_JS + String.raw`
     skinUrls.forEach(function (url) { if (url.indexOf('blob:') === 0) URL.revokeObjectURL(url); });
     skinUrls = created;
     skinCurrent = skin ? Object.freeze({ name: String(skin.name || 'Skin').slice(0, 60), parts: Object.freeze(Object.keys(parts)) }) : null;
+    skinWindow = skin && skin.window && typeof skin.window === 'object' && skin.window.frameless === true ? skin.window : null;
+    if (skinWindow) document.documentElement.setAttribute('data-eternal-frameless', '');
+    else document.documentElement.removeAttribute('data-eternal-frameless');
     if (skinCurrent) document.documentElement.setAttribute('data-eternal-skin', skinCurrent.name);
     else document.documentElement.removeAttribute('data-eternal-skin');
     skinHandlers.forEach(function (handler) { try { handler(skinCurrent); } catch (_) {} });
@@ -414,9 +417,76 @@ export const SKIN_RUNTIME_JS = SKIN_CSS_JS + String.raw`
     return {
       title: String(document.title || '').slice(0, 80),
       parts: order.map(function (name) { return found[name]; }),
-      universal: universal
+      universal: universal,
+      viewport: { w: Math.round(window.innerWidth), h: Math.round(window.innerHeight) }
     };
   }
+
+  // Shaped, frameless windows (skin.window): painted parts move, close and
+  // minimize the window. The desktop draws the shape and keeps its own
+  // always-visible handle; here we only report what the pointer does.
+  var skinWindow = null;
+  var skinDrag = null;
+  function skinInteractive(el) {
+    return Boolean(el && el.closest && el.closest('button, a, input, textarea, select, label, summary, [role="button"], [role="slider"], [contenteditable=""], [contenteditable="true"], [data-skin-nodrag]'));
+  }
+  function skinPart(el, name) {
+    return el && el.closest && SKIN_NAME_RE.test(name) ? el.closest('[data-skin~="' + name + '"]') : null;
+  }
+  function skinPost(type, extra) {
+    try { window.parent.postMessage(Object.assign({ type: type }, extra || {}), '*'); } catch (_) {}
+  }
+  document.addEventListener('click', function (event) {
+    if (!skinWindow) return;
+    if (skinWindow.close && skinPart(event.target, skinWindow.close)) {
+      event.preventDefault();
+      event.stopPropagation();
+      skinPost('eternal:window:close');
+    } else if (skinWindow.minimize && skinPart(event.target, skinWindow.minimize)) {
+      event.preventDefault();
+      event.stopPropagation();
+      skinPost('eternal:window:minimize');
+    }
+  }, true);
+  document.addEventListener('pointerdown', function (event) {
+    skinDrag = null;
+    if (!skinWindow || event.button !== 0) return;
+    var target = event.target;
+    var handle = target && target.closest ? target.closest('[data-skin-drag]') : null;
+    if (!handle) {
+      if (skinInteractive(target)) return;
+      var names = Array.isArray(skinWindow.drag) ? skinWindow.drag : [];
+      for (var i = 0; i < names.length && !handle; i++) {
+        handle = names[i] === 'app' ? document.body : skinPart(target, names[i]);
+      }
+    }
+    if (!handle) return;
+    skinDrag = { x: event.clientX, y: event.clientY, id: event.pointerId, moved: false };
+  }, true);
+  document.addEventListener('pointermove', function (event) {
+    if (!skinDrag || event.pointerId !== skinDrag.id) return;
+    if (!skinDrag.moved) {
+      if (Math.abs(event.clientX - skinDrag.x) + Math.abs(event.clientY - skinDrag.y) < 4) return;
+      skinDrag.moved = true;
+      try { document.documentElement.setPointerCapture(event.pointerId); } catch (_) {}
+      skinPost('eternal:window:dragStart', { clientX: skinDrag.x, clientY: skinDrag.y });
+    }
+    event.preventDefault();
+    skinPost('eternal:window:dragMove', { clientX: event.clientX, clientY: event.clientY });
+  }, true);
+  function skinDragEnd(event) {
+    if (!skinDrag || event.pointerId !== skinDrag.id) return;
+    if (skinDrag.moved) {
+      skinPost('eternal:window:dragEnd');
+      // A drag is not a click on whatever was under the pointer.
+      var swallow = function (click) { click.stopPropagation(); click.preventDefault(); };
+      document.addEventListener('click', swallow, { capture: true, once: true });
+      setTimeout(function () { document.removeEventListener('click', swallow, true); }, 0);
+    }
+    skinDrag = null;
+  }
+  document.addEventListener('pointerup', skinDragEnd, true);
+  document.addEventListener('pointercancel', skinDragEnd, true);
 
   window.addEventListener('message', function (event) {
     if (event.source !== window.parent || !event.data) return;

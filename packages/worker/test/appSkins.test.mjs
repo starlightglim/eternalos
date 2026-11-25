@@ -57,6 +57,27 @@ describe('normalizeSkin', () => {
     }
   });
 
+  it('takes a shaped, frameless window and refuses bad shapes', () => {
+    const shaped = normalizeSkin({
+      name: 'Round',
+      window: { frameless: true, shape: { type: 'polygon', points: [[50, 0], [100, 50], [50, 100], [0, 50.123]] }, size: { w: 300, h: 300 }, drag: ['app', 'display'], close: 'close-button', evil: 1 },
+    });
+    assert.deepEqual(shaped.window, { frameless: true, shape: { type: 'polygon', points: [[50, 0], [100, 50], [50, 100], [0, 50.12]] }, size: { w: 300, h: 300 }, drag: ['app', 'display'], close: 'close-button' });
+    const masked = normalizeSkin({ name: 'Mask', window: { frameless: true, shape: { type: 'mask', asset: 'm', x: 0, y: 0, w: 60, h: 40 } }, assets: { m: sheet } });
+    assert.deepEqual(Object.keys(masked.assets), ['m'], 'the mask image is kept');
+    for (const bad of [
+      { shape: { type: 'polygon', points: [[0, 0], [200, 0], [0, 100]] } },
+      { shape: { type: 'polygon', points: [[0, 0], [1, 1]] } },
+      { shape: { type: 'mask', asset: 'nope' } },
+      { shape: { type: 'mask', asset: 'm', x: 100, y: 0, w: 60, h: 40 } },
+      { shape: { type: 'clip-path(url(x))' } },
+      { frameless: true, close: 'x"]{}' },
+      { frameless: true, size: { w: 10, h: 10 } },
+    ]) {
+      assert.throws(() => normalizeSkin({ name: 'x', window: bad, assets: { m: sheet } }), SkinValidationError, JSON.stringify(bad));
+    }
+  });
+
   it('lenient mode (assistant skins) drops bad fields instead', () => {
     const skin = normalizeSkin({ colors: { accent: 'url(x)', text: '#111' }, parts: { app: { style: { background: 'nope()', text: '#222' } } } }, { lenient: true });
     assert.equal(skin.name, 'Untitled skin');

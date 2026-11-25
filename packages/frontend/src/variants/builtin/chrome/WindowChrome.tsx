@@ -30,6 +30,7 @@ export function WindowChrome({
   eosExtension,
   eosFolder,
   onPointerDown,
+  frameless,
   children,
 }: WindowChromeSlotProps) {
   const variantId = useAppearanceStore(
@@ -44,6 +45,7 @@ export function WindowChrome({
     variantClass,
     minimized && styles.minimized,
     collapsed && styles.collapsed,
+    frameless && styles.frameless,
   ]
     .filter(Boolean)
     .join(' ');
@@ -55,6 +57,7 @@ export function WindowChrome({
       data-window-id={windowId}
       data-content-id={contentId}
       data-content-type={contentType}
+      {...(frameless ? { 'data-frameless': '' } : {})}
       eos-name={eosName}
       eos-type={eosType}
       {...(eosExtension ? { 'eos-extension': eosExtension } : {})}

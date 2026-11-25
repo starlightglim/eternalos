@@ -71,3 +71,30 @@
 .collapsed .windowInner {
   height: auto;
 }
+
+/* === Frameless (an app skin with a shaped window) ===
+   The skin draws the whole window; keep no frame of our own. */
+.frameless,
+.frameless.beveled,
+.frameless.flat,
+.frameless.floating,
+.frameless.sprite {
+  background: transparent !important;
+  border: none !important;
+  border-image: none !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+  padding: 0 !important;
+}
+
+.frameless .windowInner {
+  border: none !important;
+  background: transparent !important;
+}
+
+/* Clicks outside the shape fall through to whatever is underneath: only the
+   (clipped) content, the handle and the skins panel take the pointer. */
+.frameless,
+.frameless .windowInner {
+  pointer-events: none;
+}

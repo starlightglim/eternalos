@@ -100,6 +100,29 @@ export interface SkinAsset {
   data: string;
 }
 
+/**
+ * The window itself (Winamp-style shaped windows). Applied by the desktop,
+ * not the app: frameless hides the title bar and frame, shape cuts the
+ * window (clicks outside a polygon/ellipse/rounded shape fall through), and
+ * the app's painted parts named in drag/close/minimize move and close it.
+ * The desktop always keeps a small handle with the app's name and a close
+ * button, so a shaped window can't hide what it is or trap the user.
+ */
+export interface SkinWindow {
+  frameless: boolean;
+  shape?:
+    | { type: 'rounded'; radius: number }
+    | { type: 'ellipse' }
+    | { type: 'polygon'; points: Array<[number, number]> }
+    | { type: 'mask'; asset: string; x?: number; y?: number; w?: number; h?: number };
+  /** Window size the shape was made for (the window is set to it, not resizable). */
+  size?: { w: number; h: number };
+  /** Part names that drag the window ("app" = any empty area). */
+  drag?: string[];
+  close?: string;
+  minimize?: string;
+}
+
 export interface AppSkin {
   format: typeof SKIN_FORMAT;
   name: string;
@@ -109,6 +132,7 @@ export interface AppSkin {
   fonts: Partial<Record<'font' | 'font-title' | 'font-mono', string>>;
   parts: Record<string, SkinPart>;
   assets: Record<string, SkinAsset>;
+  window?: SkinWindow;
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +337,74 @@ function normalizeSprite(raw: unknown, where: string, assets: Record<string, Ski
   return sprite;
 }
 
+function normalizeWindow(raw: unknown, assets: Record<string, SkinAsset>, problems: string[]): SkinWindow | undefined {
+  if (!isObject(raw)) return undefined;
+  const win: SkinWindow = { frameless: raw.frameless === true };
+  const partName = (value: unknown, key: string): string | undefined => {
+    if (value === undefined || value === null || value === '') return undefined;
+    if (typeof value === 'string' && PART_NAME_RE.test(value)) return value;
+    problems.push(`window.${key} must be a part name like "close-button"`);
+    return undefined;
+  };
+  if (isObject(raw.shape)) {
+    const shape = raw.shape;
+    if (shape.type === 'rounded') {
+      win.shape = { type: 'rounded', radius: int(shape.radius, 0, 400) ?? 24 };
+    } else if (shape.type === 'ellipse') {
+      win.shape = { type: 'ellipse' };
+    } else if (shape.type === 'polygon') {
+      const points = Array.isArray(shape.points) ? shape.points : [];
+      const clean: Array<[number, number]> = [];
+      for (const point of points.slice(0, 64)) {
+        const [x, y] = Array.isArray(point) ? point : [];
+        const px = Number(x);
+        const py = Number(y);
+        if (!Number.isFinite(px) || !Number.isFinite(py) || px < 0 || px > 100 || py < 0 || py > 100) {
+          problems.push('window.shape points must be [x, y] percentages from 0 to 100');
+          break;
+        }
+        clean.push([Math.round(px * 100) / 100, Math.round(py * 100) / 100]);
+      }
+      if (clean.length >= 3) win.shape = { type: 'polygon', points: clean };
+      else problems.push('window.shape polygon needs 3 to 64 points');
+    } else if (shape.type === 'mask') {
+      const asset = typeof shape.asset === 'string' ? shape.asset : '';
+      const image = assets[asset];
+      if (!image) {
+        problems.push(`window.shape uses missing image "${asset}"`);
+      } else {
+        const mask: Extract<NonNullable<SkinWindow['shape']>, { type: 'mask' }> = { type: 'mask', asset };
+        const x = int(shape.x, 0, SKIN_LIMITS.imageSide);
+        const y = int(shape.y, 0, SKIN_LIMITS.imageSide);
+        const w = int(shape.w, 1, SKIN_LIMITS.imageSide);
+        const h = int(shape.h, 1, SKIN_LIMITS.imageSide);
+        if (x !== undefined && y !== undefined && w !== undefined && h !== undefined) {
+          if (x + w > image.width || y + h > image.height) problems.push('window.shape mask region runs outside its image');
+          else Object.assign(mask, { x, y, w, h });
+        }
+        win.shape = mask;
+      }
+    } else if (shape.type !== undefined && shape.type !== 'rect') {
+      problems.push('window.shape type must be rounded, ellipse, polygon or mask');
+    }
+  }
+  if (isObject(raw.size)) {
+    const w = int(raw.size.w, 200, 1600);
+    const h = int(raw.size.h, 150, 1200);
+    if (w && h) win.size = { w, h };
+    else problems.push('window.size must be w 200-1600 and h 150-1200');
+  }
+  if (Array.isArray(raw.drag)) {
+    const drag = raw.drag.map((value) => partName(value, 'drag')).filter((value): value is string => Boolean(value));
+    if (drag.length) win.drag = [...new Set(drag)].slice(0, 12);
+  }
+  const close = partName(raw.close, 'close');
+  if (close) win.close = close;
+  const minimize = partName(raw.minimize, 'minimize');
+  if (minimize) win.minimize = minimize;
+  return win.frameless || win.shape || win.size ? win : undefined;
+}
+
 /**
  * Normalize and check a skin document. Throws SkinValidationError. With
  * `lenient` (assistant-designed skins), bad fields are dropped instead.
@@ -384,8 +476,10 @@ export function normalizeSkin(raw: unknown, options: { lenient?: boolean } = {})
     }
   }
 
+  const win = normalizeWindow(raw.window, assets, problems);
+
   if (problems.length > 0 && !options.lenient) throw new SkinValidationError(problems);
-  if (Object.keys(parts).length === 0 && Object.keys(colors).length === 0 && Object.keys(fonts).length === 0) {
+  if (Object.keys(parts).length === 0 && Object.keys(colors).length === 0 && Object.keys(fonts).length === 0 && !win) {
     throw new SkinValidationError(['the skin changes nothing: add parts, colors or fonts']);
   }
 
@@ -395,9 +489,11 @@ export function normalizeSkin(raw: unknown, options: { lenient?: boolean } = {})
     if (part.sprite) used.add(part.sprite.asset);
     for (const style of [part.style, ...Object.values(part.states ?? {})]) if (style?.texture) used.add(style.texture.asset);
   }
+  if (win?.shape?.type === 'mask') used.add(win.shape.asset);
   const usedAssets = Object.fromEntries(Object.entries(assets).filter(([key]) => used.has(key)));
 
   const skin: AppSkin = { format: SKIN_FORMAT, name: name!, colors, fonts, parts, assets: usedAssets };
+  if (win) skin.window = win;
   const author = str(raw.author, 60);
   if (author) skin.author = author;
   const description = str(raw.description, 300);
@@ -415,5 +511,6 @@ export function summarizeSkin(skin: AppSkin) {
     colors: Object.keys(skin.colors),
     images: Object.keys(skin.assets).length,
     sprites: Object.values(skin.parts).some((part) => part.sprite),
+    shaped: Boolean(skin.window?.frameless || skin.window?.shape),
   };
 }
