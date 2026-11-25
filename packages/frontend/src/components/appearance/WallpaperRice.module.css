@@ -142,3 +142,22 @@
 .error {
   color: var(--danger, #900);
 }
+
+.sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.sliders label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sliders .inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}

@@ -1,3 +1,4 @@
+import { useTiling } from '../../hooks/useTiling';
 import { useCallback, useRef, useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { WindowManager } from '../window';
@@ -109,6 +110,9 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
   // New user onboarding
   const [quickStartDismissed, setQuickStartDismissed] = useState(false);
   const showQuickStart = !quickStartDismissed && !isVisitorMode && !loading && !!profile?.isNewUser;
+
+  // Tiling window layout (Appearance → Windows → Layout), owner only.
+  useTiling(!isVisitorMode && !loading);
 
   // Handle QuickStart wizard completion
   const handleQuickStartComplete = useCallback(() => {

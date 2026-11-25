@@ -10,6 +10,7 @@ import { VariantPicker } from './VariantPicker';
 import CursorEditor from '../appearance/CursorEditor';
 import SpriteEditor from '../appearance/SpriteEditor';
 import { WallpaperRice } from '../appearance/WallpaperRice';
+import { TilingSettings } from '../appearance/TilingSettings';
 import { listCursors, type CursorAsset } from '../../services/api';
 import { exportCurrentTheme } from '../../utils/exportTheme';
 import { useEsthemePreviewStore } from '../../estheme/themePreviewStore';
@@ -965,6 +966,15 @@ export function AppearancePanel() {
 
         {activeTab === 'windows' && (
           <div className={styles.sectionStack}>
+            {/* --- Layout (floating / tiling) --- */}
+            <div className={styles.sectionIntro}>
+              <div className={styles.sectionTitle}>Layout</div>
+              <div className={styles.sectionHint}>Let windows float, or tile them neatly with gaps like a Linux tiling window manager.</div>
+            </div>
+            <TilingSettings />
+
+            <hr className={styles.sectionDivider} />
+
             {/* --- Style Variants --- */}
             <div className={styles.sectionIntro}>
               <div className={styles.sectionTitle}>Style</div>

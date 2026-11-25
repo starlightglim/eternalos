@@ -128,6 +128,8 @@ interface WindowStore {
   focusWindow: (id: string) => void;
   moveWindow: (id: string, position: { x: number; y: number }) => void;
   resizeWindow: (id: string, size: { width: number; height: number }) => void;
+  /** Move/resize several windows in one update (tiling layouts). */
+  setWindowGeometries: (updates: Record<string, { position: { x: number; y: number }; size: { width: number; height: number } }>) => void;
   minimizeWindow: (id: string) => void;
   restoreWindow: (id: string) => void;
   toggleCollapse: (id: string) => void;
@@ -243,6 +245,15 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
     set({ windows: newWindows });
 
     // Save to localStorage (debounced)
+    debouncedSave(newWindows, get().nextZIndex);
+  },
+
+  setWindowGeometries: (updates) => {
+    const newWindows = get().windows.map((w) => {
+      const next = updates[w.id];
+      return next ? { ...w, position: next.position, size: { width: Math.max(next.size.width, 200), height: Math.max(next.size.height, 150) } } : w;
+    });
+    set({ windows: newWindows });
     debouncedSave(newWindows, get().nextZIndex);
   },
 

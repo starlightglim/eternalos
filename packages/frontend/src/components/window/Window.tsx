@@ -1,5 +1,7 @@
 import { openAppSkins } from '../../utils/appWindowBus';
 import { useWindowSkinStore } from '../../stores/windowSkinStore';
+import { useTilingStore } from '../../stores/tilingStore';
+import { tileAt } from '../../utils/tiling';
 import { useRef, useCallback, useEffect, useMemo } from 'react';
 import { useWindowStore, clampWindowPosition } from '../../stores/windowStore';
 import { useSlot } from '../../variants/useSlot';
@@ -98,6 +100,7 @@ export function Window({
 
   // Shaped, frameless window from the app's skin (see windowSkinStore).
   const skinChrome = useWindowSkinStore((state) => state.chrome[id]);
+  const tiled = useTilingStore((state) => Boolean(state.active && state.tiles[id]));
   const frameless = Boolean(skinChrome?.frameless) && contentType === 'app';
   const shapeStyle = useMemo<React.CSSProperties | undefined>(() => {
     if (!skinChrome || contentType !== 'app') return undefined;
@@ -186,6 +189,8 @@ export function Window({
       };
 
       focusWindow(id);
+      // Tiled windows: pause tiling while dragging; the drop swaps tiles.
+      if (useTilingStore.getState().tiles[id]) useTilingStore.getState().setDragging(id);
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
     },
     [position, focusWindow, id, toggleCollapse]
@@ -227,7 +232,15 @@ export function Window({
     if (!isDragging.current) return;
     isDragging.current = false;
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-  }, []);
+    const tiling = useTilingStore.getState();
+    if (tiling.dragging === id) {
+      // Tiles are in desktop coordinates (the desktop starts below the menu bar).
+      const desktop = windowRef.current?.offsetParent?.getBoundingClientRect();
+      const target = tileAt(tiling.tiles, e.clientX - (desktop?.left ?? 0), e.clientY - (desktop?.top ?? 0), id);
+      if (target) tiling.swap(id, target);
+      tiling.setDragging(null);
+    }
+  }, [id]);
 
   // ============================================
   // BODY DRAG HANDLING (Content Area)
@@ -271,6 +284,7 @@ export function Window({
           y: pending.y - position.y,
         };
         bodyDragPending.current = null;
+        if (useTilingStore.getState().tiles[id]) useTilingStore.getState().setDragging(id);
         try {
           (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
         } catch {
@@ -280,7 +294,7 @@ export function Window({
 
       handleDragMove(e);
     },
-    [handleDragMove, position]
+    [handleDragMove, position, id]
   );
 
   const handleBodyDragEnd = useCallback(
@@ -561,7 +575,7 @@ export function Window({
       )}
 
       {/* Resize Handle (hidden when collapsed, or a skin fixed the size) */}
-      {!collapsed && !(skinChrome?.size && contentType === 'app') && (
+      {!collapsed && !tiled && !(skinChrome?.size && contentType === 'app') && (
         <Resize
           isActive={isActive}
           onResizeStart={handleResizeStart}
