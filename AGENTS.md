@@ -213,9 +213,20 @@ truth for all tokens).
   (`readOnlyRunSteps`); finished runs show "Open <app>" for changed apps
   that aren't open. Undone runs reach the model as a note
   (`modelNoteForDataPart` via `convertDataPart`).
-- The built-in browser pane blocks the cross-origin app iframe when the
-  worker is on another localhost port (`ERR_BLOCKED_BY_CLIENT`); check app
-  UI in a normal browser or read its data through the API.
+- The built-in browser pane blocks the sandboxed app iframe
+  (`ERR_BLOCKED_BY_CLIENT`), even through a same-origin proxy; check app UI
+  in a normal browser, with `test/appBrowser.test.mjs`, or read its data
+  through the API.
+- Desktop theme in apps: AppViewer sends `eternal:theme` (on the runtime's
+  `eternal:theme:request`, on load, and on every appearance change) built
+  by `readAppTheme` (`src/utils/appTheme.ts`) from the window's computed
+  CSS variables: solid/rgba colors and font stacks only (gradients, url()
+  and anything odd dropped on both sides). The runtime sets `--eternal-*`
+  vars + `data-eternal-scheme` on the app's `<html>`, exposes
+  `eternal.theme.get/onChange`, and `class="eternal-themed"` turns on
+  zero-specificity themed defaults. The builder prompt tells generated apps
+  to use them. Next steps planned: skinnable parts (`.eskin` sprite skins),
+  template export, assistant-made skins.
 - `test/appBackend.integration.test.mjs` exercises facets end to end under
   `unstable_dev`; it works without Cloudflare credentials.
 - `test/appBrowser.test.mjs` loads an app in real headless Chrome the way

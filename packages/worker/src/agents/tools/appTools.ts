@@ -1222,6 +1222,21 @@ const APP_BRIDGE_API_PROMPT = `Available in window.eternal (platform-injected â€
                               changes this app's backend data while it is
                               open â€” re-fetch there (without a handler the
                               app is reloaded).
+  eternal.theme.get()       -> { scheme: 'light'|'dark', colors, fonts } or
+                              null until the desktop sends it.
+  eternal.theme.onChange(callback) -> unsubscribe fn; the user changed the
+                              desktop's look (CSS variables already update).
+
+Desktop theme: the platform sets CSS variables on <html> that follow the
+user's desktop theme live: --eternal-bg, --eternal-surface, --eternal-chrome,
+--eternal-text, --eternal-text-muted, --eternal-accent, --eternal-accent-text,
+--eternal-border, --eternal-highlight, --eternal-shadow, --eternal-control-bg,
+--eternal-control-text, --eternal-control-border, --eternal-selection,
+--eternal-selection-text, --eternal-title-bar, --eternal-title-text,
+--eternal-danger, --eternal-success, --eternal-font, --eternal-font-title,
+--eternal-font-mono, plus [data-eternal-scheme="dark"|"light"] on <html>.
+Put class="eternal-themed" on <body> for themed defaults (background, text,
+font, buttons, inputs, links); your own CSS always wins over them.
 
 Item shape: { id, name, type, path, mimeType?, fileSize?, updatedAt, isPublic, caption?, tags?, dominantColors?, url? }`;
 
@@ -1318,6 +1333,7 @@ Rules for files:
 - Handle the empty case gracefully: eternal.fs.list() returns [] until the user grants permission, and every data-driven screen must implement the empty state its specification declares
 - Wrap fetches in try/catch so a permission denial or empty desktop doesn't crash the UI
 - Match the supplied app specification exactly for name, purpose, screens, and window size
+- Match the user's desktop: put class="eternal-themed" on <body> and take colors and fonts from the --eternal-* variables with fallbacks (background: var(--eternal-bg, #fff); color: var(--eternal-text, #111); accents var(--eternal-accent, #2563eb)). Hardcode colors only where the app's own content needs them (a game board, a drawing canvas, brand colors the user asked for)
 
 ${APP_RUNTIME_CONTRACT_PROMPT}`,
     `Build a desktop web app for this request:
@@ -2674,11 +2690,73 @@ const ETERNAL_RUNTIME_JS = `(() => {
     delete: (path) => apiJson('DELETE', path),
   });
 
+  // The desktop theme, sent by the window that hosts this app. It becomes
+  // --eternal-* CSS variables on <html> (plain colors and font stacks only);
+  // apps opt into the default themed look with class="eternal-themed".
+  let currentTheme = null;
+  const themeHandlers = new Set();
+  const THEME_NAME_RE = /^[a-z][a-z-]{0,30}$/;
+  const UNSAFE_THEME_VALUE_RE = /url\\(|[;{}<>\\\\]|\\/\\*/i;
+  const themeStyle = document.createElement('style');
+  themeStyle.setAttribute('data-eternal-theme', '');
+  themeStyle.textContent = [
+    ':where(.eternal-themed) { color-scheme: var(--eternal-scheme, light); background: var(--eternal-bg, Canvas); color: var(--eternal-text, CanvasText); font-family: var(--eternal-font, system-ui, sans-serif); }',
+    ':where(.eternal-themed) :where(button) { background: var(--eternal-control-bg, ButtonFace); color: var(--eternal-control-text, ButtonText); border: 1px solid var(--eternal-control-border, ButtonBorder); font: inherit; }',
+    ':where(.eternal-themed) :where(input, textarea, select) { background: var(--eternal-surface, Field); color: var(--eternal-text, FieldText); border: 1px solid var(--eternal-border, ButtonBorder); font: inherit; }',
+    ':where(.eternal-themed) :where(a) { color: var(--eternal-accent, LinkText); }',
+    ':where(.eternal-themed) :where(h1, h2, h3) { font-family: var(--eternal-font-title, inherit); }',
+    ':where(.eternal-themed) :where(code, pre, kbd) { font-family: var(--eternal-font-mono, ui-monospace, monospace); }',
+    ':where(.eternal-themed) ::selection { background: var(--eternal-selection, Highlight); color: var(--eternal-selection-text, HighlightText); }',
+  ].join('\\n');
+  (document.head || document.documentElement).appendChild(themeStyle);
+
+  function applyTheme(raw) {
+    if (!raw || typeof raw !== 'object') return;
+    const root = document.documentElement;
+    const clean = (group) => {
+      const out = {};
+      if (!group || typeof group !== 'object') return out;
+      for (const name of Object.keys(group).slice(0, 40)) {
+        const value = group[name];
+        if (!THEME_NAME_RE.test(name) || typeof value !== 'string' || value.length > 200 || UNSAFE_THEME_VALUE_RE.test(value)) continue;
+        out[name] = value;
+      }
+      return out;
+    };
+    const colors = clean(raw.colors);
+    const fonts = clean(raw.fonts);
+    const scheme = raw.scheme === 'dark' ? 'dark' : 'light';
+    for (const name of Object.keys(colors)) root.style.setProperty('--eternal-' + name, colors[name]);
+    for (const name of Object.keys(fonts)) root.style.setProperty('--eternal-' + name, fonts[name]);
+    root.style.setProperty('--eternal-scheme', scheme);
+    root.setAttribute('data-eternal-scheme', scheme);
+    currentTheme = Object.freeze({ scheme, colors: Object.freeze(colors), fonts: Object.freeze(fonts) });
+    for (const handler of themeHandlers) {
+      try { handler(currentTheme); } catch (_) {}
+    }
+  }
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent) return;
+    if (!event.data || event.data.type !== 'eternal:theme') return;
+    applyTheme(event.data.theme);
+  });
+  try { window.parent.postMessage({ type: 'eternal:theme:request' }, '*'); } catch (_) {}
+
+  const theme = Object.freeze({
+    get: () => currentTheme,
+    onChange(handler) {
+      if (typeof handler !== 'function') return () => {};
+      themeHandlers.add(handler);
+      return () => themeHandlers.delete(handler);
+    },
+  });
+
   const meta = document.querySelector('meta[name="eternal-app-id"]');
   const appId = meta ? meta.getAttribute('content') || '' : '';
 
   Object.defineProperty(window, 'eternal', {
-    value: Object.freeze({ appId, hostVersion: '1', fs, profile, window: appWindow, onIntent, storage, ipc, fetch: fetchProxy, api }),
+    value: Object.freeze({ appId, hostVersion: '1', fs, profile, window: appWindow, onIntent, storage, ipc, fetch: fetchProxy, api, theme }),
     writable: false,
     configurable: false,
   });

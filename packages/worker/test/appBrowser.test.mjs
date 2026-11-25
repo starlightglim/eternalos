@@ -126,9 +126,19 @@ function startHostPage(appUrl, token) {
 <iframe id="app" sandbox="allow-scripts" src="${appUrl}" style="width:400px;height:300px"></iframe>
 <script>
   window.reports = [];
+  window.themeReports = [];
   const frame = document.getElementById('app');
+  const LIGHT = { scheme: 'light', colors: { bg: '#ffeecc', accent: '#3366ff' }, fonts: { font: 'Geneva, sans-serif' } };
+  const DARK = { scheme: 'dark', colors: { bg: '#101820', accent: '#ff00aa', evil: 'url(https://evil.example/x)' }, fonts: {} };
   addEventListener('message', (event) => {
-    if (event.source === frame.contentWindow && event.data && event.data.type === 'smoke') window.reports.push(event.data);
+    if (event.source !== frame.contentWindow || !event.data) return;
+    // Like AppViewer: answer the runtime's theme request, then change the look.
+    if (event.data.type === 'eternal:theme:request') frame.contentWindow.postMessage({ type: 'eternal:theme', theme: LIGHT }, '*');
+    if (event.data.type === 'smoke') {
+      window.reports.push(event.data);
+      frame.contentWindow.postMessage({ type: 'eternal:theme', theme: DARK }, '*');
+    }
+    if (event.data.type === 'smoke-theme') window.themeReports.push(event.data);
   });
   frame.addEventListener('load', () => {
     frame.contentWindow.postMessage({ type: 'eternal:capability', token: ${JSON.stringify(token)} }, '*');
@@ -174,6 +184,28 @@ try {
   const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
   report.saved = await window.eternal.fs.write({ path: '/Smoke Drawings/first.png', content: blob });
 } catch (error) { report.saveError = String(error.message || error); }
+// The desktop theme arrives as --eternal-* variables; class="eternal-themed"
+// turns on the themed defaults.
+const firstTheme = await new Promise((resolve) => {
+  const current = window.eternal.theme.get();
+  if (current) return resolve(current);
+  const off = window.eternal.theme.onChange((theme) => { off(); resolve(theme); });
+  setTimeout(() => resolve(null), 5000);
+});
+document.body.classList.add('eternal-themed');
+const rootStyle = () => getComputedStyle(document.documentElement);
+report.theme = {
+  scheme: firstTheme && firstTheme.scheme,
+  bgVar: rootStyle().getPropertyValue('--eternal-bg').trim(),
+  bodyBg: getComputedStyle(document.body).backgroundColor,
+};
+window.eternal.theme.onChange((theme) => parent.postMessage({
+  type: 'smoke-theme',
+  scheme: theme.scheme,
+  accent: rootStyle().getPropertyValue('--eternal-accent').trim(),
+  evil: rootStyle().getPropertyValue('--eternal-evil').trim(),
+  bodyBg: getComputedStyle(document.body).backgroundColor,
+}, '*'));
 document.body.dataset.done = '1';
 parent.postMessage({ type: 'smoke', report }, '*');
 `;
@@ -261,6 +293,23 @@ describe('installed apps in a real browser', { skip: chromePath ? false : 'Chrom
       assert.ok(saved && folder, 'the drawing and its folder are on the desktop');
       assert.equal(saved.parentId, folder.id);
       assert.ok(saved.r2Key, 'stored as a real file');
+
+      // Desktop theme: applied on start, followed live, unsafe values dropped.
+      assert.deepEqual(report.theme, { scheme: 'light', bgVar: '#ffeecc', bodyBg: 'rgb(255, 238, 204)' });
+      const themeReports = await chrome.evaluate(`new Promise((resolve) => {
+        const started = Date.now();
+        const check = () => {
+          if (window.themeReports.length) return resolve(window.themeReports);
+          if (Date.now() - started > 10000) return resolve([]);
+          setTimeout(check, 100);
+        };
+        check();
+      })`);
+      assert.equal(themeReports.length, 1, 'the app saw the theme change');
+      assert.deepEqual(
+        { scheme: themeReports[0].scheme, accent: themeReports[0].accent, evil: themeReports[0].evil, bodyBg: themeReports[0].bodyBg },
+        { scheme: 'dark', accent: '#ff00aa', evil: '', bodyBg: 'rgb(16, 24, 32)' },
+      );
     } finally {
       await chrome.close();
       host.close();

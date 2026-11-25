@@ -10,6 +10,8 @@ import { AppPermissionDialog } from '../apps/AppPermissionDialog';
 import { getPermissionEntries, hasAllPermissionValues } from '../apps/appPermissionScopes';
 import type { AppPermissions } from '../../types';
 import { activeAppListeners, type ActiveAppListener } from '../../utils/appWindowBus';
+import { readAppTheme } from '../../utils/appTheme';
+import { useAppearanceStore } from '../../stores/appearanceStore';
 
 interface AppViewerProps {
   appId?: string;
@@ -41,6 +43,28 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
       token: capabilityRef.current,
     }, '*');
   }, []);
+
+  // The desktop theme, handed to the app as --eternal-* CSS variables. Sent
+  // when the app asks (runtime start), on load, and whenever the look changes.
+  const sendTheme = useCallback(() => {
+    const frame = iframeRef.current;
+    if (!frame?.contentWindow) return;
+    frame.contentWindow.postMessage({ type: 'eternal:theme', theme: readAppTheme(frame) }, '*');
+  }, []);
+
+  useEffect(() => {
+    let frame = 0;
+    const unsubscribe = useAppearanceStore.subscribe(() => {
+      // Theme CSS is applied to the DOM after the store changes; read it a
+      // couple of frames later.
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => { frame = requestAnimationFrame(sendTheme); });
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      unsubscribe();
+    };
+  }, [sendTheme]);
 
   const src = useMemo(() => {
     const base = import.meta.env.VITE_API_URL || window.location.origin;
@@ -127,6 +151,9 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
       if (!data || typeof data !== 'object') return;
 
       switch (data.type) {
+        case 'eternal:theme:request':
+          sendTheme();
+          break;
         case 'eternal:window:setTitle':
           if (windowId) {
             useWindowStore.getState().updateWindowTitle(windowId, data.title);
@@ -183,7 +210,7 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
     return () => {
       window.removeEventListener('message', handleMessage);
     };
-  }, [windowId, appId, previewId, grantedPermissions]);
+  }, [windowId, appId, previewId, grantedPermissions, sendTheme]);
 
   // Register on the global client-side IPC event bus to receive broadcasts from other apps
   useEffect(() => {
@@ -217,13 +244,14 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
         onLoad={() => {
           iframeLoadedRef.current = true;
           sendCapability();
+          sendTheme();
         }}
         sandbox="allow-scripts"
         style={{
           width: '100%',
           height: '100%',
           border: 'none',
-          backgroundColor: '#1a1a2e',
+          backgroundColor: 'var(--surface, var(--window-bg, #1a1a2e))',
         }}
         title="App"
       />

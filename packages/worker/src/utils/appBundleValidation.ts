@@ -688,6 +688,7 @@ const BRIDGE_MEMBERS: Record<string, ReadonlySet<string>> = {
   ipc: new Set(['emit', 'on']),
   fetch: new Set([]), // called directly: eternal.fetch(url, init)
   api: new Set(['fetch', 'get', 'post', 'put', 'patch', 'delete', 'onChange']), // app's own server.js
+  theme: new Set(['get', 'onChange']), // desktop theme handed to the app
 };
 
 const BRIDGE_NAMESPACES = Object.keys(BRIDGE_MEMBERS);
