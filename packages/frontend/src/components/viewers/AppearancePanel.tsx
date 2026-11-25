@@ -9,13 +9,14 @@ import { uploadWallpaper, isApiConfigured, getWallpaperUrl } from '../../service
 import { VariantPicker } from './VariantPicker';
 import CursorEditor from '../appearance/CursorEditor';
 import SpriteEditor from '../appearance/SpriteEditor';
+import { WallpaperRice } from '../appearance/WallpaperRice';
 import { listCursors, type CursorAsset } from '../../services/api';
 import { exportCurrentTheme } from '../../utils/exportTheme';
 import { useEsthemePreviewStore } from '../../estheme/themePreviewStore';
 import type { UserProfile } from '../../types';
 import styles from './AppearancePanel.module.css';
 
-type TabId = 'themes' | 'palette' | 'windows' | 'controls' | 'typography';
+type TabId = 'themes' | 'wallpaper' | 'palette' | 'windows' | 'controls' | 'typography';
 
 interface ColorControlConfig {
   key: keyof Pick<
@@ -802,6 +803,9 @@ export function AppearancePanel() {
         <button className={`${styles.tab} ${activeTab === 'themes' ? styles.activeTab : ''}`} aria-selected={activeTab === 'themes'} onClick={() => setActiveTab('themes')} role="tab" type="button">
           Themes
         </button>
+        <button className={`${styles.tab} ${activeTab === 'wallpaper' ? styles.activeTab : ''}`} aria-selected={activeTab === 'wallpaper'} onClick={() => setActiveTab('wallpaper')} role="tab" type="button">
+          From Wallpaper
+        </button>
         <button className={`${styles.tab} ${activeTab === 'palette' ? styles.activeTab : ''}`} aria-selected={activeTab === 'palette'} onClick={() => setActiveTab('palette')} role="tab" type="button">
           Colors
         </button>
@@ -856,6 +860,8 @@ export function AppearancePanel() {
             </div>
           </div>
         )}
+
+        {activeTab === 'wallpaper' && <WallpaperRice />}
 
         {activeTab === 'palette' && (
           <div className={styles.sectionStack}>
