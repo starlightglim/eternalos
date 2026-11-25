@@ -1,3 +1,5 @@
+import { MAX_FILE_SIZE } from './fileTypes';
+
 /**
  * Content an app passes to eternal.fs.write. Text stays text. Binary files
  * (a drawing from canvas.toDataURL, a recorded clip) arrive as a data URL
@@ -25,6 +27,10 @@ export function decodeBinaryContent(content: unknown, encoding?: unknown, mimeTy
     base64 = content;
   } else {
     return null;
+  }
+  // Refuse oversized content before decoding it (base64 is ~4/3 the size).
+  if (base64.length > Math.ceil((MAX_FILE_SIZE * 4) / 3) + 1024) {
+    throw new Error(`File too large. Maximum size: ${MAX_FILE_SIZE / 1024 / 1024}MB`);
   }
   const clean = base64.replace(/\s+/g, '');
   if (!clean || !/^[A-Za-z0-9+/]*={0,2}$/.test(clean)) {

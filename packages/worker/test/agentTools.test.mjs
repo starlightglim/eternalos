@@ -3646,6 +3646,17 @@ describe('editing the desktop: rename, rewrite, Trash, look — each undoable', 
     await assert.rejects(call(tools, 'changeAppearance', {}), /Nothing to change/);
   });
 
+  it('accepts only plain colors and gradients (no CSS that could break out or load resources)', () => {
+    const { tools } = setup([]);
+    const schema = tools.changeAppearance.inputSchema;
+    for (const ok of ['#c08552', 'hsl(30 60% 50%)', 'linear-gradient(165deg, #241109 0%, rgba(85,42,21,.9) 100%)']) {
+      assert.equal(schema.safeParse({ accentColor: ok }).success, true, ok);
+    }
+    for (const bad of ['red; } body { display:none }', 'url(https://evil.example/x.png)', 'red</style><script>', '@import "x"', 'data:image/png;base64,AA']) {
+      assert.equal(schema.safeParse({ desktopColor: bad }).success, false, bad);
+    }
+  });
+
   it('describes the edits in plain words for previews', () => {
     const ctx = { itemName: (id) => ({ n1: 'Shopping.txt' })[id] };
     assert.equal(runs.describeAction('renameItem', { itemId: 'n1', newName: 'Groceries.txt' }, ctx).summary, 'Rename “Shopping.txt” to “Groceries.txt”');

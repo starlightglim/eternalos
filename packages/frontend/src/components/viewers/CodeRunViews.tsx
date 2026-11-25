@@ -74,25 +74,30 @@ export interface RoutineRunData {
 
 const MAX_PREVIEW_ROWS = 12;
 
-function changeKind(action: PlannedAction): 'add' | 'remove' | 'edit' {
-  // Moving things to the Trash reads as a removal (listed first), though
-  // the Trash keeps them restorable.
-  if (action.tool === 'moveToTrash') return 'remove';
+function changeKind(action: PlannedAction): 'add' | 'remove' | 'trash' | 'edit' {
+  // Moving things to the Trash is listed first like a deletion, but counted
+  // as "to the Trash": it can be restored.
+  if (action.tool === 'moveToTrash') return 'trash';
   if (/^(Add|Create)\b/.test(action.summary)) return 'add';
   if (/^(Delete|Remove)\b/.test(action.summary)) return 'remove';
   return 'edit';
 }
 
-const KIND_ICON = { add: '+', remove: '−', edit: '✎' } as const;
+const KIND_ICON = { add: '+', remove: '−', trash: '−', edit: '✎' } as const;
 
-const KIND_ORDER = { remove: 0, edit: 1, add: 2 } as const;
-const KIND_WORD = { add: ['add', 'adds'], edit: ['update', 'updates'], remove: ['delete', 'deletes'] } as const;
+const KIND_ORDER = { remove: 0, trash: 1, edit: 2, add: 3 } as const;
+const KIND_WORD = {
+  add: ['add', 'adds'],
+  edit: ['update', 'updates'],
+  remove: ['delete', 'deletes'],
+  trash: ['move to the Trash', 'moves to the Trash'],
+} as const;
 
 function ChangeRow({ action }: { action: PlannedAction }) {
   const kind = changeKind(action);
   return (
     <li className={styles.changeItem}>
-      <span className={`${styles.changeIcon} ${styles[`change_${kind}`]}`} aria-hidden="true">{KIND_ICON[kind]}</span>
+      <span className={`${styles.changeIcon} ${styles[`change_${kind === 'trash' ? 'remove' : kind}`]}`} aria-hidden="true">{KIND_ICON[kind]}</span>
       <span className={styles.changeText}>
         <span className={styles.changeSummary}>{action.summary}</span>
         {action.detail ? <span className={styles.changeDetail}>{action.detail}</span> : null}
@@ -122,7 +127,7 @@ export function ChangePreview({ preview }: { preview?: CodePreviewData }) {
   const sorted = [...preview.actions].sort((a, b) => KIND_ORDER[changeKind(a)] - KIND_ORDER[changeKind(b)]);
   const shown = sorted.slice(0, MAX_PREVIEW_ROWS);
   const rest = sorted.slice(MAX_PREVIEW_ROWS);
-  const counts = (['remove', 'edit', 'add'] as const)
+  const counts = (['remove', 'trash', 'edit', 'add'] as const)
     .map((kind) => [kind, sorted.filter((a) => changeKind(a) === kind).length] as const)
     .filter(([, n]) => n > 0)
     .map(([kind, n]) => `${n} ${KIND_WORD[kind][n === 1 ? 0 : 1]}`);

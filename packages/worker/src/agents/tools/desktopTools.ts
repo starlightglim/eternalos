@@ -478,7 +478,12 @@ export function createDesktopTools(ctx: DesktopToolsContext) {
       ].join(' '),
       inputSchema: z.object({
         name: z.string().max(60).optional().describe('A short name for the look, e.g. "Rainy café"'),
-        ...Object.fromEntries(APPEARANCE_COLOR_FIELDS.map((field) => [field, z.string().trim().min(1).max(300).optional()])),
+        // Colors and gradients only: the assistant can be shown text from
+        // files or apps, so nothing that could end a CSS declaration or
+        // pull in a resource (; { } < > url( @ \) gets through.
+        ...Object.fromEntries(APPEARANCE_COLOR_FIELDS.map((field) => [field, z.string().trim().min(1).max(300)
+          .refine((value) => !/[;{}<>\\@]|url\s*\(|expression\s*\(|javascript:|data:/i.test(value), 'Use a plain CSS color or gradient')
+          .optional()])),
         systemFont: z.enum(FONT_IDS).optional().describe('Titles, menus, window chrome'),
         bodyFont: z.enum(FONT_IDS).optional().describe('Labels and content'),
         monoFont: z.enum(FONT_IDS).optional().describe('Code and fixed-width text'),
