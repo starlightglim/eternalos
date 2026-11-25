@@ -502,6 +502,8 @@ function createAgentHarness({ items = [], profile = null } = {}) {
     buildCodeMode: OrchestratorAgent.prototype.buildCodeMode,
     createRoutineTools: OrchestratorAgent.prototype.createRoutineTools,
     loadDesktopItemsForRuns: OrchestratorAgent.prototype.loadDesktopItemsForRuns,
+    allowedWebUrls: OrchestratorAgent.prototype.allowedWebUrls,
+    memoryWritesPausedReason: OrchestratorAgent.prototype.memoryWritesPausedReason,
     executeInverse: OrchestratorAgent.prototype.executeInverse,
     undoCodeRun: OrchestratorAgent.prototype.undoCodeRun,
     markRunUndoneInThread: OrchestratorAgent.prototype.markRunUndoneInThread,
@@ -3382,6 +3384,17 @@ describe('OrchestratorAgent approval flow', () => {
     const part = toolPartOf(turn.message, 'call_slow');
     assert.equal(part.state, 'output-available', `slow tool was cut off: ${part.errorText ?? ''}`);
     assert.equal(textOf(turn.message), 'You have one image.');
+  });
+
+  it('pauses memory changes once web page text is in the thread, unless the user asks about memory', () => {
+    const paused = OrchestratorAgent.prototype.memoryWritesPausedReason;
+    const page = { role: 'assistant', parts: [{ type: 'tool-readWebPage', state: 'output-available', output: { ok: true } }] };
+    const user = (text) => ({ role: 'user', parts: [{ type: 'text', text }] });
+    assert.equal(paused.call({ messages: [user('remember I like tea')] }, false), null);
+    assert.equal(paused.call({ messages: [user('summarize https://a.example.com')] }, false), null);
+    assert.match(paused.call({ messages: [user('summarize https://a.example.com')] }, true), /paused/);
+    assert.match(paused.call({ messages: [user('summarize https://a.example.com'), page, user('thanks, now tidy my desktop')] }, false), /paused/);
+    assert.equal(paused.call({ messages: [user('summarize https://a.example.com'), page, user('please remember I like this site')] }, false), null);
   });
 
   it('memory tools run without approval, persist state, and feed later turns', async () => {

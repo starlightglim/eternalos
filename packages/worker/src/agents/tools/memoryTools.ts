@@ -7,6 +7,8 @@ const MAX_MEMORIES = 24;
 interface MemoryToolsContext {
   getState: () => OrchestratorState;
   setState: (state: OrchestratorState) => void;
+  /** Non-null while memory changes are not allowed (e.g. web page text is in the thread). */
+  writesPausedReason?: () => string | null;
 }
 
 function normalizeMemoryContent(content: string): string {
@@ -42,6 +44,8 @@ export function createMemoryTools(ctx: MemoryToolsContext) {
         kind: z.enum(['preference', 'identity', 'project', 'context', 'other']).default('context').describe('The type of memory being stored.'),
       }),
       execute: async (input) => {
+        const paused = ctx.writesPausedReason?.();
+        if (paused) return { status: 'paused', message: paused };
         const state = ctx.getState();
         const content = normalizeMemoryContent(input.content);
         const now = Date.now();
@@ -117,6 +121,8 @@ export function createMemoryTools(ctx: MemoryToolsContext) {
         message: 'Provide either memoryId or query',
       }),
       execute: async (input) => {
+        const paused = ctx.writesPausedReason?.();
+        if (paused) return { status: 'paused', message: paused };
         const state = ctx.getState();
 
         const memoryToDelete = input.memoryId

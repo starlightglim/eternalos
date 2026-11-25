@@ -38,7 +38,7 @@ import type { OrchestratorState } from './state';
 import { createDesktopTools } from './tools/desktopTools';
 import { createAppTools, initAppRegistry } from './tools/appTools';
 import { createMemoryTools } from './tools/memoryTools';
-import { createWebTools } from './tools/webTools';
+import { createWebTools, type AllowedWebUrls } from './tools/webTools';
 import { extractUrls, urlKey } from '../utils/webPage';
 import { createCodeModeTool } from './tools/codeModeTools';
 import {
@@ -377,16 +377,17 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
    * URLs the assistant may open with readWebPage: addresses the user wrote in
    * this thread, plus where earlier reads landed and the links on those pages.
    */
-  private allowedWebUrlKeys(): Set<string> {
-    const keys = new Set<string>();
-    const add = (raw: unknown) => {
+  private allowedWebUrls(): AllowedWebUrls {
+    const userKeys = new Set<string>();
+    const linkKeys = new Set<string>();
+    const add = (raw: unknown, keys = linkKeys) => {
       const key = typeof raw === 'string' ? urlKey(raw) : null;
       if (key) keys.add(key);
     };
     for (const message of this.messages) {
       for (const part of message.parts as Array<{ type: string; text?: unknown; output?: unknown; state?: unknown }>) {
         if (message.role === 'user' && part.type === 'text') {
-          for (const url of extractUrls(String(part.text ?? ''))) add(url);
+          for (const url of extractUrls(String(part.text ?? ''))) add(url, userKeys);
         } else if (message.role === 'assistant' && part.type === 'tool-readWebPage' && part.state === 'output-available') {
           const output = part.output as { ok?: boolean; finalUrl?: unknown; links?: Array<{ url?: unknown }> } | undefined;
           if (output?.ok) {
@@ -396,7 +397,24 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
         }
       }
     }
-    return keys;
+    return { userKeys, linkKeys };
+  }
+
+  /**
+   * Memory changes persist across conversations, so text from a web page
+   * must not be able to plant or erase one. Once the thread contains page
+   * text, rememberMemory/forgetMemory work only when the user's latest
+   * message itself asks about memory.
+   */
+  private memoryWritesPausedReason(pageReadThisTurn: boolean): string | null {
+    const threadHasPage = pageReadThisTurn || this.messages.some((message) => message.role === 'assistant' && (message.parts as Array<{ type: string; state?: unknown; output?: { ok?: boolean } }>)
+      .some((part) => part.type === 'tool-readWebPage' && part.state === 'output-available' && part.output?.ok));
+    if (!threadHasPage) return null;
+    const lastUser = [...this.messages].reverse().find((message) => message.role === 'user');
+    const lastText = (lastUser?.parts as Array<{ type: string; text?: unknown }> | undefined ?? [])
+      .filter((part) => part.type === 'text').map((part) => String(part.text ?? '')).join(' ');
+    if (/\b(remember|memor(y|ies|ize|ise)|forget)\b/i.test(lastText)) return null;
+    return 'Memory changes are paused because this conversation includes web page text. If the user wants something remembered or forgotten, ask them to say so in their next message.';
   }
 
   /** Active desktop items, for Code Mode previews and undo. */
@@ -937,9 +955,13 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
       let previousRoute: ChatRoute | undefined;
       for (const text of earlierUserTexts) previousRoute = await classifyWithContext(text, previousRoute);
       const route = await classifyWithContext(lastUserText, previousRoute);
+      // Web reading: only links the user wrote in this thread, or a few
+      // same-site links on pages read for them (see utils/webPage.ts).
+      const webTools = createWebTools({ allowedUrls: () => this.allowedWebUrls() });
       const memoryTools = createMemoryTools({
         setState: (state) => this.setState(state),
         getState: () => this.state,
+        writesPausedReason: () => this.memoryWritesPausedReason(webTools.hasReadPage()),
       });
 
       // Direct desktop tools (fast path, no sandbox)
@@ -998,9 +1020,6 @@ export class OrchestratorAgent extends AIChatAgent<Env, OrchestratorState> {
         getAppSource: appTools.getAppSource,
         getAppBackendLogs: appTools.getAppBackendLogs,
       };
-      // Web reading: only links the user wrote in this thread, or links on
-      // pages already read for them (see utils/webPage.ts).
-      const webTools = createWebTools({ allowedUrlKeys: () => this.allowedWebUrlKeys() });
       const sharedTools = {
         readWebPage: webTools.readWebPage,
         rememberMemory: memoryTools.rememberMemory,

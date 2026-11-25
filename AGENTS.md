@@ -240,10 +240,18 @@ truth for all tokens).
 - Pure helpers in `packages/worker/src/utils/webPage.ts` (URL rules, text
   extraction), tool in `src/agents/tools/webTools.ts`, offered on every chat
   route (not inside Code Mode). Read-only, so no approval.
-- The assistant may open ONLY URLs the user wrote in the thread or links on
-  pages it already read (`allowedWebUrlKeys` in OrchestratorAgent; exact
-  path + query match). This stops a page or note from getting the model to
-  leak data through a URL. Don't loosen it to "any public URL".
+- The assistant may open ONLY URLs the user wrote in the thread (exact
+  path + query match), plus at most 3 links per message found on pages it
+  read, and only on the same site as a URL the user wrote
+  (`allowedWebUrls` in OrchestratorAgent). This stops a page or note from
+  getting the model to leak data through a URL or through which link it
+  picks. Don't loosen it to "any public URL".
+- Once a thread has page text, `rememberMemory`/`forgetMemory` are paused
+  unless the user's latest message mentions remember/memory/forget
+  (`memoryWritesPausedReason`): page text must not plant memories.
+- Page HTML is hostile: `extractPage` parses at most 512KB with forward
+  scans only (no backtracking `[\s\S]*?…<\/\1>` regexes); the test feeds
+  it 3MB of unclosed tags. Keep new parsing steps linear.
 - Public hosts only (no localhost/private IPs/odd ports/EternalOS hosts),
   every redirect re-checked, 3MB / 12s / 8 reads per turn, 15k chars of text.
   Results carry an "untrusted data" note; PDFs aren't read yet.

@@ -16,6 +16,8 @@
 export const MAX_PAGE_BYTES = 3 * 1024 * 1024;
 export const MAX_TEXT_CHARS = 15_000;
 export const MAX_LINKS = 40;
+/** HTML beyond this is not parsed (the readable start of any page fits easily). */
+export const MAX_PARSE_CHARS = 512 * 1024;
 
 const BLOCKED_HOST_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa', '.lan'];
 const OWN_HOST_RE = /(^|\.)eternalos\.me$|eternalos-api/i;
@@ -125,7 +127,7 @@ export function decodeEntities(text: string): string {
 }
 
 function stripTags(html: string): string {
-  return decodeEntities(html.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
+  return decodeEntities(html.replace(/<[^<>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
 }
 
 function attr(tag: string, name: string): string | undefined {
@@ -134,7 +136,7 @@ function attr(tag: string, name: string): string | undefined {
 }
 
 function metaContent(html: string, key: string): string | undefined {
-  for (const match of html.matchAll(/<meta\b[^>]*>/gi)) {
+  for (const match of html.matchAll(/<meta\b[^<>]*>/gi)) {
     const tag = match[0];
     const name = (attr(tag, 'name') ?? attr(tag, 'property') ?? '').toLowerCase();
     if (name === key) return attr(tag, 'content')?.trim() || undefined;
@@ -142,21 +144,106 @@ function metaContent(html: string, key: string): string | undefined {
   return undefined;
 }
 
-const DROP_BLOCKS_RE = /<(script|style|noscript|svg|template|iframe|canvas|select|button|form)\b[\s\S]*?<\/\1\s*>/gi;
-const CHROME_BLOCKS_RE = /<(nav|footer|header|aside)\b[\s\S]*?<\/\1\s*>/gi;
+// Page HTML is hostile input, so everything below runs in linear time:
+// no backtracking `[\s\S]*?…<\/\1>` patterns (an attacker page full of
+// unclosed `<script` or `<a` tags would make those quadratic), only
+// forward scans that never revisit text.
+
+/** Index of the next `</tag` at or after `from`, or -1. */
+function findClose(html: string, tag: string, from: number): number {
+  const re = new RegExp(`</${tag}\\b`, 'gi');
+  re.lastIndex = from;
+  return re.exec(html)?.index ?? -1;
+}
+
+/** Remove `<tag …>…</tag>` blocks; an unclosed block runs to the end (like a browser's <script>). */
+function removeBlocks(html: string, tags: string[]): string {
+  const openRe = new RegExp(`<(${tags.join('|')})\\b`, 'gi');
+  let out = '';
+  let kept = 0;
+  let match: RegExpExecArray | null;
+  while ((match = openRe.exec(html))) {
+    out += html.slice(kept, match.index) + ' ';
+    const close = findClose(html, match[1], openRe.lastIndex);
+    if (close === -1) return out;
+    const end = html.indexOf('>', close);
+    kept = end === -1 ? html.length : end + 1;
+    openRe.lastIndex = kept;
+  }
+  return out + html.slice(kept);
+}
+
+/** Inner HTML from the first `<tag …>` to the last `</tag`, or null. */
+function outerBlockInner(html: string, tags: string[]): string | null {
+  const open = new RegExp(`<(${tags.join('|')})\\b[^<>]*>`, 'i').exec(html);
+  if (!open) return null;
+  const start = open.index + open[0].length;
+  const closeRe = new RegExp(`</${open[1]}\\b`, 'gi');
+  closeRe.lastIndex = start;
+  let last = -1;
+  let match: RegExpExecArray | null;
+  while ((match = closeRe.exec(html))) last = match.index;
+  return last === -1 ? null : html.slice(start, last);
+}
+
+/** Inner HTML of the first `<tag>…</tag>`, or null. */
+function firstBlockInner(html: string, tag: string): string | null {
+  const open = new RegExp(`<${tag}\\b[^<>]*>`, 'i').exec(html);
+  if (!open) return null;
+  const start = open.index + open[0].length;
+  const close = findClose(html, tag, start);
+  return close === -1 ? null : html.slice(start, close);
+}
+
+/** Drop `<!-- … -->` comments; an unclosed one runs to the end. */
+function removeComments(html: string): string {
+  let out = '';
+  let kept = 0;
+  for (let open = html.indexOf('<!--'); open !== -1; open = html.indexOf('<!--', kept)) {
+    out += html.slice(kept, open) + ' ';
+    const close = html.indexOf('-->', open + 4);
+    if (close === -1) return out;
+    kept = close + 3;
+  }
+  return out + html.slice(kept);
+}
+
+const DROP_TAGS = ['script', 'style', 'noscript', 'svg', 'template', 'iframe', 'canvas', 'select', 'button', 'form'];
+const CHROME_TAGS = ['nav', 'footer', 'header', 'aside'];
+
+/** `<hN>…</hN>` → `# …` lines. Remembers where each level's next close is, so unclosed headings stay linear. */
+function markHeadings(html: string): string {
+  const openRe = /<h([1-6])\b[^<>]*>/gi;
+  const nextClose = new Map<string, number>();
+  let out = '';
+  let kept = 0;
+  let match: RegExpExecArray | null;
+  while ((match = openRe.exec(html))) {
+    const level = match[1];
+    let close = nextClose.get(level);
+    if (close === undefined || (close !== -1 && close < openRe.lastIndex)) {
+      close = findClose(html, `h${level}`, openRe.lastIndex);
+      nextClose.set(level, close);
+    }
+    if (close === -1) continue;
+    const end = html.indexOf('>', close);
+    out += `${html.slice(kept, match.index)}\n\n${'#'.repeat(Number(level))} ${stripTags(html.slice(openRe.lastIndex, close))}\n\n`;
+    kept = end === -1 ? html.length : end + 1;
+    openRe.lastIndex = kept;
+  }
+  return out + html.slice(kept);
+}
 
 function blockText(html: string): string {
   return decodeEntities(
-    html
-      .replace(/<!--[\s\S]*?-->/g, ' ')
-      .replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1\s*>/gi, (_m, level: string, inner: string) => `\n\n${'#'.repeat(Number(level))} ${stripTags(inner)}\n\n`)
-      .replace(/<li\b[^>]*>/gi, '\n- ')
+    markHeadings(removeComments(html))
+      .replace(/<li\b[^<>]*>/gi, '\n- ')
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<\/(td|th)\s*>/gi, ' | ')
-      .replace(/<\/?(p|div|section|article|main|tr|table|ul|ol|blockquote|pre|figure|figcaption|dl|dt|dd|hr)\b[^>]*>/gi, '\n')
-      .replace(/<[^>]*>/g, ''),
+      .replace(/<\/?(p|div|section|article|main|tr|table|ul|ol|blockquote|pre|figure|figcaption|dl|dt|dd|hr)\b[^<>]*>/gi, '\n')
+      .replace(/<[^<>]*>/g, ''),
   )
-    .replace(/[ \t\f\v ]+/g, ' ')
+    .replace(/[ \t\f\v ]+/g, ' ')
     .replace(/ *\n */g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -173,23 +260,29 @@ export interface ExtractedPage {
 }
 
 /** Readable text, title and links from an HTML page. */
-export function extractPage(html: string, baseUrl: string, maxChars = MAX_TEXT_CHARS): ExtractedPage {
-  const titleMatch = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(html);
-  const title = metaContent(html, 'og:title') ?? (titleMatch ? stripTags(titleMatch[1]) : '') ?? '';
+export function extractPage(rawHtml: string, baseUrl: string, maxChars = MAX_TEXT_CHARS): ExtractedPage {
+  const html = rawHtml.length > MAX_PARSE_CHARS ? rawHtml.slice(0, MAX_PARSE_CHARS) : rawHtml;
+  const titleInner = firstBlockInner(html, 'title');
+  const title = metaContent(html, 'og:title') ?? (titleInner !== null ? stripTags(titleInner.slice(0, 2000)) : '');
   const description = metaContent(html, 'description') ?? metaContent(html, 'og:description');
 
-  const bodyMatch = /<body\b[^>]*>([\s\S]*)<\/body\s*>/i.exec(html);
-  const body = (bodyMatch ? bodyMatch[1] : html.replace(/<head\b[\s\S]*?<\/head\s*>/i, '')).replace(DROP_BLOCKS_RE, ' ');
+  const body = removeBlocks(outerBlockInner(html, ['body']) ?? removeBlocks(html, ['head']), DROP_TAGS);
 
   // Prefer the article/main content when it holds most of the page.
-  const mainMatch = /<(article|main)\b[^>]*>([\s\S]*)<\/\1\s*>/i.exec(body);
-  let text = mainMatch ? blockText(mainMatch[2].replace(CHROME_BLOCKS_RE, ' ')) : '';
-  if (text.length < 400) text = blockText(body.replace(CHROME_BLOCKS_RE, ' '));
+  const main = outerBlockInner(body, ['article', 'main']);
+  let text = main !== null ? blockText(removeBlocks(main, CHROME_TAGS)) : '';
+  if (text.length < 400) text = blockText(removeBlocks(body, CHROME_TAGS));
   if (text.length < 200) text = blockText(body);
 
   const links: PageLink[] = [];
   const seen = new Set<string>();
-  for (const match of body.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi)) {
+  const openRe = /<a\b([^<>]*)>/gi;
+  let match: RegExpExecArray | null;
+  while (links.length < MAX_LINKS && (match = openRe.exec(body))) {
+    const close = findClose(body, 'a', openRe.lastIndex);
+    if (close === -1) break;
+    const inner = body.slice(openRe.lastIndex, close);
+    openRe.lastIndex = close;
     const href = attr(match[1], 'href');
     if (!href || href.startsWith('#')) continue;
     let absolute: string;
@@ -201,18 +294,17 @@ export function extractPage(html: string, baseUrl: string, maxChars = MAX_TEXT_C
     } catch {
       continue;
     }
-    const label = stripTags(match[2]).slice(0, 100);
+    const label = stripTags(inner.slice(0, 2000)).slice(0, 100);
     if (!label || seen.has(absolute)) continue;
     seen.add(absolute);
     links.push({ text: label, url: absolute });
-    if (links.length >= MAX_LINKS) break;
   }
 
-  const truncated = text.length > maxChars;
+  const truncated = text.length > maxChars || html.length < rawHtml.length;
   return {
     title: title.slice(0, 300),
     ...(description ? { description: description.slice(0, 500) } : {}),
-    text: truncated ? `${text.slice(0, maxChars)}…` : text,
+    text: text.length > maxChars ? `${text.slice(0, maxChars)}…` : text,
     truncated,
     links,
   };
