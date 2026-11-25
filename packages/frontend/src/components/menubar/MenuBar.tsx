@@ -1,3 +1,4 @@
+import { openAppSkins } from '../../utils/appWindowBus';
 import { useState, useCallback, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type FocusEvent as ReactFocusEvent, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWindowStore } from '../../stores/windowStore';
@@ -229,6 +230,13 @@ export function MenuBar() {
     });
     setActiveMenu(null);
   }, [openWindow]);
+
+  // Skins panel of the frontmost app window (also: right-click its title bar).
+  const topAppWindowId = [...windows].filter((w) => w.contentType === 'app' && !w.minimized).sort((a, b) => b.zIndex - a.zIndex)[0]?.id;
+  const handleOpenAppSkins = useCallback(() => {
+    if (topAppWindowId) openAppSkins(topAppWindowId);
+    setActiveMenu(null);
+  }, [topAppWindowId]);
 
   const handleOpenAppearance = useCallback(() => {
     openWindow({
@@ -871,6 +879,7 @@ export function MenuBar() {
       { label: 'Ask Eternal...', action: handleOpenAgentChat, disabled: !isApiConfigured },
       { divider: true, label: '' },
       { label: 'Appearance...', action: handleOpenAppearance },
+      { label: 'App Skins...', action: handleOpenAppSkins, disabled: !topAppWindowId },
       { label: 'Cursor Creator...', action: handleOpenCursorCreator },
       { label: 'Custom CSS...', action: handleOpenCSSEditor },
       { label: 'Developer Studio...', action: handleOpenDeveloperStudio },

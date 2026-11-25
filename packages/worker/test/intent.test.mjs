@@ -445,3 +445,20 @@ describe('messages with web links', () => {
     it(`${JSON.stringify(text)} → ${route}`, () => assert.equal(classifyRoute(text, context), route));
   }
 });
+
+describe('app skins', () => {
+  const ctx = { appNames: ['tally', 'beat box'] };
+  const cases = [
+    ['make my music app look like brushed metal', 'app-build'],
+    ['give tally a cozy wood look', 'app-build', ctx],
+    ['reskin beat box like a 90s stereo', 'app-build', ctx],
+    ['switch tally back to its normal skin', 'app-build', ctx],
+    // Desktop looks stay desktop writes; how-to questions stay chat.
+    ['make my desktop feel like a rainy cafe', 'desktop-write'],
+    ['switch to a dark theme', 'desktop-write'],
+    ['how do I make a skin?', 'chat'],
+  ];
+  for (const [text, route, context] of cases) {
+    it(`${JSON.stringify(text)} → ${route}`, () => assert.equal(classifyRoute(text, context), route));
+  }
+});

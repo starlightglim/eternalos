@@ -213,6 +213,8 @@ const APPEARANCE_WRITE_RE = new RegExp(
     `|\\b(?:${APPEARANCE_NOUNS})\\b.{0,40}\\b(?:to|into|like|more)\\b` +
     `|\\bmake\\b.{0,30}\\b(?:desktop|it|everything)\\b.{0,20}\\b(?:look|feel)\\b`,
 );
+/** App skins: "reskin my player", "give my app a skin", or a look change that names an app. */
+const SKIN_RE = /\b(?:skin|skins|skinned|reskin|re-skin|eskin)\b/;
 const HOW_TO_QUESTION_RE = /\bhow (?:do|can|could|would|should) (?:i|you|we)\b|\bwhere (?:do|can) i\b|\bis (?:it|there) (?:possible|a way)\b/;
 
 export function isAppearanceRequest(text: string): boolean {
@@ -484,6 +486,16 @@ export function classifyRoute(rawText: string, context: RouteContext = {}): Chat
   //    present ("make a folder app" is an app).
   if (FOLDER_CREATE_RE.test(actionText) && !strongNoun) {
     return 'desktop-write';
+  }
+
+  // 4b) Skinning an app, or changing the look of something that is an app
+  //     ("make my music app look like brushed metal", "give Tally a wood
+  //     look" — app names are substituted with "app" above).
+  if (
+    (SKIN_RE.test(actionText) && !HOW_TO_QUESTION_RE.test(actionText) && !CAPABILITY_QUESTION_RE.test(actionText)) ||
+    (strongNoun && isAppearanceRequest(actionText) && !/^\s*(?:what|which|where|why|who|how|does|do|is|are)\b/.test(actionText))
+  ) {
+    return 'app-build';
   }
 
   // 5) App create/edit commands, in decreasing strength:

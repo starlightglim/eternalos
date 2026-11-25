@@ -8,6 +8,7 @@
  * Apps are compiled via @cloudflare/worker-bundler and run as Dynamic Workers.
  */
 
+import { SKIN_RUNTIME_JS } from './skinRuntime';
 import { nextFreeDesktopCell } from '../../utils/desktopGrid';
 import { generateObject, generateText, tool } from 'ai';
 import { z } from 'zod';
@@ -448,7 +449,7 @@ async function generateSourceFiles(
   return files;
 }
 
-async function generateStructuredObject<T>(
+export async function generateStructuredObject<T>(
   env: Env,
   schema: z.ZodType<T>,
   system: string,
@@ -1238,6 +1239,15 @@ user's desktop theme live: --eternal-bg, --eternal-surface, --eternal-chrome,
 Put class="eternal-themed" on <body> for themed defaults (background, text,
 font, buttons, inputs, links); your own CSS always wins over them.
 
+Skins: users restyle apps with .eskin skins (painted sprites or styles) that
+target parts you mark in markup. Put data-skin="name" (lowercase-kebab, unique
+per role) on the app's distinctive pieces: data-skin="play" on a play button,
+data-skin="display" on a screen panel, data-skin="board" on a game board. A
+sprite part that shows a number or frame: data-skin="digit"
+data-skin-frames="10" and set data-skin-frame="0".."9" from code. Toggles use
+aria-pressed / aria-checked so skins can show their on state.
+  eternal.skin.get() -> { name, parts } or null; eternal.skin.onChange(cb).
+
 Item shape: { id, name, type, path, mimeType?, fileSize?, updatedAt, isPublic, caption?, tags?, dominantColors?, url? }`;
 
 /**
@@ -1333,6 +1343,7 @@ Rules for files:
 - Handle the empty case gracefully: eternal.fs.list() returns [] until the user grants permission, and every data-driven screen must implement the empty state its specification declares
 - Wrap fetches in try/catch so a permission denial or empty desktop doesn't crash the UI
 - Match the supplied app specification exactly for name, purpose, screens, and window size
+- Mark 3-8 distinctive parts with data-skin="…" (see Skins) so the app can be reskinned; keep sizes stable (fixed width/height on sprite-like controls)
 - Match the user's desktop: put class="eternal-themed" on <body> and take colors and fonts from the --eternal-* variables with fallbacks (background: var(--eternal-bg, #fff); color: var(--eternal-text, #111); accents var(--eternal-accent, #2563eb)). Hardcode colors only where the app's own content needs them (a game board, a drawing canvas, brand colors the user asked for)
 
 ${APP_RUNTIME_CONTRACT_PROMPT}`,
@@ -2752,11 +2763,12 @@ const ETERNAL_RUNTIME_JS = `(() => {
     },
   });
 
+${SKIN_RUNTIME_JS}
   const meta = document.querySelector('meta[name="eternal-app-id"]');
   const appId = meta ? meta.getAttribute('content') || '' : '';
 
   Object.defineProperty(window, 'eternal', {
-    value: Object.freeze({ appId, hostVersion: '1', fs, profile, window: appWindow, onIntent, storage, ipc, fetch: fetchProxy, api, theme }),
+    value: Object.freeze({ appId, hostVersion: '1', fs, profile, window: appWindow, onIntent, storage, ipc, fetch: fetchProxy, api, theme, skin }),
     writable: false,
     configurable: false,
   });
@@ -2839,6 +2851,15 @@ export class AppBackend extends DurableObject {
  * Wrap user-provided app files into a Worker that serves the assembled HTML
  * page AND handles the `/_eternal/*` bridge calls via the ETERNAL binding.
  */
+/**
+ * The app runtime as served today. appServe answers every app's
+ * eternal-runtime.js with this (not the copy compiled into the app's
+ * bundle), so apps installed before a runtime change get it too.
+ */
+export function currentAppRuntime(requiresCapability: boolean): string {
+  return ETERNAL_RUNTIME_JS.replace('__REQUIRE_CAPABILITY__', String(requiresCapability));
+}
+
 export function createWorkerModuleFiles(
   workspace: AppWorkspace,
   mountBasePath: '/api/apps' | '/api/app-previews' = '/api/apps',

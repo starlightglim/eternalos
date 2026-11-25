@@ -610,6 +610,29 @@ function scenarios(ctx) {
         return { pass: true };
       },
     },
+    {
+      // App skins: a look request restyles the app (not its code) and is applied.
+      id: 'skin-app',
+      prompt: 'make my Tally app look like an old brass scientific instrument',
+      timeoutMs: 240_000,
+      check: async (trace) => {
+        const made = trace.tools.find((t) => t.name === 'designAppSkin' && t.output?.ok);
+        if (!made) return { pass: false, reason: `no skin made (${trace.tools.map((t) => t.name).join(', ') || 'no tools'})` };
+        if (made.output.appId !== ctx.tally) return { pass: false, reason: 'skinned the wrong app' };
+        if (trace.tools.some((t) => ['editApp', 'updateApp'].includes(t.name))) return { pass: false, reason: 'changed the app code for a look request' };
+        const active = await api(`/api/apps/${ctx.tally}/skins/active`);
+        return active.data?.skinId === made.output.skinId ? { pass: true } : { pass: false, reason: 'skin not active' };
+      },
+    },
+    {
+      id: 'skin-switch-back',
+      prompt: 'switch Tally back to its original look',
+      check: async (trace) => {
+        const active = await api(`/api/apps/${ctx.tally}/skins/active`);
+        if (active.data?.skinId) return { pass: false, reason: `still skinned (${trace.tools.map((t) => t.name).join(', ') || 'no tools'})` };
+        return { pass: true };
+      },
+    },
     ...(WITH_BUILD ? [{
       id: 'build-fullstack',
       prompt: 'build me a simple notes app with a backend: add a note, list notes, delete a note',

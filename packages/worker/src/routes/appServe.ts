@@ -19,6 +19,7 @@
 import type { AppGrantedPermissions } from '../utils/jwt';
 import { withCors } from '../middleware/http';
 import { allowFramingByFrontend, allowOpaqueOriginAssets } from '../utils/appFraming';
+import { currentAppRuntime } from '../agents/tools/appTools';
 import { appRunnerName, type AppBackendConfig } from '../durable-objects/AppRunner';
 import type { RouteContext } from './router';
 import type { Env } from '../index';
@@ -198,6 +199,7 @@ export async function handleServeAppPreview(c: RouteContext): Promise<Response> 
   if (previewMeta.expiresAt && previewMeta.expiresAt < Date.now()) {
     return withCors(new Response('App preview expired', { status: 410 }), c.corsHeaders);
   }
+  if (previewPath === `${previewId}/${RUNTIME_ASSET}`) return serveCurrentRuntime(c.request, false);
 
   // Previews run hermetic by default. Grants are activated only after
   // install, but keep the field configurable for future permission-review
@@ -238,6 +240,27 @@ export async function handleServeAppPreview(c: RouteContext): Promise<Response> 
   return allowOpaqueOriginAssets(previewResponse, c.request.method, previewPath.slice(previewId.length + 1));
 }
 
+const RUNTIME_ASSET = 'eternal-runtime.js';
+
+/**
+ * Every app's eternal-runtime.js is the CURRENT runtime, not the copy baked
+ * into its bundle at install time: theme and skin support (and runtime
+ * fixes) reach apps installed before them without a rebuild.
+ */
+function serveCurrentRuntime(request: Request, requiresCapability: boolean): Response {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return new Response('Method not allowed', { status: 405 });
+  return new Response(request.method === 'HEAD' ? null : currentAppRuntime(requiresCapability), {
+    headers: {
+      'content-type': 'text/javascript; charset=utf-8',
+      'cache-control': 'no-cache',
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer',
+      // Module/classic scripts in the sandboxed (origin "null") iframe.
+      'access-control-allow-origin': '*',
+    },
+  });
+}
+
 /** ANY /api/apps/:appId[/...] */
 export async function handleServeApp(c: RouteContext): Promise<Response> {
   const appPath = c.params[0];
@@ -265,6 +288,7 @@ export async function handleServeApp(c: RouteContext): Promise<Response> {
   if (!appMeta) {
     return withCors(new Response('App not found', { status: 404 }), c.corsHeaders);
   }
+  if (appPath === `${appId}/${RUNTIME_ASSET}`) return serveCurrentRuntime(c.request, true);
   const granted = appMeta.granted ?? {};
 
   // Load the compiled app bundle from R2 and serve via Dynamic Worker.

@@ -24,7 +24,8 @@ import { useDesktopStore } from '../../stores/desktopStore';
 import { useWindowStore } from '../../stores/windowStore';
 import { getTextFileContentType, type AppPermissions, type DesktopItem } from '../../types';
 import { AlertDialog } from '../ui/AlertDialog';
-import { notifyAppDataChanged, openAppIds, reloadAppWindows } from '../../utils/appWindowBus';
+import { notifyAppDataChanged, notifyAppSkinChanged, openAppIds, openAppSkinsForApp, reloadAppWindows } from '../../utils/appWindowBus';
+import { setActiveAppSkin } from '../../services/appSkins';
 import styles from './AgentChatWindow.module.css';
 import {
   ActivityGroup,
@@ -181,6 +182,10 @@ function syncOpenAppWindows(part: MessagePart): void {
     if (typeof output.appId === 'string') reloadAppWindows(output.appId);
     return;
   }
+  if (part.type === 'tool-designAppSkin' || part.type === 'tool-useAppSkin') {
+    if (output.ok !== false && typeof output.appId === 'string') notifyAppSkinChanged(output.appId);
+    return;
+  }
   if (part.type === 'tool-callAppApi') {
     const method = typeof input.method === 'string' ? input.method.toUpperCase() : 'GET';
     if (typeof input.appId === 'string' && method !== 'GET' && output.ok !== false) {
@@ -195,6 +200,42 @@ function syncOpenAppWindows(part: MessagePart): void {
       if (typeof appId === 'string' && open.has(appId)) notifyAppDataChanged(appId);
     }
   }
+}
+
+type DesignAppSkinOutput =
+  | { ok: true; appId: string; skinId: string; name: string; description?: string; previousSkinId: string | null; texturesGenerated: number }
+  | { ok: false; error: string };
+
+/** A skin Ask Eternal made: name, Undo (back to the previous look) and the Skins panel. */
+function SkinResultCard({ output }: { output: Extract<DesignAppSkinOutput, { ok: true }> }) {
+  const [undone, setUndone] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const undo = async () => {
+    setBusy(true);
+    try {
+      await setActiveAppSkin(output.appId, output.previousSkinId);
+      notifyAppSkinChanged(output.appId);
+      setUndone(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className={styles.toolCard} data-app-skin>
+      <div className={styles.toolTitle}>New skin: {output.name}</div>
+      <div className={styles.toolBody}>
+        {output.description ? <div className={styles.resultSummary}>{output.description}</div> : null}
+        <div className={styles.resultMeta}>
+          {output.texturesGenerated ? `${output.texturesGenerated} generated texture${output.texturesGenerated === 1 ? '' : 's'} · ` : ''}
+          {undone ? 'Switched back to the previous look.' : 'Applied to the app.'}
+        </div>
+        <div className={styles.matchPills}>
+          {!undone ? <button type="button" onClick={() => void undo()} disabled={busy}>Undo</button> : null}
+          <button type="button" onClick={() => { if (!openAppSkinsForApp(output.appId)) window.alert('Open the app, then right-click its title bar to see its skins.'); }}>Skins…</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 type GetAppSourceOutput = {
@@ -1496,6 +1537,29 @@ function AgentChatThreadPane({
           ) : null}
         </div>
       );
+    }
+
+    if (part.type === 'tool-designAppSkin') {
+      const output = part.output as DesignAppSkinOutput | undefined;
+      if (part.state !== 'output-available' || !output) {
+        return (
+          <div key={`skin-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>App skin</div>
+            <div className={part.state === 'output-error' ? styles.errorText : styles.toolBody}>
+              {part.state === 'output-error' ? String(part.errorText ?? 'The skin could not be made.') : 'Designing the skin and painting textures. This can take up to a minute...'}
+            </div>
+          </div>
+        );
+      }
+      if (!output.ok) {
+        return (
+          <div key={`skin-${index}`} className={styles.toolCard}>
+            <div className={styles.toolTitle}>App skin</div>
+            <div className={styles.errorText}>{output.error}</div>
+          </div>
+        );
+      }
+      return <SkinResultCard key={`skin-${index}`} output={output} />;
     }
 
     if (part.type === 'tool-readWebPage') {

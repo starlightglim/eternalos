@@ -9,7 +9,11 @@ import {
 import { AppPermissionDialog } from '../apps/AppPermissionDialog';
 import { getPermissionEntries, hasAllPermissionValues } from '../apps/appPermissionScopes';
 import type { AppPermissions } from '../../types';
-import { activeAppListeners, type ActiveAppListener } from '../../utils/appWindowBus';
+import { activeAppListeners, notifyAppSkinChanged, type ActiveAppListener } from '../../utils/appWindowBus';
+import { AppSkinsPanel, type DescribedParts } from '../apps/AppSkinsPanel';
+import skinPanelStyles from '../apps/AppSkinsPanel.module.css';
+import { getActiveAppSkin, installAppSkin } from '../../services/appSkins';
+import { readSkinFile } from '../../utils/appSkins';
 import { readAppTheme } from '../../utils/appTheme';
 import { useAppearanceStore } from '../../stores/appearanceStore';
 
@@ -65,6 +69,92 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
       unsubscribe();
     };
   }, [sendTheme]);
+
+  // App skins: the active skin is sent when the app asks (runtime start)
+  // and whenever it changes; the Skins panel and .eskin drops live here.
+  const canSkin = Boolean(appId && !previewId);
+  const [skinsOpen, setSkinsOpen] = useState(false);
+  const [skinDrag, setSkinDrag] = useState(false);
+  const [skinToast, setSkinToast] = useState<string | null>(null);
+  const describeWaiters = useRef(new Map<string, (parts: DescribedParts | null) => void>());
+  const appName = useWindowStore((state) => state.windows.find((w) => w.id === windowId)?.title) ?? 'App';
+
+  const sendSkin = useCallback(async () => {
+    const frame = iframeRef.current;
+    if (!frame?.contentWindow) return;
+    if (!canSkin || !appId) {
+      frame.contentWindow.postMessage({ type: 'eternal:skin', skin: null }, '*');
+      return;
+    }
+    try {
+      const { skin } = await getActiveAppSkin(appId);
+      iframeRef.current?.contentWindow?.postMessage({ type: 'eternal:skin', skin }, '*');
+    } catch {
+      // Visitors and offline: the app keeps its own look.
+    }
+  }, [appId, canSkin]);
+
+  const describeParts = useCallback((): Promise<DescribedParts | null> => {
+    const frame = iframeRef.current;
+    if (!frame?.contentWindow) return Promise.resolve(null);
+    const requestId = Math.random().toString(36).slice(2);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        describeWaiters.current.delete(requestId);
+        resolve(null);
+      }, 3000);
+      describeWaiters.current.set(requestId, (parts) => {
+        clearTimeout(timer);
+        resolve(parts);
+      });
+      frame.contentWindow!.postMessage({ type: 'eternal:skin:describe', requestId }, '*');
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!skinToast) return;
+    const timer = setTimeout(() => setSkinToast(null), 4000);
+    return () => clearTimeout(timer);
+  }, [skinToast]);
+
+  // Show a drop target over the (event-swallowing) iframe while files are dragged.
+  useEffect(() => {
+    if (!canSkin) return;
+    const hasFiles = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes('Files');
+    const onEnter = (event: DragEvent) => { if (hasFiles(event)) setSkinDrag(true); };
+    const onLeave = (event: DragEvent) => { if (!event.relatedTarget) setSkinDrag(false); };
+    const onEnd = () => setSkinDrag(false);
+    window.addEventListener('dragenter', onEnter);
+    window.addEventListener('dragleave', onLeave);
+    window.addEventListener('drop', onEnd);
+    window.addEventListener('dragend', onEnd);
+    return () => {
+      window.removeEventListener('dragenter', onEnter);
+      window.removeEventListener('dragleave', onLeave);
+      window.removeEventListener('drop', onEnd);
+      window.removeEventListener('dragend', onEnd);
+    };
+  }, [canSkin]);
+
+  const handleSkinDrop = useCallback(async (event: React.DragEvent) => {
+    setSkinDrag(false);
+    const file = event.dataTransfer.files?.[0];
+    if (!file || !/\.(eskin|json)$/i.test(file.name)) {
+      // Not a skin: let the desktop handle it as usual.
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    if (!appId) return;
+    try {
+      const skin = await readSkinFile(file);
+      const result = await installAppSkin(appId, skin);
+      notifyAppSkinChanged(appId);
+      setSkinToast(`Skin "${result.entry.name}" applied.`);
+    } catch (error) {
+      setSkinToast(error instanceof Error ? error.message : 'That skin could not be installed.');
+    }
+  }, [appId]);
 
   const src = useMemo(() => {
     const base = import.meta.env.VITE_API_URL || window.location.origin;
@@ -154,6 +244,17 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
         case 'eternal:theme:request':
           sendTheme();
           break;
+        case 'eternal:skin:request':
+          void sendSkin();
+          break;
+        case 'eternal:skin:parts': {
+          const waiter = describeWaiters.current.get(String(data.requestId));
+          if (waiter) {
+            describeWaiters.current.delete(String(data.requestId));
+            waiter(data.parts && typeof data.parts === 'object' ? data.parts as DescribedParts : null);
+          }
+          break;
+        }
         case 'eternal:window:setTitle':
           if (windowId) {
             useWindowStore.getState().updateWindowTitle(windowId, data.title);
@@ -210,7 +311,7 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
     return () => {
       window.removeEventListener('message', handleMessage);
     };
-  }, [windowId, appId, previewId, grantedPermissions, sendTheme]);
+  }, [windowId, appId, previewId, grantedPermissions, sendTheme, sendSkin]);
 
   // Register on the global client-side IPC event bus to receive broadcasts from other apps
   useEffect(() => {
@@ -227,13 +328,16 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
         iframeLoadedRef.current = false;
         setReloadKey((key) => key + 1);
       },
+      windowId,
+      onSkinChanged: () => { void sendSkin(); },
+      openSkins: canSkin ? () => setSkinsOpen(true) : undefined,
     };
 
     activeAppListeners.add(listener);
     return () => {
       activeAppListeners.delete(listener);
     };
-  }, [appId, previewId, grantedPermissions]);
+  }, [appId, previewId, grantedPermissions, windowId, sendSkin, canSkin]);
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
@@ -255,6 +359,26 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
         }}
         title="App"
       />
+      {canSkin && skinDrag && (
+        <div
+          className={skinPanelStyles.dropOverlay}
+          onDragOver={(event) => event.preventDefault()}
+          onDragLeave={(event) => { if (event.currentTarget === event.target) setSkinDrag(false); }}
+          onDrop={(event) => void handleSkinDrop(event)}
+        >
+          <span>Drop a .eskin skin to restyle this app</span>
+        </div>
+      )}
+      {canSkin && skinsOpen && appId && (
+        <AppSkinsPanel
+          appId={appId}
+          appName={appName}
+          describeParts={describeParts}
+          onChanged={() => notifyAppSkinChanged(appId)}
+          onClose={() => setSkinsOpen(false)}
+        />
+      )}
+      {skinToast && <div className={skinPanelStyles.toast} role="status">{skinToast}</div>}
       {permissionPrompt && (
         <AppPermissionDialog
           requested={permissionPrompt.requested || {}}

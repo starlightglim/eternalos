@@ -47,6 +47,8 @@ export interface TitleBarSlotProps {
   onKeyDown: (e: React.KeyboardEvent) => void;
   /** Raised when the title bar (or a control inside it) gains focus. */
   onFocus: () => void;
+  /** Right-click on the title bar (app windows open their Skins panel). */
+  onContextMenu?: (e: React.MouseEvent) => void;
   children: React.ReactNode;
 }
 

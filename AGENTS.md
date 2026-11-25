@@ -225,8 +225,49 @@ truth for all tokens).
   vars + `data-eternal-scheme` on the app's `<html>`, exposes
   `eternal.theme.get/onChange`, and `class="eternal-themed"` turns on
   zero-specificity themed defaults. The builder prompt tells generated apps
-  to use them. Next steps planned: skinnable parts (`.eskin` sprite skins),
-  template export, assistant-made skins.
+  to use them.
+- Apps load the CURRENT runtime: `appServe` answers every app's (and
+  preview's) `eternal-runtime.js` with `currentAppRuntime()`, not the copy
+  compiled into the app's bundle, so runtime features reach old installs.
+
+## App skins (`.eskin`)
+
+Winamp-style skins per app. Format + validation: `worker/src/utils/appSkin.ts`
+(the authority; strict for user skins, `lenient` for assistant skins).
+Storage/designer/tools: `agents/tools/skinTools.ts`; REST:
+`routes/appSkins.ts` (`/api/apps/:id/skins[/generate|/active|/:skinId]`,
+owner only, R2 under `apps/{uid}/{appId}/skins/` so app delete/purge
+removes them). Runtime: `agents/tools/skinRuntime.ts` (String.raw: never a
+backtick or dollar-brace in it), spliced into `ETERNAL_RUNTIME_JS`.
+
+- Parts: apps mark them in markup — `data-skin="play"` (+ optional
+  `data-skin-states`, `data-skin-frames` with `data-skin-frame="n"`,
+  `data-skin-label`). Universal parts every app has: app, button, field,
+  link, heading, scrollbar. The runtime reports parts (sizes from the live
+  DOM) on `eternal:skin:describe`; the worker scans source for the designer.
+- A part is a sprite (cells left→right per state/frame, optional 9-slice
+  `slice`) and/or a style (fill, gradient, texture, border, radius, bevel,
+  text, font, weight, shadow) with per-state overrides. Skin colors override
+  `--eternal-*` (and set `--skin-*`). All CSS is `!important` (the skin is the
+  user's override) and built only from re-checked values.
+- Sprite cells are cut with `canvas.toDataURL`, NOT `toBlob`: toBlob is
+  throttled in out-of-process iframes and a skin with ~20 cells never
+  finished applying (real bug, found in headless Chrome with site isolation).
+- AI skins: `designSkin` = one structured model call (style recipe, system
+  fonts only) + up to 3 textures from `IMAGE_GEN_MODEL` (default
+  `@cf/black-forest-labs/flux-1-schnell`), each charged to the AI budget.
+  Generated textures are marked `blend` and made seamless in the runtime
+  (two-pass half-offset blend). Missing theme colors are derived from styles.
+- Frontend: `AppViewer` sends the active skin (`eternal:skin`), takes `.eskin`
+  drops (overlay over the iframe), hosts `AppSkinsPanel` (right-click an app's
+  title bar, or Special → App Skins...). `utils/appSkins.ts` = .eskin zip
+  read/write (JSZip; load from ArrayBuffer), template layout + drawing,
+  paint-to-skin. Chat: `designAppSkin` / `useAppSkin` (app-build route; skin
+  words and "look" requests naming an app route there), skin card with Undo.
+- Tests: `test/appSkins.test.mjs` (format, hostile values, CSS builder via
+  vm), `test/appBrowser.test.mjs` (real Chrome: sprites, states, frames,
+  styles, colors, describe), `src/utils/appSkins.test.ts`, evals `skin-app`
+  and `skin-switch-back`.
 - `test/appBackend.integration.test.mjs` exercises facets end to end under
   `unstable_dev`; it works without Cloudflare credentials.
 - `test/appBrowser.test.mjs` loads an app in real headless Chrome the way

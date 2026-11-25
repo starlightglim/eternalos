@@ -67,6 +67,7 @@ export const QUIET_TOOL_TYPES = new Set([
   'tool-getDesktopOverview',
   'tool-readTextFile',
   'tool-readWebPage',
+  'tool-useAppSkin',
   'tool-listMemories',
   'tool-listRoutines',
 ]);
@@ -151,6 +152,13 @@ export function activityLabel(part: ActivityPartLike, appName: (appId: string) =
       return {
         label: `${done ? 'Read' : 'Reading'} ${site ?? 'a web page'}`,
         detail: done ? (output.ok === false ? "couldn't read it" : (shortTitle(output.title) ?? undefined)) : undefined,
+      };
+    }
+    case 'tool-useAppSkin': {
+      const name = typeof output.name === 'string' ? output.name : null;
+      if (!('skinId' in output) && done) return { label: 'Checked app skins' };
+      return {
+        label: done ? (output.ok === false ? "Couldn't switch skins" : name ? `Switched to the skin "${name}"` : 'Switched back to the original look') : 'Switching skins',
       };
     }
     case 'tool-listMemories':

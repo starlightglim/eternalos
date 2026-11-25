@@ -1,3 +1,4 @@
+import { openAppSkins } from '../../utils/appWindowBus';
 import { useRef, useCallback, useEffect } from 'react';
 import { useWindowStore, clampWindowPosition } from '../../stores/windowStore';
 import { useSlot } from '../../variants/useSlot';
@@ -488,6 +489,9 @@ export function Window({
         onDragEnd={handleDragEnd}
         onKeyDown={handleTitleBarKeyDown}
         onFocus={handleTitleBarFocus}
+        onContextMenu={contentType === 'app' ? (event) => {
+          if (openAppSkins(id)) event.preventDefault();
+        } : undefined}
       >
         <Buttons
           isActive={isActive}

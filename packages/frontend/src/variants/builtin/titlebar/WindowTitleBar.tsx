@@ -24,6 +24,7 @@ export function WindowTitleBar({
   onDragEnd,
   onKeyDown,
   onFocus,
+  onContextMenu,
   children,
 }: TitleBarSlotProps) {
   const variantId = useAppearanceStore(
@@ -56,6 +57,7 @@ export function WindowTitleBar({
         onPointerUp={onDragEnd}
         onKeyDown={onKeyDown}
         onFocus={onFocus}
+        onContextMenu={onContextMenu}
       >
         {/* Window buttons injected as children */}
         {children}

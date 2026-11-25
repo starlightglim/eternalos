@@ -50,6 +50,7 @@ export interface Env {
   IMAGE_ANALYSIS_MODEL?: string; // Optional Workers AI model override for image metadata enrichment
   AGENT_CHAT_MODEL?: string; // Optional Workers AI model override for chat agent
   APP_BUILDER_MODEL?: string; // Optional Workers AI model override for structured app generation
+  IMAGE_GEN_MODEL?: string; // Optional Workers AI text-to-image model for skin textures (default flux-1-schnell)
 
   // Per-account AI usage limit overrides (see middleware/aiUsage.ts for the
   // defaults; the integration suite sets AI_REQUESTS_PER_DAY low to test

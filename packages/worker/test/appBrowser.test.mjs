@@ -22,6 +22,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 
 import { unstable_dev } from 'wrangler';
+import { pngDataUrl } from './pngFixture.mjs';
 
 const CHROME_CANDIDATES = [
   process.env.CHROME_PATH,
@@ -314,5 +315,143 @@ describe('installed apps in a real browser', { skip: chromePath ? false : 'Chrom
       await chrome.close();
       host.close();
     }
+  });
+
+  it('applies an installed skin: sprites with states and frames, styled buttons, colors', { timeout: 120_000 }, async () => {
+    const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`.slice(0, 10);
+    const user = await api('/api/auth/signup', {
+      method: 'POST',
+      headers: { ...JSON_HEADERS, 'CF-Connecting-IP': `skin-${suffix}` },
+      body: JSON.stringify({ email: `s${suffix}@example.com`, username: `s${suffix}`, password: 'Password123' }),
+    });
+    const app = await api('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: auth(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: { name: 'Skin Deck', version: '1', windowConfig: { defaultWidth: 400, defaultHeight: 360 }, permissions: {} },
+        files: {
+          'index.html': '<!doctype html><html><head><style>#play{width:30px;height:20px;background:#00f;border:1px solid #000}</style></head><body>'
+            + '<button id="play" data-skin="play" data-skin-label="Play">P</button>'
+            + '<span id="digit" data-skin="digit" data-skin-frames="2" data-skin-frame="0" style="display:inline-block;width:12px;height:20px"></span>'
+            + '<button id="plain">Plain</button><script src="./app.js"></script></body></html>',
+          'app.js': `
+            const waitSkin = () => new Promise((resolve) => {
+              const current = window.eternal.skin.get();
+              if (current) return resolve(current);
+              window.eternal.skin.onChange((skin) => { if (skin) resolve(skin); });
+            });
+            waitSkin().then((skin) => {
+              const css = (id, prop) => getComputedStyle(document.getElementById(id))[prop];
+              const digit = document.getElementById('digit');
+              const frame0 = css('digit', 'backgroundImage');
+              digit.dataset.skinFrame = '1';
+              const frame1 = css('digit', 'backgroundImage');
+              parent.postMessage({ type: 'skin-report', report: {
+                name: skin.name,
+                parts: skin.parts,
+                play: css('play', 'backgroundImage'),
+                playBorder: css('play', 'borderTopColor'),
+                plainBg: css('plain', 'backgroundColor'),
+                plainRadius: css('plain', 'borderTopLeftRadius'),
+                accent: getComputedStyle(document.documentElement).getPropertyValue('--eternal-accent').trim(),
+                framesDiffer: frame0 !== frame1 && frame0.startsWith('url("data:image/png') && frame1.startsWith('url("data:image/png'),
+              } }, '*');
+            });
+          `,
+        },
+      }),
+    });
+    const appId = encodeURIComponent(app.appId);
+
+    // Install through the REST route (strict validation) and read it back as AppViewer does.
+    const sheetPng = pngDataUrl(60, 40, [10, 200, 30, 255], { gradientX: true });
+    const installed = await api(`/api/apps/${appId}/skins`, {
+      method: 'POST',
+      headers: auth(user.token, JSON_HEADERS),
+      body: JSON.stringify({ skin: {
+        name: 'Test Deck',
+        colors: { accent: '#ff00aa' },
+        parts: {
+          play: { sprite: { asset: 'sheet', x: 0, y: 0, w: 30, h: 20, states: ['normal', 'hover'] } },
+          digit: { sprite: { asset: 'sheet', x: 0, y: 20, w: 12, h: 20, frames: 2 } },
+          button: { style: { background: '#dddddd', radius: 7, bevel: 'raised' } },
+        },
+        assets: { sheet: sheetPng },
+      } }),
+    });
+    assert.ok(installed.skinId);
+    const active = await api(`/api/apps/${appId}/skins/active`, { headers: auth(user.token) });
+    assert.equal(active.skinId, installed.skinId);
+    const index = await api(`/api/apps/${appId}/skins`, { headers: auth(user.token) });
+    assert.deepEqual(index.skins.map((entry) => entry.name), ['Test Deck']);
+    // A bad skin is refused with the reasons.
+    const refused = await worker.fetch(`http://127.0.0.1/api/apps/${appId}/skins`, {
+      method: 'POST',
+      headers: auth(user.token, JSON_HEADERS),
+      body: JSON.stringify({ skin: { name: 'Bad', colors: { accent: 'url(https://evil.example)' } } }),
+    });
+    assert.equal(refused.status, 400);
+
+    const capability = await api(`/api/apps/${appId}/capability`, { method: 'POST', headers: auth(user.token, JSON_HEADERS), body: '{}' });
+    const html = `<!doctype html><body>
+<iframe id="app" sandbox="allow-scripts" src="${workerOrigin}/api/apps/${appId}/" style="width:300px;height:200px"></iframe>
+<script>
+  window.skinReports = [];
+  window.parts = null;
+  const frame = document.getElementById('app');
+  const SKIN = ${JSON.stringify(active.skin)};
+  addEventListener('message', (event) => {
+    if (event.source !== frame.contentWindow || !event.data) return;
+    if (event.data.type === 'eternal:skin:request') frame.contentWindow.postMessage({ type: 'eternal:skin', skin: SKIN }, '*');
+    if (event.data.type === 'skin-report') {
+      window.skinReports.push(event.data.report);
+      frame.contentWindow.postMessage({ type: 'eternal:skin:describe', requestId: 'r1' }, '*');
+    }
+    if (event.data.type === 'eternal:skin:parts' && event.data.requestId === 'r1') window.parts = event.data.parts;
+  });
+  frame.addEventListener('load', () => frame.contentWindow.postMessage({ type: 'eternal:capability', token: ${JSON.stringify(capability.token)} }, '*'));
+</script></body>`;
+    const host = await new Promise((resolve) => {
+      const server = http.createServer((_req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end(html); });
+      server.listen(0, '127.0.0.1', () => resolve(server));
+    });
+    const chrome = await launchChrome();
+    try {
+      await chrome.goto(`http://127.0.0.1:${host.address().port}/`);
+      const result = await chrome.evaluate(`new Promise((resolve) => {
+        const started = Date.now();
+        const check = () => {
+          if (window.skinReports.length && window.parts) return resolve({ report: window.skinReports[0], parts: window.parts });
+          if (Date.now() - started > 20000) return resolve({ report: window.skinReports[0] || null, parts: window.parts });
+          setTimeout(check, 100);
+        };
+        check();
+      })`);
+      assert.ok(result.report, 'the app never saw its skin');
+      const { report } = result;
+      assert.equal(report.name, 'Test Deck');
+      assert.deepEqual([...report.parts].sort(), ['button', 'digit', 'play']);
+      assert.match(report.play, /^url\("data:image\/png;base64,/, 'the play button shows its sprite');
+      assert.equal(report.playBorder, 'rgba(0, 0, 0, 0)', 'sprite parts hide the app\'s own border');
+      assert.equal(report.plainBg, 'rgb(221, 221, 221)', 'buttons take the skin style');
+      assert.equal(report.plainRadius, '7px');
+      assert.equal(report.accent, '#ff00aa', 'skin colors override the theme variables');
+      assert.equal(report.framesDiffer, true, 'data-skin-frame switches sprite frames');
+
+      // What the Skins panel asks for templates.
+      assert.deepEqual(result.parts.parts.map((part) => [part.name, part.w, part.h, part.frames ?? null]), [['play', 30, 20, null], ['digit', 12, 20, 2]]);
+      assert.equal(result.parts.parts[0].label, 'Play');
+      assert.deepEqual(result.parts.parts[0].states, ['normal', 'hover', 'pressed', 'disabled']);
+      assert.deepEqual(result.parts.universal, ['app', 'button', 'scrollbar']);
+    } finally {
+      await chrome.close();
+      host.close();
+    }
+
+    // Switching back and deleting.
+    await api(`/api/apps/${appId}/skins/active`, { method: 'PUT', headers: auth(user.token, JSON_HEADERS), body: JSON.stringify({ skinId: null }) });
+    assert.equal((await api(`/api/apps/${appId}/skins/active`, { headers: auth(user.token) })).skin, null);
+    await api(`/api/apps/${appId}/skins/${installed.skinId}`, { method: 'DELETE', headers: auth(user.token) });
+    assert.deepEqual((await api(`/api/apps/${appId}/skins`, { headers: auth(user.token) })).skins, []);
   });
 });

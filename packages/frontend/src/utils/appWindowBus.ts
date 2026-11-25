@@ -25,6 +25,11 @@ export interface ActiveAppListener {
   onMessage: (msg: AppIpcMessage | AppDataChangedMessage) => void;
   /** Remount the iframe (new app code was installed). */
   onReload?: () => void;
+  /** The app's active skin changed: re-send it to the app. */
+  onSkinChanged?: () => void;
+  /** Open this window's Skins panel. */
+  openSkins?: () => void;
+  windowId?: string;
   granted: AppPermissions;
 }
 
@@ -55,4 +60,33 @@ export function reloadAppWindows(appId: string): void {
 /** App ids that currently have an open window (installed apps only). */
 export function openAppIds(): string[] {
   return [...new Set([...activeAppListeners].filter((l) => l.appId && !l.previewId).map((l) => l.appId as string))];
+}
+
+/** An app's active skin changed (panel, drop, or the assistant): restyle its open windows. */
+export function notifyAppSkinChanged(appId: string): void {
+  for (const listener of activeAppListeners) {
+    if (listener.appId === appId && !listener.previewId) listener.onSkinChanged?.();
+  }
+}
+
+/** Open the Skins panel of an app window. False when that window can't be skinned. */
+export function openAppSkins(windowId: string): boolean {
+  for (const listener of activeAppListeners) {
+    if (listener.windowId === windowId && listener.appId && !listener.previewId && listener.openSkins) {
+      listener.openSkins();
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Open the Skins panel in an open window of this app. False when none is open. */
+export function openAppSkinsForApp(appId: string): boolean {
+  for (const listener of activeAppListeners) {
+    if (listener.appId === appId && !listener.previewId && listener.openSkins) {
+      listener.openSkins();
+      return true;
+    }
+  }
+  return false;
 }
