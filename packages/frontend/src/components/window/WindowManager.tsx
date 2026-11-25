@@ -359,7 +359,7 @@ function WindowContent({
 
     case 'app':
       if (!item?.appManifest?.appId) return <MissingContent message="App not found" dark />;
-      return <AppViewer appId={item.appManifest.appId} windowId={windowId} launchFileId={win?.launchFileId} />;
+      return <AppViewer appId={item.appManifest.appId} windowId={windowId} launchFileId={win?.launchFileId} isVisitor={isVisitorMode} />;
 
     case 'app-preview':
       if (!contentId) return <MissingContent message="Preview not found" dark />;

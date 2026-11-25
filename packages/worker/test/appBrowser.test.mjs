@@ -448,6 +448,19 @@ describe('installed apps in a real browser', { skip: chromePath ? false : 'Chrom
       host.close();
     }
 
+    // Visitors: only apps on the public desktop show their skin, signed out.
+    const publicSkin = () => worker.fetch(`http://127.0.0.1/api/apps/${appId}/public-skin`);
+    assert.equal((await publicSkin()).status, 404, 'a private app\'s skin is not public');
+    const desktop = await api('/api/desktop', { headers: auth(user.token) });
+    const appItem = desktop.items.find((item) => item.type === 'app' && item.appManifest?.appId === app.appId);
+    await api('/api/desktop/items', { method: 'PATCH', headers: auth(user.token, JSON_HEADERS), body: JSON.stringify([{ id: appItem.id, updates: { isPublic: true } }]) });
+    const shown = await publicSkin();
+    assert.equal(shown.status, 200);
+    assert.equal((await shown.json()).skin.name, 'Test Deck');
+    await api('/api/desktop/items', { method: 'PATCH', headers: auth(user.token, JSON_HEADERS), body: JSON.stringify([{ id: appItem.id, updates: { isTrashed: true, trashedAt: Date.now() } }]) });
+    assert.equal((await publicSkin()).status, 404, 'a trashed app\'s skin is not public');
+    await api('/api/desktop/items', { method: 'PATCH', headers: auth(user.token, JSON_HEADERS), body: JSON.stringify([{ id: appItem.id, updates: { isTrashed: false } }]) });
+
     // Switching back and deleting.
     await api(`/api/apps/${appId}/skins/active`, { method: 'PUT', headers: auth(user.token, JSON_HEADERS), body: JSON.stringify({ skinId: null }) });
     assert.equal((await api(`/api/apps/${appId}/skins/active`, { headers: auth(user.token) })).skin, null);

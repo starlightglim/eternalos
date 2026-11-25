@@ -20,7 +20,7 @@
  * bucket followed by the shared CORS-only 404 (see unmatchedRouteRateLimit).
  */
 
-import { handleAppSkins } from './appSkins';
+import { handleAppSkins, handlePublicAppSkin } from './appSkins';
 import type { Env } from '../index';
 import { issueFileToken } from '../middleware/auth';
 import { withCors } from '../middleware/http';
@@ -574,6 +574,14 @@ export const ROUTES: RouteDefinition[] = [
     match: regex(/^\/api\/apps\/([^/]+)\/permissions$/),
     policy: { auth: 'required', rateLimit: null },
     handler: (c) => handleAppPermissions(c.request, c.env, requireAuthContext(c), decodeURIComponent(c.params[0])),
+  },
+  // App skin for visitors (public apps only): GET /api/apps/:appId/public-skin
+  {
+    name: 'app-public-skin',
+    method: 'GET',
+    match: regex(/^\/api\/apps\/([^/]+)\/public-skin$/),
+    policy: { auth: 'none', rateLimit: RATE_LIMIT_API },
+    handler: (c) => handlePublicAppSkin(c.env, decodeURIComponent(c.params[0])),
   },
   // App skins (owner): /api/apps/:appId/skins[/generate|/active|/:skinId]
   {

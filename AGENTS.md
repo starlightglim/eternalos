@@ -258,6 +258,9 @@ backtick or dollar-brace in it), spliced into `ETERNAL_RUNTIME_JS`.
   `@cf/black-forest-labs/flux-1-schnell`), each charged to the AI budget.
   Generated textures are marked `blend` and made seamless in the runtime
   (two-pass half-offset blend). Missing theme colors are derived from styles.
+- Visitors: `GET /api/apps/:id/public-skin` (no auth) returns the active
+  skin only when the app's desktop item is public and not trashed (404
+  otherwise); AppViewer uses it when `isVisitor` and hides the panel/drop.
 - Frontend: `AppViewer` sends the active skin (`eternal:skin`), takes `.eskin`
   drops (overlay over the iframe), hosts `AppSkinsPanel` (right-click an app's
   title bar, or Special → App Skins...). `utils/appSkins.ts` = .eskin zip

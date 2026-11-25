@@ -12,7 +12,7 @@ import type { AppPermissions } from '../../types';
 import { activeAppListeners, notifyAppSkinChanged, type ActiveAppListener } from '../../utils/appWindowBus';
 import { AppSkinsPanel, type DescribedParts } from '../apps/AppSkinsPanel';
 import skinPanelStyles from '../apps/AppSkinsPanel.module.css';
-import { getActiveAppSkin, installAppSkin } from '../../services/appSkins';
+import { getActiveAppSkin, getPublicAppSkin, installAppSkin } from '../../services/appSkins';
 import { readSkinFile } from '../../utils/appSkins';
 import { readAppTheme } from '../../utils/appTheme';
 import { useAppearanceStore } from '../../stores/appearanceStore';
@@ -22,6 +22,8 @@ interface AppViewerProps {
   previewId?: string;
   windowId?: string;
   launchFileId?: string;
+  /** Someone visiting the owner's public desktop: sees the skin, can't change it. */
+  isVisitor?: boolean;
 }
 
 function topicMatches(topic: unknown, patterns: string[] | undefined): boolean {
@@ -31,7 +33,7 @@ function topicMatches(topic: unknown, patterns: string[] | undefined): boolean {
   ));
 }
 
-export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewerProps) {
+export function AppViewer({ appId, previewId, windowId, launchFileId, isVisitor = false }: AppViewerProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const capabilityRef = useRef<string | null>(null);
   const iframeLoadedRef = useRef(false);
@@ -72,7 +74,7 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
 
   // App skins: the active skin is sent when the app asks (runtime start)
   // and whenever it changes; the Skins panel and .eskin drops live here.
-  const canSkin = Boolean(appId && !previewId);
+  const canSkin = Boolean(appId && !previewId && !isVisitor);
   const [skinsOpen, setSkinsOpen] = useState(false);
   const [skinDrag, setSkinDrag] = useState(false);
   const [skinToast, setSkinToast] = useState<string | null>(null);
@@ -82,17 +84,17 @@ export function AppViewer({ appId, previewId, windowId, launchFileId }: AppViewe
   const sendSkin = useCallback(async () => {
     const frame = iframeRef.current;
     if (!frame?.contentWindow) return;
-    if (!canSkin || !appId) {
+    if (!appId || previewId) {
       frame.contentWindow.postMessage({ type: 'eternal:skin', skin: null }, '*');
       return;
     }
     try {
-      const { skin } = await getActiveAppSkin(appId);
+      const { skin } = isVisitor ? await getPublicAppSkin(appId) : await getActiveAppSkin(appId);
       iframeRef.current?.contentWindow?.postMessage({ type: 'eternal:skin', skin }, '*');
     } catch {
       // Visitors and offline: the app keeps its own look.
     }
-  }, [appId, canSkin]);
+  }, [appId, previewId, isVisitor]);
 
   const describeParts = useCallback((): Promise<DescribedParts | null> => {
     const frame = iframeRef.current;

@@ -46,6 +46,11 @@ export function getActiveAppSkin(appId: string): Promise<{ skinId: string | null
   return apiRequest(`${base(appId)}/active`);
 }
 
+/** Visitors: the active skin of an app on a public desktop (404 for private apps). */
+export function getPublicAppSkin(appId: string): Promise<{ skin: AppSkin | null }> {
+  return apiRequest(`/api/apps/${encodeURIComponent(appId)}/public-skin`);
+}
+
 export function setActiveAppSkin(appId: string, skinId: string | null): Promise<{ active: string | null; previousActive: string | null }> {
   return apiRequest(`${base(appId)}/active`, { method: 'PUT', body: JSON.stringify({ skinId }) });
 }

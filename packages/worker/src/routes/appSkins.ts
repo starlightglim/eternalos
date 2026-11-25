@@ -171,3 +171,24 @@ export async function handleAppSkins(
     return errorResponse(error);
   }
 }
+
+/**
+ * GET /api/apps/:appId/public-skin — the active skin of an app that is on
+ * its owner's public desktop, for visitors. Anything else (private, trashed,
+ * unknown) is a 404 so it says nothing about private apps.
+ */
+export async function handlePublicAppSkin(env: Env, appId: string): Promise<Response> {
+  const notFound = () => Response.json({ error: 'Not found' }, { status: 404 });
+  if (!appId || appId.length > 100) return notFound();
+  const meta = await env.DESKTOP_KV.get<{ uid: string }>(`app:${appId}`, 'json');
+  if (!meta?.uid) return notFound();
+  const stub = env.USER_DESKTOP.get(env.USER_DESKTOP.idFromName(meta.uid));
+  const itemsResponse = await stub.fetch(new Request('http://internal/items'));
+  if (!itemsResponse.ok) return notFound();
+  const items = (await itemsResponse.json() as { items: Array<{ type?: string; isPublic?: boolean; isTrashed?: boolean; appManifest?: { appId?: string } }> }).items;
+  const isPublicApp = items.some((item) => item.type === 'app' && item.appManifest?.appId === appId && item.isPublic === true && !item.isTrashed);
+  if (!isPublicApp) return notFound();
+  const index = await readSkinIndex(env, meta.uid, appId);
+  const skin = index.active ? await readSkin(env, meta.uid, appId, index.active) : null;
+  return Response.json({ skin }, { headers: { 'cache-control': 'public, max-age=60' } });
+}
