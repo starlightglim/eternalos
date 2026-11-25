@@ -100,6 +100,40 @@ truth for all tokens).
 `--highlight`/`--shadow` override block. Sky/bubbles are pure CSS gradients on
 `.user-desktop`.
 
+## Ricing (Linux-style desktop customization)
+
+Everything below is stored as design tokens (`appearance.designTokens`),
+so it saves with the profile, exports in `.estheme` (tokens.json) and
+travels with "Try this rice". The server accepts any dot-path token key
+(`UserDesktop` validates shape/size/values only).
+
+- Pywal mode: Appearance → From Wallpaper (`components/appearance/
+  WallpaperRice.tsx`, `utils/wallpaperPalette.ts`). k-means palette from the
+  wallpaper (image via CORS with `?palette=1` cache-bust — the CSS
+  background copy is cached without CORS; pattern wallpapers from their own
+  colors) → full color scheme, every text pair pushed to WCAG contrast.
+  Colors only; pattern wallpapers keep `desktopColor` (it paints them).
+- Tiling: `layout.mode` (floating|master|columns|grid), `layout.gap`,
+  `layout.outerGap`, `layout.masterRatio`, `layout.reserveIcons`.
+  `utils/tiling.ts` (pure) + `hooks/useTiling.ts` (owner only) +
+  `stores/tilingStore.ts`. Window positions are relative to `.user-desktop`
+  (which starts below the menu bar) — tile in its box. Dragging a tiled
+  window pauses tiling; the drop swaps tiles. Leaving tiling restores the
+  floating snapshot (`eternalos-floating-geometry` in localStorage).
+  Minimized/collapsed/maximized and fixed-size skin windows float.
+- Bar: `bar.modules` (ordered list, see `BAR_MODULES`), `bar.style`
+  (classic|floating|transparent), `bar.clockFormat`, `bar.text`
+  (`components/menubar/BarModules.tsx`). Conky: `conky.enabled`,
+  `conky.text` ({placeholders}), `conky.position`, `conky.size`
+  (`components/desktop/ConkyLayer.tsx`). Live facts: `hooks/useRiceInfo.ts`
+  + `utils/riceInfo.ts` (guard browser globals: tests run without
+  `window.screen`).
+- Fetch card: Special → About This Desktop (`contentType: 'fetch'`,
+  `viewers/FetchCard.tsx`); `rice.name` names the rice.
+- Try this rice: public desktops (VisitorPage) → `exportCurrentTheme(owner
+  profile)` → `estheme/pendingRice.ts` → own `/desktop` → the normal
+  `.estheme` Keep/Revert preview (lineage handled by keep()).
+
 ## Window system
 
 `src/components/window/Window.tsx`:

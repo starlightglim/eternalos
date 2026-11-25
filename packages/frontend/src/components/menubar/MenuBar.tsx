@@ -195,6 +195,19 @@ export function MenuBar() {
     setActiveMenu(null);
   }, [openWindow]);
 
+  const handleOpenFetch = useCallback(() => {
+    openWindow({
+      id: 'fetch',
+      title: 'About This Desktop',
+      position: { x: 180, y: 90 },
+      size: { width: 560, height: 390 },
+      minimized: false,
+      maximized: false,
+      contentType: 'fetch',
+    });
+    setActiveMenu(null);
+  }, [openWindow]);
+
   const handleOpenClock = useCallback(() => {
     openWindow({
       id: 'clock',
@@ -873,6 +886,7 @@ export function MenuBar() {
       { label: 'Clock', action: handleOpenClock },
       { label: 'Ask Eternal...', action: handleOpenAgentChat, disabled: !isApiConfigured },
       { divider: true, label: '' },
+      { label: 'About This Desktop...', action: handleOpenFetch },
       { label: 'Appearance...', action: handleOpenAppearance },
       { label: 'App Skins...', action: handleOpenAppSkins, disabled: !topAppWindowId },
       { label: 'Cursor Creator...', action: handleOpenCursorCreator },

@@ -6,6 +6,7 @@ import { slugify } from '../../utils/slugify';
 import { getItemExtension } from '../../utils/itemSelectors';
 import { Calculator } from '../viewers/Calculator';
 import { Clock } from '../viewers/Clock';
+import { FetchCard } from '../viewers/FetchCard';
 
 import { FolderView } from './FolderView';
 import { TrashView } from './TrashView';
@@ -339,6 +340,9 @@ function WindowContent({
 
     case 'clock':
       return <Clock />;
+
+    case 'fetch':
+      return <FetchCard />;
 
     case 'link':
       if (!item) return <MissingContent message="Link not found" />;

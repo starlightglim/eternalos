@@ -1,6 +1,8 @@
 // Visitor Page - Read-only view of a user's desktop
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useAuthStore } from '../stores/authStore';
+import { setPendingRice } from '../estheme/pendingRice';
 import { openExternalUrl } from '../utils/safeUrl';
 import { WindowManager } from '../components/window';
 import { DesktopIcon } from '../components/icons';
@@ -12,7 +14,7 @@ import { useDocumentMeta } from '../hooks/useDocumentMeta';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { isApiConfigured, fetchVisitorDesktop, getWallpaperUrl, type SavedWindowState } from '../services/api';
 import { useVisitorSync } from '../hooks/useVisitorSync';
-import { applyAppearance, clearAppearance, profileToAppearance, profileHasAppearance, useAppearanceStore, APPEARANCE_PROFILE_KEYS } from '../stores/appearanceStore';
+import { applyAppearance, clearAppearance, profileToAppearance, profileHasAppearance, useAppearanceStore } from '../stores/appearanceStore';
 import { useSoundStore } from '../stores/soundStore';
 import { getTextFileContentType, type DesktopItem, type UserProfile } from '../types';
 import styles from './VisitorPage.module.css';
@@ -513,47 +515,64 @@ export function VisitorPage() {
 }
 
 /**
- * "Steal this theme" button — lets visitors export the owner's appearance
+ * "Try this rice": signed-in visitors preview the owner's whole look on their
+ * own desktop (colors, tokens incl. layout/bar/conky, variants, custom CSS,
+ * cursors, sounds, wallpaper) with Keep / Revert. Everyone can download it
+ * as an .estheme.
  */
 function StealThemeButton({ profile }: { profile: UserProfile }) {
-  const [copied, setCopied] = useState(false);
+  const navigate = useNavigate();
+  const viewer = useAuthStore((state) => state.user?.username);
+  const [busy, setBusy] = useState<'try' | 'download' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const riceName = typeof profile.designTokens?.['rice.name'] === 'string' && profile.designTokens['rice.name']
+    ? String(profile.designTokens['rice.name'])
+    : `${profile.username}'s rice`;
 
-  const handleSteal = () => {
-    const appearance = profileToAppearance(profile as unknown as Record<string, unknown>);
-    // Exclude customCSS from the exported theme
-    const theme: Record<string, unknown> = { _format: 'eternalos-theme-v1' };
-    for (const key of APPEARANCE_PROFILE_KEYS) {
-      if (key === 'customCSS') continue;
-      const value = (appearance as Record<string, unknown>)[key];
-      if (value !== undefined) {
-        theme[key] = value;
-      }
+  const build = async (autoDownload: boolean) => {
+    const { exportCurrentTheme } = await import('../utils/exportTheme');
+    return exportCurrentTheme(profile, { name: riceName, autoDownload });
+  };
+
+  const tryIt = async () => {
+    setBusy('try');
+    setError(null);
+    try {
+      const { blob } = await build(false);
+      setPendingRice(blob, profile.username);
+      navigate('/desktop');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'This rice could not be packed.');
+      setBusy(null);
     }
+  };
 
-    const json = JSON.stringify(theme, null, 2);
-    navigator.clipboard.writeText(json).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {
-      // Fallback: download as file
-      const blob = new Blob([json], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${profile.username}-theme.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-    });
+  const download = async () => {
+    setBusy('download');
+    setError(null);
+    try {
+      await build(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'This rice could not be packed.');
+    } finally {
+      setBusy(null);
+    }
   };
 
   return (
-    <button
-      className={styles.stealThemeButton}
-      onClick={handleSteal}
-      title="Copy this desktop's theme to your clipboard"
-    >
-      {copied ? 'Copied!' : 'Steal this theme'}
-    </button>
+    <span className={styles.riceActions}>
+      {viewer && viewer !== profile.username ? (
+        <button className={styles.stealThemeButton} onClick={() => void tryIt()} disabled={Boolean(busy)} title="Preview this whole look on your own desktop — keep it or revert">
+          {busy === 'try' ? 'Packing…' : 'Try this rice'}
+        </button>
+      ) : !viewer ? (
+        <Link className={styles.stealThemeButton} to="/" title="Make an EternalOS desktop to try this look on">Sign up to try this rice</Link>
+      ) : null}
+      <button className={styles.stealThemeButton} onClick={() => void download()} disabled={Boolean(busy)} title="Download this look as an .estheme file">
+        {busy === 'download' ? 'Packing…' : 'Download .estheme'}
+      </button>
+      {error && <span className={styles.riceError}>{error}</span>}
+    </span>
   );
 }
 

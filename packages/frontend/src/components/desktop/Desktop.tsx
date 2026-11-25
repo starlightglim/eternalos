@@ -1,3 +1,4 @@
+import { takePendingRice } from '../../estheme/pendingRice';
 import { ConkyLayer } from './ConkyLayer';
 import { useTiling } from '../../hooks/useTiling';
 import { useCallback, useRef, useState, useEffect, useMemo } from 'react';
@@ -114,6 +115,14 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
 
   // Tiling window layout (Appearance → Windows → Layout), owner only.
   useTiling(!isVisitorMode && !loading);
+
+  // "Try this rice" from someone's public desktop: preview it here with
+  // the usual Keep / Revert banner.
+  useEffect(() => {
+    if (isVisitorMode || loading) return;
+    const rice = takePendingRice();
+    if (rice) void useEsthemePreviewStore.getState().beginImport(rice.blob);
+  }, [isVisitorMode, loading]);
 
   // Handle QuickStart wizard completion
   const handleQuickStartComplete = useCallback(() => {

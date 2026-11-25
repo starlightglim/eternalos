@@ -1,0 +1,76 @@
+.fetch {
+  display: flex;
+  gap: 18px;
+  padding: 16px 18px;
+  height: 100%;
+  overflow: auto;
+  box-sizing: border-box;
+  background: var(--window-bg, #111);
+  color: var(--window-text-color, var(--text-color, #ddd));
+  font-family: var(--eos-font-mono, var(--font-monaco, monospace));
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.logo {
+  margin: 0;
+  color: var(--accent, var(--selection, #6cf));
+  font-weight: bold;
+  line-height: 1.25;
+}
+
+.info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.head {
+  font-weight: bold;
+}
+
+.accent,
+.key {
+  color: var(--accent, var(--selection, #6cf));
+  font-weight: bold;
+}
+
+.rule {
+  opacity: 0.6;
+}
+
+.line {
+  display: flex;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.key::after {
+  content: ':';
+}
+
+.themeInput {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed currentColor;
+  padding: 0;
+  width: 14ch;
+}
+
+.blocks {
+  display: flex;
+  margin-top: 10px;
+}
+
+.blocks span {
+  width: 22px;
+  height: 16px;
+}
+
+.copy {
+  margin-top: 10px;
+  align-self: flex-start;
+  font-size: 11px;
+}
