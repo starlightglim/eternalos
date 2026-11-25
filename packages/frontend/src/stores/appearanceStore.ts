@@ -291,6 +291,8 @@ interface AppearanceStore {
   setCustomCSSPreview: (css: string, summary?: string) => void;
   clearCustomCSSPreview: () => void;
   resetAppearance: () => void;
+  /** Throw away unsaved edits: back to the last saved look. */
+  discardChanges: () => void;
   saveAppearance: () => Promise<void>;
   loadAppearance: (appearance: CustomAppearance) => void;
   /**
@@ -386,6 +388,11 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => {
         customCSSPreviewSummary: undefined,
         hasUnsavedChanges: true,
       });
+    },
+
+    discardChanges: () => {
+      get().restoreAppearanceSnapshot(get().originalAppearance, false);
+      set({ customCSSPreview: undefined, customCSSPreviewSummary: undefined });
     },
 
     saveAppearance: async () => {

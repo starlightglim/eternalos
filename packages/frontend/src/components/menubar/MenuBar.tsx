@@ -259,7 +259,7 @@ export function MenuBar() {
       id: 'appearance-panel',
       title: 'Appearance',
       position: { x: 72, y: 38 },
-      size: { width: 620, height: 620 },
+      size: { width: 780, height: 640 },
       minimized: false,
       maximized: false,
       contentType: 'appearance',

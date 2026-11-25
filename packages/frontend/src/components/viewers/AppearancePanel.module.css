@@ -3,6 +3,7 @@
  */
 .panel {
   --panel-accent: var(--accent, var(--selection));
+  container-type: inline-size;
 
   display: flex;
   flex-direction: column;
@@ -755,5 +756,142 @@
 
   .footerCopy {
     display: none;
+  }
+}
+
+/* ============================================
+   Sidebar layout (grouped sections)
+   ============================================ */
+
+.headerText {
+  min-width: 0;
+}
+
+.header {
+  align-items: center;
+}
+
+.statusPillDirty {
+  background: var(--panel-accent);
+  color: var(--selection-text, #fff);
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.body .content {
+  flex: 1;
+  margin: 6px 6px 6px 0;
+}
+
+.sideNav {
+  width: 186px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  padding: 8px 6px;
+  border-right: 1px solid var(--control-border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.navGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.navGroupLabel {
+  padding: 0 8px 3px;
+  font-family: var(--font-geneva);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.navItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-chicago);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.navItem:hover {
+  background: color-mix(in srgb, var(--panel-accent) 12%, transparent);
+}
+
+.navItem:focus-visible {
+  outline: 2px solid var(--panel-accent);
+  outline-offset: -2px;
+}
+
+.navItemActive,
+.navItemActive:hover {
+  background: var(--panel-accent);
+  color: var(--selection-text, #fff);
+}
+
+.navIcon {
+  width: 18px;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.dangerButton {
+  color: var(--danger, #900);
+  border-color: color-mix(in srgb, var(--danger, #900) 60%, var(--control-border));
+}
+
+/* Narrow window: the sidebar becomes a scrolling strip above the content. */
+@container (max-width: 560px) {
+  .body {
+    flex-direction: column;
+  }
+
+  .sideNav {
+    width: auto;
+    flex-direction: row;
+    gap: 2px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 6px;
+    border-right: none;
+    border-bottom: 1px solid var(--control-border);
+    scrollbar-width: none;
+  }
+
+  .navGroup {
+    flex-direction: row;
+  }
+
+  .navGroupLabel {
+    display: none;
+  }
+
+  .navItem {
+    width: auto;
+    white-space: nowrap;
+  }
+
+  .body .content {
+    margin: 6px;
   }
 }

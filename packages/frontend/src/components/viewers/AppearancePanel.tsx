@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppearanceStore, type CustomAppearance, APPEARANCE_PROFILE_KEYS, buildTokenUpdate, getTokenValue } from '../../stores/appearanceStore';
 import { useAuthStore } from '../../stores/authStore';
+import { useWindowStore } from '../../stores/windowStore';
 import { FONT_CATALOG, resolveFontFamily, type FontEntry } from '../../utils/fontCatalog';
 import { THEME_PRESETS } from '../../utils/onboardingPresets';
 import { getTokensByTab, groupTokensByGroup, type TokenDefinition } from '../../tokens/tokenSchema';
@@ -18,7 +19,53 @@ import { useEsthemePreviewStore } from '../../estheme/themePreviewStore';
 import type { UserProfile } from '../../types';
 import styles from './AppearancePanel.module.css';
 
-type TabId = 'themes' | 'wallpaper' | 'palette' | 'windows' | 'bar' | 'controls' | 'typography';
+type TabId = 'themes' | 'wallpaper' | 'palette' | 'typography' | 'windows' | 'controls' | 'desktop' | 'layout' | 'bar' | 'advanced';
+
+/** Sidebar sections, grouped the way people think about a desktop. */
+const NAV: Array<{ group: string; items: Array<{ id: TabId; label: string; icon: string; hint: string }> }> = [
+  {
+    group: 'Start',
+    items: [
+      { id: 'themes', label: 'Themes', icon: '◐', hint: 'One-click looks to start from.' },
+      { id: 'wallpaper', label: 'From Wallpaper', icon: '✦', hint: 'Color everything from your wallpaper.' },
+    ],
+  },
+  {
+    group: 'Look',
+    items: [
+      { id: 'palette', label: 'Colors', icon: '●', hint: 'Palettes and every color, fine-tuned.' },
+      { id: 'typography', label: 'Fonts', icon: 'Aa', hint: 'Fonts for menus, text and code.' },
+      { id: 'windows', label: 'Windows', icon: '▢', hint: 'Frames, title bars, buttons and shape.' },
+      { id: 'controls', label: 'Controls & Cursors', icon: '⌖', hint: 'Buttons, inputs and the mouse pointer.' },
+    ],
+  },
+  {
+    group: 'Desktop',
+    items: [
+      { id: 'desktop', label: 'Wallpaper', icon: '▦', hint: 'Patterns or your own image.' },
+      { id: 'layout', label: 'Layout', icon: '⊞', hint: 'Floating or tiling windows, with gaps.' },
+      { id: 'bar', label: 'Bar & Widgets', icon: '▔', hint: 'Menu bar modules and desktop text.' },
+    ],
+  },
+  {
+    group: 'More',
+    items: [
+      { id: 'advanced', label: 'Advanced', icon: '⚙', hint: 'Custom CSS, sharing and reset.' },
+    ],
+  },
+];
+const NAV_ITEMS = NAV.flatMap((group) => group.items);
+const TAB_STORAGE_KEY = 'eternalos-appearance-section';
+
+function initialTab(): TabId {
+  try {
+    const saved = localStorage.getItem(TAB_STORAGE_KEY);
+    if (saved && NAV_ITEMS.some((item) => item.id === saved)) return saved as TabId;
+  } catch {
+    // Storage unavailable: start at Themes.
+  }
+  return 'themes';
+}
 
 interface ColorControlConfig {
   key: keyof Pick<
@@ -629,12 +676,31 @@ export function AppearancePanel() {
     updateAppearance,
     setFontSmoothing,
     resetAppearance,
+    discardChanges,
     saveAppearance,
     isLoading,
     hasUnsavedChanges,
   } = useAppearanceStore();
 
-  const [activeTab, setActiveTab] = useState<TabId>('themes');
+  const [activeTab, setActiveTabState] = useState<TabId>(initialTab);
+  const setActiveTab = useCallback((tab: TabId) => {
+    setActiveTabState(tab);
+    try { localStorage.setItem(TAB_STORAGE_KEY, tab); } catch { /* per-viewer convenience only */ }
+  }, []);
+  const activeNav = NAV_ITEMS.find((item) => item.id === activeTab) ?? NAV_ITEMS[0];
+  const openWindow = useWindowStore((state) => state.openWindow);
+  const navRef = useRef<HTMLElement>(null);
+  // Keep the chosen section visible (the nav scrolls sideways in narrow windows).
+  useEffect(() => {
+    const current = navRef.current?.querySelector('[aria-current="page"]') as HTMLElement | null;
+    current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }, [activeTab]);
+  const openCSSEditor = useCallback(() => {
+    openWindow({ id: 'css-editor', title: 'Custom CSS', position: { x: 80, y: 50 }, size: { width: 520, height: 500 }, minimized: false, maximized: false, contentType: 'css-editor' });
+  }, [openWindow]);
+  const openFetchCard = useCallback(() => {
+    openWindow({ id: 'fetch', title: 'About This Desktop', position: { x: 180, y: 90 }, size: { width: 560, height: 390 }, minimized: false, maximized: false, contentType: 'fetch' });
+  }, [openWindow]);
   const selectedThemeId = THEME_PRESETS.find((preset) => appearanceMatchesPreset(appearance, preset.appearance))?.id ?? null;
   const importInputRef = useRef<HTMLInputElement>(null);
   const wallpaperInputRef = useRef<HTMLInputElement>(null);
@@ -787,44 +853,47 @@ export function AppearancePanel() {
   // previewStyles removed — preview tab was deleted
 
   return (
-    <div className={styles.panel} data-theme-immune>
+    <div
+      className={styles.panel}
+      data-theme-immune
+      onKeyDown={(event) => {
+        // Cmd/Ctrl+S saves, like any editor.
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+          event.preventDefault();
+          if (hasUnsavedChanges && !isLoading) void handleSave();
+        }
+      }}
+    >
       <div className={styles.header}>
-        <div>
-          <div className={styles.eyebrow}>Custom Appearance</div>
-          <h2 className={styles.title}>Build your own chrome</h2>
-          <p className={styles.subtitle}>
-            Start with a theme, then fine-tune color, shape, typography, and controls.
-          </p>
+        <div className={styles.headerText}>
+          <h2 className={styles.title}>{activeNav.label}</h2>
+          <p className={styles.subtitle}>{activeNav.hint}</p>
         </div>
-        <div className={styles.headerMeta}>
-          <span className={styles.statusPill} aria-live="polite">{hasUnsavedChanges ? 'Unsaved' : 'Saved'}</span>
-        </div>
+        <span className={`${styles.statusPill} ${hasUnsavedChanges ? styles.statusPillDirty : ''}`} aria-live="polite">
+          {hasUnsavedChanges ? '● Unsaved preview' : '✓ Saved'}
+        </span>
       </div>
 
-      <div className={styles.tabBar} role="tablist" aria-label="Appearance sections">
-        <button className={`${styles.tab} ${activeTab === 'themes' ? styles.activeTab : ''}`} aria-selected={activeTab === 'themes'} onClick={() => setActiveTab('themes')} role="tab" type="button">
-          Themes
-        </button>
-        <button className={`${styles.tab} ${activeTab === 'wallpaper' ? styles.activeTab : ''}`} aria-selected={activeTab === 'wallpaper'} onClick={() => setActiveTab('wallpaper')} role="tab" type="button">
-          From Wallpaper
-        </button>
-        <button className={`${styles.tab} ${activeTab === 'palette' ? styles.activeTab : ''}`} aria-selected={activeTab === 'palette'} onClick={() => setActiveTab('palette')} role="tab" type="button">
-          Colors
-        </button>
-        <button className={`${styles.tab} ${activeTab === 'windows' ? styles.activeTab : ''}`} aria-selected={activeTab === 'windows'} onClick={() => setActiveTab('windows')} role="tab" type="button">
-          Windows
-        </button>
-        <button className={`${styles.tab} ${activeTab === 'bar' ? styles.activeTab : ''}`} aria-selected={activeTab === 'bar'} onClick={() => setActiveTab('bar')} role="tab" type="button">
-          Bar & Widgets
-        </button>
-        <button className={`${styles.tab} ${activeTab === 'controls' ? styles.activeTab : ''}`} aria-selected={activeTab === 'controls'} onClick={() => setActiveTab('controls')} role="tab" type="button">
-          Controls
-        </button>
-        <button className={`${styles.tab} ${activeTab === 'typography' ? styles.activeTab : ''}`} aria-selected={activeTab === 'typography'} onClick={() => setActiveTab('typography')} role="tab" type="button">
-          Typography
-        </button>
-{/* Preview tab removed — the real desktop IS the preview */}
-      </div>
+      <div className={styles.body}>
+      <nav ref={navRef} className={styles.sideNav} aria-label="Appearance sections">
+        {NAV.map((group) => (
+          <div key={group.group} className={styles.navGroup}>
+            <div className={styles.navGroupLabel}>{group.group}</div>
+            {group.items.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`${styles.navItem} ${activeTab === item.id ? styles.navItemActive : ''}`}
+                aria-current={activeTab === item.id ? 'page' : undefined}
+                onClick={() => setActiveTab(item.id)}
+              >
+                <span className={styles.navIcon} aria-hidden="true">{item.icon}</span>
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </div>
+        ))}
+      </nav>
 
       <div className={styles.content}>
         {activeTab === 'themes' && (
@@ -868,50 +937,8 @@ export function AppearancePanel() {
 
         {activeTab === 'wallpaper' && <WallpaperRice />}
 
-        {activeTab === 'bar' && <BarWidgetsSettings />}
-
-        {activeTab === 'palette' && (
+        {activeTab === 'desktop' && (
           <div className={styles.sectionStack}>
-            <div className={styles.sectionIntro}>
-              <div className={styles.sectionTitle}>Color Palettes</div>
-              <div className={styles.sectionHint}>Quick-apply a color scheme, then fine-tune individual colors below.</div>
-            </div>
-            <div className={styles.paletteRow}>
-              {COLOR_PALETTES.map((palette) => (
-                <button
-                  key={palette.name}
-                  type="button"
-                  className={styles.paletteChip}
-                  onClick={() => updateAppearance(palette.colors)}
-                  title={palette.name}
-                >
-                  <span className={styles.paletteSwatches}>
-                    <span style={{ backgroundColor: palette.colors.desktopColor }} />
-                    <span style={{ backgroundColor: palette.colors.accentColor }} />
-                    <span style={{ backgroundColor: palette.colors.windowBgColor }} />
-                    <span style={{ backgroundColor: palette.colors.titleBarBgColor }} />
-                  </span>
-                  <span className={styles.paletteName}>{palette.name}</span>
-                </button>
-              ))}
-            </div>
-            <div className={styles.sectionIntro}>
-              <div className={styles.sectionTitle}>Fine-Tune</div>
-            </div>
-            <div className={styles.grid}>
-              {PALETTE_CONTROLS.map((control) => (
-                <ColorField
-                  key={control.key}
-                  control={control}
-                  appearance={appearance}
-                  updateAppearance={updateAppearance}
-                />
-              ))}
-            </div>
-            <TokenGroupSection tab="palette" appearance={appearance} updateAppearance={updateAppearance} />
-
-            <hr className={styles.sectionDivider} />
-
             {/* --- Desktop Pattern --- */}
             <div className={styles.sectionIntro}>
               <div className={styles.sectionTitle}>Desktop Pattern</div>
@@ -970,17 +997,106 @@ export function AppearancePanel() {
           </div>
         )}
 
-        {activeTab === 'windows' && (
+        {activeTab === 'layout' && (
           <div className={styles.sectionStack}>
-            {/* --- Layout (floating / tiling) --- */}
-            <div className={styles.sectionIntro}>
-              <div className={styles.sectionTitle}>Layout</div>
-              <div className={styles.sectionHint}>Let windows float, or tile them neatly with gaps like a Linux tiling window manager.</div>
-            </div>
             <TilingSettings />
+          </div>
+        )}
+
+        {activeTab === 'bar' && <BarWidgetsSettings />}
+
+        {activeTab === 'advanced' && (
+          <div className={styles.sectionStack}>
+            <div className={styles.sectionIntro}>
+              <div className={styles.sectionTitle}>Custom CSS</div>
+              <div className={styles.sectionHint}>Write your own CSS for anything the controls don't cover. It is scoped to your desktop.</div>
+            </div>
+            <div className={styles.uploadRow}>
+              <button type="button" className={styles.secondaryButton} onClick={openCSSEditor}>Open CSS editor…</button>
+            </div>
 
             <hr className={styles.sectionDivider} />
 
+            <div className={styles.sectionIntro}>
+              <div className={styles.sectionTitle}>Share your look</div>
+              <div className={styles.sectionHint}>
+                Export everything (colors, fonts, layout, bar, cursors, sounds, wallpaper) as one .estheme file, or import one.
+                Visitors to your public desktop can also try it on with "Try this rice".
+              </div>
+            </div>
+            <div className={styles.uploadRow}>
+              <button type="button" className={styles.secondaryButton} onClick={() => void handleExportEstheme()} disabled={exporting}>
+                {exporting ? 'Exporting…' : 'Export .estheme'}
+              </button>
+              <button type="button" className={styles.secondaryButton} onClick={() => importInputRef.current?.click()}>Import…</button>
+              <button type="button" className={styles.secondaryButton} onClick={openFetchCard}>About This Desktop…</button>
+            </div>
+
+            <hr className={styles.sectionDivider} />
+
+            <div className={styles.sectionIntro}>
+              <div className={styles.sectionTitle}>Reset</div>
+              <div className={styles.sectionHint}>Go back to the default EternalOS look. You can still discard this before saving.</div>
+            </div>
+            <div className={styles.uploadRow}>
+              <button
+                type="button"
+                className={`${styles.secondaryButton} ${styles.dangerButton}`}
+                onClick={() => {
+                  if (window.confirm('Reset every color, font, layout and style to the defaults? Nothing is saved until you press Save.')) resetAppearance();
+                }}
+              >
+                Reset to defaults…
+              </button>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'palette' && (
+          <div className={styles.sectionStack}>
+            <div className={styles.sectionIntro}>
+              <div className={styles.sectionTitle}>Color Palettes</div>
+              <div className={styles.sectionHint}>Quick-apply a color scheme, then fine-tune individual colors below.</div>
+            </div>
+            <div className={styles.paletteRow}>
+              {COLOR_PALETTES.map((palette) => (
+                <button
+                  key={palette.name}
+                  type="button"
+                  className={styles.paletteChip}
+                  onClick={() => updateAppearance(palette.colors)}
+                  title={palette.name}
+                >
+                  <span className={styles.paletteSwatches}>
+                    <span style={{ backgroundColor: palette.colors.desktopColor }} />
+                    <span style={{ backgroundColor: palette.colors.accentColor }} />
+                    <span style={{ backgroundColor: palette.colors.windowBgColor }} />
+                    <span style={{ backgroundColor: palette.colors.titleBarBgColor }} />
+                  </span>
+                  <span className={styles.paletteName}>{palette.name}</span>
+                </button>
+              ))}
+            </div>
+            <div className={styles.sectionIntro}>
+              <div className={styles.sectionTitle}>Fine-Tune</div>
+            </div>
+            <div className={styles.grid}>
+              {PALETTE_CONTROLS.map((control) => (
+                <ColorField
+                  key={control.key}
+                  control={control}
+                  appearance={appearance}
+                  updateAppearance={updateAppearance}
+                />
+              ))}
+            </div>
+            <TokenGroupSection tab="palette" appearance={appearance} updateAppearance={updateAppearance} />
+
+          </div>
+        )}
+
+        {activeTab === 'windows' && (
+          <div className={styles.sectionStack}>
             {/* --- Style Variants --- */}
             <div className={styles.sectionIntro}>
               <div className={styles.sectionTitle}>Style</div>
@@ -1115,21 +1231,9 @@ export function AppearancePanel() {
 {/* Preview tab removed — the desktop itself is the live preview */}
       </div>
 
+      </div>
+
       <div className={styles.footer}>
-        <button className={styles.secondaryButton} onClick={resetAppearance} type="button">
-          Reset All
-        </button>
-        <button
-          className={styles.secondaryButton}
-          onClick={() => void handleExportEstheme()}
-          disabled={exporting}
-          type="button"
-        >
-          {exporting ? 'Exporting…' : 'Export .estheme'}
-        </button>
-        <button className={styles.secondaryButton} onClick={() => importInputRef.current?.click()} type="button">
-          Import
-        </button>
         <input
           ref={importInputRef}
           type="file"
@@ -1137,11 +1241,14 @@ export function AppearancePanel() {
           style={{ display: 'none' }}
           onChange={handleImport}
         />
-        <div className={styles.footerCopy}>
-          {feedback || (hasUnsavedChanges ? 'Changes preview instantly. Save when you are happy.' : 'Your appearance is up to date.')}
+        <button className={styles.secondaryButton} onClick={discardChanges} disabled={!hasUnsavedChanges || isLoading} type="button" title="Go back to your last saved look">
+          Discard changes
+        </button>
+        <div className={styles.footerCopy} role="status">
+          {feedback || (hasUnsavedChanges ? 'Your desktop is previewing these changes.' : 'Everything is saved.')}
         </div>
-        <button className={styles.primaryButton} disabled={isLoading || !hasUnsavedChanges} onClick={() => void handleSave()} type="button">
-          {isLoading ? 'Saving...' : 'Apply & Save'}
+        <button className={styles.primaryButton} disabled={isLoading || !hasUnsavedChanges} onClick={() => void handleSave()} type="button" title="Save (⌘S / Ctrl+S)">
+          {isLoading ? 'Saving…' : 'Save'}
         </button>
       </div>
     </div>

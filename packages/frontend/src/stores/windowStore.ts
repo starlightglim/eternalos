@@ -10,8 +10,9 @@ const WINDOW_STATE_KEY = 'eternalos-window-state';
 const CONTENT_DEPENDENT_TYPES = ['folder', 'image', 'text', 'markdown', 'code', 'audio', 'video', 'pdf', 'get-info', 'widget'];
 
 function migrateLegacyWindowLayout(windowState: WindowState): WindowState {
-  if (windowState.contentType === 'appearance' && windowState.size.width === 400 && windowState.size.height === 480) {
-    return { ...windowState, size: { width: 620, height: 620 } };
+  if (windowState.contentType === 'appearance' && ((windowState.size.width === 400 && windowState.size.height === 480) || (windowState.size.width === 620 && windowState.size.height === 620))) {
+    // Old defaults: the sectioned panel needs room for its sidebar.
+    return { ...windowState, size: { width: 780, height: 640 } };
   }
   if (windowState.contentType === 'agent-chat' && windowState.size.width === 430 && windowState.size.height === 380) {
     return { ...windowState, size: { width: 920, height: 620 } };
