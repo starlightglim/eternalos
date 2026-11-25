@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppearanceStore, type CustomAppearance, APPEARANCE_PROFILE_KEYS, buildTokenUpdate, getTokenValue } from '../../stores/appearanceStore';
 import { useAuthStore } from '../../stores/authStore';
 import { useWindowStore } from '../../stores/windowStore';
+import { APPEARANCE_SECTION_EVENT, APPEARANCE_SECTION_KEY } from '../../utils/openAppearance';
 import { FONT_CATALOG, resolveFontFamily, type FontEntry } from '../../utils/fontCatalog';
 import { THEME_PRESETS } from '../../utils/onboardingPresets';
 import { getTokensByTab, groupTokensByGroup, type TokenDefinition } from '../../tokens/tokenSchema';
@@ -22,40 +23,40 @@ import styles from './AppearancePanel.module.css';
 type TabId = 'themes' | 'wallpaper' | 'palette' | 'typography' | 'windows' | 'controls' | 'desktop' | 'layout' | 'bar' | 'advanced';
 
 /** Sidebar sections, grouped the way people think about a desktop. */
-const NAV: Array<{ group: string; items: Array<{ id: TabId; label: string; icon: string; hint: string }> }> = [
+const NAV: Array<{ group: string; items: Array<{ id: TabId; keywords: string; label: string; icon: string; hint: string }> }> = [
   {
     group: 'Start',
     items: [
-      { id: 'themes', label: 'Themes', icon: '◐', hint: 'One-click looks to start from.' },
-      { id: 'wallpaper', label: 'From Wallpaper', icon: '✦', hint: 'Color everything from your wallpaper.' },
+      { id: 'themes', keywords: 'preset presets look start retro dark light vaporwave terminal', label: 'Themes', icon: '◐', hint: 'One-click looks to start from.' },
+      { id: 'wallpaper', keywords: 'pywal palette extract image colors from wallpaper auto', label: 'From Wallpaper', icon: '✦', hint: 'Color everything from your wallpaper.' },
     ],
   },
   {
     group: 'Look',
     items: [
-      { id: 'palette', label: 'Colors', icon: '●', hint: 'Palettes and every color, fine-tuned.' },
-      { id: 'typography', label: 'Fonts', icon: 'Aa', hint: 'Fonts for menus, text and code.' },
-      { id: 'windows', label: 'Windows', icon: '▢', hint: 'Frames, title bars, buttons and shape.' },
-      { id: 'controls', label: 'Controls & Cursors', icon: '⌖', hint: 'Buttons, inputs and the mouse pointer.' },
+      { id: 'palette', keywords: 'color colors accent background desktop color label tint', label: 'Colors', icon: '●', hint: 'Palettes and every color, fine-tuned.' },
+      { id: 'typography', keywords: 'font fonts text typeface size smoothing mono', label: 'Fonts', icon: 'Aa', hint: 'Fonts for menus, text and code.' },
+      { id: 'windows', keywords: 'window frame title bar titlebar border radius shadow opacity variant sprite', label: 'Windows', icon: '▢', hint: 'Frames, title bars, buttons and shape.' },
+      { id: 'controls', keywords: 'button buttons input inputs control cursor cursors pointer mouse', label: 'Controls & Cursors', icon: '⌖', hint: 'Buttons, inputs and the mouse pointer.' },
     ],
   },
   {
     group: 'Desktop',
     items: [
-      { id: 'desktop', label: 'Wallpaper', icon: '▦', hint: 'Patterns or your own image.' },
-      { id: 'layout', label: 'Layout', icon: '⊞', hint: 'Floating or tiling windows, with gaps.' },
-      { id: 'bar', label: 'Bar & Widgets', icon: '▔', hint: 'Menu bar modules and desktop text.' },
+      { id: 'desktop', keywords: 'wallpaper background pattern image upload tile', label: 'Wallpaper', icon: '▦', hint: 'Patterns or your own image.' },
+      { id: 'layout', keywords: 'tiling tile tiles gap gaps grid columns master stack floating i3 dwm', label: 'Layout', icon: '⊞', hint: 'Floating or tiling windows, with gaps.' },
+      { id: 'bar', keywords: 'menu bar menubar clock date uptime battery modules polybar waybar conky widget widgets desktop text', label: 'Bar & Widgets', icon: '▔', hint: 'Menu bar modules and desktop text.' },
     ],
   },
   {
     group: 'More',
     items: [
-      { id: 'advanced', label: 'Advanced', icon: '⚙', hint: 'Custom CSS, sharing and reset.' },
+      { id: 'advanced', keywords: 'css custom export import share estheme reset defaults fetch about', label: 'Advanced', icon: '⚙', hint: 'Custom CSS, sharing and reset.' },
     ],
   },
 ];
 const NAV_ITEMS = NAV.flatMap((group) => group.items);
-const TAB_STORAGE_KEY = 'eternalos-appearance-section';
+const TAB_STORAGE_KEY = APPEARANCE_SECTION_KEY;
 
 function initialTab(): TabId {
   try {
@@ -690,6 +691,20 @@ export function AppearancePanel() {
   const activeNav = NAV_ITEMS.find((item) => item.id === activeTab) ?? NAV_ITEMS[0];
   const openWindow = useWindowStore((state) => state.openWindow);
   const navRef = useRef<HTMLElement>(null);
+  const [navQuery, setNavQuery] = useState('');
+  const query = navQuery.trim().toLowerCase();
+  const navMatches = query
+    ? NAV_ITEMS.filter((item) => `${item.label} ${item.hint} ${item.keywords}`.toLowerCase().includes(query))
+    : null;
+  // Deep links (Special → Wallpaper..., desktop "Change Wallpaper") switch an open panel.
+  useEffect(() => {
+    const onSection = (event: Event) => {
+      const section = (event as CustomEvent<string>).detail;
+      if (NAV_ITEMS.some((item) => item.id === section)) setActiveTabState(section as TabId);
+    };
+    window.addEventListener(APPEARANCE_SECTION_EVENT, onSection);
+    return () => window.removeEventListener(APPEARANCE_SECTION_EVENT, onSection);
+  }, []);
   // Keep the chosen section visible (the nav scrolls sideways in narrow windows).
   useEffect(() => {
     const current = navRef.current?.querySelector('[aria-current="page"]') as HTMLElement | null;
@@ -876,7 +891,23 @@ export function AppearancePanel() {
 
       <div className={styles.body}>
       <nav ref={navRef} className={styles.sideNav} aria-label="Appearance sections">
-        {NAV.map((group) => (
+        <input
+          className={styles.navSearch}
+          type="search"
+          value={navQuery}
+          placeholder="Search settings…"
+          aria-label="Search appearance settings"
+          onChange={(event) => setNavQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && navMatches?.[0]) {
+              setActiveTab(navMatches[0].id);
+              setNavQuery('');
+            } else if (event.key === 'Escape') {
+              setNavQuery('');
+            }
+          }}
+        />
+        {(navMatches ? [{ group: navMatches.length ? 'Matches' : 'No matches', items: navMatches }] : NAV).map((group) => (
           <div key={group.group} className={styles.navGroup}>
             <div className={styles.navGroupLabel}>{group.group}</div>
             {group.items.map((item) => (
@@ -885,7 +916,8 @@ export function AppearancePanel() {
                 type="button"
                 className={`${styles.navItem} ${activeTab === item.id ? styles.navItemActive : ''}`}
                 aria-current={activeTab === item.id ? 'page' : undefined}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => { setActiveTab(item.id); setNavQuery(''); }}
+                title={item.hint}
               >
                 <span className={styles.navIcon} aria-hidden="true">{item.icon}</span>
                 <span>{item.label}</span>
@@ -898,10 +930,7 @@ export function AppearancePanel() {
       <div className={styles.content}>
         {activeTab === 'themes' && (
           <div className={styles.sectionStack}>
-            <div className={styles.sectionIntro}>
-              <div className={styles.sectionTitle}>Theme Presets</div>
-              <div className={styles.sectionHint}>One-click themes. Apply as a starting point, then customize in other tabs.</div>
-            </div>
+            <div className={styles.sectionHint}>Pick one as a starting point, then fine-tune it in the other sections. Nothing is saved until you press Save.</div>
             <div className={styles.themeGrid}>
               {THEME_PRESETS.map((preset) => (
                 <button
@@ -981,6 +1010,9 @@ export function AppearancePanel() {
                     {uploadProgress !== null ? `Uploading ${uploadProgress}%` : 'Upload Image'}
                   </button>
                   <span className={styles.sectionHint}>JPG or PNG, max 2MB</span>
+                  <button type="button" className={styles.secondaryButton} onClick={() => setActiveTab('wallpaper')} title="Theme every color from this wallpaper">
+                    Match colors to wallpaper →
+                  </button>
                   <input
                     ref={wallpaperInputRef}
                     type="file"

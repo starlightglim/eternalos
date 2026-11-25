@@ -1,3 +1,4 @@
+import { openAppearance } from '../../utils/openAppearance';
 import { BarModules } from './BarModules';
 import { barFromTokens } from '../../utils/riceInfo';
 import { useAppearanceStore } from '../../stores/appearanceStore';
@@ -221,18 +222,11 @@ export function MenuBar() {
     setActiveMenu(null);
   }, [openWindow]);
 
+  // Wallpaper lives in the Appearance hub now.
   const handleOpenWallpaperPicker = useCallback(() => {
-    openWindow({
-      id: 'wallpaper-picker',
-      title: 'Desktop Patterns',
-      position: { x: 150, y: 100 },
-      size: { width: 320, height: 400 },
-      minimized: false,
-      maximized: false,
-      contentType: 'wallpaper',
-    });
+    openAppearance('desktop');
     setActiveMenu(null);
-  }, [openWindow]);
+  }, []);
 
   const handleOpenPreferences = useCallback(() => {
     openWindow({
@@ -255,17 +249,9 @@ export function MenuBar() {
   }, [topAppWindowId]);
 
   const handleOpenAppearance = useCallback(() => {
-    openWindow({
-      id: 'appearance-panel',
-      title: 'Appearance',
-      position: { x: 72, y: 38 },
-      size: { width: 780, height: 640 },
-      minimized: false,
-      maximized: false,
-      contentType: 'appearance',
-    });
+    openAppearance();
     setActiveMenu(null);
-  }, [openWindow]);
+  }, []);
 
   const handleOpenBazaar = useCallback(() => {
     openWindow({
@@ -895,7 +881,7 @@ export function MenuBar() {
       { label: 'Game Console...', action: handleOpenGameConsole },
       { label: 'Cartridge Studio...', action: handleOpenCartridgeStudio, disabled: !isApiConfigured },
 
-      { label: 'Desktop Patterns...', action: handleOpenWallpaperPicker },
+      { label: 'Wallpaper...', action: handleOpenWallpaperPicker },
       { label: 'Settings...', action: handleOpenPreferences },
       { divider: true, label: '' },
       { label: 'Empty Trash...', action: handleEmptyTrash },

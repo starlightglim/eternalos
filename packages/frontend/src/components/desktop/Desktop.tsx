@@ -1,3 +1,4 @@
+import { openAppearance } from '../../utils/openAppearance';
 import { takePendingRice } from '../../estheme/pendingRice';
 import { ConkyLayer } from './ConkyLayer';
 import { useTiling } from '../../hooks/useTiling';
@@ -1685,17 +1686,7 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
         {
           id: 'change-wallpaper',
           label: 'Change Wallpaper...',
-          action: () => {
-            openWindow({
-              id: 'wallpaper-picker',
-              title: 'Desktop Patterns',
-              position: { x: 150, y: 100 },
-              size: { width: 320, height: 280 },
-              minimized: false,
-              maximized: false,
-              contentType: 'wallpaper',
-            });
-          },
+          action: () => openAppearance('desktop'),
         },
         { id: 'divider-2', label: '', divider: true },
         {
