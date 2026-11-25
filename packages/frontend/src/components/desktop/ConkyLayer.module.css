@@ -1,0 +1,18 @@
+.conky {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  user-select: none;
+  white-space: pre;
+  line-height: 1.35;
+  font-family: var(--eos-font-mono, var(--font-monaco, monospace));
+  color: var(--desktop-text-color, var(--appearance-label-color, #fff));
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  opacity: 0.92;
+}
+
+.top_left { top: 24px; left: 120px; }
+.top_right { top: 24px; right: 32px; text-align: right; }
+.bottom_left { bottom: 32px; left: 120px; }
+.bottom_right { bottom: 32px; right: 32px; text-align: right; }
+.center { top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; }

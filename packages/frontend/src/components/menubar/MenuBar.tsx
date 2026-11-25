@@ -1,3 +1,6 @@
+import { BarModules } from './BarModules';
+import { barFromTokens } from '../../utils/riceInfo';
+import { useAppearanceStore } from '../../stores/appearanceStore';
 import { openAppSkins } from '../../utils/appWindowBus';
 import { useState, useCallback, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type FocusEvent as ReactFocusEvent, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -80,7 +83,7 @@ export function MenuBar() {
   // Tab stops (the desktop owns plain Tab for icon navigation); F10 is the
   // documented way in.
   const [focusedMenu, setFocusedMenu] = useState<MenuName | null>(null);
-  const [currentTime, setCurrentTime] = useState(new Date());
+  const barStyle = useAppearanceStore((state) => barFromTokens(state.appearance.designTokens).style);
   const menuBarRef = useRef<HTMLDivElement>(null);
   const topItemRefs = useRef<Partial<Record<MenuName, HTMLDivElement | null>>>({});
   // Where focus was before F10 moved it into the menubar; the second Escape
@@ -701,14 +704,6 @@ export function MenuBar() {
   // EFFECTS
   // ============================================
 
-  // Update clock every minute
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentTime(new Date());
-    }, 60000);
-    return () => clearInterval(timer);
-  }, []);
-
   // Close menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -898,15 +893,6 @@ export function MenuBar() {
     ],
   };
 
-  // Format time for display (12-hour format)
-  const formatTime = (date: Date) => {
-    return date.toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
-    });
-  };
-
   // Render one top-level menubar entry (the five entries share all keyboard
   // and ARIA wiring; only the label content and the apple class differ).
   const renderTopLevel = (name: MenuName, label: ReactNode) => (
@@ -939,7 +925,7 @@ export function MenuBar() {
 
   return (
     <div
-      className={`${styles.menuBar} menuBar`}
+      className={`${styles.menuBar} menuBar ${barStyle === 'floating' ? styles.floatingBar : barStyle === 'transparent' ? styles.transparentBar : ''}`}
       eos-name="menubar"
       role="menubar"
       aria-label="Main menu"
@@ -951,17 +937,8 @@ export function MenuBar() {
       {renderTopLevel('view', 'View')}
       {renderTopLevel('special', 'Special')}
 
-      {/* Bazaar quick-access button */}
-      <div
-        className={styles.bazaarButton}
-        onClick={handleOpenBazaar}
-        title="Open Bazaar — browse themes, cursors, apps"
-      >
-        ★ Bazaar
-      </div>
-
-      {/* Clock (right side) */}
-      <div className={styles.clock}>{formatTime(currentTime)}</div>
+      {/* Right side: polybar-style modules (Appearance → Bar & Widgets) */}
+      <BarModules onOpenBazaar={handleOpenBazaar} />
     </div>
   );
 }

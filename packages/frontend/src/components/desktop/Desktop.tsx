@@ -1,3 +1,4 @@
+import { ConkyLayer } from './ConkyLayer';
 import { useTiling } from '../../hooks/useTiling';
 import { useCallback, useRef, useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
@@ -1769,6 +1770,8 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
         onDragLeave={handleFileDragLeave}
         onDrop={handleFileDrop}
       >
+        {/* Conky-style desktop text (Appearance → Bar & Widgets) */}
+        {!isVisitorMode && <ConkyLayer />}
         {/* Effects overlay (skin system) */}
         <EffectsOverlay />
 

@@ -11,13 +11,14 @@ import CursorEditor from '../appearance/CursorEditor';
 import SpriteEditor from '../appearance/SpriteEditor';
 import { WallpaperRice } from '../appearance/WallpaperRice';
 import { TilingSettings } from '../appearance/TilingSettings';
+import { BarWidgetsSettings } from '../appearance/BarWidgetsSettings';
 import { listCursors, type CursorAsset } from '../../services/api';
 import { exportCurrentTheme } from '../../utils/exportTheme';
 import { useEsthemePreviewStore } from '../../estheme/themePreviewStore';
 import type { UserProfile } from '../../types';
 import styles from './AppearancePanel.module.css';
 
-type TabId = 'themes' | 'wallpaper' | 'palette' | 'windows' | 'controls' | 'typography';
+type TabId = 'themes' | 'wallpaper' | 'palette' | 'windows' | 'bar' | 'controls' | 'typography';
 
 interface ColorControlConfig {
   key: keyof Pick<
@@ -813,6 +814,9 @@ export function AppearancePanel() {
         <button className={`${styles.tab} ${activeTab === 'windows' ? styles.activeTab : ''}`} aria-selected={activeTab === 'windows'} onClick={() => setActiveTab('windows')} role="tab" type="button">
           Windows
         </button>
+        <button className={`${styles.tab} ${activeTab === 'bar' ? styles.activeTab : ''}`} aria-selected={activeTab === 'bar'} onClick={() => setActiveTab('bar')} role="tab" type="button">
+          Bar & Widgets
+        </button>
         <button className={`${styles.tab} ${activeTab === 'controls' ? styles.activeTab : ''}`} aria-selected={activeTab === 'controls'} onClick={() => setActiveTab('controls')} role="tab" type="button">
           Controls
         </button>
@@ -863,6 +867,8 @@ export function AppearancePanel() {
         )}
 
         {activeTab === 'wallpaper' && <WallpaperRice />}
+
+        {activeTab === 'bar' && <BarWidgetsSettings />}
 
         {activeTab === 'palette' && (
           <div className={styles.sectionStack}>
