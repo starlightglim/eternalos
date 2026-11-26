@@ -57,12 +57,15 @@ function sanitizeParts(raw: unknown): SkinPartInfo[] | null {
   const parts: SkinPartInfo[] = [];
   for (const entry of raw.slice(0, 80)) {
     if (!entry || typeof entry !== 'object') continue;
-    const { name, label, frames } = entry as Record<string, unknown>;
+    const { name, label, frames, w, h } = entry as Record<string, unknown>;
     if (typeof name !== 'string' || !/^[a-z][a-z0-9-]{0,39}$/.test(name)) continue;
     const info: SkinPartInfo = { name };
     if (typeof label === 'string' && label.trim()) info.label = label.replace(/[\u0000-\u001f]/g, '').trim().slice(0, 40);
     const frameCount = Number(frames);
     if (Number.isInteger(frameCount) && frameCount >= 2 && frameCount <= 64) info.frames = frameCount;
+    const width = Math.round(Number(w));
+    const height = Math.round(Number(h));
+    if (width >= 4 && width <= 1024 && height >= 4 && height <= 1024) { info.w = width; info.h = height; }
     parts.push(info);
   }
   return parts;

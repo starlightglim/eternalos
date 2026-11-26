@@ -306,6 +306,24 @@ backtick or dollar-brace in it), spliced into `ETERNAL_RUNTIME_JS`.
   windows act on them. The Skins panel portals to the outer `.window` when
   frameless (the clip would cut it). Templates can add a window-shape layer
   (alpha = shape); the AI designer adds shapes only when asked.
+- Layout skins (modern-Winamp style) — shapes no longer just crop:
+  - `parts.<name>.place {x, y, w?, h?}` (percent center + px size) puts the
+    app's own controls where the skin's art wants them (`position: fixed`
+    in the runtime; universal parts never move).
+  - `window.content {x,y,w,h}` (percent) is where the app's normal content
+    flows; otherwise the desktop measures the largest box inside the shape
+    (`safeInsets`/`largestRect`/`polygonSafeRect` in `utils/appSkins.ts`:
+    ellipse exact, polygon and masks on a 48² grid) and sends it as
+    `eternal:window:safeArea`; the runtime pads `body` with
+    `--eternal-safe-*` when `html[data-eternal-shaped]`.
+  - `window.face {asset}`: one image for the whole window (runtime
+    `html::before`, cover, zoom 1.1). For frameless skins on a plain
+    background the desktop cuts the object's silhouette out of the face
+    (`silhouetteAlpha`, same cover+1.1 geometry) and uses it as the mask.
+  - AI designer composes shape, size, content box, part places and a face
+    prompt (`generateFace`, asset `window-face`); part sizes from the
+    running app go in the prompt. Skins panel → Arrange… edits layouts by
+    hand (`SkinArrangeEditor`).
 - Visitors: `GET /api/apps/:id/public-skin` (no auth) returns the active
   skin only when the app's desktop item is public and not trashed (404
   otherwise); AppViewer uses it when `isVisitor` and hides the panel/drop.

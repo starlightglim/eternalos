@@ -30,6 +30,7 @@ import {
   writeSkinFile,
   type AppSkin,
 } from '../../utils/appSkins';
+import { SkinArrangeEditor } from './SkinArrangeEditor';
 import styles from './AppSkinsPanel.module.css';
 
 export interface DescribedParts {
@@ -66,6 +67,7 @@ export function AppSkinsPanel({ appId, appName, describeParts, onChanged, onClos
   const [status, setStatus] = useState<{ text: string; error?: boolean } | null>(null);
   const [prompt, setPrompt] = useState('');
   const [shapedTemplate, setShapedTemplate] = useState(false);
+  const [arranging, setArranging] = useState<DescribedParts | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedSkin, setSelectedSkin] = useState<AppSkin | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
@@ -194,6 +196,23 @@ export function AppSkinsPanel({ appId, appName, describeParts, onChanged, onClos
     });
   };
 
+  const openArrange = () => run('arrange', async () => {
+    const described = await describeParts();
+    setArranging(described ?? { title: appName, parts: [], universal: [] });
+  });
+
+  const saveArrange = (updated: AppSkin) => {
+    if (!selected) return;
+    setArranging(null);
+    setSelectedSkin(updated);
+    void run('arrange-save', async () => {
+      await replaceAppSkin(appId, selected, updated);
+      await refresh();
+      if (index?.active === selected) onChanged();
+      return 'Layout saved.';
+    });
+  };
+
   const selectedEntry = index?.skins.find((entry) => entry.id === selected);
   const unusedColors = COLOR_NAMES.filter((name) => !(selectedSkin?.colors && name in selectedSkin.colors));
 
@@ -266,6 +285,16 @@ export function AppSkinsPanel({ appId, appName, describeParts, onChanged, onClos
 
         {selectedEntry && selectedSkin && (
           <section className={styles.section}>
+            <h3>Layout of “{selectedEntry.name}”</h3>
+            <p className={styles.hint}>Place the app's controls where the skin's art wants them, and choose where its content goes.</p>
+            <div className={styles.buttons}>
+              <button type="button" onClick={() => void openArrange()} disabled={Boolean(busy)}>Arrange…</button>
+            </div>
+          </section>
+        )}
+
+        {selectedEntry && selectedSkin && (
+          <section className={styles.section}>
             <h3>Colors in “{selectedEntry.name}”</h3>
             <div className={styles.colors}>
               {Object.entries(selectedSkin.colors ?? {}).map(([name, value]) => {
@@ -297,6 +326,15 @@ export function AppSkinsPanel({ appId, appName, describeParts, onChanged, onClos
 
         {status && <p className={status.error ? styles.error : styles.status} role="status">{status.text}</p>}
       </div>
+      {arranging && selectedSkin && (
+        <SkinArrangeEditor
+          skin={selectedSkin}
+          parts={arranging.parts}
+          viewport={arranging.viewport}
+          onSave={saveArrange}
+          onCancel={() => setArranging(null)}
+        />
+      )}
     </div>
   );
 }

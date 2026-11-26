@@ -159,6 +159,9 @@ export const SKIN_CSS_JS = String.raw`
       var font = skinFont(fonts[key]);
       if (font) rootDecls.push('--eternal-' + key + ': ' + font);
     });
+    // Native controls (sliders, checkboxes, progress) follow the skin's accent.
+    var accent = skinColor(colors.accent);
+    if (accent) rootDecls.push('accent-color: ' + accent);
     css += skinRule([':root'], rootDecls);
 
     var parts = skin.parts && typeof skin.parts === 'object' ? skin.parts : {};
@@ -190,7 +193,43 @@ export const SKIN_CSS_JS = String.raw`
         if (stateStyle) css += skinRule(selectors, skinStyleDecls(stateStyle, urls));
         if (part.sprite && cells[state]) css += skinRule(selectors, skinSpriteDecls(name, part.sprite, cells[state]));
       });
+      // Placed parts: the skin decides where the control sits in the window.
+      if (part.place && typeof part.place === 'object' && !Object.prototype.hasOwnProperty.call(SKIN_UNIVERSAL, name)) {
+        var px = Number(part.place.x);
+        var py = Number(part.place.y);
+        if (isFinite(px) && isFinite(py) && px >= 0 && px <= 100 && py >= 0 && py <= 100) {
+          var placeDecls = ['position: fixed', 'left: ' + px + '%', 'top: ' + py + '%', 'transform: translate(-50%, -50%)', 'margin: 0', 'z-index: 5', 'box-sizing: border-box'];
+          var pw = skinInt(part.place.w, 8, 1024);
+          var ph = skinInt(part.place.h, 8, 1024);
+          if (pw !== null) placeDecls.push('width: ' + pw + 'px');
+          if (ph !== null) placeDecls.push('height: ' + ph + 'px');
+          css += skinRule(base, placeDecls);
+        }
+      }
     });
+
+    var win = skin.window && typeof skin.window === 'object' ? skin.window : null;
+    if (win) {
+      // One image for the whole window face, behind everything.
+      var faceUrl = win.face && skinUrl(urls.assets && urls.assets[win.face.asset]);
+      if (faceUrl) {
+        // Slightly zoomed so generated art (which rarely reaches its own
+        // edges) fills the shape.
+        css += skinRule(['html'], ['background: transparent', 'min-height: 100%']);
+        css += skinRule(['html::before'], ['content: ""', 'position: fixed', 'inset: 0', 'z-index: -1', 'pointer-events: none', 'background: url("' + faceUrl + '") center / cover no-repeat', 'transform: scale(1.1)']);
+        css += skinRule(['html body'], ['background: transparent']);
+      }
+      // Shaped windows: the app's normal content stays inside the safe area
+      // the desktop measured inside the shape (or the skin's content box).
+      if (win.shape || win.frameless || win.content) {
+        css += skinRule(['html[data-eternal-shaped] body'], [
+          'box-sizing: border-box',
+          'margin: 0',
+          'min-height: 100vh',
+          'padding: var(--eternal-safe-top, 0px) var(--eternal-safe-right, 0px) var(--eternal-safe-bottom, 0px) var(--eternal-safe-left, 0px)'
+        ]);
+      }
+    }
     return css;
   }
 `;
@@ -368,6 +407,9 @@ export const SKIN_RUNTIME_JS = SKIN_CSS_JS + String.raw`
     skinUrls = created;
     skinCurrent = skin ? Object.freeze({ name: String(skin.name || 'Skin').slice(0, 60), parts: Object.freeze(Object.keys(parts)) }) : null;
     skinWindow = skin && skin.window && typeof skin.window === 'object' && skin.window.frameless === true ? skin.window : null;
+    var shaped = Boolean(skin && skin.window && typeof skin.window === 'object' && (skin.window.shape || skin.window.frameless || skin.window.content));
+    if (shaped) document.documentElement.setAttribute('data-eternal-shaped', '');
+    else document.documentElement.removeAttribute('data-eternal-shaped');
     if (skinWindow) document.documentElement.setAttribute('data-eternal-frameless', '');
     else document.documentElement.removeAttribute('data-eternal-frameless');
     if (skinCurrent) document.documentElement.setAttribute('data-eternal-skin', skinCurrent.name);
@@ -492,6 +534,13 @@ export const SKIN_RUNTIME_JS = SKIN_CSS_JS + String.raw`
     if (event.source !== window.parent || !event.data) return;
     if (event.data.type === 'eternal:skin') {
       skinApply(event.data.skin || null);
+    } else if (event.data.type === 'eternal:window:safeArea') {
+      // Insets (px) of the largest box inside the window's shape.
+      var root = document.documentElement;
+      ['top', 'right', 'bottom', 'left'].forEach(function (side) {
+        var value = skinInt(event.data[side], 0, 4000);
+        root.style.setProperty('--eternal-safe-' + side, (value === null ? 0 : value) + 'px');
+      });
     } else if (event.data.type === 'eternal:skin:describe') {
       var described = null;
       try { described = skinDescribe(); } catch (_) {}

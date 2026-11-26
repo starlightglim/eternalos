@@ -151,6 +151,9 @@ export interface SkinPartInfo {
   label?: string;
   states?: string[];
   frames?: number;
+  /** Size in px in the running app (when the Skins panel asked it). */
+  w?: number;
+  h?: number;
 }
 
 /** Skinnable parts named in an app's source (data-skin="…" in HTML or JS). */
@@ -228,9 +231,13 @@ const recipeSchema = z.object({
     frameless: z.boolean().describe('Hide the desktop title bar and frame; the skin draws the whole window'),
     drag: z.array(z.string()).optional().describe('Parts that drag a frameless window; "app" = any empty area'),
     close: z.string().optional().describe('A part that closes the window when clicked'),
+    size: z.object({ w: z.number(), h: z.number() }).optional().describe('Window size in px the design is made for'),
+    content: z.object({ x: z.number(), y: z.number(), w: z.number(), h: z.number() }).optional().describe("Where the app's own content (text, lists, readouts) shows, percent of the window — the object's screen"),
+    face: z.string().optional().describe('Image prompt for the whole window face: the object seen straight on, no text'),
   }).optional().describe('Only when the user asks about the window shape or a frameless/Winamp-style window'),
   parts: z.array(z.object({
     part: z.string(),
+    place: z.object({ x: z.number(), y: z.number() }).optional().describe("Center of this control in percent of the window (shaped designs: put every app control inside the shape)"),
     style: styleSchema.optional(),
     hover: styleSchema.optional(),
     pressed: styleSchema.optional(),
@@ -261,7 +268,13 @@ Fonts: system fonts only (apps cannot load web fonts), e.g. Georgia, "Times New 
 
 Textures: up to ${MAX_TEXTURES} generated images for materials the request asks for (brushed metal, wood, marble, paper, fabric, stone, carbon fiber...). Each prompt describes one seamless material up close, no objects or text. Use a texture on the app background or big panels (textureSize 128-512), never behind small text without a solid or semi-transparent background on top. Skip textures when the request is only about colors.
 
-Window shape (only when the user asks for a shaped, round, frameless or Winamp-style window): window.shape rounded (radius), pill, ellipse or polygon ([x%, y%] points), and frameless true to hide the desktop title bar. A frameless window is dragged by empty areas (drag ["app"]) or named parts, and the desktop keeps a small tab with the app's name and a close button. Keep the app's content inside the shape: ellipse and polygon cut corners, so give the app part generous padding-like backgrounds rather than putting key controls at the edges.
+Shaped windows (only when the user asks for a shaped, round, frameless, hardware-like or Winamp-style window) — design a physical object, like a great Winamp skin:
+- window.shape: rounded (radius), pill, ellipse or polygon ([x%, y%] points); frameless true hides the desktop title bar (drag ["app"] lets empty areas move it; the desktop keeps a small name tab with a close button).
+- window.size: the window size in px the design is made for (e.g. 420x420 for a round player).
+- window.face: an image prompt for the whole front of the object seen straight on (brushed-metal disc, walnut radio front, translucent plastic Game Boy shell...). It fills the window and is cut by the shape. No text, no labels, no real buttons in the art — the app's controls sit on top.
+- window.content: the box (percent of the window) where the app's own content shows — the object's screen or display. Keep it fully inside the shape (for an ellipse, inside x 18-82, y 18-82).
+- parts[].place {x, y}: center of each of the app's own controls in percent of the window. Lay them out like real hardware: transport buttons in a row below the screen, knobs around it, nothing overlapping the content box, every control at least 10% from the shape's edge (for an ellipse keep (x-50)²+(y-50)² ≤ 1100). Use the control sizes given to space them.
+- Style the controls so they belong on the face (bevels, metal, glossy plastic) and make the content box readable (a dark LCD, a paper card...).
 
 Make it cohesive and striking: commit to the requested look on every universal part.`;
 
@@ -287,6 +300,7 @@ function recipeToSkin(recipe: SkinRecipe, textureData: Record<string, string>): 
   for (const entry of recipe.parts.slice(0, 80)) {
     const name = String(entry.part ?? '').trim().toLowerCase();
     parts[name] = {
+      ...(entry.place && !(UNIVERSAL_SKIN_PARTS as readonly string[]).includes(name) ? { place: { x: entry.place.x, y: entry.place.y } } : {}),
       style: style(entry.style),
       states: {
         hover: style(entry.hover),
@@ -314,7 +328,7 @@ function recipeToSkin(recipe: SkinRecipe, textureData: Record<string, string>): 
     if (value && !colors[name] && isSkinColor(value)) colors[name] = value;
   }
   let window: Record<string, unknown> | undefined;
-  if (recipe.window && recipe.window.shape !== 'rect' || recipe.window?.frameless) {
+  if (recipe.window && (recipe.window.shape !== 'rect' || recipe.window.frameless || recipe.window.content || textureData['window-face'])) {
     const w = recipe.window!;
     const shape = w.shape === 'rounded' ? { type: 'rounded', radius: w.radius ?? 28 }
       : w.shape === 'pill' ? { type: 'rounded', radius: 400 }
@@ -327,6 +341,9 @@ function recipeToSkin(recipe: SkinRecipe, textureData: Record<string, string>): 
       // A frameless window must be movable: empty areas drag it by default.
       ...(w.frameless ? { drag: w.drag?.length ? w.drag.map((part) => String(part).trim().toLowerCase()) : ['app'] } : {}),
       ...(w.close ? { close: String(w.close).trim().toLowerCase() } : {}),
+      ...(w.size ? { size: { w: Math.round(w.size.w), h: Math.round(w.size.h) } } : {}),
+      ...(w.content ? { content: w.content } : {}),
+      ...(textureData['window-face'] ? { face: { asset: 'window-face' } } : {}),
     };
   }
   return {
@@ -374,10 +391,30 @@ export async function generateTexture(env: Env, prompt: string): Promise<string 
   }
 }
 
+/** The whole window face for a shaped design (not tiled). */
+export async function generateFace(env: Env, prompt: string): Promise<string | null> {
+  const model = env.IMAGE_GEN_MODEL?.startsWith('@cf/') ? env.IMAGE_GEN_MODEL : DEFAULT_IMAGE_MODEL;
+  try {
+    const result = await withTimeout(
+      (env.AI.run as (model: string, input: Record<string, unknown>) => Promise<unknown>)(model, {
+        prompt: `${prompt.slice(0, 400)}. Straight-on front view of a single object that fills the entire square frame and touches all four edges, centered, symmetrical, product render, soft studio lighting, no text, no letters, no labels, no people, no white or empty background.`,
+        steps: 6,
+      }),
+      TEXTURE_TIMEOUT_MS,
+    ) as { image?: unknown };
+    if (typeof result?.image !== 'string') return null;
+    const image = parseSkinImage(`data:image/jpeg;base64,${result.image}`);
+    return 'error' in image ? null : image.data;
+  } catch (error) {
+    console.warn('[skins] face generation failed:', error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
 /** Design a skin from a description: recipe from the model, textures from the image model. */
 export async function designSkin(env: Env, input: DesignSkinInput): Promise<{ skin: AppSkin; textures: number }> {
   const partsList = input.parts.length > 0
-    ? input.parts.map((part) => `- ${part.name}${part.label && part.label !== part.name ? ` (${part.label})` : ''}${part.frames ? `, ${part.frames} frames` : ''}`).join('\n')
+    ? input.parts.map((part) => `- ${part.name}${part.label && part.label !== part.name ? ` (${part.label})` : ''}${part.w && part.h ? `, ${part.w}x${part.h}px` : ''}${part.frames ? `, ${part.frames} frames` : ''}`).join('\n')
     : '(none: style the universal parts)';
   const recipe = await generateStructuredObject(
     env,
@@ -409,8 +446,14 @@ ${partsList}`,
   for (const texture of wanted) {
     if (!input.allowTexture || await input.allowTexture()) allowed.push(texture);
   }
-  const images = await Promise.all(allowed.map((texture) => generateTexture(env, texture.prompt)));
+  const facePrompt = recipe.window?.face?.trim();
+  const wantFace = Boolean(facePrompt) && (!input.allowTexture || await input.allowTexture());
+  const [images, face] = await Promise.all([
+    Promise.all(allowed.map((texture) => generateTexture(env, texture.prompt))),
+    wantFace ? generateFace(env, facePrompt!) : Promise.resolve(null),
+  ]);
   allowed.forEach((texture, i) => { if (images[i]) textureData[texture.key] = images[i]!; });
+  if (face) textureData['window-face'] = face;
 
   const skin = normalizeSkin(recipeToSkin(recipe, textureData), { lenient: true });
   return { skin, textures: Object.keys(skin.assets).length };

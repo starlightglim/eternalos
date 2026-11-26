@@ -78,6 +78,27 @@ describe('normalizeSkin', () => {
     }
   });
 
+  it('takes part placement, a content box and face art', () => {
+    const skin = normalizeSkin({
+      name: 'Laid out',
+      parts: { play: { place: { x: 50, y: 72.345, w: 60, h: 40 } }, display: { place: { x: 50, y: 30 } } },
+      window: { frameless: true, shape: { type: 'ellipse' }, content: { x: 20, y: 18, w: 60, h: 25 }, face: { asset: 'face' } },
+      assets: { face: sheet },
+    });
+    assert.deepEqual(skin.parts.play.place, { x: 50, y: 72.35, w: 60, h: 40 });
+    assert.deepEqual(skin.window.content, { x: 20, y: 18, w: 60, h: 25 });
+    assert.deepEqual(skin.window.face, { asset: 'face' });
+    assert.deepEqual(Object.keys(skin.assets), ['face'], 'the face image is kept');
+    for (const bad of [
+      { parts: { play: { place: { x: 150, y: 10 } } } },
+      { parts: { button: { place: { x: 50, y: 50 } } } },
+      { window: { content: { x: 60, y: 0, w: 60, h: 20 } } },
+      { window: { face: { asset: 'missing' } } },
+    ]) {
+      assert.throws(() => normalizeSkin({ name: 'x', ...bad }), SkinValidationError, JSON.stringify(bad));
+    }
+  });
+
   it('lenient mode (assistant skins) drops bad fields instead', () => {
     const skin = normalizeSkin({ colors: { accent: 'url(x)', text: '#111' }, parts: { app: { style: { background: 'nope()', text: '#222' } } } }, { lenient: true });
     assert.equal(skin.name, 'Untitled skin');
@@ -126,6 +147,20 @@ describe('eternalSkinCss (app runtime)', () => {
     assert.match(css, /\[data-skin~="digit"\]\[data-skin-frame="1"\] \{\n  background: url\("blob:null\/d1"\)/);
     assert.match(css, /body \{[^}]*background-image: url\("blob:null\/wood-1"\)[^}]*background-size: 256px/s);
     assert.match(css, /scrollbar-color: #888 #222/);
+  });
+
+  it('places parts, paints the face and pads content into the safe area', () => {
+    const css = eternalSkinCss({
+      colors: { accent: '#c86' },
+      parts: { play: { place: { x: 50, y: 80, w: 44, h: 32 } }, button: { place: { x: 1, y: 1 } } },
+      window: { frameless: true, shape: { type: 'ellipse' }, face: { asset: 'face' } },
+    }, { assets: { face: 'blob:null/face-1' }, cells: {} });
+    assert.match(css, /\[data-skin~="play"\] \{\n  position: fixed !important;\n  left: 50% !important;\n  top: 80% !important;\n  transform: translate\(-50%, -50%\) !important;/);
+    assert.match(css, /width: 44px !important;\n  height: 32px !important;/);
+    assert.doesNotMatch(css, /button:not\(\[data-skin\]\) \{\n  position: fixed/, 'universal parts never move');
+    assert.match(css, /html::before \{[^}]*background: url\("blob:null\/face-1"\) center \/ cover no-repeat !important;/s);
+    assert.match(css, /html\[data-eternal-shaped\] body \{[^}]*padding: var\(--eternal-safe-top, 0px\)/s);
+    assert.match(css, /accent-color: #c86 !important;/);
   });
 
   it('drops hostile values even if they get past the server', () => {

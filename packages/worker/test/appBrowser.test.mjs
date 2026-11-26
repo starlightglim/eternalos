@@ -360,6 +360,9 @@ describe('installed apps in a real browser', { skip: chromePath ? false : 'Chrom
                 plainRadius: css('plain', 'borderTopLeftRadius'),
                 accent: getComputedStyle(document.documentElement).getPropertyValue('--eternal-accent').trim(),
                 closer: (() => { const r = document.getElementById('closer').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })(),
+                viewport: { w: document.documentElement.clientWidth, h: document.documentElement.clientHeight },
+                bodyPadding: getComputedStyle(document.body).padding,
+                shaped: document.documentElement.hasAttribute('data-eternal-shaped'),
                 framesDiffer: frame0 !== frame1 && frame0.startsWith('url("data:image/png') && frame1.startsWith('url("data:image/png'),
               } }, '*');
             });
@@ -381,6 +384,7 @@ describe('installed apps in a real browser', { skip: chromePath ? false : 'Chrom
           play: { sprite: { asset: 'sheet', x: 0, y: 0, w: 30, h: 20, states: ['normal', 'hover'] } },
           digit: { sprite: { asset: 'sheet', x: 0, y: 20, w: 12, h: 20, frames: 2 } },
           button: { style: { background: '#dddddd', radius: 7, bevel: 'raised' } },
+          closer: { place: { x: 90, y: 90, w: 20, h: 20 } },
         },
         window: { frameless: true, shape: { type: 'ellipse' }, drag: ['app'], close: 'closer' },
         assets: { sheet: sheetPng },
@@ -410,7 +414,10 @@ describe('installed apps in a real browser', { skip: chromePath ? false : 'Chrom
   const SKIN = ${JSON.stringify(active.skin)};
   addEventListener('message', (event) => {
     if (event.source !== frame.contentWindow || !event.data) return;
-    if (event.data.type === 'eternal:skin:request') frame.contentWindow.postMessage({ type: 'eternal:skin', skin: SKIN }, '*');
+    if (event.data.type === 'eternal:skin:request') {
+      frame.contentWindow.postMessage({ type: 'eternal:skin', skin: SKIN }, '*');
+      frame.contentWindow.postMessage({ type: 'eternal:window:safeArea', top: 30, right: 20, bottom: 10, left: 40 }, '*');
+    }
     if (event.data.type === 'skin-report') {
       window.skinReports.push(event.data.report);
       frame.contentWindow.postMessage({ type: 'eternal:skin:describe', requestId: 'r1' }, '*');
@@ -439,13 +446,18 @@ describe('installed apps in a real browser', { skip: chromePath ? false : 'Chrom
       assert.ok(result.report, 'the app never saw its skin');
       const { report } = result;
       assert.equal(report.name, 'Test Deck');
-      assert.deepEqual([...report.parts].sort(), ['button', 'digit', 'play']);
+      assert.deepEqual([...report.parts].sort(), ['button', 'closer', 'digit', 'play']);
       assert.match(report.play, /^url\("data:image\/png;base64,/, 'the play button shows its sprite');
       assert.equal(report.playBorder, 'rgba(0, 0, 0, 0)', 'sprite parts hide the app\'s own border');
       assert.equal(report.plainBg, 'rgb(221, 221, 221)', 'buttons take the skin style');
       assert.equal(report.plainRadius, '7px');
       assert.equal(report.accent, '#ff00aa', 'skin colors override the theme variables');
       assert.equal(report.framesDiffer, true, 'data-skin-frame switches sprite frames');
+      // Layout: the placed part sits where the skin put it; content pads into the safe area.
+      assert.ok(Math.abs(report.closer.x - report.viewport.w * 0.9) <= 1, `closer x ${report.closer.x} vs ${report.viewport.w * 0.9}`);
+      assert.ok(Math.abs(report.closer.y - report.viewport.h * 0.9) <= 1, `closer y ${report.closer.y} vs ${report.viewport.h * 0.9}`);
+      assert.equal(report.shaped, true);
+      assert.equal(report.bodyPadding, '30px 20px 10px 40px');
 
       // What the Skins panel asks for templates.
       assert.deepEqual(result.parts.parts.map((part) => [part.name, part.w, part.h, part.frames ?? null]), [['play', 30, 20, null], ['digit', 12, 20, 2], ['closer', 20, 20, null]]);

@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'vitest';
 import JSZip from 'jszip';
 import {
+  ELLIPSE_SAFE_RECT,
+  largestRect,
+  polygonSafeRect,
+  safeInsets,
+  silhouetteAlpha,
   skinClipPath,
   layoutSkinTemplate,
   readSkinFile,
@@ -116,5 +121,51 @@ describe('shaped windows', () => {
       size: { w: 420, h: 300 },
       drag: ['app'],
     });
+  });
+});
+
+describe('safe area inside shapes', () => {
+  test('largestRect finds the biggest all-true box', () => {
+    // 4x3 grid with a 2x2 hole-free block at the right.
+    const grid = [
+      false, true, true, true,
+      false, false, true, true,
+      true, false, true, true,
+    ].map(Boolean);
+    expect(largestRect(grid, 4, 3)).toEqual({ x: 0.5, y: 0, w: 0.5, h: 1 });
+    expect(largestRect([false, false], 2, 1)).toBeNull();
+  });
+
+  test('a diamond polygon gives a centered box inside it; insets stay inside the window', () => {
+    const rect = polygonSafeRect([[50, 0], [100, 50], [50, 100], [0, 50]])!;
+    expect(rect.x + rect.w / 2).toBeCloseTo(0.5, 1);
+    expect(rect.y + rect.h / 2).toBeCloseTo(0.5, 1);
+    expect(rect.w * rect.h).toBeGreaterThan(0.2);
+    expect(rect.w * rect.h).toBeLessThanOrEqual(0.5);
+    const insets = safeInsets({ safeRect: ELLIPSE_SAFE_RECT }, 400, 400);
+    expect(insets.left).toBe(Math.round(400 * ELLIPSE_SAFE_RECT.x + 6));
+    expect(insets.left + insets.right).toBeLessThan(400);
+    expect(safeInsets({ safeRadius: 40 }, 300, 200).top).toBe(Math.round(40 * (1 - 1 / Math.SQRT2) + 6));
+    expect(safeInsets(null, 300, 200)).toEqual({ top: 0, right: 0, bottom: 0, left: 0 });
+  });
+
+  test('silhouettes cut a plain background away and skip art that fills the frame', () => {
+    const w = 10;
+    const h = 10;
+    const rgba = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const object = x >= 3 && x <= 6 && y >= 3 && y <= 6;
+        rgba.set(object ? [120, 40, 200, 255] : [250, 250, 250, 255], i);
+      }
+    }
+    const alpha = silhouetteAlpha(rgba, w, h)!;
+    expect(alpha[0]).toBe(0);
+    expect(alpha[4 * w + 4]).toBe(255);
+    expect(Array.from(alpha).filter((a) => a === 255)).toHaveLength(16);
+    const full = new Uint8ClampedArray(w * h * 4).fill(128);
+    for (let i = 0; i < w * h; i++) full[i * 4 + 3] = 255;
+    expect(silhouetteAlpha(full, w, h)).toBeNull();
   });
 });

@@ -86,9 +86,22 @@ export interface SkinSprite {
   pixelated?: boolean;
 }
 
+/**
+ * Where a part sits in the window (modern-Winamp-style layout): center point
+ * in percent of the window, optional size in px. Placed parts float above
+ * the app's normal layout, so a skin can put the controls where its art is.
+ */
+export interface SkinPlace {
+  x: number;
+  y: number;
+  w?: number;
+  h?: number;
+}
+
 export interface SkinPart {
   sprite?: SkinSprite;
   style?: SkinStyle;
+  place?: SkinPlace;
   states?: Partial<Record<Exclude<SkinState, 'normal'>, SkinStyle>>;
 }
 
@@ -117,6 +130,10 @@ export interface SkinWindow {
     | { type: 'mask'; asset: string; x?: number; y?: number; w?: number; h?: number };
   /** Window size the shape was made for (the window is set to it, not resizable). */
   size?: { w: number; h: number };
+  /** Where the app's normal content lives, in percent of the window (the "screen"). */
+  content?: { x: number; y: number; w: number; h: number };
+  /** One image for the whole window face (cover-fitted, cut by the shape). */
+  face?: { asset: string };
   /** Part names that drag the window ("app" = any empty area). */
   drag?: string[];
   close?: string;
@@ -388,6 +405,23 @@ function normalizeWindow(raw: unknown, assets: Record<string, SkinAsset>, proble
       problems.push('window.shape type must be rounded, ellipse, polygon or mask');
     }
   }
+  if (isObject(raw.content)) {
+    const pct = (value: unknown, min: number) => {
+      const n = Number(value);
+      return Number.isFinite(n) && n >= min && n <= 100 ? Math.round(n * 100) / 100 : undefined;
+    };
+    const x = pct(raw.content.x, 0);
+    const y = pct(raw.content.y, 0);
+    const w = pct(raw.content.w, 5);
+    const h = pct(raw.content.h, 5);
+    if (x !== undefined && y !== undefined && w !== undefined && h !== undefined && x + w <= 100.01 && y + h <= 100.01) win.content = { x, y, w, h };
+    else problems.push('window.content must be {x, y, w, h} in percent of the window, inside it');
+  }
+  if (isObject(raw.face)) {
+    const asset = typeof raw.face.asset === 'string' ? raw.face.asset : '';
+    if (assets[asset]) win.face = { asset };
+    else problems.push(`window.face uses missing image "${asset}"`);
+  }
   if (isObject(raw.size)) {
     const w = int(raw.size.w, 200, 1600);
     const h = int(raw.size.h, 150, 1200);
@@ -402,7 +436,7 @@ function normalizeWindow(raw: unknown, assets: Record<string, SkinAsset>, proble
   if (close) win.close = close;
   const minimize = partName(raw.minimize, 'minimize');
   if (minimize) win.minimize = minimize;
-  return win.frameless || win.shape || win.size ? win : undefined;
+  return win.frameless || win.shape || win.size || win.content || win.face ? win : undefined;
 }
 
 /**
@@ -464,6 +498,21 @@ export function normalizeSkin(raw: unknown, options: { lenient?: boolean } = {})
       if (sprite) part.sprite = sprite;
       const style = normalizeStyle(value.style, `${where}.style`, assets, problems);
       if (style) part.style = style;
+      if (isObject(value.place)) {
+        const px = Number(value.place.x);
+        const py = Number(value.place.y);
+        if (Number.isFinite(px) && Number.isFinite(py) && px >= 0 && px <= 100 && py >= 0 && py <= 100) {
+          const place: SkinPlace = { x: Math.round(px * 100) / 100, y: Math.round(py * 100) / 100 };
+          const w = int(value.place.w, 8, 1024);
+          const h = int(value.place.h, 8, 1024);
+          if (w) place.w = w;
+          if (h) place.h = h;
+          if ((UNIVERSAL_SKIN_PARTS as readonly string[]).includes(partName)) problems.push(`${where}.place only works on the app's own parts, not "${partName}"`);
+          else part.place = place;
+        } else {
+          problems.push(`${where}.place needs x and y between 0 and 100 (percent of the window)`);
+        }
+      }
       if (isObject(value.states)) {
         const states: SkinPart['states'] = {};
         for (const state of ['hover', 'pressed', 'active', 'disabled'] as const) {
@@ -472,7 +521,7 @@ export function normalizeSkin(raw: unknown, options: { lenient?: boolean } = {})
         }
         if (Object.keys(states).length > 0) part.states = states;
       }
-      if (part.sprite || part.style || part.states) parts[partName] = part;
+      if (part.sprite || part.style || part.states || part.place) parts[partName] = part;
     }
   }
 
@@ -490,6 +539,7 @@ export function normalizeSkin(raw: unknown, options: { lenient?: boolean } = {})
     for (const style of [part.style, ...Object.values(part.states ?? {})]) if (style?.texture) used.add(style.texture.asset);
   }
   if (win?.shape?.type === 'mask') used.add(win.shape.asset);
+  if (win?.face) used.add(win.face.asset);
   const usedAssets = Object.fromEntries(Object.entries(assets).filter(([key]) => used.has(key)));
 
   const skin: AppSkin = { format: SKIN_FORMAT, name: name!, colors, fonts, parts, assets: usedAssets };

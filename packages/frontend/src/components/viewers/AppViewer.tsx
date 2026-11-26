@@ -14,7 +14,7 @@ import { activeAppListeners, notifyAppSkinChanged, type ActiveAppListener } from
 import { AppSkinsPanel, type DescribedParts } from '../apps/AppSkinsPanel';
 import skinPanelStyles from '../apps/AppSkinsPanel.module.css';
 import { getActiveAppSkin, getPublicAppSkin, installAppSkin } from '../../services/appSkins';
-import { readSkinFile, skinWindowChrome } from '../../utils/appSkins';
+import { readSkinFile, safeInsets, skinWindowChrome } from '../../utils/appSkins';
 import { useWindowSkinStore } from '../../stores/windowSkinStore';
 import { readAppTheme } from '../../utils/appTheme';
 import { useAppearanceStore } from '../../stores/appearanceStore';
@@ -104,6 +104,25 @@ export function AppViewer({ appId, previewId, windowId, launchFileId, isVisitor 
       // Visitors and offline: the app keeps its own look.
     }
   }, [appId, previewId, isVisitor, windowId]);
+
+  // Shaped windows: tell the app the box inside the shape, so it lays its
+  // content out there instead of being cropped.
+  const skinChrome = useWindowSkinStore((state) => (windowId ? state.chrome[windowId] : undefined));
+  const sendSafeArea = useCallback(() => {
+    const frame = iframeRef.current;
+    if (!frame?.contentWindow) return;
+    const rect = frame.getBoundingClientRect();
+    frame.contentWindow.postMessage({ type: 'eternal:window:safeArea', ...safeInsets(skinChrome, rect.width, rect.height) }, '*');
+  }, [skinChrome]);
+  useEffect(() => {
+    const frame = iframeRef.current;
+    if (!frame) return;
+    sendSafeArea();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => sendSafeArea());
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, [sendSafeArea, reloadKey]);
 
   // Forget this window's skin chrome when the viewer goes away.
   useEffect(() => () => {
@@ -407,6 +426,7 @@ export function AppViewer({ appId, previewId, windowId, launchFileId, isVisitor 
           iframeLoadedRef.current = true;
           sendCapability();
           sendTheme();
+          sendSafeArea();
         }}
         sandbox="allow-scripts"
         style={{

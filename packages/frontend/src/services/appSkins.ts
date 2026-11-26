@@ -74,6 +74,6 @@ export function deleteAppSkin(appId: string, skinId: string): Promise<AppSkinInd
 export function generateAppSkin(appId: string, prompt: string, parts?: SkinPartDescription[]): Promise<AppSkinSaveResult> {
   return apiRequest(`${base(appId)}/generate`, {
     method: 'POST',
-    body: JSON.stringify({ prompt, parts: parts?.map(({ name, label, frames }) => ({ name, label, frames })) }),
+    body: JSON.stringify({ prompt, parts: parts?.map(({ name, label, frames, w, h }) => ({ name, label, frames, w, h })) }),
   });
 }

@@ -50,6 +50,8 @@ export interface SkinWindow {
     | { type: 'polygon'; points: Array<[number, number]> }
     | { type: 'mask'; asset: string; x?: number; y?: number; w?: number; h?: number };
   size?: { w: number; h: number };
+  content?: { x: number; y: number; w: number; h: number };
+  face?: { asset: string };
   drag?: string[];
   close?: string;
   minimize?: string;
@@ -62,7 +64,7 @@ export interface AppSkin {
   description?: string;
   colors: Record<string, string>;
   fonts: Record<string, string>;
-  parts: Record<string, { sprite?: SkinSprite; style?: SkinStyle; states?: Record<string, SkinStyle> }>;
+  parts: Record<string, { sprite?: SkinSprite; style?: SkinStyle; states?: Record<string, SkinStyle>; place?: { x: number; y: number; w?: number; h?: number } }>;
   assets: Record<string, { type: string; width: number; height: number; data: string } | string>;
   window?: SkinWindow;
 }
@@ -457,18 +459,219 @@ async function cropDataUrl(dataUrl: string, region?: { x?: number; y?: number; w
   return canvas.toDataURL('image/png');
 }
 
+// ---------------------------------------------------------------------------
+// Safe area inside a shape (so apps fit their content inside, not cropped)
+// ---------------------------------------------------------------------------
+
+export type FractionRect = { x: number; y: number; w: number; h: number };
+
+/** Largest all-true axis-aligned rectangle in a cols×rows grid, as fractions. */
+export function largestRect(grid: boolean[], cols: number, rows: number): FractionRect | null {
+  const heights = new Array<number>(cols).fill(0);
+  let best = { area: 0, x: 0, y: 0, w: 0, h: 0 };
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) heights[c] = grid[r * cols + c] ? heights[c] + 1 : 0;
+    // Largest rectangle in the histogram ending at this row.
+    const stack: number[] = [];
+    for (let c = 0; c <= cols; c++) {
+      const height = c === cols ? 0 : heights[c];
+      while (stack.length && heights[stack[stack.length - 1]] >= height) {
+        const top = stack.pop()!;
+        const h = heights[top];
+        const left = stack.length ? stack[stack.length - 1] + 1 : 0;
+        const w = c - left;
+        if (h * w > best.area) best = { area: h * w, x: left, y: r - h + 1, w, h };
+      }
+      stack.push(c);
+    }
+  }
+  return best.area > 0 ? { x: best.x / cols, y: best.y / rows, w: best.w / cols, h: best.h / rows } : null;
+}
+
+function insidePolygon(x: number, y: number, points: Array<[number, number]>): boolean {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const [xi, yi] = points[i];
+    const [xj, yj] = points[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+const SAFE_GRID = 48;
+
+/** Safe box inside a polygon given in percent points. A cell counts only if all its corners are inside. */
+export function polygonSafeRect(points: Array<[number, number]>): FractionRect | null {
+  const grid: boolean[] = [];
+  const step = 100 / SAFE_GRID;
+  for (let r = 0; r < SAFE_GRID; r++) {
+    for (let c = 0; c < SAFE_GRID; c++) {
+      const x0 = c * step;
+      const y0 = r * step;
+      grid.push([[x0, y0], [x0 + step, y0], [x0, y0 + step], [x0 + step, y0 + step]].every(([x, y]) => insidePolygon(x, y, points)));
+    }
+  }
+  return largestRect(grid, SAFE_GRID, SAFE_GRID);
+}
+
+/** The largest rectangle inside an ellipse filling the window. */
+export const ELLIPSE_SAFE_RECT: FractionRect = { x: 0.5 - 0.5 / Math.SQRT2, y: 0.5 - 0.5 / Math.SQRT2, w: 1 / Math.SQRT2, h: 1 / Math.SQRT2 };
+
+/** Safe box inside a painted mask (opaque pixels), measured on a small grid. */
+async function maskSafeRect(dataUrl: string): Promise<FractionRect | null> {
+  const image = await new Promise<HTMLImageElement | null>((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+  if (!image) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = SAFE_GRID;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.drawImage(image, 0, 0, SAFE_GRID, SAFE_GRID);
+  const data = ctx.getImageData(0, 0, SAFE_GRID, SAFE_GRID).data;
+  const grid: boolean[] = [];
+  for (let i = 0; i < SAFE_GRID * SAFE_GRID; i++) grid.push(data[i * 4 + 3] > 200);
+  return largestRect(grid, SAFE_GRID, SAFE_GRID);
+}
+
+/**
+ * Cut the plain background out of face art: flood-fill from the edges over
+ * pixels close to the corners' color. Returns a PNG mask (opaque = object)
+ * drawn with the same cover + 1.1 zoom the app runtime uses, or null when
+ * the art has no uniform background (the object already fills the frame).
+ * Pure pixel step exported for tests.
+ */
+export function silhouetteAlpha(rgba: Uint8ClampedArray, width: number, height: number, tolerance = 34): Uint8ClampedArray | null {
+  const at = (x: number, y: number) => (y * width + x) * 4;
+  const corners = [at(0, 0), at(width - 1, 0), at(0, height - 1), at(width - 1, height - 1)];
+  const ref = [0, 1, 2].map((c) => corners.reduce((sum, i) => sum + rgba[i + c], 0) / 4);
+  const spread = Math.max(...corners.map((i) => Math.hypot(rgba[i] - ref[0], rgba[i + 1] - ref[1], rgba[i + 2] - ref[2])));
+  if (spread > tolerance) return null; // corners disagree: no plain background
+  const close = (i: number) => Math.hypot(rgba[i] - ref[0], rgba[i + 1] - ref[1], rgba[i + 2] - ref[2]) <= tolerance;
+  const background = new Uint8Array(width * height);
+  const stack: number[] = [];
+  for (let x = 0; x < width; x++) stack.push(x, (height - 1) * width + x);
+  for (let y = 0; y < height; y++) stack.push(y * width, y * width + width - 1);
+  while (stack.length) {
+    const p = stack.pop()!;
+    if (background[p] || !close(p * 4)) continue;
+    background[p] = 1;
+    const x = p % width;
+    const y = (p - x) / width;
+    if (x > 0) stack.push(p - 1);
+    if (x < width - 1) stack.push(p + 1);
+    if (y > 0) stack.push(p - width);
+    if (y < height - 1) stack.push(p + width);
+  }
+  let removed = 0;
+  const alpha = new Uint8ClampedArray(width * height);
+  for (let p = 0; p < width * height; p++) {
+    alpha[p] = background[p] ? 0 : 255;
+    removed += background[p];
+  }
+  // Nothing (or nearly everything) removed: not a usable silhouette.
+  const share = removed / (width * height);
+  return share < 0.03 || share > 0.9 ? null : alpha;
+}
+
+async function faceSilhouette(faceDataUrl: string, width: number, height: number): Promise<string | null> {
+  const image = await new Promise<HTMLImageElement | null>((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = faceDataUrl;
+  });
+  if (!image) return null;
+  const scaleDown = Math.min(1, 420 / Math.max(width, height));
+  const w = Math.max(1, Math.round(width * scaleDown));
+  const h = Math.max(1, Math.round(height * scaleDown));
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  // Same geometry as the runtime: cover, centered, zoomed 1.1.
+  const scale = Math.max(w / image.naturalWidth, h / image.naturalHeight) * 1.1;
+  const dw = image.naturalWidth * scale;
+  const dh = image.naturalHeight * scale;
+  ctx.drawImage(image, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  const data = ctx.getImageData(0, 0, w, h);
+  const alpha = silhouetteAlpha(data.data, w, h);
+  if (!alpha) return null;
+  for (let p = 0; p < w * h; p++) {
+    data.data[p * 4] = data.data[p * 4 + 1] = data.data[p * 4 + 2] = 0;
+    data.data[p * 4 + 3] = alpha[p];
+  }
+  ctx.putImageData(data, 0, 0);
+  // Soften the stair-steps a little when it's scaled up.
+  const out = document.createElement('canvas');
+  out.width = w;
+  out.height = h;
+  const octx = out.getContext('2d');
+  if (!octx) return null;
+  octx.filter = 'blur(0.6px)';
+  octx.drawImage(canvas, 0, 0);
+  return out.toDataURL('image/png');
+}
+
+/** Insets in px for a window of width×height (with a little breathing room). */
+export function safeInsets(chrome: { safeRect?: FractionRect; safeRadius?: number } | null | undefined, width: number, height: number): { top: number; right: number; bottom: number; left: number } {
+  const zero = { top: 0, right: 0, bottom: 0, left: 0 };
+  if (!chrome || width <= 0 || height <= 0) return zero;
+  const pad = 6;
+  if (chrome.safeRect) {
+    const r = chrome.safeRect;
+    return {
+      left: Math.round(r.x * width + pad),
+      top: Math.round(r.y * height + pad),
+      right: Math.round(width - (r.x + r.w) * width + pad),
+      bottom: Math.round(height - (r.y + r.h) * height + pad),
+    };
+  }
+  if (chrome.safeRadius) {
+    const inset = Math.round(Math.min(chrome.safeRadius, width / 2, height / 2) * (1 - 1 / Math.SQRT2) + pad);
+    return { top: inset, right: inset, bottom: inset, left: inset };
+  }
+  return zero;
+}
+
 /** The desktop-side window chrome a skin asks for, or null for a normal window. */
 export async function skinWindowChrome(skin: AppSkin | null): Promise<import('../stores/windowSkinStore').WindowSkinChrome | null> {
   const win = skin?.window;
-  if (!win || (!win.frameless && !win.shape && !win.size)) return null;
+  if (!win || (!win.frameless && !win.shape && !win.size && !win.content)) return null;
   const chrome: import('../stores/windowSkinStore').WindowSkinChrome = { frameless: win.frameless === true };
   const clipPath = skinClipPath(win.shape);
   if (clipPath) chrome.clipPath = clipPath;
+  // Frameless face art on a plain background: the window takes the object's
+  // own silhouette (the Winamp look), unless the skin painted a mask itself.
+  if (win.frameless && win.face && win.shape?.type !== 'mask') {
+    const asset = skin?.assets?.[win.face.asset];
+    const data = asset ? (typeof asset === 'string' ? asset : asset.data) : null;
+    const size = win.size ?? { w: 420, h: 360 };
+    const silhouette = data ? await faceSilhouette(data, size.w, size.h) : null;
+    if (silhouette) chrome.maskUrl = silhouette;
+  }
   if (win.shape?.type === 'mask') {
     const asset = skin?.assets?.[win.shape.asset];
     const data = asset ? (typeof asset === 'string' ? asset : asset.data) : null;
     const maskUrl = data ? await cropDataUrl(data, win.shape) : null;
     if (maskUrl) chrome.maskUrl = maskUrl;
+  }
+  // Where the app's own content goes: the skin's content box, else the
+  // largest box inside the shape.
+  if (win.content) {
+    chrome.safeRect = { x: win.content.x / 100, y: win.content.y / 100, w: win.content.w / 100, h: win.content.h / 100 };
+  } else if (win.shape?.type === 'ellipse') {
+    chrome.safeRect = ELLIPSE_SAFE_RECT;
+  } else if (win.shape?.type === 'rounded') {
+    chrome.safeRadius = num(win.shape.radius, 0, 400) ?? 0;
+  } else if (win.shape?.type === 'polygon') {
+    chrome.safeRect = polygonSafeRect(win.shape.points) ?? undefined;
+  } else if (win.shape?.type === 'mask' && chrome.maskUrl) {
+    chrome.safeRect = (await maskSafeRect(chrome.maskUrl)) ?? undefined;
   }
   if (win.size) {
     const w = num(win.size.w, 200, 1600);

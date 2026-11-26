@@ -14,6 +14,10 @@ export interface WindowSkinChrome {
   maskUrl?: string;
   /** The skin's window was drawn for this size: locked, not resizable. */
   size?: { w: number; h: number };
+  /** Largest box inside the shape, as fractions of the window (0-1). */
+  safeRect?: { x: number; y: number; w: number; h: number };
+  /** Rounded shapes: corner radius in px (the safe box depends on window size). */
+  safeRadius?: number;
 }
 
 interface WindowSkinState {
