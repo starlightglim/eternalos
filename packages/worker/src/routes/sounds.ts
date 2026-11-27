@@ -15,6 +15,7 @@ import type { Env } from '../index';
 import type { AuthContext } from '../middleware/auth';
 import type { SoundAssetMeta, SoundType } from '../types';
 import { sanitizeFilename } from '../utils/sanitize';
+import { parseByteRange } from './upload';
 
 // Allowed audio MIME types
 const SOUND_ALLOWED_TYPES: Record<string, string> = {
@@ -182,63 +183,59 @@ export async function handleServeSound(
   filename: string
 ): Promise<Response> {
   try {
+    if ([uid, soundId, filename].some((part) => part.includes('..') || part.includes('/') || part.includes('\\'))) {
+      return Response.json({ error: 'Invalid sound path' }, { status: 400 });
+    }
     const r2Key = `${uid}/sounds/${soundId}/${filename}`;
-    const object = await env.ETERNALOS_FILES.get(r2Key);
 
-    if (!object) {
+    // head() first: a range request must not download the whole object.
+    const head = await env.ETERNALOS_FILES.head(r2Key);
+    if (!head) {
       return Response.json({ error: 'Sound not found' }, { status: 404 });
     }
 
     // Validate Content-Type — only serve known audio types
-    const storedType = object.httpMetadata?.contentType || '';
+    const storedType = head.httpMetadata?.contentType || '';
     const safeAudioTypes = Object.keys(SOUND_ALLOWED_TYPES);
     const contentType = safeAudioTypes.includes(storedType) ? storedType : 'application/octet-stream';
 
     const headers = new Headers();
     headers.set('Content-Type', contentType);
-    headers.set('Content-Length', object.size.toString());
     headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-    headers.set('ETag', object.httpEtag);
+    headers.set('ETag', head.httpEtag);
     headers.set('X-Content-Type-Options', 'nosniff');
     headers.set('Content-Security-Policy', "default-src 'none'");
+    headers.set('Accept-Ranges', 'bytes');
 
     // Support range requests for audio streaming
-    const range = request.headers.get('Range');
-    if (range) {
-      const rangeMatch = range.match(/^bytes=(\d+)-(\d*)$/);
-      if (rangeMatch) {
-        const start = parseInt(rangeMatch[1], 10);
-        const end = rangeMatch[2] ? parseInt(rangeMatch[2], 10) : object.size - 1;
-
-        if (start >= object.size) {
-          return new Response(null, {
-            status: 416,
-            headers: { 'Content-Range': `bytes */${object.size}` },
-          });
-        }
-
-        const rangeObject = await env.ETERNALOS_FILES.get(r2Key, {
-          range: { offset: start, length: end - start + 1 },
-        });
-
-        if (!rangeObject) {
-          return Response.json({ error: 'Sound not found' }, { status: 404 });
-        }
-
-        headers.set('Content-Range', `bytes ${start}-${end}/${object.size}`);
-        headers.set('Content-Length', (end - start + 1).toString());
-        headers.set('Accept-Ranges', 'bytes');
-
-        return new Response(rangeObject.body, { status: 206, headers });
+    const range = parseByteRange(request.headers.get('Range'), head.size);
+    if (range.kind === 'unsatisfiable') {
+      headers.set('Content-Range', `bytes */${head.size}`);
+      return new Response(null, { status: 416, headers });
+    }
+    if (range.kind === 'partial') {
+      const length = range.end - range.start + 1;
+      const rangeObject = await env.ETERNALOS_FILES.get(r2Key, {
+        range: { offset: range.start, length },
+      });
+      if (!rangeObject) {
+        return Response.json({ error: 'Sound not found' }, { status: 404 });
       }
+      headers.set('Content-Range', `bytes ${range.start}-${range.end}/${head.size}`);
+      headers.set('Content-Length', length.toString());
+      return new Response(rangeObject.body, { status: 206, headers });
     }
 
+    headers.set('Content-Length', head.size.toString());
     const ifNoneMatch = request.headers.get('If-None-Match');
-    if (ifNoneMatch === object.httpEtag) {
+    if (ifNoneMatch === head.httpEtag) {
       return new Response(null, { status: 304, headers });
     }
 
-    headers.set('Accept-Ranges', 'bytes');
+    const object = await env.ETERNALOS_FILES.get(r2Key);
+    if (!object) {
+      return Response.json({ error: 'Sound not found' }, { status: 404 });
+    }
     return new Response(object.body, { headers });
 
   } catch (error) {
