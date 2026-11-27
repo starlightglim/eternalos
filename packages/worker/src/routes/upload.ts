@@ -12,7 +12,7 @@ import { ALLOWED_TYPES, MAX_FILE_SIZE } from '../utils/fileTypes';
 import type { Env } from '../index';
 import type { AuthContext } from '../middleware/auth';
 import { acquireAiRequest } from '../middleware/aiUsage';
-import type { DesktopItem, ImageAnalysisMetadata } from '../types';
+import type { DesktopItem, ImageAnalysisMetadata, UserRecord } from '../types';
 import { sanitizeFilename, sanitizeText } from '../utils/sanitize';
 
 // Allowed MIME types for regular file uploads
@@ -250,14 +250,38 @@ function summarizeRgbColors(
     .map((bucket) => formatHexColor(bucket.r / bucket.count, bucket.g / bucket.count, bucket.b / bucket.count));
 }
 
+/**
+ * The slice of the WebCodecs ImageDecoder API this module uses. Workers
+ * types don't declare ImageDecoder (and it may be absent at runtime), so it
+ * is read off globalThis through these shapes instead of `any`.
+ */
+interface DecodedImageFrame {
+  displayWidth?: number;
+  displayHeight?: number;
+  codedWidth?: number;
+  codedHeight?: number;
+  copyTo(destination: Uint8Array, options?: { format?: string }): Promise<unknown>;
+  close?(): void;
+}
+
+interface ImageDecoderInstance {
+  decode(options?: { frameIndex?: number }): Promise<{ image: DecodedImageFrame }>;
+  close?(): void;
+}
+
+interface ImageDecoderConstructor {
+  new (init: { data: Uint8Array; type: string }): ImageDecoderInstance;
+  isTypeSupported?(type: string): Promise<boolean>;
+}
+
 async function extractDecodedFrameDominantColors(fileBuffer: ArrayBuffer, mimeType: string): Promise<string[]> {
-  const ImageDecoderCtor = (globalThis as unknown as { ImageDecoder?: new (init: unknown) => any }).ImageDecoder;
+  const ImageDecoderCtor = (globalThis as unknown as { ImageDecoder?: ImageDecoderConstructor }).ImageDecoder;
   if (!ImageDecoderCtor) {
     return [];
   }
 
-  const supportsType = typeof (ImageDecoderCtor as any).isTypeSupported === 'function'
-    ? await (ImageDecoderCtor as any).isTypeSupported(mimeType).catch(() => false)
+  const supportsType = typeof ImageDecoderCtor.isTypeSupported === 'function'
+    ? await ImageDecoderCtor.isTypeSupported(mimeType).catch(() => false)
     : true;
 
   if (!supportsType) {
@@ -269,7 +293,7 @@ async function extractDecodedFrameDominantColors(fileBuffer: ArrayBuffer, mimeTy
     type: mimeType,
   });
 
-  let frame: any;
+  let frame: DecodedImageFrame | undefined;
 
   try {
     const decoded = await decoder.decode({ frameIndex: 0 });
@@ -509,6 +533,52 @@ async function patchItemImageAnalysis(
   }
 }
 
+/**
+ * Automatic analysis of a fresh upload, charged to the account's daily AI
+ * budget like every other AI call (middleware/aiUsage.ts). The upload itself
+ * already succeeded, so an exhausted budget or an unreachable guard never
+ * fails anything: the item is quietly marked `skipped` (the manual /analyze
+ * route can run it later) and no provider work is spent.
+ */
+async function analyzeUploadWithinBudget(
+  env: Env,
+  uid: string,
+  stub: DurableObjectStub,
+  itemId: string,
+  mimeType: string,
+  fileBuffer: ArrayBuffer
+): Promise<void> {
+  if (fileBuffer.byteLength > MAX_IMAGE_ANALYSIS_SIZE) {
+    // Too big to analyze: analyzeUploadedImage marks it skipped without any
+    // AI call, so don't charge the budget for it.
+    await analyzeUploadedImage(env, stub, itemId, mimeType, fileBuffer);
+    return;
+  }
+
+  let skipReason: string | null = null;
+  try {
+    const decision = await acquireAiRequest(env, uid, { slot: false });
+    if (!decision.allowed) {
+      skipReason = decision.message;
+    }
+  } catch (error) {
+    // Fail closed on a guard outage, like the manual analyze route.
+    console.error('AI usage guard unavailable for upload analysis:', error);
+    skipReason = 'AI usage could not be verified, so automatic analysis was skipped.';
+  }
+
+  if (skipReason) {
+    await patchItemImageAnalysis(stub, itemId, {
+      status: 'skipped',
+      analyzedAt: Date.now(),
+      error: skipReason,
+    }).catch((error) => console.error('Failed to mark upload analysis skipped:', error));
+    return;
+  }
+
+  await analyzeUploadedImage(env, stub, itemId, mimeType, fileBuffer);
+}
+
 async function analyzeUploadedImage(
   env: Env,
   stub: DurableObjectStub,
@@ -670,6 +740,46 @@ async function analyzeUploadedImage(
   }
 }
 
+type UploadMimeResolution =
+  | { ok: true; mime: string }
+  | { ok: false; error: string };
+
+/**
+ * Decide the MIME type an upload is stored and served as. Binary formats are
+ * sniffed from their magic bytes and the DETECTED type wins over the declared
+ * one (a PNG labelled image/jpeg is stored as image/png). Text types have no
+ * magic bytes, so a declared text type is kept as is.
+ */
+export async function resolveUploadMimeType(
+  declaredMime: string,
+  fileBuffer: ArrayBuffer,
+): Promise<UploadMimeResolution> {
+  if (declaredMime.startsWith('text/')) {
+    return { ok: true, mime: declaredMime };
+  }
+  const detected = await fileTypeFromBuffer(fileBuffer);
+  if (!detected) {
+    return { ok: false, error: 'Could not verify file type. The file may be corrupted.' };
+  }
+  // file-type can append parameters (`audio/ogg; codecs=opus`).
+  const detectedMime = detected.mime.split(';')[0].trim();
+  if (!ALLOWED_TYPES[detectedMime]) {
+    return { ok: false, error: `File content does not match an allowed type. Detected: ${detectedMime}` };
+  }
+  if (detectedMime === declaredMime) {
+    return { ok: true, mime: detectedMime };
+  }
+  // One container, two media classes: file-type reports every ISO-BMFF file
+  // as video/mp4 (AAC .m4a included) and every Ogg as audio/ogg. When only
+  // the top-level class differs, the declared type is the better answer.
+  const sameContainer = detectedMime.split('/')[1] === declaredMime.split('/')[1];
+  if (sameContainer) {
+    return { ok: true, mime: declaredMime };
+  }
+  console.warn(`MIME mismatch: declared=${declaredMime}, detected=${detectedMime}; storing detected`);
+  return { ok: true, mime: detectedMime };
+}
+
 /**
  * Handle file upload
  * POST /api/upload
@@ -708,10 +818,10 @@ export async function handleUpload(
     const fileBlob = file as File;
 
     // Validate file type
-    const mimeType = fileBlob.type;
-    if (!ALLOWED_TYPES[mimeType]) {
+    const declaredMimeType = fileBlob.type;
+    if (!ALLOWED_TYPES[declaredMimeType]) {
       return Response.json(
-        { error: `Invalid file type: ${mimeType}. Allowed: ${Object.keys(ALLOWED_TYPES).join(', ')}` },
+        { error: `Invalid file type: ${declaredMimeType}. Allowed: ${Object.keys(ALLOWED_TYPES).join(', ')}` },
         { status: 400 }
       );
     }
@@ -766,39 +876,25 @@ export async function handleUpload(
       ).catch(() => {});
     };
 
-    // Generate item ID and R2 key
-    const itemId = crypto.randomUUID();
-    const originalName = fileBlob.name || `file.${ALLOWED_TYPES[mimeType]}`;
-    const sanitizedName = sanitizeFilename(originalName);
-    r2Key = `${auth.uid}/${itemId}/${sanitizedName}`;
-
-    // Upload to R2
     const fileBuffer = await fileBlob.arrayBuffer();
 
     // SECURITY: Validate actual file content via magic bytes, not just the declared
     // MIME type (which is trivially spoofed). Text files have no magic bytes, so
     // we only check binary formats (images, video, audio).
-    if (!mimeType.startsWith('text/')) {
-      const detected = await fileTypeFromBuffer(fileBuffer);
-      if (!detected) {
-        if (releaseQuota) await releaseQuota();
-        return Response.json(
-          { error: 'Could not verify file type. The file may be corrupted.' },
-          { status: 400 }
-        );
-      }
-      if (!ALLOWED_TYPES[detected.mime]) {
-        if (releaseQuota) await releaseQuota();
-        return Response.json(
-          { error: `File content does not match an allowed type. Detected: ${detected.mime}` },
-          { status: 400 }
-        );
-      }
-      // If detected MIME differs from declared, use the detected one (more trustworthy)
-      if (detected.mime !== mimeType) {
-        console.warn(`MIME mismatch: declared=${mimeType}, detected=${detected.mime}`);
-      }
+    const detection = await resolveUploadMimeType(declaredMimeType, fileBuffer);
+    if (!detection.ok) {
+      if (releaseQuota) await releaseQuota();
+      return Response.json({ error: detection.error }, { status: 400 });
     }
+    // Everything below (stored Content-Type, item type, mimeType field) uses
+    // the type the bytes actually are, not the one the client claimed.
+    const mimeType = detection.mime;
+
+    // Generate item ID and R2 key
+    const itemId = crypto.randomUUID();
+    const originalName = fileBlob.name || `file.${ALLOWED_TYPES[mimeType]}`;
+    const sanitizedName = sanitizeFilename(originalName);
+    r2Key = `${auth.uid}/${itemId}/${sanitizedName}`;
 
     await env.ETERNALOS_FILES.put(r2Key, fileBuffer, {
       httpMetadata: {
@@ -876,7 +972,7 @@ export async function handleUpload(
     const createdItem = await doResponse.json();
 
     if (itemType === 'image') {
-      ctx.waitUntil(analyzeUploadedImage(env, stub, itemId, mimeType, fileBuffer));
+      ctx.waitUntil(analyzeUploadWithinBudget(env, auth.uid, stub, itemId, mimeType, fileBuffer));
     }
 
     return Response.json({
@@ -1003,63 +1099,66 @@ export async function handleServeFile(
       );
     }
 
-    // Check access permissions and get the item's stored r2Key
-    const isOwner = requestingAuth?.uid === fileOwnerUid;
-
-    if (!isOwner) {
-      // Not the owner - check if item is public via the authoritative DO
-      const isPublic = await checkItemIsPublic(env, fileOwnerUid, itemId);
-      if (!isPublic) {
-        return Response.json(
-          { error: 'Forbidden' },
-          { status: 403 }
-        );
-      }
+    // A soft-deleted (or purged) account serves nothing, to anyone. File
+    // tokens (`?ft=`) don't re-check the account, so this applies to the
+    // owner path too.
+    if (!(await isAccountActive(env, fileOwnerUid))) {
+      return Response.json({ error: 'File not found' }, { status: 404 });
     }
 
-    // SECURITY: Use the item's stored r2Key from the DO instead of constructing
-    // from URL parameters. This prevents IDOR where a valid public itemId is
-    // combined with a different filename to access other R2 objects.
-    const storedR2Key = await getItemR2Key(env, fileOwnerUid, itemId);
-    // Use stored key if available, fall back to constructed key for backwards compat
-    const r2Key = storedR2Key || `${fileOwnerUid}/${itemId}/${filename}`;
+    // SECURITY: One authoritative lookup in the owner's Durable Object gives
+    // both the visibility and the stored r2Key. The key is never built from
+    // URL parameters: that allowed IDOR (a public itemId combined with another
+    // filename) and served deleted items whose blob was still in R2.
+    const lookup = await findDesktopItem(env, fileOwnerUid, itemId);
+    if (lookup === 'error') {
+      return Response.json({ error: 'Failed to serve file' }, { status: 500 });
+    }
+    if (!lookup) {
+      return Response.json({ error: 'File not found' }, { status: 404 });
+    }
 
-    // Check for Range request header (needed for video/audio streaming)
+    const isOwner = requestingAuth?.uid === fileOwnerUid;
+    if (!isOwner && (!lookup.isPublic || lookup.isTrashed)) {
+      return Response.json(
+        { error: 'Forbidden' },
+        { status: 403 }
+      );
+    }
+
+    // Very old items may predate the stored r2Key. The item does exist, so
+    // its owner may still reach the conventional key; visitors may not.
+    const r2Key = lookup.r2Key ?? (isOwner ? `${fileOwnerUid}/${itemId}/${filename}` : null);
+    if (!r2Key) {
+      return Response.json({ error: 'File not found' }, { status: 404 });
+    }
+
+    // Range requests (video/audio streaming). An unparseable or multi-range
+    // header is ignored and the full file is served, as RFC 9110 allows.
     const rangeHeader = request.headers.get('Range');
-
     if (rangeHeader) {
-      // Parse Range header (e.g., "bytes=0-999" or "bytes=500-")
-      const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
-      if (match) {
-        // First, get total file size with head request
-        const headResult = await env.ETERNALOS_FILES.head(r2Key);
-        if (!headResult) {
-          return Response.json(
-            { error: 'File not found' },
-            { status: 404 }
-          );
-        }
-        const totalSize = headResult.size;
-        const contentType = headResult.httpMetadata?.contentType || 'application/octet-stream';
-        const etag = headResult.httpEtag;
+      const headResult = await env.ETERNALOS_FILES.head(r2Key);
+      if (!headResult) {
+        return Response.json(
+          { error: 'File not found' },
+          { status: 404 }
+        );
+      }
+      const totalSize = headResult.size;
+      const range = parseByteRange(rangeHeader, totalSize);
 
-        const start = parseInt(match[1], 10);
-        // If no end specified, serve to end of file
-        const end = match[2] ? parseInt(match[2], 10) : totalSize - 1;
-        // Clamp end to file bounds
-        const clampedEnd = Math.min(end, totalSize - 1);
-        const length = clampedEnd - start + 1;
+      if (range.kind === 'unsatisfiable') {
+        const headers = new Headers();
+        headers.set('Content-Range', `bytes */${totalSize}`);
+        headers.set('Accept-Ranges', 'bytes');
+        headers.set('Cache-Control', 'private, no-store');
+        return new Response(null, { status: 416, headers }); // Range Not Satisfiable
+      }
 
-        // Validate range
-        if (start >= totalSize || start < 0) {
-          const headers = new Headers();
-          headers.set('Content-Range', `bytes */${totalSize}`);
-          return new Response(null, { status: 416, headers }); // Range Not Satisfiable
-        }
-
-        // Fetch partial content from R2
+      if (range.kind === 'partial') {
+        const length = range.end - range.start + 1;
         const object = await env.ETERNALOS_FILES.get(r2Key, {
-          range: { offset: start, length },
+          range: { offset: range.start, length },
         });
 
         if (!object) {
@@ -1070,12 +1169,17 @@ export async function handleServeFile(
         }
 
         const headers = new Headers();
-        headers.set('Content-Type', contentType);
+        const partialType = headResult.httpMetadata?.contentType || 'application/octet-stream';
+        headers.set('Content-Type', partialType);
+        headers.set('Content-Disposition', /^(image|video|audio)\//.test(partialType)
+          ? 'inline'
+          : `attachment; filename="${encodeURIComponent(filename)}"`);
         headers.set('Content-Length', length.toString());
-        headers.set('Content-Range', `bytes ${start}-${clampedEnd}/${totalSize}`);
+        headers.set('Content-Range', `bytes ${range.start}-${range.end}/${totalSize}`);
         headers.set('Accept-Ranges', 'bytes');
         headers.set('Cache-Control', 'private, no-store');
-        headers.set('ETag', etag);
+        headers.set('ETag', headResult.httpEtag);
+        headers.set('X-Content-Type-Options', 'nosniff');
 
         return new Response(object.body, { status: 206, headers });
       }
@@ -1125,55 +1229,79 @@ export async function handleServeFile(
   }
 }
 
+export type ByteRangeDecision =
+  | { kind: 'full' }
+  | { kind: 'partial'; start: number; end: number }
+  | { kind: 'unsatisfiable' };
+
 /**
- * Check if a desktop item is public
- * First tries KV cache, falls back to Durable Object
+ * Interpret a `Range` header against an object of `size` bytes.
+ *
+ * - `bytes=a-b` / `bytes=a-` / `bytes=-n` (suffix) give one inclusive range,
+ *   with the end clamped to the last byte.
+ * - A reversed range (`bytes=500-100`), a start at/after the end of the
+ *   file, a zero-length suffix, or any range on an empty file is
+ *   unsatisfiable (416).
+ * - Anything else (missing header, other units, multiple ranges, garbage)
+ *   is ignored and the full object is served.
  */
-async function checkItemIsPublic(
-  env: Env,
-  uid: string,
-  itemId: string
-): Promise<boolean> {
-  // Try KV cache first (public snapshot)
-  const cached = await env.DESKTOP_KV.get<{ items: DesktopItem[] }>(`public:${uid}`, 'json');
-  if (cached) {
-    const item = cached.items.find(i => i.id === itemId);
-    if (item) return true; // It's in the public snapshot, so it's public
+export function parseByteRange(header: string | null, size: number): ByteRangeDecision {
+  if (!header) return { kind: 'full' };
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!match) return { kind: 'full' };
+  const [, startText, endText] = match;
+  if (!startText && !endText) return { kind: 'full' };
+
+  if (!startText) {
+    // Suffix range: the last N bytes.
+    const suffix = Number(endText);
+    if (!Number.isSafeInteger(suffix) || suffix <= 0 || size <= 0) return { kind: 'unsatisfiable' };
+    return { kind: 'partial', start: Math.max(0, size - suffix), end: size - 1 };
   }
 
-  // Fall back to Durable Object
-  const doId = env.USER_DESKTOP.idFromName(uid);
-  const stub = env.USER_DESKTOP.get(doId);
-  const response = await stub.fetch(new Request('http://internal/items'));
-
-  if (!response.ok) {
-    return false;
-  }
-
-  const data = await response.json() as { items: DesktopItem[] };
-  const item = data.items.find(i => i.id === itemId);
-
-  return (item?.isPublic ?? false) && !item?.isTrashed;
+  const start = Number(startText);
+  const requestedEnd = endText ? Number(endText) : size - 1;
+  if (!Number.isSafeInteger(start) || start >= size) return { kind: 'unsatisfiable' };
+  if (endText && (!Number.isFinite(requestedEnd) || requestedEnd < start)) return { kind: 'unsatisfiable' };
+  return { kind: 'partial', start, end: Math.min(requestedEnd, size - 1) };
 }
 
 /**
- * Get the stored r2Key for a desktop item.
- * Returns null if item not found or has no r2Key.
+ * Whether the account owning `uid` exists and is not soft-deleted
+ * (`deletedAt` on the UserRecord at AUTH_KV `user:{email}`, found through
+ * the `uid:{uid}` index).
  */
-async function getItemR2Key(
+async function isAccountActive(env: Env, uid: string): Promise<boolean> {
+  const indexJson = await env.AUTH_KV.get(`uid:${uid}`);
+  if (!indexJson) return false;
+  try {
+    const { email } = JSON.parse(indexJson) as { email?: string };
+    if (!email) return false;
+    const userJson = await env.AUTH_KV.get(`user:${email}`);
+    if (!userJson) return false;
+    const user = JSON.parse(userJson) as Pick<UserRecord, 'deletedAt'>;
+    return !user.deletedAt;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Load one desktop item from its owner's Durable Object.
+ * Returns null when it doesn't exist, 'error' when the DO can't answer.
+ */
+async function findDesktopItem(
   env: Env,
   uid: string,
   itemId: string
-): Promise<string | null> {
+): Promise<DesktopItem | null | 'error'> {
   const doId = env.USER_DESKTOP.idFromName(uid);
   const stub = env.USER_DESKTOP.get(doId);
   const response = await stub.fetch(new Request('http://internal/items'));
-
-  if (!response.ok) return null;
+  if (!response.ok) return 'error';
 
   const data = await response.json() as { items: DesktopItem[] };
-  const item = data.items.find(i => i.id === itemId);
-  return item?.r2Key ?? null;
+  return data.items.find((item) => item.id === itemId) ?? null;
 }
 
 // Note: sanitizeFilename is now imported from utils/sanitize.ts
@@ -1430,8 +1558,12 @@ export async function handleServeWallpaper(
  * - file: The icon image file (PNG only, max 50KB)
  * - itemId: The desktop item ID to associate the icon with
  *
- * Icons are stored at {uid}/icons/{itemId}.png
- * The item's customIcon field is updated to point to the R2 key
+ * Icons are stored at {uid}/icons/{itemId}.{version}.png, where version is
+ * a hash of the bytes. Icons are served with immutable year-long caching, so
+ * every new icon needs a new URL; the frontend derives the URL from the key
+ * (`/api/icon/{uid}/{itemId}.{version}/icon.png`). Older icons used the
+ * unversioned {uid}/icons/{itemId}.png key, which still serves.
+ * The item's customIcon field is updated to point to the R2 key.
  */
 export async function handleIconUpload(
   request: Request,
@@ -1498,11 +1630,18 @@ export async function handleIconUpload(
       );
     }
 
-    // Generate R2 key for the icon
-    const r2Key = `${auth.uid}/icons/${itemId}.png`;
+    // Versioned R2 key: a new icon gets a new key, hence a new URL that no
+    // immutable cache entry can shadow.
+    const fileBuffer = await fileBlob.arrayBuffer();
+    const version = await iconContentVersion(fileBuffer);
+    const r2Key = `${auth.uid}/icons/${itemId}.${version}.png`;
+    // Only this item's own earlier key: a duplicated item copies its
+    // original's customIcon, and that key is still the original's icon.
+    const previousIconKey = item.customIcon?.startsWith(`upload:${auth.uid}/icons/${itemId}.`)
+      ? item.customIcon.slice('upload:'.length)
+      : null;
 
     // Upload to R2
-    const fileBuffer = await fileBlob.arrayBuffer();
     await env.ETERNALOS_FILES.put(r2Key, fileBuffer, {
       httpMetadata: {
         contentType: mimeType,
@@ -1530,11 +1669,23 @@ export async function handleIconUpload(
     );
 
     if (!updateResponse.ok) {
-      // Cleanup R2 if update fails
-      await env.ETERNALOS_FILES.delete(r2Key);
+      // Cleanup R2 if update fails (unless the same bytes were already the
+      // item's icon: then the key is still in use).
+      if (previousIconKey !== r2Key) {
+        await env.ETERNALOS_FILES.delete(r2Key);
+      }
       return Response.json(
         { error: 'Failed to update item with custom icon' },
         { status: 500 }
+      );
+    }
+
+    // The item now points at the new key; drop the replaced icon so
+    // re-uploads don't pile up orphans. Old unversioned URLs still resolve
+    // through the item (see handleServeIcon).
+    if (previousIconKey && previousIconKey !== r2Key) {
+      await env.ETERNALOS_FILES.delete(previousIconKey).catch((error) =>
+        console.warn('Failed to delete replaced icon:', error)
       );
     }
 
@@ -1556,6 +1707,15 @@ export async function handleIconUpload(
   }
 }
 
+/** `{itemId}.{version}` URL segment of a versioned icon. */
+const ICON_VERSIONED_SEGMENT = /^.+\.[0-9a-f]{16}$/;
+
+/** Content version of an icon: the first 16 hex chars of its SHA-256. */
+async function iconContentVersion(bytes: ArrayBuffer): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  return Array.from(digest.slice(0, 8), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 /**
  * Serve custom icon from R2
  * GET /api/icon/:uid/:itemId/:filename
@@ -1575,11 +1735,27 @@ export async function handleServeIcon(
       return Response.json({ error: 'Invalid item ID' }, { status: 400 });
     }
 
-    // Construct R2 key
-    const r2Key = `${uid}/icons/${itemId}.png`;
+    if (uid.includes('..') || uid.includes('/') || uid.includes('\\')) {
+      return Response.json({ error: 'Invalid icon path' }, { status: 400 });
+    }
 
-    // Fetch from R2
-    const object = await env.ETERNALOS_FILES.get(r2Key);
+    // `itemId` is the URL segment: `{itemId}.{version}` for versioned icons
+    // (key `{uid}/icons/{itemId}.{version}.png`), or a bare `{itemId}` for
+    // the legacy unversioned key.
+    let versioned = ICON_VERSIONED_SEGMENT.test(itemId);
+    let object = await env.ETERNALOS_FILES.get(`${uid}/icons/${itemId}.png`);
+
+    if (!object) {
+      // An old URL whose icon was replaced since: serve the item's current
+      // uploaded icon (short-cached), so old links keep working.
+      versioned = false;
+      const baseItemId = itemId.replace(/\.[0-9a-f]{16}$/, '');
+      const item = await findDesktopItem(env, uid, baseItemId);
+      const prefix = `upload:${uid}/icons/`;
+      if (item && item !== 'error' && item.customIcon?.startsWith(prefix)) {
+        object = await env.ETERNALOS_FILES.get(item.customIcon.slice('upload:'.length));
+      }
+    }
 
     if (!object) {
       return Response.json(
@@ -1592,7 +1768,12 @@ export async function handleServeIcon(
     const headers = new Headers();
     headers.set('Content-Type', object.httpMetadata?.contentType || 'image/png');
     headers.set('Content-Length', object.size.toString());
-    headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+    // A versioned URL never changes content, so it can be cached forever. An
+    // unversioned (legacy) URL can change on re-upload, so keep it short.
+    headers.set(
+      'Cache-Control',
+      versioned ? 'public, max-age=31536000, immutable' : 'public, max-age=300, must-revalidate'
+    );
     headers.set('ETag', object.httpEtag);
     headers.set('Content-Disposition', 'inline');
     headers.set('Content-Security-Policy', "default-src 'none'");

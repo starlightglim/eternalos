@@ -3478,9 +3478,15 @@ describe('worker integration', () => {
     const socket = await openAgentChatSocket(user, 'budget');
     try {
       // The test env caps accounts at 6 AI requests/day (test/worker.env).
-      // The first 6 turns are admitted — each fails at the (absent)
-      // provider but still consumes budget: attempts count.
-      for (let i = 0; i < 6; i++) {
+      // The upload's automatic image analysis already spent one; the next 5
+      // turns are admitted — each fails at the (absent) provider but still
+      // consumes budget: attempts count.
+      await waitFor(async () => {
+        const desktop = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+        const item = desktop.items.find((candidate) => candidate.id === upload.item.id);
+        assert.notEqual(item?.imageAnalysis?.status, 'pending');
+      }, { timeoutMs: 5000 });
+      for (let i = 0; i < 5; i++) {
         const turn = await sendChatTurn(socket, `budget-${i}`, `turn ${i}`, 'budget');
         assert.equal(turn.done, true, `budget turn ${i} must terminate`);
         assert.doesNotMatch(turn.errorText ?? '', BUDGET_REFUSAL,
