@@ -75,25 +75,13 @@ async function authenticateSessionToken(token: string, env: Env): Promise<AuthCo
       return null;
     }
 
-    // Check if password was changed after session was issued
-    // This invalidates sessions when password changes
-    const userJson = await getUserByUid(env, payload.uid);
-
-    if (userJson) {
-      const user = JSON.parse(userJson) as UserRecord;
-      if (user.passwordChangedAt && session.issuedAt && session.issuedAt < user.passwordChangedAt) {
-        // Session was issued before password change - invalidate it
-        await env.AUTH_KV.delete(`session:${token}`);
-        return null;
-      }
-      // SECURITY: Reject sessions for soft-deleted accounts. This is defense
-      // in depth — the login/OAuth/recovery-code paths all check `deletedAt`
-      // before minting a token, but if any future code path forgets (as the
-      // original Google callback did), every `requireAuth` route still holds.
-      if (user.deletedAt) {
-        await env.AUTH_KV.delete(`session:${token}`);
-        return null;
-      }
+    // SECURITY: the account must still exist and be active. A missing uid
+    // index or user record (e.g. after a hard-delete purge) means 401 — a
+    // leftover session must never outlive its account.
+    const user = await loadActiveUser(env, payload.uid, session.issuedAt);
+    if (!user) {
+      await env.AUTH_KV.delete(`session:${token}`);
+      return null;
     }
 
     return {
@@ -123,11 +111,50 @@ export async function authenticateAgentChatWebSocket(
   const payload = await verifyChatWebSocketToken(wsToken, env.JWT_SECRET);
   if (!payload) return null;
 
+  // The token carries no session, so apply the same account checks a session
+  // gets: the account must exist, not be soft-deleted, and the token must not
+  // predate a password change (iat is in seconds; round the change down so a
+  // token minted in the same second as the change is still rejected).
+  let user: UserRecord | null;
+  try {
+    user = await loadActiveUser(env, payload.uid, payload.iat * 1000, { iatSeconds: true });
+  } catch {
+    return null;
+  }
+  if (!user) return null;
+
+  // One-time use: record the jti on first use. A replayed token URL (logs,
+  // history, a proxy) is rejected even inside its 60s lifetime. The marker
+  // expires shortly after the token itself (KV's minimum TTL is 60s), after
+  // which the signature check rejects the token anyway. KV, not a DO, so the
+  // markers clean themselves up; the cost is a small window in which two
+  // truly simultaneous upgrades with one token could both pass.
+  if (!payload.jti || !(await claimChatWebSocketJti(env, payload.jti, payload.exp))) {
+    return null;
+  }
+
   return {
     uid: payload.uid,
-    username: '',
+    username: user.username,
     kind: 'session',
   };
+}
+
+const CHAT_WS_JTI_SLACK_SECONDS = 60;
+
+async function claimChatWebSocketJti(env: Env, jti: string, expSeconds: number): Promise<boolean> {
+  try {
+    const key = `chat-ws-jti:${jti}`;
+    if (await env.AUTH_KV.get(key)) return false;
+    const remaining = Math.max(0, expSeconds - Math.floor(Date.now() / 1000));
+    await env.AUTH_KV.put(key, '1', {
+      expirationTtl: Math.max(60, remaining + CHAT_WS_JTI_SLACK_SECONDS),
+    });
+    return true;
+  } catch {
+    // Fail closed: if the use can't be recorded, the token isn't accepted.
+    return false;
+  }
 }
 
 /**
@@ -179,6 +206,39 @@ async function getUserByUid(env: Env, uid: string): Promise<string | null> {
 
   // Fetch the actual user record
   return await env.AUTH_KV.get(`user:${email}`);
+}
+
+/**
+ * Load the user record for a credential and check it is still usable:
+ * the uid index and user record exist, the account is not soft-deleted, and
+ * the credential was not issued before the last password change.
+ * Returns null when any check fails.
+ *
+ * `issuedAtMs` is when the credential was issued. With `iatSeconds`, it came
+ * from a whole-second JWT `iat`, so a change within that same second also
+ * invalidates it.
+ */
+export async function loadActiveUser(
+  env: Env,
+  uid: string,
+  issuedAtMs: number | undefined,
+  options: { iatSeconds?: boolean } = {},
+): Promise<UserRecord | null> {
+  const userJson = await getUserByUid(env, uid);
+  if (!userJson) return null;
+  const user = JSON.parse(userJson) as UserRecord;
+  if (user.uid && user.uid !== uid) return null;
+  // SECURITY: Reject credentials for soft-deleted accounts. Defense in depth —
+  // the login/OAuth/recovery-code paths all check `deletedAt` before minting a
+  // token, but if any future code path forgets, every credential check holds.
+  if (user.deletedAt) return null;
+  if (user.passwordChangedAt && issuedAtMs !== undefined) {
+    const changedAt = options.iatSeconds
+      ? Math.floor(user.passwordChangedAt / 1000) * 1000
+      : user.passwordChangedAt;
+    if (options.iatSeconds ? issuedAtMs <= changedAt : issuedAtMs < changedAt) return null;
+  }
+  return user;
 }
 
 /**

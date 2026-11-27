@@ -19,9 +19,12 @@
  *   Foundations / R2.
  *
  * Documented residuals (not purged here):
- * - Session / refresh tokens are keyed by token with no per-uid index. They are
- *   already invalidated at soft-delete (passwordChangedAt bump) and expire via
- *   their KV TTLs.
+ * - Session / refresh tokens issued before the `auth-tokens:{uid}:` index
+ *   existed can't be enumerated. They are invalidated at soft-delete
+ *   (passwordChangedAt bump), rejected once the user record is gone, and
+ *   expire via their KV TTLs. Indexed tokens ARE deleted (step 5c).
+ * - `refresh-family-revoked:{familyId}` markers are keyed by family, not uid,
+ *   and expire via their TTL.
  * - Per-game saves `gamesave:{gameId}:{uid}` are keyed by a uid *suffix*;
  *   finding them needs a full keyspace scan. They are orphaned (small, tied to
  *   a uid that no longer resolves to an account).
@@ -57,6 +60,55 @@ export async function markPendingDeletion(
 ): Promise<void> {
   const value: PendingDeletion = { uid, email, hardDeleteAt };
   await env.AUTH_KV.put(pendingDeletionKey(uid), JSON.stringify(value));
+}
+
+const AUTH_TOKEN_INDEX_PREFIX = 'auth-tokens:';
+
+/** Per-uid index prefix for session / refresh tokens (see {@link recordAuthTokens}). */
+export function authTokenIndexPrefix(uid: string): string {
+  return `${AUTH_TOKEN_INDEX_PREFIX}${uid}:`;
+}
+
+/**
+ * Index a freshly issued session + refresh token pair under the account, so
+ * the purge can find and delete them (they are otherwise keyed only by the
+ * token itself). Each index key is `auth-tokens:{uid}:{the token's KV key}`
+ * and expires with the token. Best-effort: a failed index write never fails
+ * the login — an unindexed token is still rejected once the account is gone,
+ * it just lingers until its own TTL.
+ */
+export async function recordAuthTokens(
+  env: Env,
+  uid: string,
+  accessToken: string,
+  accessTtlSeconds: number,
+  refreshToken: string,
+  refreshTtlSeconds: number,
+): Promise<void> {
+  const prefix = authTokenIndexPrefix(uid);
+  await Promise.all([
+    env.AUTH_KV.put(`${prefix}session:${accessToken}`, '', { expirationTtl: Math.max(60, accessTtlSeconds) }),
+    env.AUTH_KV.put(`${prefix}refresh:${refreshToken}`, '', { expirationTtl: Math.max(60, refreshTtlSeconds) }),
+  ]).catch((err) => console.error('recordAuthTokens: index write failed:', err));
+}
+
+async function deleteKvPrefix(
+  kv: KVNamespace,
+  prefix: string,
+  onKey?: (name: string) => Promise<void>,
+): Promise<number> {
+  let deleted = 0;
+  let cursor: string | undefined;
+  do {
+    const res = await kv.list({ prefix, cursor });
+    for (const key of res.keys) {
+      if (onKey) await onKey(key.name);
+      await kv.delete(key.name).catch(() => {});
+      deleted++;
+    }
+    cursor = res.list_complete ? undefined : (res.cursor ?? undefined);
+  } while (cursor);
+  return deleted;
 }
 
 /** Cancel a scheduled deletion (grace-period reactivation). Idempotent. */
@@ -215,16 +267,36 @@ export async function purgeAccount(env: Env, pending: PendingDeletion): Promise<
   // 5. Uid-scoped DESKTOP_KV: public snapshot + app storage namespace.
   await env.DESKTOP_KV.delete(`public:${uid}`).catch(() => {});
   kvDeleted++;
+  kvDeleted += await deleteKvPrefix(env.DESKTOP_KV, `app-storage:${uid}:`);
+  // Visit analytics (routes/analytics.ts): counters `views:{uid}:total`,
+  // `views:{uid}:daily:{date}` and dedupe markers `viewlog:{uid}:{hash}`.
+  kvDeleted += await deleteKvPrefix(env.DESKTOP_KV, `views:${uid}:`);
+  kvDeleted += await deleteKvPrefix(env.DESKTOP_KV, `viewlog:${uid}:`);
+
+  // 5b. Uid/email-scoped AUTH_KV leftovers: guestbook sign rate limits
+  //     (`guestbook:{ownerUid}:{itemId}:{ip}`, routes/guestbook.ts) and the
+  //     per-address email rate limits (routes/auth.ts forgot-password and
+  //     send-verification).
+  kvDeleted += await deleteKvPrefix(env.AUTH_KV, `guestbook:${uid}:`);
+  await env.AUTH_KV.delete(`email-ratelimit:${email}`).catch(() => {});
+  await env.AUTH_KV.delete(`email-ratelimit:verify:${email}`).catch(() => {});
+  kvDeleted += 2;
+
+  // 5c. Sessions + refresh tokens, via the per-uid index recordAuthTokens
+  //     writes at issue time (each index key names the token's own KV key).
+  //     Tokens issued before the index existed can't be enumerated, but they
+  //     are rejected anyway once the user record below is gone.
   {
-    let cursor: string | undefined;
-    do {
-      const res = await env.DESKTOP_KV.list({ prefix: `app-storage:${uid}:`, cursor });
-      for (const key of res.keys) {
-        await env.DESKTOP_KV.delete(key.name).catch(() => {});
-        kvDeleted++;
+    const prefix = authTokenIndexPrefix(uid);
+    let tokensDeleted = 0;
+    const indexDeleted = await deleteKvPrefix(env.AUTH_KV, prefix, async (name) => {
+      const tokenKey = name.slice(prefix.length);
+      if (tokenKey.startsWith('session:') || tokenKey.startsWith('refresh:')) {
+        await env.AUTH_KV.delete(tokenKey).catch(() => {});
+        tokensDeleted++;
       }
-      cursor = res.list_complete ? undefined : (res.cursor ?? undefined);
-    } while (cursor);
+    });
+    kvDeleted += indexDeleted + tokensDeleted;
   }
 
   // 6. UserDesktop DO: wipe all desktop state (items, profile, trash, assets,

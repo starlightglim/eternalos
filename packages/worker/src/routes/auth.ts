@@ -22,7 +22,7 @@ import { sanitizeEmail, sanitizeUsername } from '../utils/sanitize';
 import { sendEmail, getPasswordResetEmail, getEmailVerificationEmail, getUsernameChangeEmail } from '../utils/email';
 import { generateRecoveryCodes, hashRecoveryCodes, findMatchingRecoveryHash, burnRecoveryCode } from '../utils/recoveryCodes';
 import { verifyTurnstile } from '../utils/turnstile';
-import { markPendingDeletion, clearPendingDeletion } from '../utils/accountPurge';
+import { markPendingDeletion, clearPendingDeletion, recordAuthTokens } from '../utils/accountPurge';
 
 interface SignupBody {
   email: string;
@@ -99,7 +99,7 @@ function validateUsername(username: string): string | null {
  * POST /api/auth/signup
  * Create a new user account
  */
-export async function handleSignup(request: Request, env: Env): Promise<Response> {
+export async function handleSignup(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   let body: SignupBody;
   try {
     body = await request.json() as SignupBody;
@@ -442,9 +442,12 @@ Try saying:
     console.error('Signup: store refresh token failed:', e);
     return Response.json({ error: 'Signup failed. Please try again.' }, { status: 500 });
   }
+  await recordAuthTokens(env, uid, token, accessExpiry, refreshToken, refreshExpiry);
 
-  // Send verification email on signup (non-blocking)
-  if (env.RESEND_API_KEY && env.FROM_EMAIL) {
+  // Send verification email on signup without delaying the response.
+  // ctx.waitUntil keeps the worker alive until the send finishes (a floating
+  // promise can be cut off once the response is returned).
+  if ((env.SEND_EMAIL || env.RESEND_API_KEY) && env.FROM_EMAIL) {
     const verifyToken = crypto.randomUUID() + '-' + crypto.randomUUID();
     const verifyTtlSeconds = 24 * 60 * 60;
     const verificationRecord: EmailVerificationRecord = {
@@ -453,7 +456,7 @@ Try saying:
       createdAt: now,
       expiresAt: now + (verifyTtlSeconds * 1000),
     };
-    env.AUTH_KV.put(`verify:${verifyToken}`, JSON.stringify(verificationRecord), {
+    ctx.waitUntil(env.AUTH_KV.put(`verify:${verifyToken}`, JSON.stringify(verificationRecord), {
       expirationTtl: verifyTtlSeconds,
     }).then(() => {
       const appUrl = env.APP_URL || 'https://eternalos.app';
@@ -465,7 +468,7 @@ Try saying:
         html,
         text,
       });
-    }).catch((err) => console.error('Failed to send verification email:', err));
+    }).catch((err) => console.error('Failed to send verification email:', err)));
   }
 
     return Response.json({
@@ -634,6 +637,7 @@ export async function handleLogin(request: Request, env: Env): Promise<Response>
     console.error('Refresh token storage error:', refreshError);
     return Response.json({ error: 'Session creation error' }, { status: 500 });
   }
+  await recordAuthTokens(env, userRecord.uid, token, accessExpiry, refreshToken, refreshExpiry);
 
   return Response.json({
     token,
@@ -792,32 +796,40 @@ export async function handleRefreshToken(request: Request, env: Env): Promise<Re
   // Check if password was changed after refresh token was issued.
   // Uses issuedAt from the refresh token record directly — does NOT depend
   // on the access token session existing (which expires after 15 min).
+  //
+  // SECURITY: the account must also still exist and be active. A missing uid
+  // index or user record (e.g. after a hard-delete purge) means 401 — a
+  // leftover refresh token must never mint a session for a purged account.
+  let user: UserRecord | null = null;
   const uidIndexJson = await env.AUTH_KV.get(`uid:${refreshData.uid}`);
   if (uidIndexJson) {
     const { email } = JSON.parse(uidIndexJson) as { email: string };
     const userJson = await env.AUTH_KV.get(`user:${email}`);
-    if (userJson) {
-      const user = JSON.parse(userJson) as UserRecord;
-      // Use refresh token's own issuedAt (reliable), fall back to old session check
-      const tokenIssuedAt = refreshData.issuedAt;
-      if (tokenIssuedAt && user.passwordChangedAt && tokenIssuedAt < user.passwordChangedAt) {
-        // Password was changed after this refresh token was issued — invalidate
+    if (userJson) user = JSON.parse(userJson) as UserRecord;
+  }
+  if (!user || (user.uid && user.uid !== refreshData.uid) || user.deletedAt) {
+    await env.AUTH_KV.delete(`refresh:${refreshToken}`);
+    await env.AUTH_KV.delete(`session:${refreshData.accessToken}`);
+    return Response.json({ error: 'Invalid or expired refresh token' }, { status: 401 });
+  }
+  // Use refresh token's own issuedAt (reliable), fall back to old session check
+  const tokenIssuedAt = refreshData.issuedAt;
+  if (tokenIssuedAt && user.passwordChangedAt && tokenIssuedAt < user.passwordChangedAt) {
+    // Password was changed after this refresh token was issued — invalidate
+    await env.AUTH_KV.delete(`refresh:${refreshToken}`);
+    await env.AUTH_KV.delete(`session:${refreshData.accessToken}`);
+    return Response.json({ error: 'Session invalidated due to password change' }, { status: 401 });
+  }
+
+  // Fallback for old refresh tokens that don't have issuedAt yet
+  if (!tokenIssuedAt && user.passwordChangedAt) {
+    const oldSessionJson = await env.AUTH_KV.get(`session:${refreshData.accessToken}`);
+    if (oldSessionJson) {
+      const oldSession = JSON.parse(oldSessionJson) as SessionRecord;
+      if (oldSession.issuedAt < user.passwordChangedAt) {
         await env.AUTH_KV.delete(`refresh:${refreshToken}`);
         await env.AUTH_KV.delete(`session:${refreshData.accessToken}`);
         return Response.json({ error: 'Session invalidated due to password change' }, { status: 401 });
-      }
-
-      // Fallback for old refresh tokens that don't have issuedAt yet
-      if (!tokenIssuedAt && user.passwordChangedAt) {
-        const oldSessionJson = await env.AUTH_KV.get(`session:${refreshData.accessToken}`);
-        if (oldSessionJson) {
-          const oldSession = JSON.parse(oldSessionJson) as SessionRecord;
-          if (oldSession.issuedAt < user.passwordChangedAt) {
-            await env.AUTH_KV.delete(`refresh:${refreshToken}`);
-            await env.AUTH_KV.delete(`session:${refreshData.accessToken}`);
-            return Response.json({ error: 'Session invalidated due to password change' }, { status: 401 });
-          }
-        }
       }
     }
   }
@@ -883,6 +895,7 @@ export async function handleRefreshToken(request: Request, env: Env): Promise<Re
   await env.AUTH_KV.put(`refresh:${newRefreshToken}`, JSON.stringify(newRefreshData), {
     expirationTtl: refreshExpiry,
   });
+  await recordAuthTokens(env, refreshData.uid, newAccessToken, accessExpiry, newRefreshToken, refreshExpiry);
 
   return Response.json({
     token: newAccessToken,
@@ -899,7 +912,7 @@ interface ForgotPasswordBody {
  * POST /api/auth/forgot-password
  * Request a password reset token
  */
-export async function handleForgotPassword(request: Request, env: Env): Promise<Response> {
+export async function handleForgotPassword(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   let body: ForgotPasswordBody;
   try {
     body = await request.json() as ForgotPasswordBody;
@@ -918,95 +931,102 @@ export async function handleForgotPassword(request: Request, env: Env): Promise<
   }
 
   const normalizedEmail = sanitizeEmail(email);
+  const isDev = env.ENVIRONMENT === 'development';
+  const genericResponse = {
+    success: true,
+    message: 'If an account with that email exists, a reset link has been generated.',
+  };
 
-  // SECURITY: Per-address email rate limit — max 3 reset emails per hour
-  // Prevents email bombing and abuse of the email-sending endpoint
-  const emailRateLimitKey = `email-ratelimit:${normalizedEmail}`;
-  const emailRateData = await env.AUTH_KV.get<number[]>(emailRateLimitKey, 'json');
-  const oneHourAgo = Date.now() - 60 * 60 * 1000;
-  const recentSends = (emailRateData || []).filter(ts => ts > oneHourAgo);
-  if (recentSends.length >= 3) {
-    // Still return success to prevent email enumeration
-    return Response.json({
-      success: true,
-      message: 'If an account with that email exists, a reset link has been generated.',
-    });
-  }
-
-  // Look up user by email
+  // SECURITY: Always return the same response, after the same work, whether
+  // or not the email belongs to an account (no enumeration by body OR by
+  // timing). The request path does only the one read every request does;
+  // everything that happens only for a real account (rate limit, reset
+  // token, email send) runs after the response via ctx.waitUntil.
   const userJson = await env.AUTH_KV.get(`user:${normalizedEmail}`);
-
-  // Always return success to prevent email enumeration attacks
-  // Even if user doesn't exist, we return the same response
   if (!userJson) {
-    return Response.json({
-      success: true,
-      message: 'If an account with that email exists, a reset link has been generated.',
-    });
+    return Response.json(genericResponse);
   }
-
-  // Track the email send
-  recentSends.push(Date.now());
-  await env.AUTH_KV.put(emailRateLimitKey, JSON.stringify(recentSends), { expirationTtl: 3600 });
 
   const userRecord = JSON.parse(userJson) as UserRecord;
 
-  // OAuth-only users have no password — silently return success
-  // (consistent with the non-enumeration pattern above)
-  if (!userRecord.passwordHash && userRecord.oauthProviders?.length) {
-    return Response.json({
-      success: true,
-      message: 'If an account with that email exists, a reset link has been generated.',
-    });
-  }
-
   // Generate a secure reset token
   const resetToken = crypto.randomUUID() + '-' + crypto.randomUUID();
-  const now = Date.now();
-  const ttlSeconds = 60 * 60; // 1 hour TTL
-
-  const resetRecord: PasswordResetRecord = {
-    uid: userRecord.uid,
-    email: normalizedEmail,
-    createdAt: now,
-    expiresAt: now + (ttlSeconds * 1000),
-  };
-
-  // Store reset token in KV with TTL
-  await env.AUTH_KV.put(`reset:${resetToken}`, JSON.stringify(resetRecord), {
-    expirationTtl: ttlSeconds,
-  });
-
-  // Build the reset URL
   const appUrl = env.APP_URL || 'https://eternalos.app';
   const resetUrl = `${appUrl}/reset-password?token=${resetToken}`;
+  // OAuth-only users have no password — no reset link (same response).
+  const isOAuthOnly = !userRecord.passwordHash && !!userRecord.oauthProviders?.length;
 
-  const isDev = env.ENVIRONMENT === 'development';
+  // Per-address email rate limit — max 3 reset emails per hour. Prevents
+  // email bombing and abuse of the email-sending endpoint. A short
+  // AuthCoordinator lock serializes bursts, so parallel requests can't all
+  // read the same old list before any write lands. Returns whether this
+  // request may send.
+  const claimRateLimit = async (): Promise<boolean> => {
+    if (!await claimAuthLock(env, `forgot-password:${normalizedEmail}`, crypto.randomUUID(), 60)) return false;
+    const emailRateLimitKey = `email-ratelimit:${normalizedEmail}`;
+    const emailRateData = await env.AUTH_KV.get<number[]>(emailRateLimitKey, 'json');
+    const oneHourAgo = Date.now() - 60 * 60 * 1000;
+    const recentSends = (emailRateData || []).filter(ts => ts > oneHourAgo);
+    if (recentSends.length >= 3) return false;
+    recentSends.push(Date.now());
+    await env.AUTH_KV.put(emailRateLimitKey, JSON.stringify(recentSends), { expirationTtl: 3600 });
+    return true;
+  };
 
-  // Send password reset email — sendEmail() picks CF binding or Resend automatically
-  const emailConfigured = (env.SEND_EMAIL || env.RESEND_API_KEY) && env.FROM_EMAIL;
-  if (emailConfigured) {
-    const { html, text } = getPasswordResetEmail(resetUrl, userRecord.username);
-    const sent = await sendEmail(env, {
-      to: normalizedEmail,
-      subject: 'Reset your EternalOS password',
-      html,
-      text,
+  // `allowed` resolves to whether a reset token was issued.
+  const work = (async (): Promise<boolean> => {
+    if (!await claimRateLimit()) return false;
+    if (isOAuthOnly) return false;
+
+    const now = Date.now();
+    const ttlSeconds = 60 * 60; // 1 hour TTL
+    const resetRecord: PasswordResetRecord = {
+      uid: userRecord.uid,
+      email: normalizedEmail,
+      createdAt: now,
+      expiresAt: now + (ttlSeconds * 1000),
+    };
+
+    // Store reset token in KV with TTL
+    await env.AUTH_KV.put(`reset:${resetToken}`, JSON.stringify(resetRecord), {
+      expirationTtl: ttlSeconds,
     });
 
-    if (!sent) {
-      console.error(`Failed to send password reset email to ${normalizedEmail}`);
+    // Send password reset email — sendEmail() picks CF binding or Resend automatically
+    const emailConfigured = (env.SEND_EMAIL || env.RESEND_API_KEY) && env.FROM_EMAIL;
+    if (emailConfigured) {
+      const { html, text } = getPasswordResetEmail(resetUrl, userRecord.username);
+      const sent = await sendEmail(env, {
+        to: normalizedEmail,
+        subject: 'Reset your EternalOS password',
+        html,
+        text,
+      });
+      if (!sent) {
+        console.error('Failed to send password reset email');
+      }
+    } else if (isDev) {
+      // In development without email configured, log the reset URL
+      console.log(`[DEV] Password reset URL: ${resetUrl}`);
     }
-  } else if (isDev) {
-    // In development without email configured, log the reset URL
-    console.log(`[DEV] Password reset URL: ${resetUrl}`);
+    return true;
+  })().catch((err) => {
+    console.error('Password reset background work failed:', err);
+    return false;
+  });
+
+  if (!isDev) {
+    ctx.waitUntil(work);
+    return Response.json(genericResponse);
   }
 
+  // Development only: the response carries the reset token (so local flows
+  // and tests can use it right away), so wait for it to be stored first.
+  // Production never returns the token and never waits.
+  const issued = await work;
   return Response.json({
-    success: true,
-    message: 'If an account with that email exists, a reset link has been generated.',
-    // Only include token in development mode — NEVER in production
-    ...(isDev ? { resetToken, resetUrl } : {}),
+    ...genericResponse,
+    ...(issued ? { resetToken, resetUrl } : {}),
   });
 }
 
@@ -1184,6 +1204,7 @@ export async function handleChangePassword(request: Request, env: Env, auth: Aut
   }), {
     expirationTtl: refreshExpiry,
   });
+  await recordAuthTokens(env, auth.uid, token, accessExpiry, refreshToken, refreshExpiry);
 
   return Response.json({
     success: true,
@@ -1205,7 +1226,12 @@ interface ChangeUsernameBody {
  * POST /api/auth/change-username
  * Change username for authenticated user (requires password confirmation)
  */
-export async function handleChangeUsername(request: Request, env: Env, auth: AuthContext): Promise<Response> {
+export async function handleChangeUsername(
+  request: Request,
+  env: Env,
+  auth: AuthContext,
+  ctx: ExecutionContext,
+): Promise<Response> {
   let body: ChangeUsernameBody;
   try {
     body = await request.json() as ChangeUsernameBody;
@@ -1331,16 +1357,18 @@ export async function handleChangeUsername(request: Request, env: Env, auth: Aut
     }), {
       expirationTtl: refreshExpiry,
     });
+    await recordAuthTokens(env, auth.uid, token, accessExpiry, refreshToken, refreshExpiry);
 
-    // Send notification email (non-blocking) — sendEmail picks CF or Resend
+    // Send notification email without delaying the response (waitUntil keeps
+    // the worker alive until it finishes) — sendEmail picks CF or Resend
     if ((env.SEND_EMAIL || env.RESEND_API_KEY) && env.FROM_EMAIL) {
       const { html, text } = getUsernameChangeEmail(oldUsername, normalizedNewUsername);
-      sendEmail(env, {
+      ctx.waitUntil(sendEmail(env, {
         to: email,
         subject: 'Your EternalOS username has been changed',
         html,
         text,
-      }).catch((err) => console.error('Failed to send username change email:', err));
+      }).catch((err) => console.error('Failed to send username change email:', err)));
     }
 
     return Response.json({
@@ -1426,7 +1454,7 @@ export async function handleSendVerification(request: Request, env: Env, auth: A
     });
 
     if (!sent) {
-      console.error(`Failed to send verification email to ${email}`);
+      console.error('Failed to send verification email');
     }
   } else if (isDev) {
     console.log(`[DEV] Email verification URL: ${verifyUrl}`);
@@ -1526,6 +1554,128 @@ interface GoogleUserInfo {
   name: string;
   given_name?: string;
   picture?: string;
+}
+
+const GOOGLE_SIGNUP_LOCK_TTL_SECONDS = 60;
+
+/**
+ * Create a new OAuth-only account for a first-time Google sign-in.
+ *
+ * SECURITY: Holds the same AuthCoordinator locks as password signup
+ * (`signup:email:*`, `signup:username:*`) across the check-then-write, so a
+ * concurrent password or Google signup can't claim the same email or
+ * username. A username candidate is used only once its lock is held AND the
+ * `username:` index shows it free.
+ */
+async function createGoogleUser(
+  env: Env,
+  googleUser: GoogleUserInfo,
+  normalizedEmail: string,
+  now: number,
+): Promise<UserRecord | Response> {
+  const lockValue = crypto.randomUUID();
+  const heldLocks: string[] = [];
+  const busy = () => Response.json(
+    { error: 'Signup in progress for this account. Please try again.' },
+    { status: 409 },
+  );
+
+  try {
+    const emailLock = `signup:email:${normalizedEmail}`;
+    if (!await claimAuthLock(env, emailLock, lockValue, GOOGLE_SIGNUP_LOCK_TTL_SECONDS)) return busy();
+    heldLocks.push(emailLock);
+
+    // Re-check under the lock: a concurrent signup may have just created it.
+    if (await env.AUTH_KV.get(`user:${normalizedEmail}`)) return busy();
+
+    // Generate username from Google name
+    let baseUsername = (googleUser.given_name || googleUser.name || 'user')
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, '')
+      .slice(0, 15);
+    if (baseUsername.length < 3) baseUsername = 'user';
+
+    const candidates: string[] = [baseUsername];
+    for (let suffix = 1; suffix <= 100; suffix++) candidates.push(`${baseUsername}${suffix}`);
+    for (let i = 0; i < 5; i++) candidates.push(`user_${crypto.randomUUID().slice(0, 8)}`);
+
+    let username: string | null = null;
+    for (const candidate of candidates) {
+      if (validateUsername(candidate)) continue; // reserved / invalid
+      // Cheap KV pre-check so taken names don't cost a lock round-trip each;
+      // the authoritative check is repeated under the lock below.
+      if (await env.AUTH_KV.get(`username:${candidate}`)) continue;
+      const usernameLock = `signup:username:${candidate}`;
+      if (!await claimAuthLock(env, usernameLock, lockValue, GOOGLE_SIGNUP_LOCK_TTL_SECONDS)) continue;
+      if (!await env.AUTH_KV.get(`username:${candidate}`)) {
+        heldLocks.push(usernameLock);
+        username = candidate;
+        break;
+      }
+      await releaseAuthLock(env, usernameLock, lockValue).catch(() => {});
+    }
+    if (!username) return busy();
+
+    const uid = crypto.randomUUID();
+    const oauthProvider: OAuthProvider = {
+      provider: 'google',
+      providerId: googleUser.id,
+      connectedAt: now,
+      email: normalizedEmail,
+    };
+
+    const userRecord: UserRecord = {
+      uid,
+      email: normalizedEmail,
+      // No passwordHash — OAuth-only account
+      username,
+      createdAt: now,
+      emailVerified: true,
+      emailVerifiedAt: now,
+      oauthProviders: [oauthProvider],
+    };
+
+    // Store user data
+    await env.AUTH_KV.put(`user:${normalizedEmail}`, JSON.stringify(userRecord));
+    await env.AUTH_KV.put(`username:${username}`, JSON.stringify({ uid }));
+    await env.AUTH_KV.put(`uid:${uid}`, JSON.stringify({ email: normalizedEmail }));
+    await env.AUTH_KV.put(`oauth:google:${googleUser.id}`, JSON.stringify({ uid }));
+    await env.AUTH_KV.put(`user_index:${uid}`, normalizedEmail);
+
+    // Initialize Durable Object with profile and default items
+    const doId = env.USER_DESKTOP.idFromName(uid);
+    const stub = env.USER_DESKTOP.get(doId);
+
+    const displayName = googleUser.name || username;
+    await stub.fetch(new Request('http://internal/profile', {
+      method: 'POST',
+      body: JSON.stringify({
+        uid,
+        username,
+        displayName,
+        wallpaper: 'default',
+        createdAt: now,
+        isNewUser: true,
+      }),
+    }));
+
+    // Create a default welcome item
+    await stub.fetch(new Request('http://internal/items', {
+      method: 'POST',
+      body: JSON.stringify({
+        type: 'text',
+        name: 'Welcome.txt',
+        parentId: null,
+        position: { x: 0, y: 0 },
+        isPublic: true,
+        textContent: `Welcome to EternalOS, ${displayName}!\n\nYour personal desktop is ready.\n\n• Double-click items to open them\n• Right-click for context menus\n• Drop files to upload\n• Special menu → Appearance for customization\n\nYour public URL: eternalos.app/@${username}`,
+      }),
+    }));
+
+    return userRecord;
+  } finally {
+    await Promise.all(heldLocks.map((lock) => releaseAuthLock(env, lock, lockValue).catch(() => {})));
+  }
 }
 
 /**
@@ -1646,83 +1796,19 @@ export async function handleGoogleCallback(request: Request, env: Env): Promise<
         await env.AUTH_KV.put(`oauth:google:${googleUser.id}`, JSON.stringify({ uid: userRecord.uid }));
       }
     } else {
-      // New user via Google OAuth — create account
-      isNewUser = true;
-      const uid = crypto.randomUUID();
-
-      // Generate username from Google name
-      let baseUsername = (googleUser.given_name || googleUser.name || 'user')
-        .toLowerCase()
-        .replace(/[^a-z0-9_]/g, '')
-        .slice(0, 15);
-      if (baseUsername.length < 3) baseUsername = 'user';
-
-      // Ensure uniqueness
-      let username = baseUsername;
-      let suffix = 1;
-      while (await env.AUTH_KV.get(`username:${username}`)) {
-        username = `${baseUsername}${suffix}`;
-        suffix++;
-        if (suffix > 100) {
-          username = `user_${crypto.randomUUID().slice(0, 8)}`;
-          break;
-        }
+      // New user via Google OAuth — create account (under the same
+      // AuthCoordinator locks password signup uses, so two signups can't
+      // both claim one username or one email).
+      let created: UserRecord | Response;
+      try {
+        created = await createGoogleUser(env, googleUser, normalizedEmail, now);
+      } catch (e) {
+        console.error('Google signup failed:', e);
+        return Response.json({ error: 'Sign-in failed. Please try again.' }, { status: 503 });
       }
-
-      const oauthProvider: OAuthProvider = {
-        provider: 'google',
-        providerId: googleUser.id,
-        connectedAt: now,
-        email: normalizedEmail,
-      };
-
-      userRecord = {
-        uid,
-        email: normalizedEmail,
-        // No passwordHash — OAuth-only account
-        username,
-        createdAt: now,
-        emailVerified: true,
-        emailVerifiedAt: now,
-        oauthProviders: [oauthProvider],
-      };
-
-      // Store user data
-      await env.AUTH_KV.put(`user:${normalizedEmail}`, JSON.stringify(userRecord));
-      await env.AUTH_KV.put(`username:${username}`, JSON.stringify({ uid }));
-      await env.AUTH_KV.put(`uid:${uid}`, JSON.stringify({ email: normalizedEmail }));
-      await env.AUTH_KV.put(`oauth:google:${googleUser.id}`, JSON.stringify({ uid }));
-      await env.AUTH_KV.put(`user_index:${uid}`, normalizedEmail);
-
-      // Initialize Durable Object with profile and default items
-      const doId = env.USER_DESKTOP.idFromName(uid);
-      const stub = env.USER_DESKTOP.get(doId);
-
-      const displayName = googleUser.name || username;
-      await stub.fetch(new Request('http://internal/profile', {
-        method: 'POST',
-        body: JSON.stringify({
-          uid,
-          username,
-          displayName,
-          wallpaper: 'default',
-          createdAt: now,
-          isNewUser: true,
-        }),
-      }));
-
-      // Create a default welcome item
-      await stub.fetch(new Request('http://internal/items', {
-        method: 'POST',
-        body: JSON.stringify({
-          type: 'text',
-          name: 'Welcome.txt',
-          parentId: null,
-          position: { x: 0, y: 0 },
-          isPublic: true,
-          textContent: `Welcome to EternalOS, ${displayName}!\n\nYour personal desktop is ready.\n\n• Double-click items to open them\n• Right-click for context menus\n• Drop files to upload\n• Special menu → Appearance for customization\n\nYour public URL: eternalos.app/@${username}`,
-        }),
-      }));
+      if (created instanceof Response) return created;
+      userRecord = created;
+      isNewUser = true;
     }
   }
 
@@ -1791,6 +1877,7 @@ export async function handleGoogleCallback(request: Request, env: Env): Promise<
   }), {
     expirationTtl: refreshExpiry,
   });
+  await recordAuthTokens(env, userRecord.uid, token, accessExpiry, refreshTokenValue, refreshExpiry);
 
   return Response.json({
     token,
@@ -2148,6 +2235,7 @@ export async function handleUseRecoveryCode(request: Request, env: Env): Promise
     expiresAt: now + refreshExpiry * 1000,
     issuedAt: now,
   }), { expirationTtl: refreshExpiry });
+  await recordAuthTokens(env, user.uid, token, accessExpiry, refreshToken, refreshExpiry);
 
   return Response.json({
     success: true,

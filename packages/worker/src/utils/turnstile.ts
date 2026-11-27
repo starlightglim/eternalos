@@ -10,8 +10,8 @@
  *   - `turnstileToken` JSON field (body already parsed upstream → pass token directly)
  *   - `CF-Turnstile-Response` header
  *
- * If `env.TURNSTILE_SECRET` is unset the verifier returns true, so dev/local
- * work continues without Turnstile until the secret is configured in prod.
+ * If `env.TURNSTILE_SECRET` is unset the verifier returns true ONLY when
+ * `ENVIRONMENT=development` (local work); otherwise it fails closed.
  */
 
 interface TurnstileSiteVerifyResponse {
@@ -54,17 +54,22 @@ export async function extractTurnstileToken(request: Request): Promise<string | 
 
 /**
  * Verify a Turnstile token. Returns true if verification succeeds OR if
- * TURNSTILE_SECRET is unset (dev mode). Returns false on any verification error.
+ * TURNSTILE_SECRET is unset in development. Returns false on any verification
+ * error, and when the secret is unset outside development.
  */
 export async function verifyTurnstile(
   request: Request,
-  env: { TURNSTILE_SECRET?: string },
+  env: { TURNSTILE_SECRET?: string; ENVIRONMENT?: string },
   options: VerifyOptions = {}
 ): Promise<boolean> {
   const secret = env.TURNSTILE_SECRET;
   if (!secret) {
-    // Dev mode / secret not configured — allow.
-    return true;
+    // SECURITY: an unconfigured secret only skips the check in local
+    // development. Anywhere else it fails closed, so a missing secret can't
+    // silently turn the CAPTCHA off in production.
+    if (env.ENVIRONMENT === 'development') return true;
+    console.error('verifyTurnstile: TURNSTILE_SECRET is not configured; rejecting');
+    return false;
   }
 
   const token = options.token ?? (await extractTurnstileToken(request));
