@@ -5,7 +5,11 @@ import './styles/global.css'
 import './styles/wallpapers.css'
 import { registerBuiltinVariants } from './variants/registerBuiltins'
 import { registerServiceWorker } from './utils/registerServiceWorker'
+import { loadGoogleFonts } from './utils/googleFonts'
 import App from './App.tsx'
+
+// Non-blocking Google Fonts stylesheet (was a render-blocking CSS @import).
+loadGoogleFonts()
 
 // Register all built-in variant components before rendering
 registerBuiltinVariants()

@@ -6,7 +6,8 @@ import styles from './UploadProgress.module.css';
  * Displays in a small retro window at the bottom-right corner
  */
 export function UploadProgress() {
-  const { uploads, clearUpload } = useDesktopStore();
+  const uploads = useDesktopStore((s) => s.uploads);
+  const clearUpload = useDesktopStore((s) => s.clearUpload);
 
   if (uploads.length === 0) {
     return null;

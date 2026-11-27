@@ -31,12 +31,7 @@
  */
 
 import { create } from 'zustand';
-import {
-  buildEsthemeImportPlan,
-  composePreviewAppearance,
-  mimeForAsset,
-  type EsthemeImportPlan,
-} from './importEstheme';
+import type { EsthemeImportPlan } from './importEstheme';
 import {
   recordPreviewCursor,
   recordPreviewSound,
@@ -49,6 +44,12 @@ import { useAuthStore } from '../stores/authStore';
 import { uploadCursor, uploadSound, deleteCursor, deleteSound, getCursorUrl } from '../services/assets';
 import { uploadWallpaper } from '../services/appearance';
 import { isApiConfigured } from '../services/transport';
+
+/**
+ * The importer (zod schemas + JSZip, ~200KB) loads only when a theme is
+ * actually imported, so the desktop's initial chunk doesn't carry it.
+ */
+const loadImporter = () => import('./importEstheme');
 
 /** What the banner shows about the theme being previewed. */
 export interface EsthemePreviewInfo {
@@ -160,6 +161,7 @@ export const useEsthemePreviewStore = create<EsthemePreviewState>((set, get) => 
       set({ status: 'importing', info: null, error: null });
 
       try {
+        const { buildEsthemeImportPlan, composePreviewAppearance, mimeForAsset } = await loadImporter();
         const plan = await buildEsthemeImportPlan(source);
         const warnings = [...plan.warnings];
 
@@ -282,6 +284,7 @@ export const useEsthemePreviewStore = create<EsthemePreviewState>((set, get) => 
       if (active.plan.wallpaper && isApiConfigured) {
         try {
           const wallpaper = active.plan.wallpaper;
+          const { mimeForAsset } = await loadImporter();
           const mime = mimeForAsset('wallpaper', wallpaper.filename) ?? 'image/png';
           const file = new File([wallpaper.blob], wallpaper.filename, { type: mime });
           const response = await uploadWallpaper(file);
