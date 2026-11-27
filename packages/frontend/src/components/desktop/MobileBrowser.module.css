@@ -202,3 +202,32 @@
   font-size: 11px;
   color: var(--text-muted);
 }
+
+/* Tap feedback ("can't open on mobile") */
+.notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--surface-chrome);
+  border-bottom: 1px solid var(--control-border);
+  font-size: 12px;
+}
+
+.noticeDismiss,
+.retryButton {
+  font-family: var(--font-chicago);
+  font-size: 11px;
+  min-height: 32px;
+  min-width: 32px;
+  background: var(--control-bg);
+  color: var(--control-text);
+  border: 2px solid var(--control-border);
+  border-radius: 4px;
+}
+
+.retryButton {
+  margin-top: 12px;
+  padding: 4px 16px;
+}
