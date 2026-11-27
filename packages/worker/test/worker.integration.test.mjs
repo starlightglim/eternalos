@@ -4113,6 +4113,169 @@ describe('worker integration', () => {
     assert.equal(finalQuota.itemCount - startingQuota.itemCount, 4);
   });
 
+  it('sends visitors a visitor-safe profile over the live-sync WebSocket', async () => {
+    const user = await signupUser();
+    await patchProfile(user.token, { bio: 'hello visitors', analyticsEnabled: true });
+
+    const socket = new WebSocket(`ws://${worker.address || '127.0.0.1'}:${worker.port}/api/ws/${user.username}`);
+    const messages = [];
+    socket.on('message', (data) => messages.push(JSON.parse(data.toString())));
+    const nextMessage = () => new Promise((resolve, reject) => {
+      const deadline = Date.now() + 10000;
+      const check = () => {
+        if (messages.length > 0) resolve(messages.shift());
+        else if (Date.now() > deadline) reject(new Error('Timed out waiting for a visitor message'));
+        else setTimeout(check, 20);
+      };
+      check();
+    });
+    await new Promise((resolve, reject) => { socket.on('open', resolve); socket.on('error', reject); });
+    const privateFields = ['createdAt', 'isNewUser', 'analyticsEnabled'];
+    try {
+      const snapshot = await nextMessage();
+      assert.equal(snapshot.type, 'snapshot');
+      assert.equal(snapshot.profile.bio, 'hello visitors');
+      // uid stays: it keys the public guestbook route visitors post to.
+      assert.equal(typeof snapshot.profile.uid, 'string');
+      for (const field of privateFields) {
+        assert.equal(field in snapshot.profile, false, `snapshot leaked ${field}`);
+      }
+
+      await patchProfile(user.token, { bio: 'updated' });
+      const update = await nextMessage();
+      assert.equal(update.type, 'profile');
+      assert.equal(update.profile.bio, 'updated');
+      for (const field of privateFields) {
+        assert.equal(field in update.profile, false, `profile broadcast leaked ${field}`);
+      }
+    } finally {
+      socket.close();
+    }
+
+    // The owner still reads the full profile.
+    const own = await expectOk('/api/profile', { headers: authHeaders(user.token) });
+    assert.equal(typeof own.profile.uid, 'string');
+    assert.equal(own.profile.analyticsEnabled, true);
+  });
+
+  it('refuses the visitor WebSocket for a soft-deleted account', async () => {
+    const user = await signupUser();
+    const before = await wsUpgrade(`/api/ws/${user.username}`, {});
+    assert.equal(before.status, 101);
+
+    await expectOk('/api/auth/delete-account', {
+      method: 'POST',
+      headers: authHeaders(user.token, freshAuthIp('ws-soft-delete')),
+      body: JSON.stringify({ password: user.password }),
+    });
+    const after = await wsUpgrade(`/api/ws/${user.username}`, {});
+    assert.equal(after.status, 404);
+  });
+
+  it('rejects malformed window-state bodies with 400s, never 500s', async () => {
+    const user = await signupUser();
+    const put = (body) => fetchJson('/api/desktop/windows', {
+      method: 'PUT',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body,
+    });
+    for (const body of ['{"a":1}', '42', 'null', '[null]', '[{"title":"no id"}]', '[{"id":7}]']) {
+      const { response } = await put(body);
+      assert.equal(response.status, 400, `expected 400 for ${body}`);
+    }
+    const ok = await put(JSON.stringify([{ id: 'w1', title: 'Win', contentType: 'folder' }]));
+    assert.equal(ok.response.status, 200);
+  });
+
+  it('validates folder moves: cycles and bad parents are 400s and apply nothing', async () => {
+    const user = await signupUser();
+    const outer = await createDesktopItem(user.token, { type: 'folder', name: 'Outer' });
+    const inner = await createDesktopItem(user.token, { type: 'folder', name: 'Inner', parentId: outer.id });
+    const sibling = await createDesktopItem(user.token, { type: 'folder', name: 'Sibling' });
+    const note = await createDesktopItem(user.token, { type: 'text', name: 'note.txt', textContent: 'x' });
+
+    const patch = (patches) => fetchJson('/api/desktop/items', {
+      method: 'PATCH',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify(patches),
+    });
+
+    for (const patches of [
+      // into its own subfolder
+      [{ id: outer.id, updates: { parentId: inner.id } }],
+      // into itself
+      [{ id: outer.id, updates: { parentId: outer.id } }],
+      // a good entry alongside a cyclic one: all-or-nothing
+      [{ id: note.id, updates: { name: 'renamed' } }, { id: outer.id, updates: { parentId: inner.id } }],
+      // a cycle only the batch as a whole creates
+      [{ id: sibling.id, updates: { parentId: outer.id } }, { id: outer.id, updates: { parentId: sibling.id } }],
+      // parents must be existing folders
+      [{ id: note.id, updates: { parentId: 'missing-folder' } }],
+      [{ id: inner.id, updates: { parentId: note.id } }],
+      // imageAnalysis is server-controlled
+      [{ id: note.id, updates: { imageAnalysis: { status: 'complete', caption: 'forged' } } }],
+    ]) {
+      const { response } = await patch(patches);
+      assert.equal(response.status, 400, JSON.stringify(patches));
+    }
+
+    const badCreate = await fetchJson('/api/desktop/items', {
+      method: 'POST',
+      headers: authHeaders(user.token, JSON_HEADERS),
+      body: JSON.stringify({ type: 'text', name: 'orphan', parentId: 'missing-folder' }),
+    });
+    assert.equal(badCreate.response.status, 400);
+
+    const desktop = await expectOk('/api/desktop', { headers: authHeaders(user.token) });
+    const byId = new Map(desktop.items.map((item) => [item.id, item]));
+    assert.equal(byId.get(outer.id).parentId, null);
+    assert.equal(byId.get(inner.id).parentId, outer.id);
+    assert.equal(byId.get(sibling.id).parentId, null);
+    assert.equal(byId.get(note.id).name, 'note.txt');
+    assert.equal(byId.get(note.id).imageAnalysis, undefined);
+
+    // Valid moves still work, including back to the root.
+    await patchItems(user.token, [{ id: note.id, updates: { parentId: inner.id } }]);
+    await patchItems(user.token, [{ id: inner.id, updates: { parentId: null } }]);
+  });
+
+  it('keeps a running quota counter across upload, delete, and empty trash', async () => {
+    const user = await signupUser();
+    const start = await getQuota(user.token);
+    const upload = async (name, text) => {
+      const form = new UndiciFormData();
+      form.set('file', new File([text], name, { type: 'text/plain' }));
+      return expectOk('/api/upload', { method: 'POST', headers: authHeaders(user.token), body: form });
+    };
+    const a = await upload('a.txt', 'aaaa');
+    const b = await upload('b.txt', 'bbbbbbbb');
+    const afterUpload = await getQuota(user.token);
+    assert.equal(afterUpload.used - start.used, 12);
+    assert.equal(afterUpload.itemCount - start.itemCount, 2);
+
+    const aId = a.item?.id ?? a.id;
+    const bId = b.item?.id ?? b.id;
+    const deleted = await expectOk(`/api/desktop/items/${aId}`, { method: 'DELETE', headers: authHeaders(user.token) });
+    assert.equal(deleted.deleted, true);
+    const afterDelete = await getQuota(user.token);
+    assert.equal(afterDelete.used - start.used, 8);
+    assert.equal(afterDelete.itemCount - start.itemCount, 1);
+
+    await patchItems(user.token, [{ id: bId, updates: { isTrashed: true, trashedAt: Date.now() } }]);
+    const emptied = await expectOk('/api/trash', { method: 'DELETE', headers: authHeaders(user.token) });
+    assert.equal(emptied.deleted, 1);
+    assert.equal(emptied.r2Keys.length, 1);
+    const afterEmpty = await getQuota(user.token);
+    assert.equal(afterEmpty.used, start.used);
+    assert.equal(afterEmpty.itemCount, start.itemCount);
+
+    // Unknown item deletes and an already-empty trash stay clean no-ops.
+    const missing = await expectOk('/api/desktop/items/does-not-exist', { method: 'DELETE', headers: authHeaders(user.token) });
+    assert.equal(missing.deleted, false);
+    const emptyAgain = await expectOk('/api/trash', { method: 'DELETE', headers: authHeaders(user.token) });
+    assert.equal(emptyAgain.deleted, 0);
+  });
+
   it('stores custom CSS history and can restore an earlier version', async () => {
     const user = await signupUser();
     const firstCSS = '.window { border-radius: 8px; }';

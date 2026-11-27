@@ -99,6 +99,95 @@ const CLEARABLE_APPEARANCE_FIELDS: ReadonlySet<keyof UserProfile> = new Set([
  */
 const ALLOWED_TYPE_TRANSITIONS: ReadonlySet<string> = new Set(['image->sticker']);
 
+/**
+ * The profile fields a visitor may see — the same public surface the HTTP
+ * visit route (buildVisitorResponse in routes/visit.ts) exposes, plus the
+ * remaining appearance fields the visitor page renders. Everything else on
+ * UserProfile is account data that never leaves the owner's session:
+ * `createdAt`, `isNewUser`, `analyticsEnabled`. An allowlist (not a
+ * denylist) so a field added to UserProfile later stays private until it is
+ * deliberately listed here.
+ *
+ * `uid` stays visible: it is the owner key in the public guestbook route
+ * (POST /api/guestbook/:uid/:itemId) and the visitor page learns it only
+ * from this live-sync profile — dropping it would break every visitor's
+ * guestbook signing.
+ */
+const VISITOR_PROFILE_FIELDS = [
+  'uid',
+  'username',
+  'displayName',
+  'wallpaper',
+  'wallpaperMode',
+  'accentColor',
+  'desktopColor',
+  'windowBgColor',
+  'titleBarBgColor',
+  'titleBarTextColor',
+  'windowBorderColor',
+  'buttonBgColor',
+  'buttonTextColor',
+  'buttonBorderColor',
+  'labelColor',
+  'systemFont',
+  'bodyFont',
+  'monoFont',
+  'fontSmoothing',
+  'windowBorderRadius',
+  'controlBorderRadius',
+  'windowShadow',
+  'windowOpacity',
+  'designTokens',
+  'variants',
+  'customCSS',
+  'hideWatermark',
+  'bio',
+  'profileLinks',
+  'shareDescription',
+  'soundPack',
+] as const satisfies readonly (keyof UserProfile)[];
+
+export type VisitorProfile = Pick<UserProfile, (typeof VISITOR_PROFILE_FIELDS)[number]>;
+
+/** Strip a profile down to what visitors may see (see VISITOR_PROFILE_FIELDS). */
+export function toVisitorProfile(profile: UserProfile | null): VisitorProfile | null {
+  if (!profile) return null;
+  const visible: Record<string, unknown> = {};
+  for (const field of VISITOR_PROFILE_FIELDS) {
+    if (profile[field] !== undefined) visible[field] = profile[field];
+  }
+  return visible as VisitorProfile;
+}
+
+/**
+ * Running storage-usage counter (bytes + object count under `${uid}/` in R2),
+ * persisted under QUOTA_USAGE_KEY so quota reads and upload reservations no
+ * longer list every R2 object.
+ *
+ * The DO adjusts it exactly for the writes it can size itself — committed
+ * uploads (/items-internal with r2Key + fileSize) and item deletes/trash
+ * empties. Other uid-scoped R2 writes (wallpaper, uploaded icons, CSS/sound/
+ * cursor assets) are done by the upload routes, which only tell the DO about
+ * them indirectly (a profile/item/asset-metadata write without the byte
+ * delta), so those events invalidate the counter and the next read rebuilds
+ * it from R2 once. QUOTA_RECOMPUTE_MS is a backstop for anything else the
+ * DO never sees (a failed R2 cleanup, an orphaned object): a counter older
+ * than that is rebuilt on the next read.
+ */
+const QUOTA_USAGE_KEY = 'quota-usage';
+export const QUOTA_RECOMPUTE_MS = 10 * 60 * 1000;
+/** How long after a delete/invalidate an R2 listing is treated as unsettled. */
+const QUOTA_SETTLE_MS = 30 * 1000;
+
+interface QuotaUsage {
+  used: number;
+  objects: number;
+  computedAt: number;
+}
+
+/** Saved window state is capped to prevent storage abuse. */
+const MAX_WINDOWS = 20;
+
 export class UserDesktop {
   private state: DurableObjectState;
   private env: Env;
@@ -113,6 +202,18 @@ export class UserDesktop {
   // Track bytes reserved by in-flight uploads (not yet committed as items)
   // to prevent quota bypass via concurrent uploads.
   private pendingUploadBytes = 0;
+  // Running R2 usage counter (see QUOTA_USAGE_KEY). null = must be rebuilt
+  // from R2 on the next quota read.
+  private quotaUsage: QuotaUsage | null = null;
+  // Bumped by every adjust/invalidate so an R2 rebuild that raced with a
+  // write never persists a stale total.
+  private quotaGeneration = 0;
+  private quotaRebuild: Promise<QuotaUsage> | null = null;
+  // Until this time an R2 listing may still include objects the routes are
+  // about to delete (the DO forgets an item before the route removes its
+  // file, and the wallpaper route deletes the old file after the profile
+  // write) — rebuilds started before then answer their read but aren't saved.
+  private quotaSettleAt = 0;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -164,6 +265,9 @@ export class UserDesktop {
     this.soundAssets = await this.state.storage.get<SoundAssetMeta[]>('sound-assets') ?? [];
     this.cursorAssets = await this.state.storage.get<CursorAssetMeta[]>('cursor-assets') ?? [];
 
+    // Running quota counter (absent on old desktops: rebuilt on first read)
+    this.quotaUsage = await this.state.storage.get<QuotaUsage>(QUOTA_USAGE_KEY) ?? null;
+
     this.initialized = true;
   }
 
@@ -202,7 +306,8 @@ export class UserDesktop {
 
         this.state.acceptWebSocket(server);
 
-        // Send initial snapshot to the new visitor
+        // Send initial snapshot to the new visitor (visitor-safe profile:
+        // getVisitorData never carries uid/createdAt/isNewUser/analytics)
         const snapshot = this.getVisitorData();
         server.send(JSON.stringify({ type: 'snapshot', ...snapshot }));
 
@@ -231,6 +336,12 @@ export class UserDesktop {
       if (path === '/items-internal' && method === 'POST') {
         const item = await request.json() as Partial<DesktopItem>;
         const newItem = await this.createItemInternal(item);
+        // A committed upload: its bytes are already in R2, so they move from
+        // the in-flight reservation into the running usage counter.
+        const committedBytes = this.countedFileBytes(newItem);
+        if (committedBytes !== null) {
+          await this.adjustQuotaUsage(committedBytes, 1);
+        }
         return Response.json(newItem);
       }
 
@@ -283,7 +394,7 @@ export class UserDesktop {
 
       // PUT /windows - Save window state
       if (path === '/windows' && method === 'PUT') {
-        const windowData = await request.json() as SavedWindowState[];
+        const windowData: unknown = await request.json();
         await this.saveWindows(windowData);
         return Response.json({ success: true });
       }
@@ -341,6 +452,13 @@ export class UserDesktop {
         return Response.json(result);
       }
 
+      // POST /quota/invalidate - Drop the running usage counter (a route's
+      // R2 cleanup failed, so the counter no longer matches R2)
+      if (path === '/quota/invalidate' && method === 'POST') {
+        await this.invalidateQuotaUsage();
+        return Response.json({ success: true });
+      }
+
       // POST /quota/release - Release reserved quota (upload finished or failed)
       if (path === '/quota/release' && method === 'POST') {
         const { fileSize } = await request.json() as { fileSize: number };
@@ -358,6 +476,7 @@ export class UserDesktop {
         const meta = await request.json() as CSSAssetMeta;
         this.cssAssets.push(meta);
         await this.state.storage.put('css-assets', this.cssAssets);
+        await this.invalidateQuotaUsage();
         return Response.json({ success: true });
       }
 
@@ -366,6 +485,7 @@ export class UserDesktop {
         const assetId = path.slice('/css-assets/'.length);
         this.cssAssets = this.cssAssets.filter(a => a.assetId !== assetId);
         await this.state.storage.put('css-assets', this.cssAssets);
+        await this.invalidateQuotaUsage();
         return Response.json({ success: true });
       }
 
@@ -379,6 +499,7 @@ export class UserDesktop {
         const meta = await request.json() as SoundAssetMeta;
         this.soundAssets.push(meta);
         await this.state.storage.put('sound-assets', this.soundAssets);
+        await this.invalidateQuotaUsage();
         return Response.json({ success: true });
       }
 
@@ -387,6 +508,7 @@ export class UserDesktop {
         const soundId = path.slice('/sounds/'.length);
         this.soundAssets = this.soundAssets.filter(a => a.soundId !== soundId);
         await this.state.storage.put('sound-assets', this.soundAssets);
+        await this.invalidateQuotaUsage();
         return Response.json({ success: true });
       }
 
@@ -400,6 +522,7 @@ export class UserDesktop {
         const meta = await request.json() as CursorAssetMeta;
         this.cursorAssets.push(meta);
         await this.state.storage.put('cursor-assets', this.cursorAssets);
+        await this.invalidateQuotaUsage();
         return Response.json({ success: true });
       }
 
@@ -408,6 +531,7 @@ export class UserDesktop {
         const cursorId = path.slice('/cursors/'.length);
         this.cursorAssets = this.cursorAssets.filter(a => a.cursorId !== cursorId);
         await this.state.storage.put('cursor-assets', this.cursorAssets);
+        await this.invalidateQuotaUsage();
         return Response.json({ success: true });
       }
 
@@ -484,6 +608,9 @@ export class UserDesktop {
     if (typeof partial !== 'object' || partial === null || Array.isArray(partial)) {
       throw new HttpError(400, 'Item body must be a JSON object');
     }
+    // A client create may only nest the item inside one of this desktop's
+    // folders (or at the root) — a dangling or non-folder parent orphans it.
+    this.assertValidParent(partial.parentId);
     return this.createItemInternal({
       ...partial,
       // Strip server-controlled fields — these are only set by upload handlers
@@ -586,6 +713,26 @@ export class UserDesktop {
         const range = max === undefined ? `at least ${min}` : `between ${min} and ${max}`;
         throw new HttpError(400, `Invalid stickerConfig.${field}: must be a finite number ${range}`);
       }
+    }
+  }
+
+  /**
+   * A client-supplied parentId must be null/undefined (the desktop root) or
+   * the id of an existing folder on this desktop. Anything else — a missing
+   * id, a non-folder item, a non-string — is a 400 rather than a silently
+   * orphaned item that no window can ever show.
+   */
+  private assertValidParent(parentId: unknown): void {
+    if (parentId === undefined || parentId === null) return;
+    if (typeof parentId !== 'string') {
+      throw new HttpError(400, 'parentId must be a folder id or null');
+    }
+    const parent = this.items.get(parentId);
+    if (!parent) {
+      throw new HttpError(400, `parentId '${parentId}' does not exist`);
+    }
+    if (parent.type !== 'folder') {
+      throw new HttpError(400, `parentId '${parentId}' is not a folder`);
     }
   }
 
@@ -738,6 +885,9 @@ export class UserDesktop {
       }
 
       try {
+        if (filteredUpdates.parentId !== undefined) {
+          this.assertValidParent(filteredUpdates.parentId);
+        }
         this.assertValidTypeTransition(item, updatesRecord.type);
         if (updatesRecord.stickerConfig !== undefined) {
           this.assertValidStickerConfig(updatesRecord.stickerConfig);
@@ -758,6 +908,47 @@ export class UserDesktop {
       planned.push({ id, updates: filteredUpdates });
     }
 
+    // Folder-cycle check against the state the whole batch would produce
+    // (a batch can move A into B and B into A in two entries — each entry
+    // alone looks fine against the current map). Any cycle rejects the whole
+    // batch with a 400: the old per-entry check silently skipped the move
+    // and still answered 200, so the client thought it was saved.
+    const projectedParent = new Map<string, string | null | undefined>();
+    for (const { id, updates } of planned) {
+      if (updates.parentId !== undefined) projectedParent.set(id, updates.parentId);
+    }
+    if (projectedParent.size > 0) {
+      const parentOf = (itemId: string): string | null | undefined =>
+        projectedParent.has(itemId) ? projectedParent.get(itemId) : this.items.get(itemId)?.parentId;
+      for (const [index, entry] of planned.entries()) {
+        const { id, updates } = entry;
+        if (updates.parentId === undefined || updates.parentId === null) continue;
+        let ancestor: string | null | undefined = updates.parentId;
+        const visited = new Set<string>();
+        while (ancestor) {
+          if (ancestor === id) {
+            throw new HttpError(
+              400,
+              `Patch entry ${index}: cannot move folder '${id}' into itself or one of its subfolders`,
+            );
+          }
+          if (visited.has(ancestor)) break; // pre-existing cycle elsewhere: stop walking
+          visited.add(ancestor);
+          ancestor = parentOf(ancestor);
+        }
+      }
+    }
+
+    // Uploaded custom icons are R2 objects the upload route writes without
+    // telling the DO their size; a patch that points customIcon at one means
+    // the stored usage total is stale.
+    const touchesUploadedIcon = planned.some(({ id, updates }) =>
+      updates.customIcon !== undefined && (
+        String(updates.customIcon).startsWith('upload:') ||
+        String(this.items.get(id)?.customIcon ?? '').startsWith('upload:')
+      )
+    );
+
     // Apply pass: every client-input validator has already run, so nothing
     // below can throw between the first and last mutation.
     const updated: DesktopItem[] = [];
@@ -765,33 +956,6 @@ export class UserDesktop {
     for (const { id, updates: filteredUpdates } of planned) {
       const item = this.items.get(id);
       if (!item) continue;
-
-      // Prevent circular folder references: if parentId is being changed,
-      // walk up the target parent's ancestor chain and ensure this item
-      // doesn't appear (which would create a cycle).
-      if (
-        filteredUpdates.parentId !== undefined &&
-        filteredUpdates.parentId !== null &&
-        item.type === 'folder'
-      ) {
-        let ancestor: string | null | undefined = filteredUpdates.parentId as string;
-        let isCycle = false;
-        const visited = new Set<string>();
-        while (ancestor) {
-          if (ancestor === id) {
-            isCycle = true;
-            break;
-          }
-          if (visited.has(ancestor)) break; // safety against existing cycles
-          visited.add(ancestor);
-          const parentItem = this.items.get(ancestor);
-          ancestor = parentItem?.parentId;
-        }
-        if (isCycle) {
-          // Skip this update — moving a folder into its own descendant
-          continue;
-        }
-      }
 
       const updatedItem = {
         ...item,
@@ -805,6 +969,9 @@ export class UserDesktop {
     if (updated.length > 0) {
       await this.saveItems();
       this.broadcastItems();
+    }
+    if (touchesUploadedIcon) {
+      await this.invalidateQuotaUsage();
     }
 
     return updated;
@@ -820,6 +987,7 @@ export class UserDesktop {
     }
 
     const r2Keys: string[] = [];
+    const removed: DesktopItem[] = [item];
 
     // Collect this item's r2Key
     if (item.r2Key) {
@@ -833,6 +1001,7 @@ export class UserDesktop {
           if (child.r2Key) {
             r2Keys.push(child.r2Key);
           }
+          removed.push(child);
           collectChildren(childId); // recurse into subfolders
           this.items.delete(childId);
         }
@@ -846,6 +1015,7 @@ export class UserDesktop {
 
     this.items.delete(id);
     await this.saveItems();
+    await this.releaseItemsFromQuota(removed);
     this.broadcastItems();
     this.broadcastWindows();
 
@@ -867,13 +1037,17 @@ export class UserDesktop {
   /**
    * Compute visitor-visible data (items, windows, profile) without side effects
    */
-  private getVisitorData(): { items: DesktopItem[]; windows: SavedWindowState[]; profile: UserProfile | null } {
+  private getVisitorData(): { items: DesktopItem[]; windows: SavedWindowState[]; profile: VisitorProfile | null } {
     const items = this.getPublicItemsFiltered();
     const publicItemIds = new Set(items.map((i) => i.id));
     const windows = this.windows.filter(
       (w) => !w.contentId || publicItemIds.has(w.contentId)
     );
-    return { items, windows, profile: this.profile };
+    // SECURITY: visitors (WebSocket snapshot, KV public snapshot,
+    // /public-snapshot) only ever get the visitor-safe profile — never uid,
+    // createdAt, isNewUser, or analyticsEnabled. Owners read the full
+    // profile through GET /items and GET /profile.
+    return { items, windows, profile: toVisitorProfile(this.profile) };
   }
 
   /**
@@ -884,7 +1058,7 @@ export class UserDesktop {
    */
   private async getPublicSnapshot(): Promise<{
     items: DesktopItem[];
-    profile: UserProfile | null;
+    profile: VisitorProfile | null;
     windows: SavedWindowState[];
   }> {
     const data = this.getVisitorData();
@@ -899,7 +1073,9 @@ export class UserDesktop {
    * Set user profile (full replace)
    */
   private async setProfile(profile: UserProfile): Promise<void> {
+    const wallpaperChanged = this.profile?.wallpaper !== profile.wallpaper;
     this.profile = profile;
+    if (wallpaperChanged) await this.invalidateQuotaUsage();
     await this.state.storage.put('profile', profile);
     await this.syncPublicSnapshot();
     this.broadcastProfile();
@@ -1299,6 +1475,7 @@ export class UserDesktop {
     // Apply the update. `null` values (gated above to the clearable
     // appearance fields) REMOVE the field from the stored profile, so
     // GET /profile reports it gone rather than echoing a stored null.
+    const previousWallpaper = this.profile.wallpaper;
     const nextProfile = { ...this.profile } as UserProfile & Record<string, unknown>;
     for (const [field, value] of Object.entries(filteredUpdates)) {
       if (value === null) {
@@ -1310,6 +1487,11 @@ export class UserDesktop {
     this.profile = nextProfile;
 
     await this.state.storage.put('profile', this.profile);
+    // A custom wallpaper is an R2 object the upload route writes without
+    // telling the DO its size: a wallpaper change makes the usage total stale.
+    if (filteredUpdates.wallpaper !== undefined && filteredUpdates.wallpaper !== previousWallpaper) {
+      await this.invalidateQuotaUsage();
+    }
     if (typeof filteredUpdates.customCSS === 'string' && filteredUpdates.customCSS !== currentCustomCSS) {
       await this.recordCustomCSSVersion(filteredUpdates.customCSS, 'manual');
     }
@@ -1415,9 +1597,25 @@ export class UserDesktop {
    * Save window state to DO storage
    * Only stores essential fields, max 20 windows to prevent abuse.
    */
-  private async saveWindows(windowData: SavedWindowState[]): Promise<void> {
-    // Limit to 20 windows to prevent storage abuse
-    this.windows = windowData.slice(0, 20).map((w) => ({
+  private async saveWindows(windowData: unknown): Promise<void> {
+    // The body is client input (the public route forwards it): anything but
+    // an array of objects with a string id is a 400, never a 500 from
+    // `.slice`/property access on a non-array.
+    if (!Array.isArray(windowData)) {
+      throw new HttpError(400, 'Window state must be a JSON array');
+    }
+    const entries = windowData.slice(0, MAX_WINDOWS);
+    entries.forEach((w: unknown, index) => {
+      if (typeof w !== 'object' || w === null || Array.isArray(w)) {
+        throw new HttpError(400, `Window ${index}: expected an object`);
+      }
+      const id = (w as { id?: unknown }).id;
+      if (typeof id !== 'string' || id.length === 0 || id.length > 200) {
+        throw new HttpError(400, `Window ${index}: "id" must be a non-empty string`);
+      }
+    });
+    // Limit to MAX_WINDOWS windows to prevent storage abuse
+    this.windows = (entries as SavedWindowState[]).map((w) => ({
       id: w.id,
       title: String(w.title || '').slice(0, 200),
       position: { x: Number(w.position?.x) || 0, y: Number(w.position?.y) || 0 },
@@ -1482,6 +1680,7 @@ export class UserDesktop {
 
     if (deletedCount > 0) {
       await this.saveItems();
+      await this.releaseItemsFromQuota(trashedItems);
       this.broadcastItems();
     }
 
@@ -1509,6 +1708,8 @@ export class UserDesktop {
     this.soundAssets = [];
     this.cursorAssets = [];
     this.pendingUploadBytes = 0;
+    this.quotaUsage = null;
+    this.quotaGeneration++;
     // Keep `initialized = true`: storage is now authoritatively empty, so there
     // is nothing to re-read, and we must not resurrect state from a stale load.
     this.initialized = true;
@@ -1535,6 +1736,7 @@ export class UserDesktop {
 
     if (deletedCount > 0) {
       await this.saveItems();
+      await this.releaseItemsFromQuota(oldTrashedItems);
       this.broadcastItems();
     }
 
@@ -1542,36 +1744,121 @@ export class UserDesktop {
   }
 
   /**
-   * Get storage quota usage
-   * Calculates total bytes used by summing fileSize of ALL items (including trashed).
-   * Trashed items still consume R2 storage until permanently deleted, so they must
-   * count toward the quota to prevent the trash-cycling bypass.
+   * Bytes an item's file counts for in the running usage counter: its
+   * fileSize when it owns an R2 object under this user's prefix, else null.
+   */
+  private countedFileBytes(item: DesktopItem): number | null {
+    const uid = this.profile?.uid;
+    if (!uid || typeof item.r2Key !== 'string' || !item.r2Key.startsWith(`${uid}/`)) return null;
+    return typeof item.fileSize === 'number' && Number.isFinite(item.fileSize) && item.fileSize >= 0
+      ? item.fileSize
+      : null;
+  }
+
+  /** Subtract permanently deleted items' files from the usage counter. */
+  private async releaseItemsFromQuota(items: DesktopItem[]): Promise<void> {
+    this.quotaSettleAt = Date.now() + QUOTA_SETTLE_MS;
+    let bytes = 0;
+    let objects = 0;
+    for (const item of items) {
+      const counted = this.countedFileBytes(item);
+      if (counted === null) continue;
+      bytes += counted;
+      objects++;
+    }
+    if (objects > 0) await this.adjustQuotaUsage(-bytes, -objects);
+  }
+
+  /**
+   * Apply an exact delta to the running usage counter. With no counter yet
+   * there is nothing to adjust: the next read rebuilds it from R2.
+   */
+  private async adjustQuotaUsage(deltaBytes: number, deltaObjects: number): Promise<void> {
+    this.quotaGeneration++;
+    if (!this.quotaUsage) return;
+    this.quotaUsage = {
+      used: Math.max(0, this.quotaUsage.used + deltaBytes),
+      objects: Math.max(0, this.quotaUsage.objects + deltaObjects),
+      computedAt: this.quotaUsage.computedAt,
+    };
+    await this.state.storage.put(QUOTA_USAGE_KEY, this.quotaUsage);
+  }
+
+  /** Drop the counter so the next quota read rebuilds it from R2. */
+  private async invalidateQuotaUsage(): Promise<void> {
+    this.quotaGeneration++;
+    this.quotaSettleAt = Date.now() + QUOTA_SETTLE_MS;
+    if (!this.quotaUsage) return;
+    this.quotaUsage = null;
+    await this.state.storage.delete(QUOTA_USAGE_KEY);
+  }
+
+  /** Sum every R2 object under `${uid}/` (the one-off rebuild). */
+  private async listR2Usage(uid: string): Promise<QuotaUsage> {
+    let used = 0;
+    let objects = 0;
+    let cursor: string | undefined;
+    do {
+      const result = await this.env.ETERNALOS_FILES.list({ prefix: `${uid}/`, cursor });
+      for (const object of result.objects) {
+        used += object.size;
+        objects++;
+      }
+      cursor = result.truncated ? result.cursor : undefined;
+    } while (cursor);
+    return { used, objects, computedAt: Date.now() };
+  }
+
+  /**
+   * Current usage from the running counter, rebuilt from R2 when it is
+   * missing or older than QUOTA_RECOMPUTE_MS. Concurrent rebuilds share one
+   * listing. A rebuild is only persisted when nothing changed while it ran
+   * (no adjust/invalidate — an R2 listing can't tell whether a racing write
+   * landed before or after it) and no upload was in flight (its object may
+   * already be in R2 while its commit, which adds the bytes again, is still
+   * to come). Otherwise the result answers this read and the next read
+   * rebuilds again.
+   */
+  private async currentQuotaUsage(uid: string): Promise<QuotaUsage> {
+    const usage = this.quotaUsage;
+    if (usage && Date.now() - usage.computedAt < QUOTA_RECOMPUTE_MS) return usage;
+    if (!this.quotaRebuild) {
+      const generation = this.quotaGeneration;
+      const uploadsInFlight = this.pendingUploadBytes > 0;
+      const unsettled = Date.now() < this.quotaSettleAt;
+      this.quotaRebuild = (async () => {
+        try {
+          const rebuilt = await this.listR2Usage(uid);
+          if (
+            generation === this.quotaGeneration && !unsettled &&
+            !uploadsInFlight && this.pendingUploadBytes === 0
+          ) {
+            this.quotaUsage = rebuilt;
+            await this.state.storage.put(QUOTA_USAGE_KEY, rebuilt);
+          }
+          return rebuilt;
+        } finally {
+          this.quotaRebuild = null;
+        }
+      })();
+    }
+    return this.quotaRebuild;
+  }
+
+  /**
+   * Get storage quota usage: every R2 object under the user's prefix —
+   * item files (trashed ones included, they still occupy R2 until emptied,
+   * which closes the trash-cycling bypass), wallpapers, icons, and assets —
+   * read from the running counter (see QUOTA_USAGE_KEY).
    */
   private async getQuota(): Promise<QuotaInfo> {
     if (this.profile?.uid) {
-      let usedBytes = 0;
-      let itemCount = 0;
-      let cursor: string | undefined;
-
-      do {
-        const result = await this.env.ETERNALOS_FILES.list({
-          prefix: `${this.profile.uid}/`,
-          cursor,
-        });
-
-        for (const object of result.objects) {
-          usedBytes += object.size;
-          itemCount++;
-        }
-
-        cursor = result.truncated ? result.cursor : undefined;
-      } while (cursor);
-
+      const usage = await this.currentQuotaUsage(this.profile.uid);
       return {
-        used: usedBytes,
+        used: usage.used,
         limit: DEFAULT_QUOTA_BYTES,
-        remaining: Math.max(0, DEFAULT_QUOTA_BYTES - usedBytes),
-        itemCount,
+        remaining: Math.max(0, DEFAULT_QUOTA_BYTES - usage.used),
+        itemCount: usage.objects,
       };
     }
 
@@ -1714,7 +2001,8 @@ export class UserDesktop {
   /** Broadcast profile to all visitors */
   private broadcastProfile(): void {
     if (this.state.getWebSockets().length === 0) return;
-    this.broadcastToVisitors({ type: 'profile', profile: this.profile });
+    // Visitor-safe fields only (see getVisitorData).
+    this.broadcastToVisitors({ type: 'profile', profile: toVisitorProfile(this.profile) });
   }
 
   // --- WebSocket hibernation handlers ---
