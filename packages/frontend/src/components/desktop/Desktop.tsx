@@ -18,7 +18,6 @@ import { useDesktopStore } from '../../stores/desktopStore';
 import { useAuthStore } from '../../stores/authStore';
 import { useClipboardStore } from '../../stores/clipboardStore';
 import { useCSSPickerStore } from '../../stores/cssPickerStore';
-import { useDesktopSync } from '../../hooks/useDesktopSync';
 import { isApiConfigured, getWallpaperUrl } from '../../services/api';
 import { createStickerFromFile } from './stickerUpload';
 import { useEsthemePreviewStore } from '../../estheme/themePreviewStore';
@@ -62,9 +61,6 @@ interface DesktopProps {
  * Full viewport #C0C0C0 background that holds all windows and icons
  */
 export function Desktop({ isVisitorMode = false }: DesktopProps) {
-  // Sync desktop state with Firestore (if Firebase is enabled)
-  useDesktopSync();
-
   const { openWindow, windows, focusWindow, loadWindowState } = useWindowStore();
   const { profile } = useAuthStore();
   const {
@@ -93,8 +89,8 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
   // CSS Element Picker state
   const pickerActive = useCSSPickerStore((state) => state.isActive);
 
-  // Note: Desktop items are loaded by useDesktopSync hook (called above)
-  // which fetches items + profile from the API when user is authenticated.
+  // Note: Desktop items are loaded by useDesktopSync, called from
+  // OwnerDesktop in App.tsx (above the desktop/mobile layout switch).
 
   // Restore window state after items are loaded
   // Tries localStorage first, falls back to server-saved windows

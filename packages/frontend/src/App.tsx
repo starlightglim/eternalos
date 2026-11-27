@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import {
   Routes,
   Route,
@@ -9,8 +9,9 @@ import {
 import { LoadingOverlay, AlertDialog, ErrorBoundary } from "./components/ui";
 import { useAuthStore } from "./stores/authStore";
 import { useAlertStore } from "./stores/alertStore";
-import { useIsMobile } from "./hooks/useIsMobile";
+import { useDesktopSync } from "./hooks/useDesktopSync";
 import { isApiConfigured } from "./services/api";
+import { decideMobileLayout } from "./utils/layoutMode";
 
 const Desktop = lazy(() => import("./components/desktop/Desktop").then(({ Desktop: component }) => ({ default: component })));
 const MobileBrowser = lazy(() => import("./components/desktop/MobileBrowser").then(({ MobileBrowser: component }) => ({ default: component })));
@@ -29,7 +30,8 @@ const NotFoundPage = lazy(() => import("./pages/NotFoundPage").then(({ NotFoundP
  * Renders AlertDialog based on alertStore state
  */
 function GlobalAlert() {
-  const { alert, closeAlert } = useAlertStore();
+  const alert = useAlertStore((state) => state.alert);
+  const closeAlert = useAlertStore((state) => state.closeAlert);
 
   if (!alert) return null;
 
@@ -66,7 +68,8 @@ function GlobalAlert() {
 
 // Protected route wrapper for authenticated pages
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { user, initialized } = useAuthStore();
+  const hasUser = useAuthStore((state) => state.user !== null);
+  const initialized = useAuthStore((state) => state.initialized);
 
   if (!initialized) {
     return <LoadingOverlay message="Initializing..." />;
@@ -77,16 +80,62 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     return <>{children}</>;
   }
 
-  if (!user) {
+  if (!hasUser) {
     return <Navigate to="/login" replace />;
   }
 
   return <>{children}</>;
 }
 
-// Responsive wrapper - shows MobileBrowser on small screens
-function ResponsiveDesktop() {
-  const isMobile = useIsMobile();
+function readLayout(previous?: boolean): boolean {
+  if (typeof window === "undefined") return false;
+  const coarsePointer =
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(pointer: coarse)").matches;
+  return decideMobileLayout({
+    width: window.innerWidth,
+    height: window.innerHeight,
+    coarsePointer,
+    previous,
+  });
+}
+
+/**
+ * Mobile vs desktop layout with hysteresis + a short debounce: swapping the
+ * two trees destroys every open viewer, so a small resize near the
+ * breakpoint (or a phone rotating) must not flip it. See utils/layoutMode.
+ */
+function useMobileLayout(): boolean {
+  const [isMobile, setIsMobile] = useState(() => readLayout());
+
+  useEffect(() => {
+    let timer: number | undefined;
+    const onResize = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        setIsMobile((previous) => readLayout(previous));
+      }, 150);
+    };
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onResize);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("orientationchange", onResize);
+    };
+  }, []);
+
+  return isMobile;
+}
+
+/**
+ * The signed-in owner's own desktop. Syncs with the server once here (above
+ * the layout switch) so both the desktop and the mobile layout get server
+ * data, and a layout change doesn't refetch.
+ */
+function OwnerDesktop() {
+  useDesktopSync();
+  const isMobile = useMobileLayout();
   return isMobile ? <MobileBrowser /> : <Desktop />;
 }
 
@@ -94,8 +143,8 @@ function ResponsiveDesktop() {
 // Note: React Router v6 doesn't support mixed literal+param segments like /@:username,
 // so we extract the username from window.location.pathname manually.
 function UserDesktopRoute() {
-  const { user, initialized } = useAuthStore();
-  const isMobile = useIsMobile();
+  const ownUsername = useAuthStore((state) => state.user?.username);
+  const initialized = useAuthStore((state) => state.initialized);
   const [searchParams] = useSearchParams();
   const username = window.location.pathname.slice(2).split("?")[0]; // Remove "/@" and query params
 
@@ -109,9 +158,9 @@ function UserDesktopRoute() {
   // If logged in as this user and not forcing visitor mode, show owner's Desktop
   if (
     !forceVisitor &&
-    user?.username?.toLowerCase() === username.toLowerCase()
+    ownUsername?.toLowerCase() === username.toLowerCase()
   ) {
-    return isMobile ? <MobileBrowser /> : <Desktop />;
+    return <OwnerDesktop />;
   }
 
   // Otherwise show visitor view (has its own mobile handling)
@@ -136,7 +185,8 @@ function CatchAllRoute() {
 }
 
 function App() {
-  const { initialize, initialized } = useAuthStore();
+  const initialize = useAuthStore((state) => state.initialize);
+  const initialized = useAuthStore((state) => state.initialized);
 
   useEffect(() => {
     const unsubscribe = initialize();
@@ -169,7 +219,7 @@ function App() {
             path="/desktop"
             element={
               <ProtectedRoute>
-                <ResponsiveDesktop />
+                <OwnerDesktop />
               </ProtectedRoute>
             }
           />
