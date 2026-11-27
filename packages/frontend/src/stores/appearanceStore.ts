@@ -252,6 +252,16 @@ export function applyCustomCSS(css: string | undefined) {
 
 const APPEARANCE_STORAGE_KEY = 'eternalos-appearance';
 
+// Bumped whenever the local look is committed (save acked, explicit load,
+// reset). A server snapshot fetched before the latest commit is older than
+// what the user has and must not repaint it.
+let appearanceCommitSeq = 0;
+
+/** Stamp to capture before fetching a server appearance snapshot. */
+export function currentAppearanceCommitSeq(): number {
+  return appearanceCommitSeq;
+}
+
 function loadSavedAppearance(): CustomAppearance {
   try {
     const saved = localStorage.getItem(APPEARANCE_STORAGE_KEY);
@@ -302,6 +312,18 @@ interface AppearanceStore {
    * last-saved mirror and the unsaved flag is whatever the snapshot carried.
    */
   restoreAppearanceSnapshot: (appearance: CustomAppearance, wasUnsaved: boolean) => void;
+  /**
+   * Reconcile with the appearance the server holds (desktop sync, refresh
+   * after an assistant turn). Always runs — an empty appearance is a reset to
+   * defaults and must clear the old look. The server copy becomes the saved
+   * baseline (and the localStorage mirror), but while the user has unsaved
+   * edits or a CSS preview open, their preview stays on screen: a background
+   * refresh must never clobber work in progress. Discard then lands on the
+   * server copy.
+   */
+  syncFromServer: (appearance: CustomAppearance, fetchedAtSeq?: number) => void;
+  /** Forget the current account's look entirely (logout / session expiry). */
+  reset: () => void;
 }
 
 export const useAppearanceStore = create<AppearanceStore>((set, get) => {
@@ -411,6 +433,7 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => {
         // Demo mode (API not configured) has no server that can refuse the
         // save — the local mirror is the source of truth, so it still saves.
         saveLocalAppearance(appearance);
+        appearanceCommitSeq++;
 
         set({
           originalAppearance: appearance,
@@ -430,6 +453,7 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => {
     },
 
     loadAppearance: (appearance: CustomAppearance) => {
+      appearanceCommitSeq++;
       applyAppearance(appearance);
       saveLocalAppearance(appearance);
       set({
@@ -448,6 +472,37 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => {
       // unsaved manual edits reverts to those unsaved edits).
       applyAppearance(appearance);
       set({ appearance, hasUnsavedChanges: wasUnsaved });
+    },
+
+    syncFromServer: (appearance: CustomAppearance, fetchedAtSeq?: number) => {
+      // Fetched before the latest local commit: older than what we have.
+      if (fetchedAtSeq !== undefined && fetchedAtSeq !== appearanceCommitSeq) return;
+      saveLocalAppearance(appearance);
+      const { hasUnsavedChanges, customCSSPreview } = get();
+      if (hasUnsavedChanges || customCSSPreview !== undefined) {
+        set({ originalAppearance: appearance });
+        return;
+      }
+      applyAppearance(appearance);
+      set({ appearance, originalAppearance: appearance });
+    },
+
+    reset: () => {
+      appearanceCommitSeq++;
+      clearAppearance();
+      try {
+        localStorage.removeItem(APPEARANCE_STORAGE_KEY);
+      } catch {
+        // Ignore
+      }
+      set({
+        appearance: {},
+        originalAppearance: {},
+        customCSSPreview: undefined,
+        customCSSPreviewSummary: undefined,
+        isLoading: false,
+        hasUnsavedChanges: false,
+      });
     },
   };
 });

@@ -22,6 +22,7 @@ import {
 } from '../services/api';
 import { useWindowStore } from './windowStore';
 import { useDesktopStore } from './desktopStore';
+import { useAppearanceStore } from './appearanceStore';
 
 interface AuthState {
   user: AuthUser | null;
@@ -97,10 +98,57 @@ type SyncedProfileField =
 //    failure never clobbers a newer edit.
 const profileWriteQueues = new Map<SyncedProfileField, Promise<boolean>>();
 const profileRollback = new Map<SyncedProfileField, unknown>();
+// Monotonic stamp of local profile writes, so a server snapshot fetched
+// before a write (even one already acked) can't overwrite it.
+let profileWriteSeq = 0;
+const profileFieldWrittenAt = new Map<SyncedProfileField, number>();
 
 function resetProfileSyncQueues(): void {
   profileWriteQueues.clear();
   profileRollback.clear();
+  profileFieldWrittenAt.clear();
+}
+
+/** Stamp to capture before fetching a server profile snapshot. */
+export function currentProfileWriteSeq(): number {
+  return profileWriteSeq;
+}
+
+/**
+ * Profile fields a server snapshot must not overwrite: those with an
+ * optimistic PATCH still in flight, plus (given the stamp captured before
+ * the fetch) those written locally since the fetch began. Such a snapshot
+ * predates the edit, so the sync keeps the local value (see
+ * mergeServerProfile).
+ */
+export function pendingProfileFields(sinceSeq?: number): SyncedProfileField[] {
+  const fields = new Set<SyncedProfileField>(profileWriteQueues.keys());
+  if (sinceSeq !== undefined) {
+    for (const [field, seq] of profileFieldWrittenAt) {
+      if (seq > sinceSeq) fields.add(field);
+    }
+  }
+  return [...fields];
+}
+
+/**
+ * Where the session-expired handler sends the user. LoginPage reads
+ * `expired=1` to explain why (a store `error` would not survive the full
+ * page load the redirect causes).
+ */
+export const SESSION_EXPIRED_LOGIN_URL = '/login?expired=1';
+
+/**
+ * Wipe every per-user cache so the next account on this browser can't see
+ * the previous user's items, windows, image URLs, or look (appearance store,
+ * its localStorage mirror, and the CSS applied to the document).
+ */
+function resetPerUserState(): void {
+  resetProfileSyncQueues();
+  useWindowStore.getState().resetOnLogout();
+  useDesktopStore.getState().reset();
+  useAppearanceStore.getState().reset();
+  clearFileToken();
 }
 
 // Minimal store seam the helper below needs (the zustand store's set/get).
@@ -123,6 +171,7 @@ function syncProfileField(
   const { profile } = get();
   if (!profile) return Promise.resolve(false);
 
+  profileFieldWrittenAt.set(field, ++profileWriteSeq);
   // Update local state immediately for responsive UI.
   set({ profile: { ...profile, [field]: value } as UserProfile });
 
@@ -367,12 +416,7 @@ export const useAuthStore = create<AuthStore>()(
         } catch {
           // Ignore logout API errors — we clear state regardless
         }
-        // Wipe every per-user cache so the next sign-in can't see the
-        // previous user's items, windows, or image URLs.
-        resetProfileSyncQueues();
-        useWindowStore.getState().resetOnLogout();
-        useDesktopStore.getState().reset();
-        clearFileToken();
+        resetPerUserState();
         set({
           user: null,
           profile: null,
@@ -493,10 +537,7 @@ export const useAuthStore = create<AuthStore>()(
         setSessionExpiredHandler(() => {
           setAuthToken(null);
           setRefreshToken(null);
-          clearFileToken();
-          resetProfileSyncQueues();
-          useWindowStore.getState().resetOnLogout();
-          useDesktopStore.getState().reset();
+          resetPerUserState();
           set({
             user: null,
             profile: null,
@@ -505,8 +546,10 @@ export const useAuthStore = create<AuthStore>()(
             loading: false,
             error: 'Your session has expired. Please log in again.',
           });
-          // Navigate to login — use window.location since store can't access React Router
-          window.location.href = '/login';
+          // Navigate to login — use window.location since store can't access
+          // React Router. The full load drops `error`, so the reason travels
+          // in the URL instead.
+          window.location.href = SESSION_EXPIRED_LOGIN_URL;
         });
 
         // Sync refreshed tokens back to the persisted store so page reloads
