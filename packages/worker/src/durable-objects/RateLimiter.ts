@@ -11,22 +11,23 @@ import {
   type AiUsageDecision,
 } from './aiUsageState';
 
-interface RateLimitState {
-  requests: number[];
-}
+import {
+  RATE_LIMIT_CLEANUP_GRACE_MS,
+  applyRateLimitCheck,
+  rateLimitWindowExpired,
+  type RateLimitCheck,
+  type RateLimitResult,
+  type RateLimitWindow,
+} from './rateLimitWindow';
 
-interface RateLimitCheck {
-  maxRequests: number;
-  windowMs: number;
-  now: number;
-}
-
-interface RateLimitResult {
-  allowed: boolean;
-  remaining: number;
-  resetAt: number;
-  retryAfter?: number;
-}
+/** Fixed-window counter for the per-IP / per-user rate-limit buckets. */
+const RATE_LIMIT_WINDOW_KEY = 'window';
+/**
+ * Key of the old sliding-log state (an array of up to maxRequests
+ * timestamps). No longer written; dropped by alarm() for buckets created
+ * before the fixed-window counter.
+ */
+const LEGACY_RATE_LIMIT_KEY = 'state';
 
 interface AiTokenRecordRequest {
   now: number;
@@ -63,7 +64,7 @@ export class RateLimiter {
     }
 
     // Per-account AI usage guard endpoints (see middleware/aiUsage.ts). Any
-    // other path keeps the legacy per-IP rate-limit check, unchanged.
+    // other path is the fixed-window rate-limit check (per IP or per user).
     const pathname = new URL(request.url).pathname;
     if (pathname === '/ai/acquire') {
       return this.handleAiAcquire(request);
@@ -94,33 +95,20 @@ export class RateLimiter {
     }
 
     const result = await this.state.storage.transaction(async (transaction): Promise<RateLimitResult> => {
-      const windowStart = check.now - check.windowMs;
-      const stored = await transaction.get<RateLimitState>('state');
-      const validRequests = (stored?.requests ?? []).filter((timestamp) => timestamp > windowStart);
-
-      if (validRequests.length >= check.maxRequests) {
-        const oldestInWindow = Math.min(...validRequests);
-        const resetAt = oldestInWindow + check.windowMs;
-        return {
-          allowed: false,
-          remaining: 0,
-          resetAt,
-          retryAfter: Math.max(1, Math.ceil((resetAt - check.now) / 1000)),
-        };
+      const stored = await transaction.get<RateLimitWindow>(RATE_LIMIT_WINDOW_KEY);
+      const { window, result } = applyRateLimitCheck(stored ?? null, check);
+      // Rejections leave the counter untouched: only admitted requests count.
+      if (result.allowed) {
+        await transaction.put(RATE_LIMIT_WINDOW_KEY, window);
       }
-
-      validRequests.push(check.now);
-      await transaction.put('state', { requests: validRequests });
-
-      return {
-        allowed: true,
-        remaining: check.maxRequests - validRequests.length,
-        resetAt: Math.min(...validRequests) + check.windowMs,
-      };
+      return result;
     });
 
-    if (result.allowed) {
-      await this.state.storage.setAlarm(check.now + check.windowMs + 60_000);
+    // Schedule cleanup only when nothing is pending: one alarm per idle
+    // bucket instead of a storage write on every request. alarm() re-arms
+    // itself while a window is still live.
+    if (result.allowed && (await this.state.storage.getAlarm()) === null) {
+      await this.state.storage.setAlarm(result.resetAt + RATE_LIMIT_CLEANUP_GRACE_MS);
     }
 
     return Response.json(result);
@@ -212,28 +200,43 @@ export class RateLimiter {
   }
 
   async alarm(): Promise<void> {
-    // Legacy per-IP rate-limit cleanup (unchanged): the whole state is
-    // dropped; the next allowed request re-creates it.
-    await this.state.storage.delete('state');
+    const now = Date.now();
+    let nextAlarm: number | null = null;
+
+    // Rate-limit cleanup: drop the counter once its window is over (the next
+    // request starts a fresh one). If the window is still live — e.g. the
+    // alarm was scheduled for an earlier window, or by the AI-usage path —
+    // re-arm for just past its end.
+    await this.state.storage.delete(LEGACY_RATE_LIMIT_KEY);
+    const window = await this.state.storage.get<RateLimitWindow>(RATE_LIMIT_WINDOW_KEY);
+    if (window) {
+      if (rateLimitWindowExpired(window, now)) {
+        await this.state.storage.delete(RATE_LIMIT_WINDOW_KEY);
+      } else {
+        nextAlarm = window.start + window.windowMs + RATE_LIMIT_CLEANUP_GRACE_MS;
+      }
+    }
 
     // AI usage cleanup: reclaim expired slots; once the day has rolled and
     // nothing is in flight, drop the state entirely (the next acquire
     // re-creates it).
     const ai = await this.state.storage.get<AiUsageAccountState>('ai-usage');
-    if (!ai) {
-      return;
-    }
-    const now = Date.now();
-    const slots = pruneExpiredSlots(ai.slots, now);
-    const dayRolled = ai.day !== utcDayOf(now);
+    if (ai) {
+      const slots = pruneExpiredSlots(ai.slots, now);
+      const dayRolled = ai.day !== utcDayOf(now);
 
-    if (slots.length === 0 && dayRolled) {
-      await this.state.storage.delete('ai-usage');
-      return;
+      if (slots.length === 0 && dayRolled) {
+        await this.state.storage.delete('ai-usage');
+      } else {
+        const next = normalizeAiUsageState({ ...ai, slots }, now);
+        await this.state.storage.put('ai-usage', next);
+        const aiAt = aiUsageCleanupAt(next, now);
+        nextAlarm = nextAlarm === null ? aiAt : Math.min(nextAlarm, aiAt);
+      }
     }
 
-    const next = normalizeAiUsageState({ ...ai, slots }, now);
-    await this.state.storage.put('ai-usage', next);
-    await this.state.storage.setAlarm(aiUsageCleanupAt(next, now));
+    if (nextAlarm !== null) {
+      await this.state.storage.setAlarm(nextAlarm);
+    }
   }
 }

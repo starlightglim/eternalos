@@ -1,13 +1,16 @@
 /**
  * Rate Limiting Middleware
  *
- * Uses a per-key Durable Object to track request counts per IP.
- * The Durable Object transaction makes each bucket update atomic under
- * concurrent requests.
+ * Uses a per-key Durable Object (RateLimiter) holding a fixed-window counter
+ * per bucket — per IP (CF-Connecting-IP) for the route-table buckets, per
+ * account uid for the expensive authenticated routes. The Durable Object
+ * transaction makes each bucket update atomic under concurrent requests.
  *
- * Rate limits:
- * - Auth endpoints: 60 requests/minute
- * - General API: 300 requests/minute
+ * Rate limits (per window of 1 minute):
+ * - Auth endpoints: 60 / IP
+ * - General API: 300 / IP
+ * - Public assets: 1000 / IP
+ * - App deploy 20, app skins 60, app capability 120, game drafts 120 / user
  */
 
 import type { Env } from '../index';
@@ -55,39 +58,85 @@ export const RATE_LIMIT_WS: RateLimitConfig = {
   keyPrefix: 'ratelimit:ws',
 };
 
+// ---------------------------------------------------------------------------
+// Per-user buckets (keyed by account uid, checked after authentication).
+// Used by expensive authenticated routes where an IP bucket is the wrong unit:
+// many users can share an IP (NAT, offices), and one account can rotate IPs.
+// ---------------------------------------------------------------------------
+
+// App dev-deploy: compiles a bundle (up to 6MB JSON) and writes R2 + DO state.
+// The most expensive write route; a human or the demo deploys a handful a
+// minute at most.
+export const RATE_LIMIT_APP_DEPLOY: RateLimitConfig = {
+  maxRequests: 20,
+  windowMs: 60 * 1000, // 1 minute
+  keyPrefix: 'ratelimit:user:app-deploy',
+};
+
+// App skins: PUT bodies up to 9MB and AI skin generation.
+export const RATE_LIMIT_APP_SKINS: RateLimitConfig = {
+  maxRequests: 60,
+  windowMs: 60 * 1000, // 1 minute
+  keyPrefix: 'ratelimit:user:app-skins',
+};
+
+// App capability minting: one per app window open/reload.
+export const RATE_LIMIT_APP_CAPABILITY: RateLimitConfig = {
+  maxRequests: 120,
+  windowMs: 60 * 1000, // 1 minute
+  keyPrefix: 'ratelimit:user:app-capability',
+};
+
+// Cartridge draft read/save/delete (editor saves).
+export const RATE_LIMIT_GAME_DRAFT: RateLimitConfig = {
+  maxRequests: 120,
+  windowMs: 60 * 1000, // 1 minute
+  keyPrefix: 'ratelimit:user:game-draft',
+};
+
 /**
- * Get client identifier for rate limiting
- * Uses CF-Connecting-IP header (set by Cloudflare) or falls back to request IP
+ * Client identifier for per-IP rate limiting.
+ *
+ * Only CF-Connecting-IP is trusted: Cloudflare sets it on every request that
+ * reaches the worker and overwrites any client-supplied value. X-Forwarded-For
+ * is client-controlled (anyone can send a fresh value per request to get a
+ * fresh bucket), so it is never consulted. Without CF-Connecting-IP (local
+ * tooling, internal calls) requests share one 'unknown' bucket — stricter, not
+ * looser, so a missing header can't be used to dodge the limit.
  */
-function getClientId(request: Request): string {
-  // Cloudflare sets CF-Connecting-IP header
-  const cfIp = request.headers.get('CF-Connecting-IP');
-  if (cfIp) return cfIp;
-
-  // Fallback to X-Forwarded-For
-  const forwarded = request.headers.get('X-Forwarded-For');
-  if (forwarded) {
-    return forwarded.split(',')[0].trim();
-  }
-
-  // Last resort: use a hash of the request origin
-  return 'unknown';
+export function getClientId(request: Request): string {
+  const cfIp = request.headers.get('CF-Connecting-IP')?.trim();
+  return cfIp || 'unknown';
 }
 
 /**
- * Check rate limit for a request
+ * Check the per-IP rate limit for a request.
  */
-export async function checkRateLimit(
+export function checkRateLimit(
   request: Request,
   env: Env,
   config: RateLimitConfig
 ): Promise<RateLimitResult> {
-  const clientId = getClientId(request);
-  const now = Date.now();
-  const windowStart = now - config.windowMs;
+  return checkRateLimitKey(env, `${config.keyPrefix}:${getClientId(request)}`, config);
+}
 
-  // KV key for this client's rate limit bucket
-  const key = `${config.keyPrefix}:${clientId}`;
+/**
+ * Check a per-account rate limit (call after authentication).
+ */
+export function checkUserRateLimit(
+  env: Env,
+  uid: string,
+  config: RateLimitConfig
+): Promise<RateLimitResult> {
+  return checkRateLimitKey(env, `${config.keyPrefix}:${uid}`, config);
+}
+
+async function checkRateLimitKey(
+  env: Env,
+  key: string,
+  config: RateLimitConfig
+): Promise<RateLimitResult> {
+  const now = Date.now();
 
   try {
     const limiterId = env.RATE_LIMITER.idFromName(key);

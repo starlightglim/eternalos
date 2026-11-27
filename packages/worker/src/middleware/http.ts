@@ -36,42 +36,52 @@ export function withCors(response: Response, corsHeaders: Record<string, string>
   });
 }
 
-// Get CORS headers based on environment and request origin
+// Local front-end / worker origins the development worker accepts.
+const DEV_ORIGINS = [
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:8787',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5174',
+];
+
+/**
+ * Get CORS headers based on environment and request origin.
+ *
+ * Access-Control-Allow-Origin (with Allow-Credentials) is present only when
+ * the request carries an allowed Origin, and it echoes that exact origin —
+ * never `*`, which browsers reject together with Allow-Credentials. A request
+ * without an Origin (same-origin navigation, curl, server-to-server) needs no
+ * CORS grant, and a disallowed origin gets no ACAO header at all rather than
+ * an empty one. Callers detect "not allowed" by the key being absent.
+ */
 export function getCorsHeaders(request: Request, env: Env): Record<string, string> {
   const origin = request.headers.get('Origin') || '';
   const isProduction = env.ENVIRONMENT === 'production';
 
-  // In development, allow known local origins instead of wildcard
+  let isAllowed: boolean;
   if (!isProduction) {
-    const devOrigins = ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:8787', 'http://127.0.0.1:5173', 'http://127.0.0.1:5174'];
-    const isDevAllowed = !origin || devOrigins.includes(origin);
-    return {
-      'Access-Control-Allow-Origin': isDevAllowed ? (origin || '*') : '',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      'Access-Control-Allow-Credentials': 'true',
-      'Vary': 'Origin',
-    };
+    // In development, allow known local origins instead of a wildcard.
+    isAllowed = DEV_ORIGINS.includes(origin);
+  } else {
+    // In production, check against ALLOWED_ORIGINS plus the worker's own
+    // origin (same-origin requests that still send Origin, e.g. POSTs).
+    const allowedOrigins = env.ALLOWED_ORIGINS
+      ? env.ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
+      : [];
+    const requestUrl = new URL(request.url);
+    allowedOrigins.push(`${requestUrl.protocol}//${requestUrl.host}`);
+    isAllowed = allowedOrigins.includes(origin);
   }
 
-  // In production, check against allowed origins
-  const allowedOrigins = env.ALLOWED_ORIGINS
-    ? env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
-    : [];
-
-  // Always allow the worker's own origin (for same-origin requests)
-  const requestUrl = new URL(request.url);
-  const selfOrigin = `${requestUrl.protocol}//${requestUrl.host}`;
-  allowedOrigins.push(selfOrigin);
-
-  // Check if the request origin is allowed
-  const isAllowed = allowedOrigins.includes(origin);
-
-  return {
-    'Access-Control-Allow-Origin': isAllowed ? origin : '',
+  const headers: Record<string, string> = {
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Allow-Credentials': 'true',
     'Vary': 'Origin', // Important for caching with different origins
   };
+  if (origin && isAllowed) {
+    headers['Access-Control-Allow-Origin'] = origin;
+    headers['Access-Control-Allow-Credentials'] = 'true';
+  }
+  return headers;
 }
