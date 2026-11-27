@@ -1,7 +1,10 @@
 // Reset Password Page - Classic Mac OS styled password reset
-import { useState, type FormEvent, useEffect } from 'react'
+import { useState, type FormEvent, useEffect, useRef } from 'react'
 import { Link, useSearchParams, useNavigate } from 'react-router-dom'
 import { isApiConfigured, resetPassword } from '../services/api'
+import { useDocumentMeta } from '../hooks/useDocumentMeta'
+import { validatePassword, PASSWORD_MAX_LENGTH } from '../utils/passwordRules'
+import { PasswordRuleHints } from './PasswordRuleHints'
 import styles from './AuthPage.module.css'
 
 export function ResetPasswordPage() {
@@ -15,19 +18,23 @@ export function ResetPasswordPage() {
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
 
-  // Set document title
-  useEffect(() => {
-    document.title = 'Reset Password | EternalOS'
-    return () => { document.title = 'EternalOS' }
+  const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useDocumentMeta({ title: 'Reset Password | EternalOS' })
+
+  // Cancel the post-success redirect if the user leaves first
+  useEffect(() => () => {
+    if (redirectTimerRef.current) clearTimeout(redirectTimerRef.current)
   }, [])
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     setError(null)
 
-    // Client-side validation
-    if (newPassword.length < 8) {
-      setError('Password must be at least 8 characters')
+    // Client-side validation (mirrors the server rules in routes/auth.ts)
+    const passwordError = validatePassword(newPassword)
+    if (passwordError) {
+      setError(passwordError)
       return
     }
 
@@ -42,7 +49,7 @@ export function ResetPasswordPage() {
       await resetPassword(token, newPassword)
       setSuccess(true)
       // Redirect to login after 3 seconds
-      setTimeout(() => {
+      redirectTimerRef.current = setTimeout(() => {
         navigate('/login')
       }, 3000)
     } catch (err) {
@@ -91,7 +98,7 @@ export function ResetPasswordPage() {
               <span className={styles.logoText}>EternalOS</span>
             </div>
 
-            <div className={styles.error}>
+            <div className={styles.error} role="alert">
               Invalid or missing reset token. Please request a new password reset link.
             </div>
 
@@ -147,7 +154,7 @@ export function ResetPasswordPage() {
             Enter your new password below.
           </p>
 
-          {error && <div className={styles.error}>{error}</div>}
+          {error && <div className={styles.error} role="alert">{error}</div>}
 
           <form className={styles.form} onSubmit={handleSubmit}>
             <div className={styles.formGroup}>
@@ -162,7 +169,10 @@ export function ResetPasswordPage() {
                 autoComplete="new-password"
                 autoFocus
                 minLength={8}
+                maxLength={PASSWORD_MAX_LENGTH}
+                aria-describedby="password-rules"
               />
+              <PasswordRuleHints id="password-rules" password={newPassword} />
             </div>
 
             <div className={styles.formGroup}>

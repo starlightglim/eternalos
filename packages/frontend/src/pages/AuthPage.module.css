@@ -262,6 +262,63 @@
   line-height: 1.4;
 }
 
+/* Informational notice (e.g. "session expired") — calmer than .error */
+.notice {
+  font-family: var(--font-chicago);
+  font-size: 12px;
+  color: var(--text, var(--black));
+  background: color-mix(in srgb, var(--accent, var(--selection, #3366cc)) 12%, var(--surface, #fff));
+  padding: 8px;
+  border: 1px solid var(--accent, var(--selection, #3366cc));
+  text-align: center;
+  line-height: 1.4;
+}
+
+/* Password rule checklist under the password field */
+.ruleList {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 8px;
+  font-family: var(--font-geneva);
+  font-size: 11px;
+}
+
+.ruleMet,
+.ruleUnmet {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.ruleMet {
+  color: var(--success, var(--success-text, #006600));
+}
+
+.ruleUnmet {
+  color: var(--text-muted, var(--shadow, #666));
+}
+
+.ruleMark {
+  display: inline-block;
+  width: 10px;
+  text-align: center;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 @media (max-width: 480px) {
   .authContainer {
     align-items: flex-start;

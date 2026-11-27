@@ -1,10 +1,11 @@
 // Login Page - Classic Mac OS styled authentication
-import { useState, type FormEvent, useEffect } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useState, type FormEvent, useEffect, useRef } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuthStore } from '../stores/authStore'
 import { isApiConfigured } from '../services/api'
 import { getGoogleClientId, redirectToGoogle } from '../utils/googleOAuth'
-import { Turnstile, TURNSTILE_ENABLED } from '../components/ui/Turnstile'
+import { Turnstile, TURNSTILE_ENABLED, type TurnstileHandle } from '../components/ui/Turnstile'
+import { useDocumentMeta } from '../hooks/useDocumentMeta'
 import styles from './AuthPage.module.css'
 
 export function LoginPage() {
@@ -12,14 +13,18 @@ export function LoginPage() {
   const [password, setPassword] = useState('')
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null)
   const [localError, setLocalError] = useState<string | null>(null)
+  const turnstileRef = useRef<TurnstileHandle>(null)
   const { login, loading, error, clearError, user } = useAuthStore()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const sessionExpired = searchParams.get('expired') === '1'
 
-  // Set document title
+  useDocumentMeta({ title: 'Log In | EternalOS' })
+
+  // Drop any error left over from another auth page (the store's error is shared)
   useEffect(() => {
-    document.title = 'Log In | EternalOS'
-    return () => { document.title = 'EternalOS' }
-  }, [])
+    clearError()
+  }, [clearError])
 
   // If already logged in, redirect to desktop
   useEffect(() => {
@@ -44,14 +49,24 @@ export function LoginPage() {
       return
     }
 
+    let failed = false
     try {
       await login(email, password, turnstileToken)
+      // The store records failures in `error` instead of throwing.
+      failed = !useAuthStore.getState().user
       // Navigation happens via useEffect when user state updates
     } catch (err) {
-      // Error is handled by the store
+      failed = true
       console.error('Login error:', err)
     }
+    if (failed) {
+      // Turnstile tokens are single-use: get a fresh one for the retry.
+      setTurnstileToken(null)
+      turnstileRef.current?.reset()
+    }
   }
+
+  const displayError = localError || error
 
   // If API not configured, show demo mode notice
   if (!isApiConfigured) {
@@ -97,7 +112,13 @@ export function LoginPage() {
             <span className={styles.logoText}>EternalOS</span>
           </div>
 
-          {(localError || error) && <div className={styles.error}>{localError || error}</div>}
+          {sessionExpired && !displayError && (
+            <div className={styles.notice} role="status">
+              Your session expired. Please log in again.
+            </div>
+          )}
+
+          {displayError && <div className={styles.error} role="alert">{displayError}</div>}
 
           <form className={styles.form} onSubmit={handleSubmit}>
             <div className={styles.formGroup}>
@@ -126,7 +147,7 @@ export function LoginPage() {
               />
             </div>
 
-            <Turnstile onToken={setTurnstileToken} action="login" />
+            <Turnstile ref={turnstileRef} onToken={setTurnstileToken} action="login" />
 
             <button
               type="submit"

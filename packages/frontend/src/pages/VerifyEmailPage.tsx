@@ -1,8 +1,9 @@
 // Verify Email Page - Handles email verification token from link
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { isApiConfigured, verifyEmail } from '../services/api'
 import { useAuthStore } from '../stores/authStore'
+import { useDocumentMeta } from '../hooks/useDocumentMeta'
 import styles from './AuthPage.module.css'
 
 export function VerifyEmailPage() {
@@ -14,15 +15,17 @@ export function VerifyEmailPage() {
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
 
-  useEffect(() => {
-    document.title = 'Verify Email | EternalOS'
-    return () => { document.title = 'EternalOS' }
-  }, [])
+  // Tokens are single-use: StrictMode's double effect run would consume it
+  // twice and show "invalid token" after a successful verify.
+  const verifiedTokenRef = useRef<string | null>(null)
+
+  useDocumentMeta({ title: 'Verify Email | EternalOS' })
 
   useEffect(() => {
-    if (!token || !isApiConfigured) {
+    if (!token || !isApiConfigured || verifiedTokenRef.current === token) {
       return
     }
+    verifiedTokenRef.current = token
 
     verifyEmail(token)
       .then(() => {
@@ -69,7 +72,7 @@ export function VerifyEmailPage() {
             <div className={styles.logo}>
               <span className={styles.logoText}>EternalOS</span>
             </div>
-            <div className={styles.error}>
+            <div className={styles.error} role="alert">
               Invalid or missing verification token.
             </div>
             <div className={styles.linkSection}>
@@ -98,7 +101,7 @@ export function VerifyEmailPage() {
 
           {error && (
             <>
-              <div className={styles.error}>{error}</div>
+              <div className={styles.error} role="alert">{error}</div>
               <div className={styles.linkSection}>
                 <Link to="/desktop" className={styles.link}>Go to Desktop</Link>
               </div>
