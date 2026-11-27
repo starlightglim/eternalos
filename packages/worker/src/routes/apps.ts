@@ -14,6 +14,8 @@ import type { Env } from '../index';
 import type { AuthContext } from '../middleware/auth';
 import type { AppGrantedPermissions, AppCapabilityPayload } from '../utils/jwt';
 import type { DesktopItem } from '../types';
+import type { AppPermissions } from '@eternalos/contracts';
+import { readTextWithLimit } from '../utils/limitedBody';
 import { signAppCapabilityToken, verifyAppCapabilityToken } from '../utils/jwt';
 import { nextFreeDesktopCell } from '../utils/desktopGrid';
 import { buildItemPath, pathMatchesGlob as sharedPathMatchesGlob, canReadItem as sharedCanReadItem } from '../utils/fsPolicy';
@@ -597,6 +599,8 @@ export async function handleAppFsRead(
  *
  * Auth: Bearer user JWT (requireAuth)
  */
+const DEV_DEPLOY_MAX_BODY_BYTES = 6 * 1024 * 1024;
+
 export async function handleAppDevDeploy(
   request: Request,
   env: Env,
@@ -624,19 +628,20 @@ export async function handleAppDevDeploy(
   } | null = null;
 
   try {
-    const contentLength = Number(request.headers.get('content-length') ?? 0);
-    if (Number.isFinite(contentLength) && contentLength > 6 * 1024 * 1024) {
+    // Streamed cap: a chunked body has no Content-Length to check.
+    const rawBody = await readTextWithLimit(request, DEV_DEPLOY_MAX_BODY_BYTES);
+    if (rawBody === null) {
       return Response.json({ error: 'App deployment payload is too large' }, { status: 413 });
     }
 
-    const body = await request.json() as {
+    const body = JSON.parse(rawBody) as {
       appId?: string; // present if updating
       manifest: {
         name: string;
         description?: string;
         version: string;
         windowConfig: { defaultWidth: number; defaultHeight: number; resizable?: boolean };
-        permissions?: any;
+        permissions?: AppPermissions;
         rationale?: string;
       };
       files: Record<string, string>;
@@ -691,7 +696,7 @@ export async function handleAppDevDeploy(
 
     if (appId) {
       // Update flow
-      const appMeta = await env.DESKTOP_KV.get<{ uid: string; version: number; granted?: any; r2Prefix?: string }>(`app:${appId}`, 'json');
+      const appMeta = await env.DESKTOP_KV.get<{ uid: string; version: number; granted?: AppGrantedPermissions; r2Prefix?: string }>(`app:${appId}`, 'json');
       if (!appMeta) {
         return Response.json({ error: 'App not found' }, { status: 404 });
       }

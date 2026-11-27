@@ -170,6 +170,60 @@ export async function resolveInstalledAppBackend(
   };
 }
 
+// A missing bundle loads a stub worker that answers with this header, so
+// the outcome is a plain response (not an error that has to survive the
+// loader boundary). The outer handler turns it into the CORS-wrapped 404.
+const BUNDLE_MISSING_HEADER = 'x-eternal-bundle-missing';
+const BUNDLE_MISSING_STUB = `export default { fetch() { return new Response(null, { status: 404, headers: { '${BUNDLE_MISSING_HEADER}': '1' } }); } };`;
+
+/**
+ * Serve a request from an app's compiled bundle through a Dynamic Worker.
+ *
+ * bundle.json is read from R2 only inside the loader callback, i.e. only
+ * when no isolate is cached for `cacheKey` (app id + version + grants).
+ * Warm requests (every asset of a page load) skip the R2 read and the
+ * multi-megabyte JSON parse entirely.
+ */
+async function serveFromBundle(
+  c: RouteContext,
+  options: {
+    cacheKey: string;
+    r2Prefix: string;
+    props: { uid: string; appId: string; granted: AppGrantedPermissions; requiresCapability?: boolean };
+    missingMessage: string;
+    assetPath: string;
+  },
+): Promise<Response> {
+  const { env } = c;
+  const loopback = eternalLoopback(c.ctx);
+  const worker = env.LOADER.get(options.cacheKey, async () => {
+    const bundleObj = await env.ETERNALOS_FILES.get(`${options.r2Prefix}/bundle.json`);
+    if (!bundleObj) {
+      return {
+        compatibilityDate: '2026-04-15',
+        mainModule: 'missing.js',
+        modules: { 'missing.js': BUNDLE_MISSING_STUB },
+        globalOutbound: null,
+      };
+    }
+    const bundle = await bundleObj.json<{ mainModule: string; modules: Record<string, string> }>();
+    return {
+      compatibilityDate: '2026-04-15',
+      mainModule: bundle.mainModule,
+      modules: bundle.modules,
+      // No arbitrary egress; bridge calls come back in through ETERNAL.
+      globalOutbound: null,
+      env: { ETERNAL: loopback.EternalService({ props: options.props }) },
+    };
+  });
+
+  const response = await worker.getEntrypoint().fetch(c.request);
+  if (response.status === 404 && response.headers.get(BUNDLE_MISSING_HEADER) === '1') {
+    return withCors(new Response(options.missingMessage, { status: 404 }), c.corsHeaders);
+  }
+  return allowOpaqueOriginAssets(allowFramingByFrontend(response, env), c.request.method, options.assetPath);
+}
+
 /** ANY /api/app-previews/:previewId[/...] */
 export async function handleServeAppPreview(c: RouteContext): Promise<Response> {
   const previewPath = c.params[0];
@@ -216,28 +270,13 @@ export async function handleServeAppPreview(c: RouteContext): Promise<Response> 
       requiresCapability: false,
     });
   }
-  const bundleObj = await c.env.ETERNALOS_FILES.get(`${previewMeta.r2Prefix}/bundle.json`);
-  if (!bundleObj) {
-    return withCors(new Response('App preview bundle not found', { status: 404 }), c.corsHeaders);
-  }
-
-  const bundle = await bundleObj.json<{ mainModule: string; modules: Record<string, string> }>();
-  const grantsHash = await hashGrants(granted);
-  const loopback = eternalLoopback(c.ctx);
-  const worker = c.env.LOADER.get(`app-preview-${previewId}@v${previewMeta.version}-${grantsHash}`, async () => ({
-    compatibilityDate: '2026-04-15',
-    mainModule: bundle.mainModule,
-    modules: bundle.modules,
-    globalOutbound: null,
-    env: {
-      ETERNAL: loopback.EternalService({
-        props: { uid: previewMeta.uid, appId: previewId, granted },
-      }),
-    },
-  }));
-
-  const previewResponse = allowFramingByFrontend(await worker.getEntrypoint().fetch(c.request), c.env);
-  return allowOpaqueOriginAssets(previewResponse, c.request.method, previewPath.slice(previewId.length + 1));
+  return serveFromBundle(c, {
+    cacheKey: `app-preview-${previewId}@v${previewMeta.version}-${await hashGrants(granted)}`,
+    r2Prefix: previewMeta.r2Prefix,
+    props: { uid: previewMeta.uid, appId: previewId, granted },
+    missingMessage: 'App preview bundle not found',
+    assetPath: previewPath.slice(previewId.length + 1),
+  });
 }
 
 const RUNTIME_ASSET = 'eternal-runtime.js';
@@ -304,31 +343,13 @@ export async function handleServeApp(c: RouteContext): Promise<Response> {
       requiresCapability: true,
     });
   }
-  const bundleObj = await c.env.ETERNALOS_FILES.get(`${r2Prefix}/bundle.json`);
-  if (!bundleObj) {
-    return withCors(new Response('App bundle not found', { status: 404 }), c.corsHeaders);
-  }
-
-  const bundle = await bundleObj.json<{ mainModule: string; modules: Record<string, string> }>();
   // Re-key the isolate cache on grant changes so revocation takes effect
   // on the next request without a manual flush. Hash is cheap and stable.
-  const grantsHash = await hashGrants(granted);
-  const loopback = eternalLoopback(c.ctx);
-  const worker = c.env.LOADER.get(`app-${appId}@v${appMeta.version}-${grantsHash}`, async () => ({
-    compatibilityDate: '2026-04-15',
-    mainModule: bundle.mainModule,
-    modules: bundle.modules,
-    // No arbitrary egress; bridge calls come back in through ETERNAL.
-    globalOutbound: null,
-    env: {
-      ETERNAL: loopback.EternalService({
-        props: { uid: appMeta.uid, appId, granted, requiresCapability: true },
-      }),
-    },
-  }));
-
-  const entrypoint = worker.getEntrypoint();
-  const response = allowFramingByFrontend(await entrypoint.fetch(c.request), c.env);
-  return allowOpaqueOriginAssets(response, c.request.method, appPath.slice(appId.length + 1));
+  return serveFromBundle(c, {
+    cacheKey: `app-${appId}@v${appMeta.version}-${await hashGrants(granted)}`,
+    r2Prefix,
+    props: { uid: appMeta.uid, appId, granted, requiresCapability: true },
+    missingMessage: 'App bundle not found',
+    assetPath: appPath.slice(appId.length + 1),
+  });
 }
-

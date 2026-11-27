@@ -16,6 +16,7 @@ import { AppOutbound, EternalService } from './services/EternalService';
 import { AppLogTail, AppRunner } from './durable-objects/AppRunner';
 import { handleRequest } from './routes/routeTable';
 import { listDuePendingDeletions, purgeAccount } from './utils/accountPurge';
+import { runTrashCleanup, type TrashCleanupSummary } from './utils/trashCleanup';
 
 export interface Env {
   // KV Namespaces
@@ -93,99 +94,43 @@ export default {
    * Cron: 0 3 * * * (3:00 AM UTC daily)
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    console.log('Running scheduled trash cleanup...');
-
-    // Enumerate all users via per-user index keys (avoids race condition of a single JSON array).
-    // KV.list() returns keys in pages of up to 1000.
-    const userUids: string[] = [];
-    let cursor: string | undefined;
-    do {
-      const listResult = await env.AUTH_KV.list({ prefix: 'user_index:', cursor });
-      for (const key of listResult.keys) {
-        // key.name is "user_index:{uid}" — extract uid
-        userUids.push(key.name.slice('user_index:'.length));
-      }
-      cursor = listResult.list_complete ? undefined : (listResult.cursor ?? undefined);
-    } while (cursor);
-
-    if (userUids.length === 0) {
-      console.log('No users found, skipping cleanup');
-      return;
+    const startedAt = Date.now();
+    // One summary line per run; per-user detail stays out of the logs
+    // (failures are still logged individually, without content).
+    let trash: TrashCleanupSummary = { users: 0, itemsDeleted: 0, r2Deleted: 0, failures: 0 };
+    try {
+      trash = await runTrashCleanup(env);
+    } catch (error) {
+      console.error('Trash cleanup enumeration failed:', error);
     }
-
-    console.log(`Processing ${userUids.length} users for trash cleanup`);
-
-    let totalDeleted = 0;
-    let totalR2Deleted = 0;
-
-    // Workers have a 1000 subrequest limit. Each user needs 1 DO fetch + N R2 deletes.
-    // Process in batches to stay within limits and avoid timeout.
-    const BATCH_SIZE = 50; // Conservative: leaves room for R2 deletes per batch
-
-    for (let i = 0; i < userUids.length; i += BATCH_SIZE) {
-      const batch = userUids.slice(i, i + BATCH_SIZE);
-
-      // Process batch concurrently
-      const results = await Promise.allSettled(
-        batch.map(async (uid) => {
-          const doId = env.USER_DESKTOP.idFromName(uid);
-          const stub = env.USER_DESKTOP.get(doId);
-          const response = await stub.fetch(new Request('http://internal/trash/cleanup', {
-            method: 'POST',
-          }));
-
-          const result = await response.json() as { deleted: number; r2Keys: string[] };
-
-          if (result.deleted > 0) {
-            console.log(`User ${uid}: deleted ${result.deleted} old trash items`);
-
-            // Clean up R2 files
-            if (result.r2Keys.length > 0) {
-              await Promise.all(result.r2Keys.map((key) => env.ETERNALOS_FILES.delete(key)));
-            }
-          }
-
-          return result;
-        })
-      );
-
-      // Tally results
-      for (const result of results) {
-        if (result.status === 'fulfilled') {
-          totalDeleted += result.value.deleted;
-          totalR2Deleted += result.value.r2Keys.length;
-        } else {
-          console.error('Batch cleanup error:', result.reason);
-        }
-      }
-    }
-
-    console.log(`Scheduled cleanup complete: ${totalDeleted} items deleted, ${totalR2Deleted} R2 files cleaned up`);
 
     // --- Account hard-deletion purge ---
     // Enumerate the small `pending-deletion:` index (not every user) for
     // accounts past their 14-day grace deadline and purge each. The purge is
     // idempotent and resumable: a failure mid-run leaves the account still
     // indexed, and the next invocation re-purges it cleanly.
+    let accountsPurged = 0;
+    let purgeFailures = 0;
     try {
       const due = await listDuePendingDeletions(env, Date.now());
-      if (due.length > 0) {
-        console.log(`Purging ${due.length} account(s) past the deletion deadline`);
-        for (const pending of due) {
-          try {
-            const result = await purgeAccount(env, pending);
-            console.log(
-              `Purged account ${pending.uid}: ${result.r2Deleted} R2 objects, ${result.kvDeleted} KV keys, ${result.packsDeleted} packs`
-            );
-          } catch (error) {
-            // Leave the pending-deletion marker in place so the next run retries.
-            console.error(`Account purge failed for ${pending.uid}; will retry next run:`, error);
-          }
+      for (const pending of due) {
+        try {
+          await purgeAccount(env, pending);
+          accountsPurged += 1;
+        } catch (error) {
+          // Leave the pending-deletion marker in place so the next run retries.
+          purgeFailures += 1;
+          console.error(`Account purge failed for ${pending.uid}; will retry next run:`, error);
         }
       }
     } catch (error) {
       console.error('Account purge enumeration failed:', error);
     }
+
+    console.log(
+      `[cron] ${event.cron}: trash ${trash.itemsDeleted} items / ${trash.r2Deleted} files across ${trash.users} users` +
+        ` (${trash.failures} failed); purged ${accountsPurged} accounts (${purgeFailures} failed) in ${Date.now() - startedAt}ms`,
+    );
   },
 
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
