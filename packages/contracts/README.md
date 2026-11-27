@@ -1,8 +1,9 @@
 # @eternalos/contracts
 
 Shared domain types for the EternalOS frontend (`@eternalos/frontend`) and
-worker (`@eternalos/worker`). **Types only — no runtime code, no zod schemas
-(yet).** Runtime validation at network boundaries is planned follow-up work
+worker (`@eternalos/worker`). **Types only — no logic, no zod schemas
+(yet).** The single runtime value is `CARTRIDGE_LIMITS`, a frozen literal the
+worker validator and the frontend editor both read. Runtime validation at network boundaries is planned follow-up work
 (design/RELEASE-READINESS.md, "Structure" item 1).
 
 Both packages re-export these names from their own type modules
@@ -13,10 +14,16 @@ Both packages re-export these names from their own type modules
 
 A common domain type belongs here when **both** deployables declare or use
 it. Today that is the `DesktopItem` graph (item types, widget configs,
-sticker/image-analysis metadata, app manifests and permission shapes) and
-`UserProfile`. Types used by only one package (worker auth records, bazaar
-types, sound/cursor asset metadata; frontend window state, cartridge types,
-menu types, `AuthUser`) stay in that package.
+sticker/image-analysis metadata, app manifests and permission shapes),
+`UserProfile`, sound/cursor skins (`SoundType`, `SoundPack`, `CursorState`,
+`SoundAssetMeta`, `CursorAssetMeta`), `CustomCSSVersion`, and the fantasy
+console `Cartridge`/`CartridgeMeta` plus `CARTRIDGE_LIMITS`. Types used by
+only one package (worker auth records, bazaar types; frontend window state,
+cartridge draft summaries, menu types, `AuthUser`) stay in that package.
+
+Old import locations re-export the moved names (`worker/src/types.ts`,
+`worker/src/utils/cartridge.ts`, `frontend/src/types/index.ts`,
+`stores/soundStore.ts`, `services/appearance.ts`).
 
 ## Reconciliation record (2026-11)
 

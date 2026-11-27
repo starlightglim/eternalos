@@ -25,25 +25,10 @@ import {
   type PreloadedAudioMap,
 } from '../sounds/audioPreloader';
 
-// Sound types available in the system
-export type SoundType =
-  | 'click'
-  | 'windowOpen'
-  | 'windowClose'
-  | 'folderOpen'
-  | 'drop'
-  | 'trash'
-  | 'emptyTrash'
-  | 'alert'
-  | 'error'
-  | 'startup'
-  | 'select';
+import type { SoundType, SoundPack } from '@eternalos/contracts';
 
-/** Sound pack — maps sound types to custom audio file URLs */
-export interface SoundPack {
-  name: string;
-  sounds: Partial<Record<SoundType, string>>;
-}
+// Sound slots and packs are shared with the worker (@eternalos/contracts).
+export type { SoundType, SoundPack };
 
 interface SoundState {
   enabled: boolean;

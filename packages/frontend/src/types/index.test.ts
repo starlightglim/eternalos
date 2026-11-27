@@ -1,10 +1,16 @@
 import { expect, expectTypeOf, test, describe } from 'vitest';
-import { getTextFileContentType } from './index';
-import type { DesktopItem, UserProfile } from './index';
+import { getTextFileContentType, CARTRIDGE_LIMITS } from './index';
+import type { DesktopItem, UserProfile, Cartridge, CustomCSSVersion, SoundPack, CursorState } from './index';
+import type { SoundPack as StoreSoundPack } from '../stores/soundStore';
+import type { CustomCSSVersion as ServiceCustomCSSVersion } from '../services/appearance';
 import type {
   AppGrantedPermissions,
   DesktopItem as ContractsDesktopItem,
   UserProfile as ContractsUserProfile,
+  Cartridge as ContractsCartridge,
+  CustomCSSVersion as ContractsCustomCSSVersion,
+  SoundPack as ContractsSoundPack,
+  CursorState as ContractsCursorState,
 } from '@eternalos/contracts';
 
 describe('getTextFileContentType', () => {
@@ -73,5 +79,30 @@ describe('reconciled UserProfile shape', () => {
 
   test('soundPack keys stay unconstrained (the server validates URL prefixes, not slot names)', () => {
     expectTypeOf<NonNullable<UserProfile['soundPack']>['sounds']>().toEqualTypeOf<Partial<Record<string, string>>>();
+  });
+});
+
+describe('moved shared types (sounds, cursors, CSS history, cartridges)', () => {
+  test('old import locations re-export the contracts types', () => {
+    expectTypeOf<Cartridge>().toEqualTypeOf<ContractsCartridge>();
+    expectTypeOf<CustomCSSVersion>().toEqualTypeOf<ContractsCustomCSSVersion>();
+    expectTypeOf<ServiceCustomCSSVersion>().toEqualTypeOf<ContractsCustomCSSVersion>();
+    expectTypeOf<SoundPack>().toEqualTypeOf<ContractsSoundPack>();
+    expectTypeOf<StoreSoundPack>().toEqualTypeOf<ContractsSoundPack>();
+    expectTypeOf<CursorState>().toEqualTypeOf<ContractsCursorState>();
+  });
+
+  test('cartridge limits match the worker validator and cannot be mutated', () => {
+    expect(CARTRIDGE_LIMITS).toEqual({
+      maxCodeBytes: 256 * 1024,
+      maxTotalBytes: 512 * 1024,
+      maxNameLength: 80,
+      maxDescriptionLength: 500,
+      maxVersionLength: 32,
+      screenSize: 128,
+      paletteSize: 16,
+      flagsHexLength: 512,
+    });
+    expect(Object.isFrozen(CARTRIDGE_LIMITS)).toBe(true);
   });
 });

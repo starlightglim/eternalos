@@ -5,39 +5,20 @@
  * sprite sheet + metadata. Validated here on every write path (draft save,
  * bazaar publish) so the play route can trust stored cartridges.
  *
- * Console spec (mirrored in games/consoleRuntime.ts):
+ * Console spec (mirrored in games/consoleRuntime.ts; types and limits in
+ * @eternalos/contracts):
  *   - 128x128 screen, 16-color palette
  *   - sprite sheet: 128 rows x 128 hex nibbles (one palette index per pixel),
  *     rows joined by '\n' — 16x16 grid of 8x8 sprites, indices 0-255
  *   - optional per-sprite flags: 256 hex bytes (512 chars) for fget/fset
  */
 
-export interface CartridgeMeta {
-  name: string;
-  description?: string;
-  author: string;
-  version: string;
-}
+import { CARTRIDGE_LIMITS, type Cartridge, type CartridgeMeta } from '@eternalos/contracts';
 
-export interface Cartridge {
-  formatVersion: 1;
-  meta: CartridgeMeta;
-  code: string;
-  spritesheet: string;
-  palette?: string[];
-  flags?: string;
-}
-
-export const CARTRIDGE_LIMITS = {
-  maxCodeBytes: 256 * 1024,
-  maxTotalBytes: 512 * 1024,
-  maxNameLength: 80,
-  maxDescriptionLength: 500,
-  maxVersionLength: 32,
-  screenSize: 128,
-  paletteSize: 16,
-  flagsHexLength: 512, // 256 sprites x 2 hex chars
-} as const;
+// The format and its limits live in @eternalos/contracts (shared with the
+// frontend editor); re-exported so existing imports keep working.
+export { CARTRIDGE_LIMITS };
+export type { Cartridge, CartridgeMeta };
 
 /** PICO-8 default palette — cartridges may override all 16 entries. */
 export const DEFAULT_PALETTE: readonly string[] = [

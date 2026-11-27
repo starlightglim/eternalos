@@ -10,8 +10,7 @@ import { useState, useRef, useCallback } from 'react';
 import { uploadCursor, deleteCursor, getCursorUrl, getApiUrl, type CursorAsset } from '../../services/api';
 import { useAppearanceStore, buildTokenUpdate } from '../../stores/appearanceStore';
 import styles from './CursorEditor.module.css';
-
-type CursorState = 'default' | 'pointer' | 'grab' | 'grabbing' | 'text' | 'wait' | 'move' | 'nwse-resize';
+import type { CursorState } from '@eternalos/contracts';
 
 /** Human-readable labels for cursor states */
 const CURSOR_STATE_INFO: { state: CursorState; label: string; tokenPath: string }[] = [

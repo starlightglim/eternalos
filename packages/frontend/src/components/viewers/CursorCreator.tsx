@@ -6,8 +6,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { uploadCursor, deleteCursor, getCursorUrl, listCursors, bazaarPublish } from '../../services/api';
 import { useAppearanceStore } from '../../stores/appearanceStore';
-
-type CursorState = 'default' | 'pointer' | 'grab' | 'grabbing' | 'text' | 'wait' | 'move' | 'nwse-resize';
+import type { CursorState } from '@eternalos/contracts';
 
 const SLOTS: { state: CursorState; label: string; tokenPath: string; fallback: string }[] = [
   { state: 'default', label: 'Default', tokenPath: 'cursor.image.default', fallback: 'default' },

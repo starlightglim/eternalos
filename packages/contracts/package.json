@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Shared domain types for the EternalOS frontend and worker. Types only — no runtime code.",
+  "description": "Shared domain types for the EternalOS frontend and worker. Types only, plus the frozen CARTRIDGE_LIMITS literal.",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
@@ -14,7 +14,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "echo 'No runtime tests: @eternalos/contracts is a types-only package (guarded by typecheck)'"
+    "test": "echo 'No runtime tests: @eternalos/contracts is a types-only package plus one constant (guarded by typecheck and frontend vitest)'"
   },
   "devDependencies": {
     "typescript": "~5.9.3"
