@@ -4,7 +4,7 @@
  * Extracts and verifies JWT from Authorization header.
  * Attaches uid to request context for downstream handlers.
  *
- * Implementation in Phase 4
+ * Also authenticates signed file-access URLs and the agent chat WebSocket.
  */
 
 import type { Env } from '../index';

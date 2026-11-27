@@ -1524,7 +1524,6 @@ async function generateAppWithRepairLoop<T>(
           attempt > 0 ? lastError : undefined,
         );
       attemptFiles = app.files;
-      console.log(`[app-build] attempt ${attempt + 1}: generated ${Object.keys(app.files).length} files in ${Date.now() - attemptStarted}ms`);
       // Pre-bundle source gate — runs with the generated files captured, so
       // its failures can be repaired by patching the files they name.
       validateGeneratedApp(app);

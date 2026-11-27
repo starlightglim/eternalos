@@ -308,6 +308,26 @@ describe('full-stack app backends (Dynamic Worker facets)', () => {
     assert.equal(res.status, 404);
     assert.match(JSON.stringify(res.body), /no server\.js backend/);
   });
+
+  it('serves pages and assets repeatedly (bundle read only for a cold isolate)', async () => {
+    const user = await signup();
+    const app = await expectStatus('/api/apps/dev-deploy', {
+      method: 'POST',
+      headers: auth(user.token, JSON_HEADERS),
+      body: JSON.stringify({
+        manifest: { name: 'Assets', version: '1', windowConfig: { defaultWidth: 400, defaultHeight: 400 } },
+        files: { 'index.html': '<!doctype html><script src="./app.js"></script>', 'app.js': 'document.title = "ok";' },
+      }),
+    });
+    const appId = encodeURIComponent(app.appId);
+    for (let i = 0; i < 2; i++) {
+      assert.equal((await call(`/api/apps/${appId}/`)).status, 200);
+      const asset = await call(`/api/apps/${appId}/app.js`);
+      assert.equal(asset.status, 200);
+      assert.match(String(asset.body), /document\.title/);
+    }
+    assert.equal((await call(`/api/apps/${appId}/eternal-runtime.js`)).status, 200);
+  });
 });
 
 // A real 1×1 PNG (magic bytes and all), as canvas.toDataURL would produce.

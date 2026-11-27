@@ -14,6 +14,7 @@
 import type { Env } from '../index';
 import type { AuthContext } from '../middleware/auth';
 import { acquireAiRequest, legibleAiErrorMessage } from '../middleware/aiUsage';
+import { readTextWithLimit } from '../utils/limitedBody';
 import { SkinValidationError, normalizeSkin, summarizeSkin } from '../utils/appSkin';
 import {
   SkinStoreError,
@@ -33,10 +34,9 @@ import {
 const MAX_BODY_BYTES = 9 * 1024 * 1024;
 
 async function readJsonBody(request: Request): Promise<Record<string, unknown> | Response> {
-  const declared = Number(request.headers.get('content-length') ?? 0);
-  if (declared > MAX_BODY_BYTES) return Response.json({ error: 'That skin is too large (9MB max).' }, { status: 413 });
-  const text = await request.text();
-  if (text.length > MAX_BODY_BYTES) return Response.json({ error: 'That skin is too large (9MB max).' }, { status: 413 });
+  // Streamed cap: stops reading as soon as the limit is passed, chunked or not.
+  const text = await readTextWithLimit(request, MAX_BODY_BYTES);
+  if (text === null) return Response.json({ error: 'That skin is too large (9MB max).' }, { status: 413 });
   try {
     const parsed = JSON.parse(text);
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : Response.json({ error: 'Expected a JSON object' }, { status: 400 });
