@@ -1,7 +1,8 @@
 // Forgot Password Page - Classic Mac OS styled password recovery
-import { useState, type FormEvent, useEffect } from 'react'
+import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { isApiConfigured, forgotPassword } from '../services/api'
+import { useDocumentMeta } from '../hooks/useDocumentMeta'
 import styles from './AuthPage.module.css'
 
 export function ForgotPasswordPage() {
@@ -11,11 +12,7 @@ export function ForgotPasswordPage() {
   const [success, setSuccess] = useState(false)
   const [resetUrl, setResetUrl] = useState<string | null>(null)
 
-  // Set document title
-  useEffect(() => {
-    document.title = 'Forgot Password | EternalOS'
-    return () => { document.title = 'EternalOS' }
-  }, [])
+  useDocumentMeta({ title: 'Forgot Password | EternalOS' })
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -113,7 +110,7 @@ export function ForgotPasswordPage() {
             Enter your email address and we'll send you a link to reset your password.
           </p>
 
-          {error && <div className={styles.error}>{error}</div>}
+          {error && <div className={styles.error} role="alert">{error}</div>}
 
           <form className={styles.form} onSubmit={handleSubmit}>
             <div className={styles.formGroup}>

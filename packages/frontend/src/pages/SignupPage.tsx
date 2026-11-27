@@ -1,11 +1,14 @@
 // Signup Page - Classic Mac OS styled registration
-import { useState, type FormEvent, useEffect } from 'react'
+import { useState, type FormEvent, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/authStore'
 import { isApiConfigured } from '../services/api'
 import { getGoogleClientId, redirectToGoogle } from '../utils/googleOAuth'
-import { Turnstile, TURNSTILE_ENABLED } from '../components/ui/Turnstile'
+import { Turnstile, TURNSTILE_ENABLED, type TurnstileHandle } from '../components/ui/Turnstile'
 import { RecoveryCodesDialog } from '../components/ui/RecoveryCodesDialog'
+import { useDocumentMeta } from '../hooks/useDocumentMeta'
+import { validatePassword, PASSWORD_MAX_LENGTH } from '../utils/passwordRules'
+import { PasswordRuleHints } from './PasswordRuleHints'
 import styles from './AuthPage.module.css'
 
 export function SignupPage() {
@@ -16,14 +19,16 @@ export function SignupPage() {
   const [localError, setLocalError] = useState<string | null>(null)
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null)
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null)
+  const turnstileRef = useRef<TurnstileHandle>(null)
   const { signup, loading, error, clearError, user } = useAuthStore()
   const navigate = useNavigate()
 
-  // Set document title
+  useDocumentMeta({ title: 'Create Your Desktop | EternalOS' })
+
+  // Drop any error left over from another auth page (the store's error is shared)
   useEffect(() => {
-    document.title = 'Create Your Desktop | EternalOS'
-    return () => { document.title = 'EternalOS' }
-  }, [])
+    clearError()
+  }, [clearError])
 
   // If already logged in, redirect to desktop — but hold if recovery codes are showing
   useEffect(() => {
@@ -49,9 +54,10 @@ export function SignupPage() {
       return
     }
 
-    // Validate password strength (must match backend: 8+ chars with uppercase, lowercase, number)
-    if (password.length < 8) {
-      setLocalError('Password must be at least 8 characters')
+    // Validate password strength (mirrors the server rules in routes/auth.ts)
+    const passwordError = validatePassword(password)
+    if (passwordError) {
+      setLocalError(passwordError)
       return
     }
 
@@ -61,16 +67,24 @@ export function SignupPage() {
       return
     }
 
+    let failed = false
     try {
       const codes = await signup(email, password, username, turnstileToken)
+      // The store records failures in `error` instead of throwing.
+      failed = !useAuthStore.getState().user
       if (codes && codes.length > 0) {
         // Surface recovery codes; navigation happens after user acknowledges.
         setRecoveryCodes(codes)
       }
       // Navigation otherwise happens via useEffect when user state updates
     } catch (err) {
-      // Error is handled by the store
+      failed = true
       console.error('Signup error:', err)
+    }
+    if (failed) {
+      // Turnstile tokens are single-use: get a fresh one for the retry.
+      setTurnstileToken(null)
+      turnstileRef.current?.reset()
     }
   }
 
@@ -120,7 +134,7 @@ export function SignupPage() {
             <span className={styles.logoText}>EternalOS</span>
           </div>
 
-          {displayError && <div className={styles.error}>{displayError}</div>}
+          {displayError && <div className={styles.error} role="alert">{displayError}</div>}
 
           <form className={styles.form} onSubmit={handleSubmit}>
             <div className={styles.formGroup}>
@@ -164,7 +178,10 @@ export function SignupPage() {
                 required
                 autoComplete="new-password"
                 minLength={8}
+                maxLength={PASSWORD_MAX_LENGTH}
+                aria-describedby="password-rules"
               />
+              <PasswordRuleHints id="password-rules" password={password} />
             </div>
 
             <div className={styles.formGroup}>
@@ -180,7 +197,7 @@ export function SignupPage() {
               />
             </div>
 
-            <Turnstile onToken={setTurnstileToken} action="signup" />
+            <Turnstile ref={turnstileRef} onToken={setTurnstileToken} action="signup" />
 
             <button
               type="submit"

@@ -3,15 +3,17 @@
  *
  * Usage:
  *   const [token, setToken] = useState<string | null>(null);
- *   <Turnstile onToken={setToken} action="signup" />
- *   // Include `cf-turnstile-response: token` in the submitted form / JSON
+ *   const turnstileRef = useRef<TurnstileHandle>(null);
+ *   <Turnstile ref={turnstileRef} onToken={setToken} action="signup" />
+ *   // Include `cf-turnstile-response: token` in the submitted form / JSON.
+ *   // Tokens are single-use: call turnstileRef.current?.reset() after a failed submit.
  *
  * When the site key isn't configured (VITE_TURNSTILE_SITE_KEY unset), renders
  * nothing and calls onToken(null). The worker-side verifier is also no-op
  * without TURNSTILE_SECRET, so dev work continues unblocked.
  */
 
-import { useEffect, useRef } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 
 interface TurnstileProps {
   /** Called with the token on challenge pass, or null on reset/expire. */
@@ -80,9 +82,32 @@ function loadTurnstileScript(): Promise<void> {
 
 const SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY;
 
-export function Turnstile({ onToken, action, theme = 'auto', size = 'invisible', className }: TurnstileProps) {
+/** Imperative handle: tokens are single-use, so call reset() after a failed submit. */
+export interface TurnstileHandle {
+  /** Clears the current token (onToken(null)) and re-runs the challenge for a fresh one. */
+  reset: () => void;
+}
+
+export const Turnstile = forwardRef<TurnstileHandle, TurnstileProps>(function Turnstile(
+  { onToken, action, theme = 'auto', size = 'invisible', className },
+  ref,
+) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const widgetIdRef = useRef<string | null>(null);
+
+  useImperativeHandle(ref, () => ({
+    reset: () => {
+      if (!SITE_KEY) return;
+      onToken(null);
+      if (widgetIdRef.current && window.turnstile) {
+        try {
+          window.turnstile.reset(widgetIdRef.current);
+        } catch (err) {
+          console.warn('Turnstile reset failed:', err);
+        }
+      }
+    },
+  }), [onToken]);
 
   useEffect(() => {
     if (!SITE_KEY) {
@@ -133,7 +158,7 @@ export function Turnstile({ onToken, action, theme = 'auto', size = 'invisible',
   if (!SITE_KEY) return null;
 
   return <div ref={containerRef} className={className} />;
-}
+});
 
 /** True when Turnstile is configured for this build. Use to branch UI. */
 export const TURNSTILE_ENABLED: boolean = Boolean(SITE_KEY);

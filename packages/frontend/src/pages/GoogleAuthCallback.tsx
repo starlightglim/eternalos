@@ -2,10 +2,11 @@
 // Handles the redirect back from Google after user consents.
 // Exchanges the authorization code for EternalOS tokens via the backend.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/authStore'
 import { verifyOAuthState, getOAuthRedirectUri } from '../utils/googleOAuth'
+import { useDocumentMeta } from '../hooks/useDocumentMeta'
 import styles from './AuthPage.module.css'
 
 export function GoogleAuthCallback() {
@@ -22,8 +23,16 @@ export function GoogleAuthCallback() {
   })
   const { googleLogin } = useAuthStore()
   const navigate = useNavigate()
+  // One-shot: the OAuth state is consumed on first check and the code is
+  // single-use, so StrictMode's second effect run must not repeat this.
+  const handledRef = useRef(false)
+
+  useDocumentMeta({ title: 'Signing In | EternalOS' })
 
   useEffect(() => {
+    if (handledRef.current) return
+    handledRef.current = true
+
     const params = new URLSearchParams(window.location.search)
     const code = params.get('code')
     const state = params.get('state')
@@ -74,7 +83,7 @@ export function GoogleAuthCallback() {
             <div className={styles.logo}>
               <span className={styles.logoText}>EternalOS</span>
             </div>
-            <div className={styles.error}>{error}</div>
+            <div className={styles.error} role="alert">{error}</div>
             <button
               className={styles.submitButton}
               onClick={() => navigate('/login', { replace: true })}
