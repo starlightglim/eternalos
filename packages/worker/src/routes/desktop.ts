@@ -19,6 +19,7 @@
  */
 
 import type { Env } from '../index';
+import type { UserRecord } from '../types';
 import { RATE_LIMIT_WS, checkRateLimit, rateLimitResponse } from '../middleware/rateLimit';
 import type { RouteContext, RouteHandlerResult } from './router';
 import { requireAuthContext, ROUTE_FALLTHROUGH } from './router';
@@ -67,6 +68,50 @@ function serverManagedItemFieldsIn(payload: unknown): string[] {
   return [];
 }
 
+function serverPatchSetsImageAnalysis(payload: unknown): boolean {
+  return Array.isArray(payload) && payload.some((entry) => {
+    const updates = typeof entry === 'object' && entry !== null
+      ? (entry as { updates?: unknown }).updates
+      : null;
+    return typeof updates === 'object' && updates !== null && 'imageAnalysis' in updates;
+  });
+}
+
+/** R2's batch delete takes at most 1000 keys per call. */
+const R2_DELETE_BATCH = 1000;
+
+/**
+ * Delete the R2 objects of permanently deleted items, in batches of up to
+ * 1000 keys. Only keys under the caller's own prefix are touched (items only
+ * ever carry such keys; this keeps a corrupted record from reaching another
+ * tenant's files). The DO has already removed the items, so a failed R2
+ * delete is logged rather than turned into an error response, and the
+ * quota counter is invalidated so the orphans are counted again.
+ */
+async function deleteUserR2Objects(env: Env, uid: string, keys: unknown): Promise<void> {
+  let failed = false;
+  if (!Array.isArray(keys)) return;
+  const owned = [...new Set(keys.filter(
+    (key): key is string => typeof key === 'string' && key.startsWith(`${uid}/`),
+  ))];
+  for (let start = 0; start < owned.length; start += R2_DELETE_BATCH) {
+    const batch = owned.slice(start, start + R2_DELETE_BATCH);
+    try {
+      await env.ETERNALOS_FILES.delete(batch);
+    } catch (error) {
+      console.error(`R2 cleanup failed for ${batch.length} object(s):`, error);
+      failed = true;
+    }
+  }
+  // The DO already subtracted these files from its usage counter; they are
+  // still in R2, so make the next quota read rebuild from R2.
+  if (failed) {
+    await userDesktopStub(env, uid)
+      .fetch(new Request('http://internal/quota/invalidate', { method: 'POST' }))
+      .catch(() => undefined);
+  }
+}
+
 /**
  * Reject (400) a public item create/patch body the DO must never see:
  *
@@ -101,6 +146,15 @@ function rejectInvalidItemBody(body: string, patch: boolean): Response | null {
   }
   if (!patch && (typeof payload !== 'object' || payload === null || Array.isArray(payload))) {
     return Response.json({ error: 'Item body must be a JSON object' }, { status: 400 });
+  }
+  // imageAnalysis is written only by the server's image-analysis pass (which
+  // PATCHes the DO directly); the public create path already strips it, and
+  // a client patch must not forge captions/tags either.
+  if (patch && serverPatchSetsImageAnalysis(payload)) {
+    return Response.json(
+      { error: 'Item writes may not set imageAnalysis; it is set by the server\'s image-analysis pass' },
+      { status: 400 },
+    );
   }
   const fields = serverManagedItemFieldsIn(payload);
   if (fields.length === 0) return null;
@@ -160,13 +214,13 @@ export async function handleDeleteDesktopItem(c: RouteContext): Promise<Response
   const itemId = c.params[0];
   const doResponse = await userDesktopStub(c.env, auth.uid)
     .fetch(new Request(`http://internal/items/${itemId}`, { method: 'DELETE' }));
+  // A DO failure keeps its own status and body — never a 200.
+  if (!doResponse.ok) return doResponse;
 
   // Clean up R2 files (including cascaded children)
   const result = await doResponse.json() as { deleted: boolean; r2Key?: string; r2Keys?: string[] };
-  const keysToDelete = result.r2Keys || (result.r2Key ? [result.r2Key] : []);
-  if (keysToDelete.length > 0) {
-    await Promise.all(keysToDelete.map((key) => c.env.ETERNALOS_FILES.delete(key)));
-  }
+  const keysToDelete = Array.isArray(result.r2Keys) ? result.r2Keys : (result.r2Key ? [result.r2Key] : []);
+  await deleteUserR2Objects(c.env, auth.uid, keysToDelete);
 
   return Response.json(result);
 }
@@ -175,6 +229,17 @@ export async function handleDeleteDesktopItem(c: RouteContext): Promise<Response
 export async function handlePutWindows(c: RouteContext): Promise<Response> {
   const auth = requireAuthContext(c);
   const body = await c.request.text();
+  // Client input: refuse non-JSON and non-array bodies here with a 400 (the
+  // DO re-checks every entry and answers bad entries with a 400 too).
+  let payload: unknown;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    return Response.json({ error: 'Request body must be valid JSON' }, { status: 400 });
+  }
+  if (!Array.isArray(payload)) {
+    return Response.json({ error: 'Window state must be a JSON array' }, { status: 400 });
+  }
   return userDesktopStub(c.env, auth.uid).fetch(new Request('http://internal/windows', {
     method: 'PUT',
     body,
@@ -250,14 +315,22 @@ export async function handleEmptyTrash(c: RouteContext): Promise<Response> {
   const auth = requireAuthContext(c);
   const doResponse = await userDesktopStub(c.env, auth.uid)
     .fetch(new Request('http://internal/trash', { method: 'DELETE' }));
+  // A DO failure keeps its own status and body — never a 200.
+  if (!doResponse.ok) return doResponse;
 
-  // Clean up R2 files for deleted items
-  const result = await doResponse.json() as { deleted: number; r2Keys: string[] };
-  if (result.r2Keys.length > 0) {
-    await Promise.all(result.r2Keys.map((key) => c.env.ETERNALOS_FILES.delete(key)));
-  }
+  // Clean up R2 files for deleted items (r2Keys may be absent)
+  const result = await doResponse.json() as { deleted: number; r2Keys?: string[] };
+  await deleteUserR2Objects(c.env, auth.uid, result.r2Keys);
 
   return Response.json(result);
+}
+
+/** True when the uid's user record carries deletedAt (soft-deleted). */
+async function isSoftDeleted(env: Env, uid: string): Promise<boolean> {
+  const index = await env.AUTH_KV.get<{ email?: string }>(`uid:${uid}`, 'json');
+  if (!index?.email) return false;
+  const user = await env.AUTH_KV.get<UserRecord>(`user:${index.email}`, 'json');
+  return Boolean(user?.deletedAt);
 }
 
 /**
@@ -290,6 +363,13 @@ export async function handleVisitorWebSocket(c: RouteContext): Promise<RouteHand
   // Look up uid by username (stored as JSON { uid })
   const usernameData = await c.env.AUTH_KV.get<{ uid: string }>(`username:${wsUsername}`, 'json');
   if (!usernameData) {
+    return new Response('User not found', { status: 404 });
+  }
+
+  // A soft-deleted account (deletedAt set, inside its grace period) is gone
+  // to visitors: no live-sync socket. Answers the same 404 as an unknown
+  // username so a pending deletion isn't observable.
+  if (await isSoftDeleted(c.env, usernameData.uid)) {
     return new Response('User not found', { status: 404 });
   }
 
