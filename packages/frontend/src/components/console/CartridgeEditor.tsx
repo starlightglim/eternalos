@@ -11,6 +11,8 @@ import { useAuthStore } from '../../stores/authStore';
 import { ConsolePlayer } from './ConsolePlayer';
 import { createStarterCartridge, drawSpritesheet, generateCover, CONSOLE_SCREEN } from './consoleSpec';
 import { AlertDialog } from '../ui/AlertDialog';
+import { CARTRIDGE_LIMITS } from '@eternalos/contracts';
+import { checkCartridgeLimits } from './cartridgeLimits';
 import styles from './CartridgeEditor.module.css';
 
 type EditorTab = 'code' | 'sprites' | 'meta';
@@ -91,6 +93,14 @@ export function CartridgeEditor() {
 
   const persistDraft = useCallback(async (): Promise<boolean> => {
     if (!cartId || !cartridge) return false;
+    const problems = checkCartridgeLimits(cartridge);
+    if (problems.length > 0) {
+      setStatus({
+        kind: 'error',
+        text: `Can't save: ${problems[0]}${problems.length > 1 ? ` (+${problems.length - 1} more)` : ''}`,
+      });
+      return false;
+    }
     setBusy(true);
     setStatus(null);
     try {
@@ -272,7 +282,7 @@ export function CartridgeEditor() {
                       Name
                       <input
                         value={cartridge.meta.name}
-                        maxLength={80}
+                        maxLength={CARTRIDGE_LIMITS.maxNameLength}
                         onChange={(e) => updateMeta({ name: e.target.value })}
                       />
                     </label>
@@ -281,7 +291,7 @@ export function CartridgeEditor() {
                       <textarea
                         rows={3}
                         value={cartridge.meta.description ?? ''}
-                        maxLength={500}
+                        maxLength={CARTRIDGE_LIMITS.maxDescriptionLength}
                         onChange={(e) => updateMeta({ description: e.target.value })}
                       />
                     </label>
@@ -289,7 +299,7 @@ export function CartridgeEditor() {
                       Version
                       <input
                         value={cartridge.meta.version}
-                        maxLength={32}
+                        maxLength={CARTRIDGE_LIMITS.maxVersionLength}
                         onChange={(e) => updateMeta({ version: e.target.value })}
                       />
                     </label>
