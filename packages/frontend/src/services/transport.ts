@@ -39,6 +39,19 @@ class SessionChangedError extends Error {
   constructor() { super('Your session changed. Please try again.'); }
 }
 
+/** A non-2xx API response. `message` keeps the `"<status> <error>"` format. */
+export class ApiError extends Error {
+  readonly status: number;
+  /** The server's `error` text (or status text), without the status prefix. */
+  readonly detail: string;
+  constructor(status: number, detail: string) {
+    super(`${status} ${detail}`);
+    this.name = 'ApiError';
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 class RefreshUnavailableError extends Error {
   constructor() { super('Unable to reconnect right now. Your session is saved; please try again.'); }
 }
@@ -283,6 +296,20 @@ export async function refreshSession(): Promise<boolean> {
 }
 
 /**
+ * GET a public endpoint whose answer doesn't depend on who is signed in.
+ * A sign-in/out mid-request makes `apiRequest` distrust the response; for
+ * these reads that's harmless, so retry once instead of failing.
+ */
+export async function publicGet<T>(path: string, options: RequestInit = {}): Promise<T> {
+  try {
+    return await apiRequest<T>(path, options);
+  } catch (err) {
+    if (err instanceof SessionChangedError && !options.signal?.aborted) return apiRequest<T>(path, options);
+    throw err;
+  }
+}
+
+/**
  * Make an authenticated API request
  */
 export async function apiRequest<T>(
@@ -292,8 +319,10 @@ export async function apiRequest<T>(
 ): Promise<T> {
   const requestSessionVersion = sessionVersion;
   const requestAuthToken = authToken;
+  // Multipart bodies need the browser-generated boundary header.
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
   const headers: HeadersInit = {
-    'Content-Type': 'application/json',
+    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
     ...options.headers,
   };
 
@@ -340,7 +369,7 @@ export async function apiRequest<T>(
       errorMessage = response.statusText || 'Request failed';
     }
 
-    throw new Error(`${response.status} ${errorMessage}`);
+    throw new ApiError(response.status, errorMessage);
   }
 
   const data = await response.json();

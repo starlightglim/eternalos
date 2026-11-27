@@ -4,7 +4,7 @@
  */
 
 import type { DesktopItem, UserProfile } from '../types';
-import { API_URL } from './transport';
+import { ApiError, publicGet } from './transport';
 import type { SavedWindowState } from './desktop';
 
 // ============ Visitor API ============
@@ -41,18 +41,18 @@ export interface VisitorResponse {
   windows?: SavedWindowState[];
 }
 
-export async function fetchVisitorDesktop(username: string): Promise<VisitorResponse> {
-  const response = await fetch(`${API_URL}/api/visit/${username}`);
-
-  if (!response.ok) {
-    if (response.status === 404) {
-      throw new Error('User not found');
+export async function fetchVisitorDesktop(username: string, signal?: AbortSignal): Promise<VisitorResponse> {
+  let data: VisitorApiResponse;
+  try {
+    data = await publicGet<VisitorApiResponse>(`/api/visit/${encodeURIComponent(username)}`, { signal });
+  } catch (err) {
+    if (err instanceof ApiError) {
+      // VisitorPage matches this exact message for its "not found" screen.
+      if (err.status === 404) throw new Error('User not found');
+      throw new Error(err.detail || `HTTP ${err.status}`);
     }
-    const error = await response.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(error.error || `HTTP ${response.status}`);
+    throw err;
   }
-
-  const data: VisitorApiResponse = await response.json();
 
   // Transform API response to match expected format
   return {

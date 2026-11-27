@@ -3,7 +3,7 @@
  */
 
 import type { Cartridge } from '../types';
-import { API_URL, getAuthToken } from './transport';
+import { ApiError, apiRequest, publicGet } from './transport';
 
 // ---------------------------------------------------------------------------
 // Bazaar API
@@ -26,33 +26,64 @@ export interface BazaarPack {
   config: Record<string, string | number | boolean>;
 }
 
-/** Browse packs in the Bazaar */
+export interface BazaarBrowseResult {
+  packs: BazaarPack[];
+  total: number;
+  page: number;
+  pageSize: number;
+  /** Opaque cursor for the next page (newer backends only). */
+  nextCursor?: string;
+}
+
+type BazaarResult<T> = { success: boolean; error?: string } & Partial<T>;
+
+/** Turn a thrown request error into the `{ success: false, error }` shape. */
+function failure(err: unknown, fallback: string): { success: false; error: string } {
+  if (err instanceof ApiError) return { success: false, error: err.detail || fallback };
+  if (err instanceof Error && err.name === 'AbortError') throw err;
+  return { success: false, error: err instanceof Error && err.message ? err.message : fallback };
+}
+
+/**
+ * Browse packs in the Bazaar. Works with page-based backends and with
+ * cursor-paginated ones (`limit`/`cursor` in, `nextCursor` out; `page` still
+ * honoured). Throws on a failed request.
+ */
 export async function bazaarBrowse(options?: {
-  type?: string; q?: string; page?: number;
-}): Promise<{ packs: BazaarPack[]; total: number; page: number; pageSize: number }> {
+  type?: string; q?: string; page?: number; limit?: number; cursor?: string; signal?: AbortSignal;
+}): Promise<BazaarBrowseResult> {
   const params = new URLSearchParams();
   if (options?.type) params.set('type', options.type);
   if (options?.q) params.set('q', options.q);
   if (options?.page) params.set('page', String(options.page));
+  if (options?.limit) params.set('limit', String(options.limit));
+  if (options?.cursor) params.set('cursor', options.cursor);
 
-  const response = await fetch(`${API_URL}/api/bazaar/browse?${params}`);
-  return response.json();
+  const data = await publicGet<Partial<BazaarBrowseResult>>(`/api/bazaar/browse?${params}`, {
+    signal: options?.signal,
+  });
+  const pageSize = Number(data.pageSize) > 0 ? Number(data.pageSize) : options?.limit || 20;
+  return {
+    packs: Array.isArray(data.packs) ? data.packs : [],
+    total: Number(data.total) || 0,
+    page: Number(data.page) || options?.page || 1,
+    pageSize,
+    ...(typeof data.nextCursor === 'string' && data.nextCursor ? { nextCursor: data.nextCursor } : {}),
+  };
 }
 
-/** Get a single pack */
+/** Get a single pack. Throws on a failed request. */
 export async function bazaarGetPack(packId: string): Promise<{ pack: BazaarPack }> {
-  const response = await fetch(`${API_URL}/api/bazaar/pack/${packId}`);
-  return response.json();
+  return publicGet<{ pack: BazaarPack }>(`/api/bazaar/pack/${encodeURIComponent(packId)}`);
 }
 
 /** Install a pack (returns the config to apply) */
-export async function bazaarInstall(packId: string): Promise<{ success: boolean; config: Record<string, string | number | boolean>; pack: BazaarPack; error?: string }> {
-  const authToken = getAuthToken();
-  const response = await fetch(`${API_URL}/api/bazaar/install/${packId}`, {
-    method: 'POST',
-    headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-  });
-  return response.json();
+export async function bazaarInstall(packId: string): Promise<BazaarResult<{ config: Record<string, string | number | boolean>; pack: BazaarPack }>> {
+  try {
+    return await apiRequest(`/api/bazaar/install/${encodeURIComponent(packId)}`, { method: 'POST' });
+  } catch (err) {
+    return failure(err, 'Install failed');
+  }
 }
 
 /** Publish a pack to the Bazaar */
@@ -60,7 +91,7 @@ export async function bazaarPublish(
   manifest: { type: string; name: string; description: string; tags: string[]; config: Record<string, string | number | boolean> },
   preview: File,
   assets: Record<string, File>,
-): Promise<{ success: boolean; pack?: BazaarPack; error?: string }> {
+): Promise<BazaarResult<{ pack: BazaarPack }>> {
   const formData = new FormData();
   formData.append('manifest', JSON.stringify(manifest));
   formData.append('preview', preview);
@@ -68,13 +99,11 @@ export async function bazaarPublish(
     formData.append(`asset_${key}`, file);
   }
 
-  const authToken = getAuthToken();
-  const response = await fetch(`${API_URL}/api/bazaar/publish`, {
-    method: 'POST',
-    headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-    body: formData,
-  });
-  return response.json();
+  try {
+    return await apiRequest('/api/bazaar/publish', { method: 'POST', body: formData });
+  } catch (err) {
+    return failure(err, 'Publish failed');
+  }
 }
 
 /** Publish (or republish with packId) a game cartridge to the Bazaar */
@@ -83,7 +112,7 @@ export async function bazaarPublishGame(
   cover: Blob | null,
   packId?: string,
   draftId?: string,
-): Promise<{ success: boolean; pack?: BazaarPack; error?: string }> {
+): Promise<BazaarResult<{ pack: BazaarPack }>> {
   const formData = new FormData();
   formData.append('cartridge', JSON.stringify(cartridge));
   if (cover) {
@@ -96,30 +125,24 @@ export async function bazaarPublishGame(
     formData.append('draftId', draftId);
   }
 
-  const authToken = getAuthToken();
-  const response = await fetch(`${API_URL}/api/bazaar/publish-game`, {
-    method: 'POST',
-    headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-    body: formData,
-  });
-  return response.json();
+  try {
+    return await apiRequest('/api/bazaar/publish-game', { method: 'POST', body: formData });
+  } catch (err) {
+    return failure(err, 'Publish failed');
+  }
 }
 
 /** Delete a pack you published */
 export async function bazaarDelete(packId: string): Promise<{ success: boolean; error?: string }> {
-  const authToken = getAuthToken();
-  const response = await fetch(`${API_URL}/api/bazaar/pack/${packId}`, {
-    method: 'DELETE',
-    headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-  });
-  return response.json();
+  try {
+    return await apiRequest(`/api/bazaar/pack/${encodeURIComponent(packId)}`, { method: 'DELETE' });
+  } catch (err) {
+    return failure(err, 'Delete failed');
+  }
 }
 
-/** List your own published packs */
+/** List your own published packs. Throws on a failed request. */
 export async function bazaarMyPacks(): Promise<{ packs: BazaarPack[] }> {
-  const authToken = getAuthToken();
-  const response = await fetch(`${API_URL}/api/bazaar/my-packs`, {
-    headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-  });
-  return response.json();
+  const data = await apiRequest<{ packs?: BazaarPack[] }>('/api/bazaar/my-packs');
+  return { packs: Array.isArray(data.packs) ? data.packs : [] };
 }
