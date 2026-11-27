@@ -27,6 +27,8 @@ export function ShareDialog({ isOwner = true }: ShareDialogProps) {
   const [descSaved, setDescSaved] = useState(false);
   const [descError, setDescError] = useState<string | null>(null);
   const descTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  /** The debounced value not yet sent; flushed if the dialog closes first. */
+  const pendingDescRef = useRef<string | null>(null);
 
   const username = profile?.username;
   const shareUrl = username ? `${window.location.origin}/@${username}` : '';
@@ -80,8 +82,24 @@ export function ShareDialog({ isOwner = true }: ShareDialogProps) {
   }, [profile?.shareDescription, setShareDescription]);
 
   const handleSaveDescription = useCallback(() => {
+    if (descTimerRef.current) clearTimeout(descTimerRef.current);
+    descTimerRef.current = undefined;
+    pendingDescRef.current = null;
     void saveDescription(description);
   }, [description, saveDescription]);
+
+  // Closing the dialog while the debounce is pending would drop the edit:
+  // flush it instead (setShareDescription lives in the auth store, so it
+  // completes after this component is gone).
+  const flushRef = useRef(saveDescription);
+  flushRef.current = saveDescription;
+  useEffect(() => () => {
+    if (descTimerRef.current) clearTimeout(descTimerRef.current);
+    descTimerRef.current = undefined;
+    const pending = pendingDescRef.current;
+    pendingDescRef.current = null;
+    if (pending !== null) void flushRef.current(pending);
+  }, []);
 
   // Auto-save description on blur or after typing stops (debounce)
   const handleDescriptionChange = useCallback((value: string) => {
@@ -91,7 +109,10 @@ export function ShareDialog({ isOwner = true }: ShareDialogProps) {
     // Clear existing timer
     if (descTimerRef.current) clearTimeout(descTimerRef.current);
     // Auto-save after 1.5s of no typing
+    pendingDescRef.current = value;
     descTimerRef.current = setTimeout(() => {
+      descTimerRef.current = undefined;
+      pendingDescRef.current = null;
       void saveDescription(value);
     }, 1500);
   }, [saveDescription]);

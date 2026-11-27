@@ -16,6 +16,7 @@ import {
   type AppSkinIndex,
   type SkinPartDescription,
 } from '../../services/appSkins';
+import { useAlertStore } from '../../stores/alertStore';
 import {
   TEMPLATE_README,
   canvasToDataUrl,
@@ -172,15 +173,21 @@ export function AppSkinsPanel({ appId, appName, describeParts, onChanged, onClos
     downloadBlob(await writeSkinFile(skin), `${safeFileName(skin.name)}.eskin`);
   });
 
+  // The delete confirm is async: read the active skin and selection as they
+  // are when the user presses OK, not when they clicked Delete.
+  const latestRef = useRef({ index, selected });
+  useEffect(() => { latestRef.current = { index, selected }; });
+
   const removeSkin = (skinId: string, name: string) => {
-    if (!window.confirm(`Delete the skin "${name}"? This can't be undone.`)) return;
-    void run('delete', async () => {
-      const wasActive = index?.active === skinId;
-      await deleteAppSkin(appId, skinId);
-      if (selected === skinId) setSelected(null);
-      await refresh();
-      if (wasActive) onChanged();
-    });
+    useAlertStore.getState().showConfirm(`Delete the skin "${name}"? This can't be undone.`, () => {
+      void run('delete', async () => {
+        const wasActive = latestRef.current.index?.active === skinId;
+        await deleteAppSkin(appId, skinId);
+        setSelected((current) => (current === skinId ? null : current));
+        await refresh();
+        if (wasActive) onChanged();
+      });
+    }, undefined, 'Delete skin');
   };
 
   const setColor = (name: string, value: string | null) => {

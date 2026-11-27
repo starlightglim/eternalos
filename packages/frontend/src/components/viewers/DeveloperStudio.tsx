@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useDesktopStore } from '../../stores/desktopStore';
 import {
   deleteAppRuntime,
@@ -78,6 +78,24 @@ export function DeveloperStudio() {
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [statusMsg, setStatusMsg] = useState('');
+  // One status timer: a new status cancels a pending "back to idle", so an
+  // old success timer can never wipe a later error or progress message.
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const showStatus = useCallback((next: 'idle' | 'loading' | 'success' | 'error', message: string) => {
+    clearTimeout(statusTimerRef.current);
+    statusTimerRef.current = undefined;
+    setStatus(next);
+    setStatusMsg(message);
+  }, []);
+  const clearStatusLater = useCallback(() => {
+    clearTimeout(statusTimerRef.current);
+    statusTimerRef.current = setTimeout(() => {
+      statusTimerRef.current = undefined;
+      setStatus('idle');
+      setStatusMsg('');
+    }, 3000);
+  }, []);
+  useEffect(() => () => clearTimeout(statusTimerRef.current), []);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -118,8 +136,7 @@ export function DeveloperStudio() {
   // Load selected app's files from backend R2
   const handleSelectApp = useCallback(async (app: AppItem) => {
     setIsLoading(true);
-    setStatus('loading');
-    setStatusMsg(`Loading ${app.name} source files...`);
+    showStatus('loading', `Loading ${app.name} source files...`);
     setActiveApp(app);
     setActiveTab('index.html');
     setReleases([]);
@@ -157,24 +174,21 @@ export function DeveloperStudio() {
       setSourceFiles(srcFiles);
       setReleases(versionData.releases);
 
-      setStatus('idle');
-      setStatusMsg('');
+      showStatus('idle', '');
     } catch (err) {
       console.error(err);
-      setStatus('error');
-      setStatusMsg(err instanceof Error ? err.message : 'Failed to retrieve files.');
+      showStatus('error', err instanceof Error ? err.message : 'Failed to retrieve files.');
     } finally {
       setIsLoading(false);
     }
-  }, [items]);
+  }, [items, showStatus]);
 
   // Deploy / Update the currently selected app
   const handleDeploy = useCallback(async () => {
     if (!activeApp) return;
 
     setIsLoading(true);
-    setStatus('loading');
-    setStatusMsg(`Compiling and deploying ${activeApp.name}...`);
+    showStatus('loading', `Compiling and deploying ${activeApp.name}...`);
 
     try {
       // Validate manifest is valid JSON
@@ -204,8 +218,7 @@ export function DeveloperStudio() {
         files: deployFiles,
       });
 
-      setStatus('success');
-      setStatusMsg(`App updated successfully to version ${data.version}!`);
+      showStatus('success', `App updated successfully to version ${data.version}!`);
       
       // Update local state and trigger desktop reload
       await loadDesktop();
@@ -214,18 +227,14 @@ export function DeveloperStudio() {
       setReleases(versionData.releases);
       setRollbackVersion('');
       
-      setTimeout(() => {
-        setStatus('idle');
-        setStatusMsg('');
-      }, 3000);
+      clearStatusLater();
     } catch (err) {
       console.error(err);
-      setStatus('error');
-      setStatusMsg(err instanceof Error ? err.message : 'Deployment failed.');
+      showStatus('error', err instanceof Error ? err.message : 'Deployment failed.');
     } finally {
       setIsLoading(false);
     }
-  }, [activeApp, files, loadDesktop, sourceFiles]);
+  }, [activeApp, files, loadDesktop, sourceFiles, showStatus, clearStatusLater]);
 
   const handleRollback = useCallback(async () => {
     if (!activeApp || !rollbackVersion) return;
@@ -234,24 +243,21 @@ export function DeveloperStudio() {
     if (!Number.isInteger(version)) return;
 
     setIsLoading(true);
-    setStatus('loading');
-    setStatusMsg(`Rolling ${activeApp.name} back to version ${version}...`);
+    showStatus('loading', `Rolling ${activeApp.name} back to version ${version}...`);
 
     try {
       await rollbackApp(activeApp.appId, version);
       await loadDesktop();
       await handleSelectApp(activeApp);
       setActiveApp((previous) => previous ? { ...previous, version: String(version) } : previous);
-      setStatus('success');
-      setStatusMsg(`App rolled back to version ${version}.`);
+      showStatus('success', `App rolled back to version ${version}.`);
       setRollbackVersion('');
     } catch (err) {
-      setStatus('error');
-      setStatusMsg(err instanceof Error ? err.message : 'Rollback failed.');
+      showStatus('error', err instanceof Error ? err.message : 'Rollback failed.');
     } finally {
       setIsLoading(false);
     }
-  }, [activeApp, handleSelectApp, loadDesktop, rollbackVersion]);
+  }, [activeApp, handleSelectApp, loadDesktop, rollbackVersion, showStatus]);
 
   // A revision was restored through the History panel: the app's deployed
   // release, desktop item, and source all changed server-side, so reload the
@@ -262,13 +268,9 @@ export function DeveloperStudio() {
       await handleSelectApp(activeApp);
       setActiveApp((previous) => previous ? { ...previous, version: String(result.version) } : previous);
     }
-    setStatus('success');
-    setStatusMsg(`Restored app to version ${result.version}.`);
-    setTimeout(() => {
-      setStatus('idle');
-      setStatusMsg('');
-    }, 3000);
-  }, [activeApp, handleSelectApp, loadDesktop]);
+    showStatus('success', `Restored app to version ${result.version}.`);
+    clearStatusLater();
+  }, [activeApp, handleSelectApp, loadDesktop, showStatus, clearStatusLater]);
 
   const handleToggleLogs = useCallback(async () => {
     if (!activeApp) return;
@@ -292,8 +294,7 @@ export function DeveloperStudio() {
     if (!activeApp) return;
 
     setIsLoading(true);
-    setStatus('loading');
-    setStatusMsg(`Deleting ${activeApp.name}...`);
+    showStatus('loading', `Deleting ${activeApp.name}...`);
 
     try {
       await deleteAppRuntime(activeApp.appId);
@@ -304,22 +305,17 @@ export function DeveloperStudio() {
       setReleases([]);
       setRollbackVersion('');
       setShowDeleteConfirm(false);
-      setStatus('success');
-      setStatusMsg('App uninstalled and its runtime data was removed.');
+      showStatus('success', 'App uninstalled and its runtime data was removed.');
 
       await loadDesktop();
 
-      setTimeout(() => {
-        setStatus('idle');
-        setStatusMsg('');
-      }, 3000);
+      clearStatusLater();
     } catch (err) {
-      setStatus('error');
-      setStatusMsg(err instanceof Error ? err.message : 'Failed to delete app.');
+      showStatus('error', err instanceof Error ? err.message : 'Failed to delete app.');
     } finally {
       setIsLoading(false);
     }
-  }, [activeApp, loadDesktop, removeItem]);
+  }, [activeApp, loadDesktop, removeItem, showStatus, clearStatusLater]);
 
   // Create a brand new app from scratch
   const handleCreateApp = useCallback(async (e: React.FormEvent) => {
@@ -336,8 +332,7 @@ export function DeveloperStudio() {
     })[character] ?? character);
 
     setIsLoading(true);
-    setStatus('loading');
-    setStatusMsg(`Scaffolding new app ${appName}...`);
+    showStatus('loading', `Scaffolding new app ${appName}...`);
     setShowCreateModal(false);
 
     try {
@@ -477,8 +472,7 @@ button:focus-visible { outline: 3px solid color-mix(in srgb, var(--app-accent) 5
         version: createdDesktopItem.appManifest.version || '1',
       };
 
-      setStatus('success');
-      setStatusMsg(`App "${newName}" created successfully!`);
+      showStatus('success', `App "${newName}" created successfully!`);
       setActiveApp(createdApp);
       setFiles({
         'eternal.app.json': JSON.stringify(manifest, null, 2),
@@ -499,18 +493,14 @@ button:focus-visible { outline: 3px solid color-mix(in srgb, var(--app-accent) 5
       setNewName('');
       setNewDesc('');
 
-      setTimeout(() => {
-        setStatus('idle');
-        setStatusMsg('');
-      }, 3000);
+      clearStatusLater();
     } catch (err) {
       console.error(err);
-      setStatus('error');
-      setStatusMsg(err instanceof Error ? err.message : 'Creation failed.');
+      showStatus('error', err instanceof Error ? err.message : 'Creation failed.');
     } finally {
       setIsLoading(false);
     }
-  }, [newName, newDesc, newWidth, newHeight, loadDesktop]);
+  }, [newName, newDesc, newWidth, newHeight, loadDesktop, showStatus, clearStatusLater]);
 
   return (
     <div className={styles.studio} data-no-drag>

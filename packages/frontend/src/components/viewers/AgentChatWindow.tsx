@@ -22,6 +22,7 @@ import {
 import { useAuthStore } from '../../stores/authStore';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { useWindowStore } from '../../stores/windowStore';
+import { useAlertStore } from '../../stores/alertStore';
 import { getTextFileContentType, type AppPermissions, type DesktopItem } from '../../types';
 import { AlertDialog } from '../ui/AlertDialog';
 import { notifyAppDataChanged, notifyAppSkinChanged, openAppIds, openAppSkinsForApp, reloadAppWindows } from '../../utils/appWindowBus';
@@ -231,7 +232,7 @@ function SkinResultCard({ output }: { output: Extract<DesignAppSkinOutput, { ok:
         </div>
         <div className={styles.matchPills}>
           {!undone ? <button type="button" onClick={() => void undo()} disabled={busy}>Undo</button> : null}
-          <button type="button" onClick={() => { if (!openAppSkinsForApp(output.appId)) window.alert('Open the app, then right-click its title bar to see its skins.'); }}>Skins…</button>
+          <button type="button" onClick={() => { if (!openAppSkinsForApp(output.appId)) useAlertStore.getState().showInfo('Open the app, then right-click its title bar to see its skins.', 'Skins'); }}>Skins…</button>
         </div>
       </div>
     </div>
