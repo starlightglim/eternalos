@@ -3838,7 +3838,7 @@ describe('worker integration', () => {
     assert.equal(analytics.dailyViews[0].count, 2);
   });
 
-  it('returns an SVG og:image for public desktops', async () => {
+  it('returns a PNG og:image (and an SVG variant) for public desktops', async () => {
     const user = await signupUser();
 
     await patchProfile(user.token, {
@@ -3846,7 +3846,13 @@ describe('worker integration', () => {
       shareDescription: 'A quiet corner of the web',
     });
 
-    const response = await worker.fetch(`${BASE_URL}/api/og/${user.user.username}.png`);
+    const png = await worker.fetch(`${BASE_URL}/api/og/${user.user.username}.png`);
+    assert.equal(png.status, 200);
+    assert.equal(png.headers.get('Content-Type'), 'image/png');
+    const bytes = new Uint8Array(await png.arrayBuffer());
+    assert.deepEqual([...bytes.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
+
+    const response = await worker.fetch(`${BASE_URL}/api/og/${user.user.username}.svg`);
     const svg = await response.text();
 
     assert.equal(response.status, 200);
