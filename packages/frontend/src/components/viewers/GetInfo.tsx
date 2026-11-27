@@ -37,14 +37,19 @@ export function GetInfo({ item, isOwner = true }: GetInfoProps) {
   const [editingTagIndex, setEditingTagIndex] = useState<number | null>(null);
   const [editingTagValue, setEditingTagValue] = useState('');
   const nameInputRef = useRef<HTMLInputElement>(null);
-  const { updateItem, items, requestImageAnalysis } = useDesktopStore();
+  const updateItem = useDesktopStore((s) => s.updateItem);
+  // Select just the parent folder's name, not the whole items array.
+  const parentName = useDesktopStore((s) =>
+    item.parentId ? s.items.find((i) => i.id === item.parentId)?.name : undefined
+  );
+  const requestImageAnalysis = useDesktopStore((s) => s.requestImageAnalysis);
 
   // Get the appropriate icon for this item type
   // Custom icon takes precedence if set
   const hasUploadedIcon = item.customIcon?.startsWith('upload:');
   const hasLibraryIcon = item.customIcon && CUSTOM_ICON_LIBRARY[item.customIcon as CustomIconId];
   const locationLabel = item.parentId
-    ? items.find((i) => i.id === item.parentId)?.name || 'Unknown folder'
+    ? parentName || 'Unknown folder'
     : null;
 
   // Format the file size
@@ -97,7 +102,7 @@ export function GetInfo({ item, isOwner = true }: GetInfoProps) {
   }, [isEditingName]);
 
   // Handle name edit
-  const { updateWindowTitle } = useWindowStore();
+  const updateWindowTitle = useWindowStore((s) => s.updateWindowTitle);
   const handleNameCommit = useCallback(() => {
     setIsEditingName(false);
     const trimmed = name.trim();

@@ -1,22 +1,26 @@
 /* EternalOS Global Styles */
 /* Classic Mac OS Retro Aesthetic */
 
-/* @import must come first - Fallback pixel font + optional user fonts from Google Fonts */
-@import url('https://fonts.googleapis.com/css2?family=VT323&family=Silkscreen:wght@400;700&family=Press+Start+2P&family=DM+Sans:wght@400;500;700&family=Inter:wght@400;500;600&family=Space+Mono:wght@400;700&family=IBM+Plex+Mono:wght@400;500&family=Courier+Prime:wght@400;700&family=DM+Mono:wght@400;500&display=swap');
+/* Google Fonts (VT323 fallback + optional user fonts) are NOT @imported here:
+   a cross-origin @import blocks first paint. utils/googleFonts.ts injects the
+   stylesheet without blocking render; the browser then fetches only the font
+   files that text actually uses. */
 
 /* ============================================
    FONT FACE DECLARATIONS
    ChiKareGo2 - Chicago pixel font clone (primary UI)
    Geneva/Monaco - Classic Mac body/monospace font fallbacks
 
-   Font files should be placed in public/fonts/
-   If fonts are missing, we use VT323 as fallback
+   Font files should be placed in public/fonts/ (WOFF2 first, preloaded in
+   index.html; regenerate with scripts/ttf2woff2.mjs). If fonts are missing,
+   we use VT323 as fallback
    ============================================ */
 
 /* Primary UI font - ChiKareGo2 (Chicago clone) */
 @font-face {
   font-family: 'ChiKareGo2';
-  src: url('/fonts/ChiKareGo2.ttf') format('truetype');
+  src: url('/fonts/ChiKareGo2.woff2') format('woff2'),
+       url('/fonts/ChiKareGo2.ttf') format('truetype');
   font-weight: normal;
   font-style: normal;
   font-display: swap;

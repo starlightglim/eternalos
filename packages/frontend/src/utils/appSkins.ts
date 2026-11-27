@@ -11,7 +11,10 @@
  *   README.txt  (templates: how to paint)
  */
 
-import JSZip from 'jszip';
+import type JSZip from 'jszip';
+
+/** JSZip (~97KB) loads only when a .eskin is read or written. */
+const loadJSZip = async () => (await import('jszip')).default;
 import type { SkinPartDescription } from '../services/appSkins';
 
 export const SKIN_FORMAT = 'eternal-skin/1';
@@ -102,7 +105,8 @@ export async function readSkinFile(file: Blob & { name?: string }): Promise<AppS
   }
   let zip: JSZip;
   try {
-    zip = await JSZip.loadAsync(await file.arrayBuffer());
+    const Zip = await loadJSZip();
+    zip = await Zip.loadAsync(await file.arrayBuffer());
   } catch {
     throw new SkinFileError('That .eskin file could not be opened (not a valid zip).');
   }
@@ -138,7 +142,8 @@ export async function readSkinFile(file: Blob & { name?: string }): Promise<AppS
 
 /** Pack a skin as a .eskin zip. */
 export async function writeSkinFile(skin: AppSkin, extras: Record<string, string> = {}): Promise<Blob> {
-  const zip = new JSZip();
+  const Zip = await loadJSZip();
+  const zip = new Zip();
   const assets: Record<string, string> = {};
   for (const [key, value] of Object.entries(skin.assets ?? {})) {
     const data = assetData(value);

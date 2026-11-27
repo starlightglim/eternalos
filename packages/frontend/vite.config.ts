@@ -48,8 +48,9 @@ export default defineConfig({
       output: {
         // Chunk vendor dependencies separately
         manualChunks: {
+          // zustand (<1KB) stays in the entry chunk: its own chunk only
+          // added a request.
           'react-vendor': ['react', 'react-dom', 'react-router-dom'],
-          'state': ['zustand'],
         },
       },
     },

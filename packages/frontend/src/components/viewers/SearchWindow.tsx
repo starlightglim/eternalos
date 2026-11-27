@@ -47,8 +47,10 @@ function getPreviewUrl(item: DesktopItem): string | null {
 export function SearchWindow() {
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
-  const { items } = useDesktopStore();
-  const { openWindow, windows, closeWindow, focusWindow } = useWindowStore();
+  const items = useDesktopStore((s) => s.items);
+  const openWindow = useWindowStore((s) => s.openWindow);
+  const closeWindow = useWindowStore((s) => s.closeWindow);
+  const focusWindow = useWindowStore((s) => s.focusWindow);
   const inputRef = useRef<HTMLInputElement>(null);
   // Re-render preview thumbnails when the file token rotates.
   useFileTokenVersion();
@@ -61,11 +63,15 @@ export function SearchWindow() {
   const results = useMemo(() => searchItems(items, query), [items, query]);
 
   const closeSearchWindow = useCallback(() => {
-    const searchWindow = windows.find((window) => window.contentType === 'search');
+    // Read windows at call time: subscribing would re-render search on every
+    // window move/focus anywhere on the desktop.
+    const searchWindow = useWindowStore
+      .getState()
+      .windows.find((window) => window.contentType === 'search');
     if (searchWindow) {
       closeWindow(searchWindow.id);
     }
-  }, [closeWindow, windows]);
+  }, [closeWindow]);
 
   const handleOpenItem = useCallback(
     (item: DesktopItem) => {
@@ -198,10 +204,10 @@ export function SearchWindow() {
   useEffect(() => {
     if (!topResult) return;
     const itemWindowId = `${topResult.item.type}-${topResult.item.id}`;
-    if (windows.some((window) => window.id === itemWindowId)) {
+    if (useWindowStore.getState().windows.some((window) => window.id === itemWindowId)) {
       focusWindow(itemWindowId);
     }
-  }, [focusWindow, topResult, windows]);
+  }, [focusWindow, topResult]);
 
   return (
     <div className={styles.searchWindow}>

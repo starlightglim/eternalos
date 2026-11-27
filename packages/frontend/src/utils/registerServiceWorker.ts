@@ -25,7 +25,7 @@ export function registerServiceWorker(options: RegisterSWOptions = {}): void {
 
   const logErrors = options.logErrors ?? true;
 
-  window.addEventListener('load', async () => {
+  const register = async () => {
     try {
       const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
 
@@ -50,7 +50,24 @@ export function registerServiceWorker(options: RegisterSWOptions = {}): void {
         console.error('Service worker registration failed:', error);
       }
     }
-  });
+  };
+
+  // Called after `load` already fired (late boot, lazy caller)? A `load`
+  // listener would never run, so register right away.
+  whenLoaded(register);
+}
+
+/** Run `fn` once the window has loaded — immediately if it already has. */
+export function whenLoaded(
+  fn: () => void,
+  target: Pick<Window, 'addEventListener'> = window,
+  doc: Pick<Document, 'readyState'> = document,
+): void {
+  if (doc.readyState === 'complete') {
+    fn();
+  } else {
+    target.addEventListener('load', () => fn(), { once: true });
+  }
 }
 
 /**
