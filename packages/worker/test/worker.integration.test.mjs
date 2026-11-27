@@ -3385,7 +3385,9 @@ describe('worker integration', () => {
       headers,
     });
     assert.equal(wsToken.status, 429);
-    const chat = await worker.fetch(`${BASE_URL}/api/agent/chat?threadId=t`, { headers });
+    const chat = await worker.fetch(`${BASE_URL}/api/agent/chat?threadId=t`, {
+      headers: { ...headers, Origin: 'http://localhost:5173' },
+    });
     assert.equal(chat.status, 429);
 
     // The 429 keeps the legacy general-block shape: JSON body, retry hints,
@@ -3394,7 +3396,7 @@ describe('worker integration', () => {
     assert.equal(chatBody.error, 'Too many requests. Please try again later.');
     assert.ok(chat.headers.get('Retry-After'), '429 carries a Retry-After hint');
     assert.equal(chat.headers.get('X-RateLimit-Remaining'), '0');
-    assert.ok(chat.headers.get('Access-Control-Allow-Origin'), '429 is CORS-decorated');
+    assert.equal(chat.headers.get('Access-Control-Allow-Origin'), 'http://localhost:5173', '429 is CORS-decorated');
     assert.equal(chat.headers.get('X-Content-Type-Options'), 'nosniff', '429 carries security headers');
   });
 
@@ -3407,10 +3409,12 @@ describe('worker integration', () => {
     // Sub-limit requests still succeed and keep their legacy headers:
     // decorated with CORS + security headers, but — like every non-auth
     // route — WITHOUT success-path X-RateLimit-* headers.
-    const threads = await fetchJson('/api/agent/threads', { headers });
+    const threads = await fetchJson('/api/agent/threads', {
+      headers: { ...headers, Origin: 'http://localhost:5173' },
+    });
     assert.equal(threads.response.status, 200);
     assert.ok(Array.isArray(threads.body.threads));
-    assert.equal(threads.response.headers.get('Access-Control-Allow-Origin'), '*');
+    assert.equal(threads.response.headers.get('Access-Control-Allow-Origin'), 'http://localhost:5173');
     assert.equal(threads.response.headers.get('X-Frame-Options'), 'DENY');
     assert.equal(threads.response.headers.get('X-RateLimit-Limit'), null,
       'agent routes must not gain success-path rate-limit headers');
@@ -3610,7 +3614,7 @@ describe('worker integration', () => {
   it('preserves the legacy policies of a sample of existing routes', async () => {
     // Health: any method, CORS-only headers (no security headers), never
     // rate limited.
-    const health = await worker.fetch(`${BASE_URL}/api/health`);
+    const health = await worker.fetch(`${BASE_URL}/api/health`, { headers: { Origin: 'http://localhost:5173' } });
     const healthBody = JSON.parse(await health.text());
     assert.equal(health.status, 200);
     assert.equal(healthBody.status, 'ok');
@@ -3623,13 +3627,16 @@ describe('worker integration', () => {
     assert.equal(healthPost.status, 200);
 
     // Preflight: CORS-only headers, no security headers.
-    const preflight = await worker.fetch(`${BASE_URL}/api/desktop`, { method: 'OPTIONS' });
+    const preflight = await worker.fetch(`${BASE_URL}/api/desktop`, {
+      method: 'OPTIONS',
+      headers: { Origin: 'http://localhost:5173' },
+    });
     assert.equal(preflight.status, 200);
     assert.ok(preflight.headers.get('Access-Control-Allow-Origin'));
     assert.equal(preflight.headers.get('X-Frame-Options'), null);
 
     // Unmatched paths: CORS-only JSON 404 after the fallback rate-limit check.
-    const missing = await worker.fetch(`${BASE_URL}/api/no-such-route`);
+    const missing = await worker.fetch(`${BASE_URL}/api/no-such-route`, { headers: { Origin: 'http://localhost:5173' } });
     assert.equal(missing.status, 404);
     assert.deepEqual(JSON.parse(await missing.text()), { error: 'Not found' });
     assert.ok(missing.headers.get('Access-Control-Allow-Origin'));
@@ -3673,6 +3680,144 @@ describe('worker integration', () => {
     });
     assert.equal(draftOddMethod.response.status, 404);
     assert.deepEqual(draftOddMethod.body, { error: 'Not found' });
+  });
+
+  it('sends credentialed CORS only to allowed origins (never * with credentials)', async () => {
+    const ip = { 'CF-Connecting-IP': `cors-${Date.now()}-${Math.random().toString(36).slice(2)}` };
+
+    const allowed = await worker.fetch(`${BASE_URL}/api/health`, { headers: { ...ip, Origin: 'http://localhost:5173' } });
+    assert.equal(allowed.headers.get('Access-Control-Allow-Origin'), 'http://localhost:5173');
+    assert.equal(allowed.headers.get('Access-Control-Allow-Credentials'), 'true');
+    assert.equal(allowed.headers.get('Vary'), 'Origin');
+
+    // No Origin: no CORS grant at all (previously ACAO * + credentials).
+    const noOrigin = await worker.fetch(`${BASE_URL}/api/health`, { headers: ip });
+    assert.equal(noOrigin.status, 200);
+    assert.equal(noOrigin.headers.get('Access-Control-Allow-Origin'), null);
+    assert.equal(noOrigin.headers.get('Access-Control-Allow-Credentials'), null);
+
+    // Disallowed Origin: header omitted (previously present but empty).
+    for (const init of [{ headers: { ...ip, Origin: 'https://evil.example' } },
+      { method: 'OPTIONS', headers: { ...ip, Origin: 'https://evil.example' } }]) {
+      const res = await worker.fetch(`${BASE_URL}/api/desktop`, init);
+      assert.equal(res.headers.has('Access-Control-Allow-Origin'), false);
+      assert.equal(res.headers.get('Access-Control-Allow-Credentials'), null);
+    }
+
+    // Allowed preflight.
+    const preflight = await worker.fetch(`${BASE_URL}/api/desktop`, {
+      method: 'OPTIONS',
+      headers: { ...ip, Origin: 'http://127.0.0.1:5173', 'Access-Control-Request-Method': 'PATCH' },
+    });
+    assert.equal(preflight.status, 200);
+    assert.equal(preflight.headers.get('Access-Control-Allow-Origin'), 'http://127.0.0.1:5173');
+    assert.match(preflight.headers.get('Access-Control-Allow-Methods'), /PATCH/);
+  });
+
+  it('ignores X-Forwarded-For when picking the per-IP bucket', async () => {
+    // A fresh X-Forwarded-For per request must not buy a fresh bucket: with
+    // the same CF-Connecting-IP every request shares one 60/min auth bucket.
+    const cfIp = `xff-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const statuses = [];
+    for (let batch = 0; batch < 2; batch++) {
+      const requests = Array.from({ length: 40 }, (_, i) => worker.fetch(`${BASE_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: { ...JSON_HEADERS, 'CF-Connecting-IP': cfIp, 'X-Forwarded-For': `198.51.100.${batch * 40 + i}` },
+        body: JSON.stringify({ email: 'xff@example.com', password: 'WrongPassword123' }),
+      }));
+      for (const response of await Promise.all(requests)) statuses.push(response.status);
+    }
+    assert.ok(statuses.filter((s) => s === 429).length >= 20, 'rotating X-Forwarded-For must not evade the limit');
+  });
+
+  it('rate limits app dev-deploy per user, not per IP', async () => {
+    const user = await signupUser();
+    const other = await signupUser();
+    const deploy = (token, ip) => worker.fetch(`${BASE_URL}/api/apps/dev-deploy`, {
+      method: 'POST',
+      // Invalid body: cheap 400 from the handler, still counted by the limiter.
+      headers: authHeaders(token, { ...JSON_HEADERS, 'CF-Connecting-IP': ip }),
+      body: JSON.stringify({}),
+    });
+
+    const statuses = [];
+    for (let i = 0; i < 22; i++) {
+      // A different IP every request: the bucket follows the account.
+      const res = await deploy(user.token, `deploy-${i}-${Math.random().toString(36).slice(2)}`);
+      statuses.push(res.status);
+      if (res.status === 429) {
+        assert.ok(res.headers.get('Retry-After'));
+        assert.equal(res.headers.get('X-RateLimit-Remaining'), '0');
+        assert.equal(res.headers.get('X-Content-Type-Options'), 'nosniff');
+        assert.equal(JSON.parse(await res.text()).error, 'Too many requests. Please try again later.');
+      } else {
+        await res.text();
+      }
+    }
+    assert.equal(statuses.filter((s) => s !== 429).length, 20, `statuses: ${statuses.join(',')}`);
+    assert.deepEqual(statuses.slice(20), [429, 429]);
+
+    // Another account is unaffected.
+    const otherRes = await deploy(other.token, 'deploy-other');
+    assert.notEqual(otherRes.status, 429);
+    await otherRes.text();
+
+    // Unauthenticated requests are rejected by auth, not charged to anyone.
+    const unauth = await worker.fetch(`${BASE_URL}/api/apps/dev-deploy`, { method: 'POST', body: '{}' });
+    assert.equal(unauth.status, 401);
+  });
+
+  it('rate limits app capability, skins and draft routes per user', async () => {
+    const user = await signupUser();
+    const hammer = async (count, url, init = {}) => {
+      const statuses = await Promise.all(Array.from({ length: count }, async () => {
+        const res = await worker.fetch(`${BASE_URL}${url}`, { ...init, headers: authHeaders(user.token, init.headers) });
+        await res.text();
+        return res.status;
+      }));
+      return statuses;
+    };
+    const capability = await hammer(125, '/api/apps/no-such-app/capability', { method: 'POST' });
+    assert.equal(capability.filter((s) => s === 429).length, 5, `capability: ${capability.join(',')}`);
+    const skins = await hammer(65, '/api/apps/no-such-app/skins');
+    assert.equal(skins.filter((s) => s === 429).length, 5, `skins: ${skins.join(',')}`);
+    const drafts = await hammer(125, '/api/games/drafts/no-such-cart');
+    assert.equal(drafts.filter((s) => s === 429).length, 5, `drafts: ${drafts.join(',')}`);
+  });
+
+  it('puts asset delete routes on the general API bucket', async () => {
+    // 301 authenticated-shape deletes from one IP: the API bucket (300/min)
+    // rejects the excess; the public-asset bucket (1000/min) would not.
+    for (const route of ['/api/css-assets/x', '/api/sounds/x', '/api/cursors/x']) {
+      const ip = `asset-del-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const statuses = [];
+      for (let batch = 0; batch < 7; batch++) {
+        const requests = Array.from({ length: batch === 6 ? 10 : 50 }, () =>
+          worker.fetch(`${BASE_URL}${route}`, { method: 'DELETE', headers: { 'CF-Connecting-IP': ip } }));
+        for (const response of await Promise.all(requests)) {
+          statuses.push(response.status);
+          await response.text();
+        }
+      }
+      assert.equal(statuses.filter((s) => s === 429).length, 10, `${route}: expected the 300/min bucket`);
+    }
+  });
+
+  it('serves visits and 404s for unknown visitors with CORS', async () => {
+    const user = await signupUser();
+    const ok = await worker.fetch(`${BASE_URL}/api/visit/${user.user.username}`, {
+      headers: { Origin: 'http://localhost:5173' },
+    });
+    assert.equal(ok.status, 200);
+    assert.equal(JSON.parse(await ok.text()).username, user.user.username);
+    assert.equal(ok.headers.get('Access-Control-Allow-Origin'), 'http://localhost:5173');
+
+    const missing = await worker.fetch(`${BASE_URL}/api/visit/nobody-${Date.now().toString(36)}`, {
+      headers: { Origin: 'http://localhost:5173' },
+    });
+    assert.equal(missing.status, 404);
+    assert.equal(missing.headers.get('Access-Control-Allow-Origin'), 'http://localhost:5173');
+    await missing.text();
   });
 
   it('keeps the explicit no-rate-limit policy on game and app routes', async () => {

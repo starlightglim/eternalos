@@ -28,6 +28,12 @@ import {
   RATE_LIMIT_AUTH,
   RATE_LIMIT_API,
   RATE_LIMIT_PUBLIC_ASSET,
+  RATE_LIMIT_APP_CAPABILITY,
+  RATE_LIMIT_APP_DEPLOY,
+  RATE_LIMIT_APP_SKINS,
+  RATE_LIMIT_GAME_DRAFT,
+  checkUserRateLimit,
+  rateLimitResponse,
   type RateLimitConfig,
 } from '../middleware/rateLimit';
 import { trackVisitAnalytics, handleGetAnalytics } from './analytics';
@@ -119,7 +125,7 @@ import {
 } from './games';
 import { handleGuestbookSign } from './guestbook';
 import { handleOgImage } from './ogImage';
-import type { RouteContext, RouteDefinition, RouteHandlerResult, PathMatcher } from './router';
+import type { RouteContext, RouteDefinition, RouteHandler, RouteHandlerResult, PathMatcher } from './router';
 import {
   anyPath,
   dispatchRequest,
@@ -156,6 +162,23 @@ import { handleVisit } from './visit';
 // Conditions that don't match return ROUTE_FALLTHROUGH so dispatch continues
 // exactly like the legacy if/else chain did.
 // ---------------------------------------------------------------------------
+
+/**
+ * Per-account rate limit for expensive authenticated routes (policy.auth
+ * 'required'). The dispatcher's policy.rateLimit buckets run before auth and
+ * key on the client IP; these key on the account uid instead, so one account
+ * can't dodge the limit by rotating IPs and users behind one NAT don't share
+ * it. The 429 is the standard rateLimitResponse shape (CORS + security
+ * headers added by the dispatcher's decoration).
+ */
+const withUserRateLimit = (config: RateLimitConfig, handler: RouteHandler): RouteHandler =>
+  async (c) => {
+    const result = await checkUserRateLimit(c.env, requireAuthContext(c).uid, config);
+    if (!result.allowed) {
+      return rateLimitResponse(result);
+    }
+    return handler(c);
+  };
 
 /** /api/agent/chat plus any sub-path (the agent transport base). */
 const agentChatPath: PathMatcher = (path) =>
@@ -348,7 +371,13 @@ const serveFile = async (c: RouteContext): Promise<Response> => {
   );
 };
 
-/** Visitor mode: /api/visit/:username (analytics tracked non-blocking). */
+/**
+ * Visitor mode: /api/visit/:username. Analytics are tracked only for a
+ * successful visit (a 404 for an unknown user or a 500 is not a visit), and
+ * entirely off the response path: handleVisit doesn't expose the uid it
+ * resolved, so the username -> uid read happens inside waitUntil instead of
+ * delaying every visitor response with a second KV round trip.
+ */
 const serveVisit = async (c: RouteContext): Promise<Response> => {
   const username = c.params[0];
   if (!username) {
@@ -356,15 +385,19 @@ const serveVisit = async (c: RouteContext): Promise<Response> => {
   }
   const response = await handleVisit(c.request, c.env, username);
 
-  // Track analytics non-blocking (if user opted in)
-  const normalizedUsername = username.toLowerCase();
-  const usernameData = await c.env.AUTH_KV.get<{ uid: string }>(`username:${normalizedUsername}`, 'json');
-  if (usernameData) {
-    c.ctx.waitUntil(trackVisitAnalytics(c.request, c.env, usernameData.uid));
+  if (response.ok) {
+    c.ctx.waitUntil(trackSuccessfulVisit(c.request, c.env, username));
   }
 
   return withCors(response, c.corsHeaders);
 };
+
+async function trackSuccessfulVisit(request: Request, env: Env, username: string): Promise<void> {
+  const usernameData = await env.AUTH_KV.get<{ uid: string }>(`username:${username.toLowerCase()}`, 'json');
+  if (usernameData) {
+    await trackVisitAnalytics(request, env, usernameData.uid);
+  }
+}
 
 /** OG image generation: /api/og/:username.png. */
 const serveOgImage = async (c: RouteContext): Promise<Response> => {
@@ -542,8 +575,10 @@ export const ROUTES: RouteDefinition[] = [
     name: 'app-dev-deploy',
     method: 'POST',
     match: exact('/api/apps/dev-deploy'),
+    // Per-user bucket (20/min): the most expensive write route (6MB JSON
+    // bundle + compile + R2/DO writes).
     policy: { auth: 'required', rateLimit: null },
-    handler: (c) => handleAppDevDeploy(c.request, c.env, requireAuthContext(c)),
+    handler: withUserRateLimit(RATE_LIMIT_APP_DEPLOY, (c) => handleAppDevDeploy(c.request, c.env, requireAuthContext(c))),
   },
   {
     name: 'app-versions-rollback',
@@ -588,8 +623,12 @@ export const ROUTES: RouteDefinition[] = [
     name: 'app-skins',
     method: '*',
     match: regex(/^\/api\/apps\/([^/]+)\/skins(?:\/([^/]+))?$/),
+    // Per-user bucket (60/min): 9MB skin PUTs and AI skin generation.
     policy: { auth: 'required', rateLimit: null },
-    handler: (c) => handleAppSkins(c.request, c.env, requireAuthContext(c), decodeURIComponent(c.params[0]), c.params[1]),
+    handler: withUserRateLimit(
+      RATE_LIMIT_APP_SKINS,
+      (c) => handleAppSkins(c.request, c.env, requireAuthContext(c), decodeURIComponent(c.params[0]), c.params[1])
+    ),
   },
   // Get App Source: GET /api/apps/:appId/source
   {
@@ -614,8 +653,12 @@ export const ROUTES: RouteDefinition[] = [
     name: 'app-capability',
     method: 'POST',
     match: regex(/^\/api\/apps\/([^/]+)\/capability$/),
+    // Per-user bucket (120/min): one mint per app window open/reload.
     policy: { auth: 'required', rateLimit: null },
-    handler: (c) => handleAppCapability(c.request, c.env, requireAuthContext(c), c.params[0]),
+    handler: withUserRateLimit(
+      RATE_LIMIT_APP_CAPABILITY,
+      (c) => handleAppCapability(c.request, c.env, requireAuthContext(c), c.params[0])
+    ),
   },
   // App fs.list — capability-gated; auth verified inside handler.
   {
@@ -667,8 +710,9 @@ export const ROUTES: RouteDefinition[] = [
     name: 'game-draft-item',
     method: '*',
     match: regex(/^\/api\/games\/drafts\/([^/]+)$/),
+    // Per-user bucket (120/min): cartridge editor reads/saves/deletes.
     policy: { auth: 'required', rateLimit: null },
-    handler: manageGameDraft,
+    handler: withUserRateLimit(RATE_LIMIT_GAME_DRAFT, manageGameDraft),
   },
 
   // Serve user-created apps via Dynamic Workers: /api/apps/:appId
@@ -939,13 +983,13 @@ export const ROUTES: RouteDefinition[] = [
     policy: { auth: 'required', rateLimit: RATE_LIMIT_API },
     handler: (c) => handleListCSSAssets(c.request, c.env, requireAuthContext(c)),
   },
-  // CSS asset delete: /api/css-assets/:assetId (public-asset bucket — the
-  // legacy prefix-based selection put every /api/css-assets/* path there)
+  // CSS asset delete: /api/css-assets/:assetId (general API bucket — an
+  // authenticated write, not a public asset read)
   {
     name: 'css-asset-delete',
     method: 'DELETE',
     match: prefix('/api/css-assets/'),
-    policy: { auth: 'required', rateLimit: RATE_LIMIT_PUBLIC_ASSET },
+    policy: { auth: 'required', rateLimit: RATE_LIMIT_API },
     handler: (c) => handleDeleteCSSAsset(c.request, c.env, requireAuthContext(c), c.params[0]),
   },
   // CSS asset serving: /api/css-assets/:uid/:assetId/:filename (public)
@@ -973,12 +1017,12 @@ export const ROUTES: RouteDefinition[] = [
     policy: { auth: 'required', rateLimit: RATE_LIMIT_API },
     handler: (c) => handleListSounds(c.request, c.env, requireAuthContext(c)),
   },
-  // Sound delete: /api/sounds/:soundId (public-asset bucket, legacy selection)
+  // Sound delete: /api/sounds/:soundId (general API bucket — authenticated write)
   {
     name: 'sound-delete',
     method: 'DELETE',
     match: prefix('/api/sounds/'),
-    policy: { auth: 'required', rateLimit: RATE_LIMIT_PUBLIC_ASSET },
+    policy: { auth: 'required', rateLimit: RATE_LIMIT_API },
     handler: deleteSound,
   },
   // Sound serving: /api/sounds/:uid/:soundId/:filename (public)
@@ -1006,12 +1050,12 @@ export const ROUTES: RouteDefinition[] = [
     policy: { auth: 'required', rateLimit: RATE_LIMIT_API },
     handler: (c) => handleListCursors(c.request, c.env, requireAuthContext(c)),
   },
-  // Cursor delete: /api/cursors/:cursorId (public-asset bucket, legacy selection)
+  // Cursor delete: /api/cursors/:cursorId (general API bucket — authenticated write)
   {
     name: 'cursor-delete',
     method: 'DELETE',
     match: prefix('/api/cursors/'),
-    policy: { auth: 'required', rateLimit: RATE_LIMIT_PUBLIC_ASSET },
+    policy: { auth: 'required', rateLimit: RATE_LIMIT_API },
     handler: deleteCursor,
   },
   // Cursor serving: /api/cursors/:uid/:cursorId/:filename (public)
