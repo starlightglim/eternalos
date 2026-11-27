@@ -30,6 +30,9 @@ export function WindowChrome({
   eosExtension,
   eosFolder,
   onPointerDown,
+  onPointerCancel,
+  onLostPointerCapture,
+  titleId,
   frameless,
   children,
 }: WindowChromeSlotProps) {
@@ -54,6 +57,10 @@ export function WindowChrome({
     <div
       ref={windowRef}
       className={windowClasses}
+      // Windows are non-modal dialogs named by their title.
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby={titleId}
       data-window-id={windowId}
       data-content-id={contentId}
       data-content-type={contentType}
@@ -70,6 +77,8 @@ export function WindowChrome({
         zIndex,
       }}
       onPointerDown={onPointerDown}
+      onPointerCancel={onPointerCancel}
+      onLostPointerCapture={onLostPointerCapture}
     >
       <div className={styles.windowInner}>
         {children}

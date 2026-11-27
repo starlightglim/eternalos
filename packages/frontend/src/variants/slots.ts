@@ -28,6 +28,12 @@ export interface WindowChromeSlotProps {
   eosExtension?: string;
   eosFolder?: string;
   onPointerDown: (e: React.PointerEvent) => void;
+  /** Pointer cancelled anywhere in the window (ends a drag/resize). */
+  onPointerCancel?: (e: React.PointerEvent) => void;
+  /** Pointer capture lost anywhere in the window (ends a drag/resize). */
+  onLostPointerCapture?: (e: React.PointerEvent) => void;
+  /** id of the element naming the window (its title) — the dialog's aria-labelledby. */
+  titleId?: string;
   /** A skin made this window frameless (no frame, no shadow, overflow visible). */
   frameless?: boolean;
   children: React.ReactNode;
@@ -36,6 +42,8 @@ export interface WindowChromeSlotProps {
 /** Props for title bar variants */
 export interface TitleBarSlotProps {
   title: string;
+  /** id for the title text element (the window's accessible name). */
+  titleId?: string;
   isActive: boolean;
   collapsed: boolean;
   onDragStart: (e: React.PointerEvent) => void;

@@ -1,0 +1,98 @@
+/* Per-window crash message — classic Mac OS alert, inside the window */
+
+.crash {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 16px;
+  height: 100%;
+  padding: 20px;
+  box-sizing: border-box;
+  background: var(--window-bg, var(--white, #ffffff));
+  color: var(--window-text-color, var(--black, #000000));
+  overflow: auto;
+}
+
+.body {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.icon {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 2px solid var(--black, #000000);
+  border-radius: 50%;
+  background: var(--platinum, #c0c0c0);
+  color: var(--black, #000000);
+  font-family: var(--font-chicago, 'Chicago', sans-serif);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.message {
+  flex: 1;
+  min-width: 0;
+}
+
+.mainText {
+  margin: 0 0 8px;
+  font-family: var(--font-geneva, 'Geneva', sans-serif);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.detail {
+  margin: 0;
+  padding: 6px 8px;
+  max-height: 72px;
+  overflow: auto;
+  font-family: var(--font-monaco, 'Monaco', monospace);
+  font-size: 10px;
+  word-break: break-word;
+  color: var(--window-text-secondary, var(--shadow, #808080));
+  background: var(--platinum, #c0c0c0);
+  border: 1px solid var(--shadow, #808080);
+}
+
+.buttons {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.button {
+  font-family: var(--font-chicago, 'Chicago', sans-serif);
+  font-size: 12px;
+  padding: 4px 16px;
+  background: var(--appearance-button-bg, var(--white, #ffffff));
+  color: var(--appearance-button-text, var(--black, #000000));
+  border: 2px solid var(--appearance-button-border, var(--black, #000000));
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow:
+    inset 1px 1px 0 var(--highlight, #ffffff),
+    inset -1px -1px 0 var(--shadow, #808080);
+}
+
+.button:active {
+  background: var(--accent, var(--black, #000000));
+  color: var(--selection-text, var(--white, #ffffff));
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--accent, var(--selection, #000080));
+  outline-offset: 2px;
+}
+
+.primary {
+  box-shadow:
+    inset 1px 1px 0 var(--highlight, #ffffff),
+    inset -1px -1px 0 var(--shadow, #808080),
+    0 0 0 3px var(--accent, var(--black, #000000));
+}

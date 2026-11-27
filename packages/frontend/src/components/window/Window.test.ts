@@ -29,6 +29,8 @@ import type { Root } from 'react-dom/client';
 import { Window } from './Window';
 import { installTestDom, type TestDom, type TestElement, type TestEvent, type KeyInit } from './windowTestDom';
 import { useWindowStore } from '../../stores/windowStore';
+import { useTilingStore } from '../../stores/tilingStore';
+import type { Rect } from '../../utils/tiling';
 
 const WINDOW_ID = 'w1';
 const INITIAL_POSITION = { x: 100, y: 100 };
@@ -341,4 +343,50 @@ test('Tab stays native inside the window and never reaches the desktop icon cycl
   const fromContent = pressKey(content, { key: 'Tab' });
   expect(fromContent.propagationStopped).toBe(true);
   expect(fromContent.defaultPrevented).toBe(false);
+});
+
+// ============================================
+// CANCELLATION + ACCESSIBILITY
+// ============================================
+
+test('pointercancel mid-drag releases the window and un-pauses tiling', async () => {
+  const { row } = await renderWindowWithRow(() => {});
+  const tile = { x: 0, y: 0, width: 400, height: 300 } as unknown as Rect;
+  act(() => {
+    useTilingStore.getState().setLayout(true, [WINDOW_ID], { [WINDOW_ID]: tile });
+  });
+
+  act(() => {
+    dom.pointer(row, 'pointerdown', { clientX: 150, clientY: 150 });
+    dom.pointer(row, 'pointermove', { clientX: 200, clientY: 150 }); // drag begins
+  });
+  expect(useTilingStore.getState().dragging).toBe(WINDOW_ID);
+
+  act(() => {
+    dom.pointer(row, 'pointercancel', { clientX: 200, clientY: 150 });
+  });
+  expect(useTilingStore.getState().dragging).toBeNull();
+  const afterCancel = useWindowStore.getState().windows[0].position;
+
+  // Later movement with the button still reported down must not move it.
+  act(() => {
+    dom.pointer(row, 'pointermove', { clientX: 400, clientY: 300 });
+  });
+  expect(useWindowStore.getState().windows[0].position).toEqual(afterCancel);
+
+  act(() => {
+    useTilingStore.getState().setLayout(false, [], {});
+  });
+});
+
+test('window root is a non-modal dialog labelled by its title', async () => {
+  await renderWindowWithRow(() => {});
+  let root = findPart('content').parentNode as TestElement | null;
+  while (root && root.getAttribute?.('role') !== 'dialog') root = root.parentNode as TestElement | null;
+  if (!root) throw new Error('no role=dialog ancestor');
+  expect(root.getAttribute('aria-modal')).toBe('false');
+  const titleId = root.getAttribute('aria-labelledby');
+  expect(titleId).toBeTruthy();
+  expect(findPart('title').getAttribute('id')).toBe(titleId);
+  expect(root.getAttribute('class')).toContain('window');
 });

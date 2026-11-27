@@ -2,13 +2,14 @@ import { openAppSkins } from '../../utils/appWindowBus';
 import { useWindowSkinStore } from '../../stores/windowSkinStore';
 import { useTilingStore } from '../../stores/tilingStore';
 import { tileAt } from '../../utils/tiling';
-import { useRef, useCallback, useEffect, useMemo } from 'react';
+import { memo, useRef, useCallback, useEffect, useId, useMemo } from 'react';
 import { useWindowStore, clampWindowPosition } from '../../stores/windowStore';
 import { useSlot } from '../../variants/useSlot';
 import type { WindowButtonsSlotProps, ResizeHandleSlotProps } from '../../variants/slots';
 import { WindowChrome } from '../../variants/builtin/chrome/WindowChrome';
 import { WindowTitleBar } from '../../variants/builtin/titlebar/WindowTitleBar';
 import { getMenuBarHeight } from '../../utils/layout';
+import { createFrameCoalescer } from './frameCoalescer';
 import styles from './Window.module.css';
 
 // Tags considered interactive — clicks on these shouldn't trigger body-drag
@@ -72,8 +73,10 @@ interface WindowProps {
 /**
  * Window component — renders via the variant slot system.
  * Chrome, title bar, buttons, and resize handle are all swappable variants.
+ * Memoized (cheap when only children change); WindowManager's memoized
+ * ManagedWindow is what keeps other windows from re-rendering during a drag.
  */
-export function Window({
+export const Window = memo(function Window({
   id,
   title,
   position,
@@ -90,7 +93,15 @@ export function Window({
   eosFolder,
   children,
 }: WindowProps) {
-  const { closeWindow, focusWindow, moveWindow, resizeWindow, toggleCollapse, toggleMaximize } = useWindowStore();
+  // One selector per action: a bare useWindowStore() would re-render every
+  // window on every store change (each pointermove of any drag).
+  const closeWindow = useWindowStore((state) => state.closeWindow);
+  const focusWindow = useWindowStore((state) => state.focusWindow);
+  const moveWindow = useWindowStore((state) => state.moveWindow);
+  const resizeWindow = useWindowStore((state) => state.resizeWindow);
+  const toggleCollapse = useWindowStore((state) => state.toggleCollapse);
+  const toggleMaximize = useWindowStore((state) => state.toggleMaximize);
+  const titleId = useId();
 
   // Resolve active variant components for leaf slots (safe to swap)
   // Chrome and TitleBar use stable unified components (CSS-driven variants)
@@ -130,6 +141,27 @@ export function Window({
   // Pending body-drag: press started on non-interactive content, but the drag
   // only begins once the pointer moves past a threshold (keeps clicks working).
   const bodyDragPending = useRef<{ x: number; y: number; pointerId: number } | null>(null);
+  // Pointer driving the current drag/resize (cancellation must match it).
+  const activePointerId = useRef<number | null>(null);
+  // Element holding our pointer capture: only its lostpointercapture counts
+  // (moving capture off a child that touch captured implicitly fires one on
+  // the child, which must not abort the drag that just started).
+  const captureTarget = useRef<EventTarget | null>(null);
+
+  // pointermove fires faster than frames paint: write at most one geometry
+  // update per animation frame. pointerup/cancel flush the final value.
+  const moveFrames = useMemo(
+    () => createFrameCoalescer<{ x: number; y: number }>((next) => moveWindow(id, next)),
+    [moveWindow, id]
+  );
+  const resizeFrames = useMemo(
+    () => createFrameCoalescer<{ width: number; height: number }>((next) => resizeWindow(id, next)),
+    [resizeWindow, id]
+  );
+  useEffect(() => () => {
+    moveFrames.cancel();
+    resizeFrames.cancel();
+  }, [moveFrames, resizeFrames]);
 
   // Focus window on any click
   const handleWindowClick = useCallback(() => {
@@ -183,6 +215,7 @@ export function Window({
       lastClickTime.current = now;
 
       isDragging.current = true;
+      activePointerId.current = e.pointerId;
       dragOffset.current = {
         x: e.clientX - position.x,
         y: e.clientY - position.y,
@@ -191,6 +224,7 @@ export function Window({
       focusWindow(id);
       // Tiled windows: pause tiling while dragging; the drop swaps tiles.
       if (useTilingStore.getState().tiles[id]) useTilingStore.getState().setDragging(id);
+      captureTarget.current = e.target;
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
     },
     [position, focusWindow, id, toggleCollapse]
@@ -223,15 +257,22 @@ export function Window({
         newY = viewportHeight - size.height;
       }
 
-      moveWindow(id, { x: newX, y: newY });
+      moveFrames.push({ x: newX, y: newY });
     },
-    [moveWindow, id, size.width, size.height]
+    [moveFrames, size.width, size.height]
   );
 
   const handleDragEnd = useCallback((e: React.PointerEvent) => {
     if (!isDragging.current) return;
     isDragging.current = false;
-    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    activePointerId.current = null;
+    captureTarget.current = null;
+    moveFrames.flush();
+    try {
+      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      // Capture may already be gone (released implicitly on pointerup).
+    }
     const tiling = useTilingStore.getState();
     if (tiling.dragging === id) {
       // Tiles are in desktop coordinates (the desktop starts below the menu bar).
@@ -240,7 +281,7 @@ export function Window({
       if (target) tiling.swap(id, target);
       tiling.setDragging(null);
     }
-  }, [id]);
+  }, [id, moveFrames]);
 
   // ============================================
   // BODY DRAG HANDLING (Content Area)
@@ -279,6 +320,7 @@ export function Window({
         if (distance < 5) return;
 
         isDragging.current = true;
+        activePointerId.current = e.pointerId;
         dragOffset.current = {
           x: pending.x - position.x,
           y: pending.y - position.y,
@@ -286,6 +328,7 @@ export function Window({
         bodyDragPending.current = null;
         if (useTilingStore.getState().tiles[id]) useTilingStore.getState().setDragging(id);
         try {
+          captureTarget.current = e.currentTarget;
           (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
         } catch {
           // Pointer may already be released (e.g. touch cancel race)
@@ -317,6 +360,7 @@ export function Window({
       e.stopPropagation();
 
       isResizing.current = true;
+      activePointerId.current = e.pointerId;
       resizeStart.current = {
         x: e.clientX,
         y: e.clientY,
@@ -325,6 +369,7 @@ export function Window({
       };
 
       focusWindow(id);
+      captureTarget.current = e.target;
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
     },
     [size, focusWindow, id]
@@ -339,19 +384,74 @@ export function Window({
       const deltaX = e.clientX - resizeStart.current.x;
       const deltaY = e.clientY - resizeStart.current.y;
 
-      resizeWindow(id, {
+      resizeFrames.push({
         width: resizeStart.current.width + deltaX,
         height: resizeStart.current.height + deltaY,
       });
     },
-    [resizeWindow, id]
+    [resizeFrames]
   );
 
   const handleResizeEnd = useCallback((e: React.PointerEvent) => {
     if (!isResizing.current) return;
     isResizing.current = false;
-    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-  }, []);
+    activePointerId.current = null;
+    captureTarget.current = null;
+    resizeFrames.flush();
+    try {
+      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      // Capture may already be gone (released implicitly on pointerup).
+    }
+  }, [resizeFrames]);
+
+  // ============================================
+  // CANCELLATION (pointercancel / lostpointercapture)
+  // ============================================
+  //
+  // A cancelled touch (scroll takeover, OS gesture, palm rejection) or a
+  // capture stolen mid-drag never sends pointerup. Without this the window
+  // stays glued to the pointer and tiling stays paused. Both events bubble
+  // to the window root from the title bar, body, resize handle or skin
+  // handle. The window keeps the last position it reached; a tiled drag is
+  // abandoned without a swap (the layout re-tiles it).
+
+  const abortInteraction = useCallback(() => {
+    if (isDragging.current) moveFrames.flush();
+    if (isResizing.current) resizeFrames.flush();
+    isDragging.current = false;
+    isResizing.current = false;
+    activePointerId.current = null;
+    captureTarget.current = null;
+    bodyDragPending.current = null;
+    const tiling = useTilingStore.getState();
+    if (tiling.dragging === id) tiling.setDragging(null);
+  }, [id, moveFrames, resizeFrames]);
+
+  const handlePointerCancel = useCallback(
+    (e: React.PointerEvent) => {
+      if (bodyDragPending.current?.pointerId === e.pointerId) bodyDragPending.current = null;
+      if ((isDragging.current || isResizing.current) && activePointerId.current === e.pointerId) {
+        abortInteraction();
+      }
+    },
+    [abortInteraction]
+  );
+
+  const handleLostPointerCapture = useCallback(
+    (e: React.PointerEvent) => {
+      // Normal ends reset state in pointerup before capture is released, so
+      // this only fires for a drag/resize whose capture vanished mid-way.
+      if (
+        (isDragging.current || isResizing.current) &&
+        activePointerId.current === e.pointerId &&
+        e.target === captureTarget.current
+      ) {
+        abortInteraction();
+      }
+    },
+    [abortInteraction]
+  );
 
   // ============================================
   // KEYBOARD HANDLING (title bar is the focus surface)
@@ -495,8 +595,11 @@ export function Window({
     return () => {
       isDragging.current = false;
       isResizing.current = false;
+      // Closed mid-drag: don't leave tiling paused on a window that's gone.
+      const tiling = useTilingStore.getState();
+      if (tiling.dragging === id) tiling.setDragging(null);
     };
-  }, []);
+  }, [id]);
 
   return (
     <WindowChrome
@@ -515,6 +618,9 @@ export function Window({
       eosExtension={eosExtension}
       eosFolder={eosFolder}
       onPointerDown={handleWindowClick}
+      onPointerCancel={handlePointerCancel}
+      onLostPointerCapture={handleLostPointerCapture}
+      titleId={titleId}
       frameless={frameless}
     >
       {frameless ? (
@@ -529,12 +635,13 @@ export function Window({
           onContextMenu={(event) => { if (openAppSkins(id)) event.preventDefault(); }}
           title={`${title} — drag to move, right-click for skins`}
         >
-          <span className={styles.skinHandleTitle}>{title}</span>
+          <span id={titleId} className={styles.skinHandleTitle}>{title}</span>
           <button type="button" className={styles.skinHandleClose} onPointerDown={(event) => event.stopPropagation()} onClick={handleClose} aria-label={`Close ${title}`}>×</button>
         </div>
       ) : (
       <WindowTitleBar
         title={title}
+        titleId={titleId}
         isActive={isActive}
         collapsed={!!collapsed}
         onDragStart={handleDragStart}
@@ -585,4 +692,4 @@ export function Window({
       )}
     </WindowChrome>
   );
-}
+});

@@ -1,5 +1,11 @@
+import { readFileSync } from 'node:fs'
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+
+// Frontend version (shown in About), read from package.json at build time.
+const appVersion: string = JSON.parse(
+  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+).version
 
 /**
  * Vite plugin to handle /@username SPA routes.
@@ -34,6 +40,9 @@ function atSignRoutePlugin(): Plugin {
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [atSignRoutePlugin(), react()],
+  define: {
+    __APP_VERSION__: JSON.stringify(appVersion),
+  },
   build: {
     // Output to dist folder for Cloudflare Pages
     outDir: 'dist',
