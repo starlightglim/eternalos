@@ -731,7 +731,8 @@ describe('worker integration', () => {
     assert.ok(installResults.every(({ response }) => response.status === 200));
 
     const installedPack = await expectOk(`/api/bazaar/pack/${encodeURIComponent(first.pack.packId)}`);
-    assert.equal(installedPack.pack.installs, 32);
+    // 32 concurrent installs by one user count once (per-user dedupe).
+    assert.equal(installedPack.pack.installs, 1);
 
     const second = await publish({
       ...createTestCartridge('1.0.1'),
@@ -741,7 +742,7 @@ describe('worker integration', () => {
     assert.ok(first.pack.packId);
     assert.equal(second.pack.packId, first.pack.packId);
     assert.equal(second.pack.name, 'Updated Integration Game');
-    assert.equal(second.pack.installs, 32);
+    assert.equal(second.pack.installs, 1);
 
     const playResponse = await worker.fetch(
       `${BASE_URL}/api/games/play/${encodeURIComponent(first.pack.packId)}/cartridge.json`,
@@ -749,6 +750,115 @@ describe('worker integration', () => {
     assert.equal(playResponse.status, 200);
     const storedCartridge = await playResponse.json();
     assert.equal(storedCartridge.meta.version, '1.0.1');
+  });
+
+  it('keeps the bazaar catalogue consistent: concurrent publishes, paging, deduped installs, no resurrection', async () => {
+    const author = await signupUser();
+    const tag = `cat${Math.random().toString(36).slice(2, 8)}`;
+    const publishCursor = (name, extra = {}) => {
+      const form = new UndiciFormData();
+      form.set('manifest', JSON.stringify({ type: 'cursor', name, tags: [tag], config: {}, ...extra }));
+      form.set('preview', createPngFile('preview.png'));
+      return fetchJson('/api/bazaar/publish', { method: 'POST', headers: authHeaders(author.token), body: form });
+    };
+
+    // Concurrent publishes by one author must all land in the listings (the
+    // old KV read-modify-write lost index updates).
+    const results = await Promise.all([1, 2, 3, 4, 5].map((n) => publishCursor(`${tag} pack ${n}`)));
+    for (const { response, body } of results) assert.equal(response.status, 200, JSON.stringify(body));
+    const ids = results.map(({ body }) => body.pack.packId);
+    const mine = await expectOk('/api/bazaar/my-packs', { headers: authHeaders(author.token) });
+    assert.deepEqual(new Set(mine.packs.map((p) => p.packId)), new Set(ids));
+
+    // Browse pages through the summary with limit/cursor and with page.
+    const seen = [];
+    let cursor;
+    do {
+      const qs = new URLSearchParams({ type: 'cursor', q: tag, limit: '2' });
+      if (cursor) qs.set('cursor', cursor);
+      const page = await expectOk(`/api/bazaar/browse?${qs}`);
+      assert.equal(page.total, 5);
+      assert.ok(page.packs.length <= 2);
+      seen.push(...page.packs.map((p) => p.packId));
+      cursor = page.nextCursor;
+    } while (cursor);
+    assert.deepEqual(new Set(seen), new Set(ids));
+    assert.equal(seen.length, 5);
+    const page3 = await expectOk(`/api/bazaar/browse?q=${tag}&limit=2&page=3`);
+    assert.equal(page3.packs.length, 1);
+    assert.equal(page3.pageSize, 2);
+    assert.equal(page3.page, 3);
+
+    // Installs are deduplicated per user.
+    const packId = ids[0];
+    const installer = await signupUser();
+    const install = () => expectOk(`/api/bazaar/install/${encodeURIComponent(packId)}`, {
+      method: 'POST', headers: authHeaders(installer.token),
+    });
+    assert.equal((await install()).pack.installs, 1);
+    assert.equal((await install()).pack.installs, 1);
+    await expectOk(`/api/bazaar/install/${encodeURIComponent(packId)}`, {
+      method: 'POST', headers: authHeaders(author.token),
+    });
+    const detail = await expectOk(`/api/bazaar/pack/${encodeURIComponent(packId)}`);
+    assert.equal(detail.pack.installs, 2);
+    const ranked = await expectOk(`/api/bazaar/browse?q=${tag}`);
+    assert.equal(ranked.packs[0].packId, packId, 'most-installed pack ranks first');
+
+    // A deleted pack can't be installed or resurrected.
+    await expectOk(`/api/bazaar/pack/${encodeURIComponent(packId)}`, {
+      method: 'DELETE', headers: authHeaders(author.token),
+    });
+    const lateInstall = await fetchJson(`/api/bazaar/install/${encodeURIComponent(packId)}`, {
+      method: 'POST', headers: authHeaders(installer.token),
+    });
+    assert.equal(lateInstall.response.status, 404);
+    assert.equal((await fetchJson(`/api/bazaar/pack/${encodeURIComponent(packId)}`)).response.status, 404);
+    const afterDelete = await expectOk(`/api/bazaar/browse?q=${tag}`);
+    assert.equal(afterDelete.total, 4);
+    assert.ok(!afterDelete.packs.some((p) => p.packId === packId));
+
+    // Malformed manifests are 400s, not 500s.
+    for (const bad of [{ name: 42 }, { name: ['x'] }, { name: 'ok', description: 7 }, { name: 'ok', tags: 'x' }]) {
+      const { response } = await publishCursor('placeholder', bad);
+      assert.equal(response.status, 400, `expected 400 for ${JSON.stringify(bad)}`);
+    }
+    const nullManifest = new UndiciFormData();
+    nullManifest.set('manifest', 'null');
+    nullManifest.set('preview', createPngFile('preview.png'));
+    const nullResult = await fetchJson('/api/bazaar/publish', {
+      method: 'POST', headers: authHeaders(author.token), body: nullManifest,
+    });
+    assert.equal(nullResult.response.status, 400);
+  });
+
+  it('gives bazaar files that sanitize to the same name distinct R2 keys', async () => {
+    const user = await signupUser();
+    const pngWithByte = (name, byte) => {
+      const bytes = Buffer.from(PNG_BYTES);
+      return new File([bytes, Buffer.from([byte])], name, { type: 'image/png' });
+    };
+    const form = new UndiciFormData();
+    form.set('manifest', JSON.stringify({
+      type: 'icon', name: 'Collisions', tags: [],
+      config: { 'icon.a': '{asset:a}', 'icon.b': '{asset:b}' },
+    }));
+    form.set('preview', pngWithByte('same.png', 1));
+    form.set('asset_a', pngWithByte('same.png', 2));
+    form.set('asset_b', pngWithByte('same.png', 3));
+    const published = await expectOk('/api/bazaar/publish', {
+      method: 'POST', headers: authHeaders(user.token), body: form,
+    });
+    const urls = [published.pack.previewUrl, published.pack.assets.a, published.pack.assets.b];
+    assert.equal(new Set(urls).size, 3, `expected distinct URLs, got ${urls.join(', ')}`);
+    const lastBytes = [];
+    for (const url of urls) {
+      const response = await worker.fetch(`${BASE_URL}${url}`);
+      assert.equal(response.status, 200);
+      const buf = Buffer.from(await response.arrayBuffer());
+      lastBytes.push(buf[buf.length - 1]);
+    }
+    assert.deepEqual(lastBytes, [1, 2, 3]);
   });
 
   it('requires authentication before app capabilities can be minted', async () => {

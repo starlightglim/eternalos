@@ -32,6 +32,7 @@ import type { UserRecord } from '../types';
 import { getAgentByName } from 'agents';
 import { buildThreadAgentName } from '../agents/threadRegistry';
 import type { OrchestratorAgent } from '../agents/OrchestratorAgent';
+import { removeAuthorFromBazaarCatalog } from '../routes/bazaar';
 
 const PENDING_DELETION_PREFIX = 'pending-deletion:';
 
@@ -159,11 +160,15 @@ export async function purgeAccount(env: Env, pending: PendingDeletion): Promise<
   // 3. Authored bazaar packs — delete the pack, remove it from its type index,
   //    drop its game-registry mirror, and delete its R2 assets. (Policy: delete
   //    published content.)
+  //    The BazaarCoordinator catalogue is the author index now; the legacy KV
+  //    index is merged in for packs published before the catalogue existed.
   const authorKey = `bazaar:author:${uid}`;
   const authorStr = await env.DESKTOP_KV.get(authorKey);
-  if (authorStr) {
+  const catalogPackIds = await removeAuthorFromBazaarCatalog(env, uid);
+  if (authorStr || catalogPackIds.length > 0) {
     let packIds: string[] = [];
-    try { packIds = JSON.parse(authorStr) as string[]; } catch { packIds = []; }
+    try { packIds = authorStr ? JSON.parse(authorStr) as string[] : []; } catch { packIds = []; }
+    packIds = [...new Set([...packIds, ...catalogPackIds])];
     for (const packId of packIds) {
       const packStr = await env.DESKTOP_KV.get(`bazaar:pack:${packId}`);
       if (packStr) {
