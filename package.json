@@ -23,7 +23,7 @@
     "typecheck": "npm run typecheck --workspaces",
     "test": "npm run test --workspaces",
     "check:release": "npm run typecheck && npm run lint && npm test && npm run build && npm run build:worker",
-    "lint": "npm run lint --workspace=@eternalos/frontend",
+    "lint": "npm run lint --workspace=@eternalos/frontend --workspace=@eternalos/worker",
     "preview": "npm run preview --workspace=@eternalos/frontend",
     "test:worker": "npm run test --workspace=@eternalos/worker",
     "coverage:worker": "npm run coverage --workspace=@eternalos/worker",

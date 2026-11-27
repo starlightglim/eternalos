@@ -1,7 +1,6 @@
-import { expect, test, describe, beforeAll, vi, beforeEach, afterEach } from 'vitest';
+import { expect, test, describe, beforeAll, afterAll, vi, beforeEach, afterEach } from 'vitest';
 import { resolveTokensFromAppearance, compileTokensToCSS, isFirstPartyAssetUrl } from './tokenCompiler';
 import { getContrastingTextColor, getSecondaryTextColor } from '../utils/colorUtils';
-import { registerBuiltinVariants } from '../variants/registerBuiltins';
 
 /**
  * Token compiler — the heart of the customization pipeline. These exercise the
@@ -276,8 +275,27 @@ describe('compileTokensToCSS — conditional (variant-scoped) tokens', () => {
   // entirely — even with the token present in designTokens and the variant
   // active, no CSS var was ever emitted. They must now compile exactly like
   // registry tokens, but ONLY while their variant is active.
-  beforeAll(() => {
-    registerBuiltinVariants();
+  //
+  // tokenCompiler reads VITE_API_URL at module load and prefixes relative
+  // /api/ sprite URLs with it, so a developer's .env.local would turn the
+  // expected relative URLs absolute. Load a fresh copy with the variable
+  // cleared (and a fresh variant registry to register into, since
+  // resetModules gives the new compiler its own registry instance).
+  let compileTokensToCSS: typeof import('./tokenCompiler').compileTokensToCSS;
+  let resolveTokensFromAppearance: typeof import('./tokenCompiler').resolveTokensFromAppearance;
+
+  beforeAll(async () => {
+    vi.stubEnv('VITE_API_URL', '');
+    vi.resetModules();
+    const compiler = await import('./tokenCompiler');
+    const variants = await import('../variants/registerBuiltins');
+    compileTokensToCSS = compiler.compileTokensToCSS;
+    resolveTokensFromAppearance = compiler.resolveTokensFromAppearance;
+    variants.registerBuiltinVariants();
+  });
+
+  afterAll(() => {
+    vi.unstubAllEnvs();
   });
 
   test('sprite frame tokens compile when the sprite chrome variant is active', () => {
