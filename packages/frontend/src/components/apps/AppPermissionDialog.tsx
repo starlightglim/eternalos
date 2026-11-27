@@ -12,7 +12,8 @@
  * Extracted from AppViewer.tsx (Workstream 3, Phase B).
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 import type { AppGrantApproval } from '../../types';
 import {
   approvalDateText,
@@ -61,6 +62,14 @@ export function AppPermissionDialog({
   const entries = useMemo(() => getPermissionEntries(requested, broad), [requested, broad]);
   const [selectedKeys, setSelectedKeys] = useState<string[]>(() => initialSelectedKeys(entries, granted));
 
+  // Focus starts on Deny (the least-privilege choice, so a stray Space can't
+  // tick a scope); Escape denies unless a grant is in flight; Tab stays inside.
+  // Window scope: the prompt only covers its app window, so it never takes
+  // keys or focus from the rest of the desktop (or while minimized).
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const denyRef = useRef<HTMLButtonElement>(null);
+  useFocusTrap(dialogRef, { onEscape: busy ? undefined : onDeny, initialFocus: denyRef, scope: 'window' });
+
   const toggle = (key: string, checked: boolean) => {
     setSelectedKeys((current) => checked
       ? [...current, key]
@@ -87,7 +96,7 @@ export function AppPermissionDialog({
       background: 'rgba(0, 0, 0, 0.45)',
       zIndex: 2,
     }}>
-      <div role="dialog" aria-modal="true" aria-labelledby="app-permissions-title" style={{
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="app-permissions-title" style={{
         width: 'min(420px, 100%)',
         maxHeight: '100%',
         overflow: 'auto',
@@ -162,7 +171,7 @@ export function AppPermissionDialog({
           );
         })}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
-          <button type="button" data-role="deny" onClick={onDeny} disabled={busy}>Deny</button>
+          <button type="button" ref={denyRef} data-role="deny" onClick={onDeny} disabled={busy}>Deny</button>
           <button type="button" data-role="allow" onClick={handleAllow} disabled={busy}>Allow selected</button>
         </div>
       </div>

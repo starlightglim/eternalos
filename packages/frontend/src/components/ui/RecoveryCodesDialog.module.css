@@ -1,0 +1,130 @@
+/* RecoveryCodesDialog — one-time reveal of signup recovery codes.
+   Fixed light colors on purpose: it appears outside any theme (signup), and
+   the codes must stay legible whatever theme is active. */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: 16px;
+}
+
+.dialog {
+  background: #fff;
+  color: #000;
+  border: 1px solid #000;
+  border-radius: 6px;
+  padding: 24px;
+  max-width: 520px;
+  width: 100%;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.3);
+  font-family: var(--font-system, system-ui), sans-serif;
+}
+
+.dialog:focus {
+  outline: none;
+}
+
+.title {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.subtitle {
+  margin: 0 0 16px;
+  color: #444;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.codes {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  padding: 12px;
+  background: #f6f6f6;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+
+.code {
+  font-family: var(--font-mono, ui-monospace, "Monaco", monospace);
+  font-size: 14px;
+  letter-spacing: 1px;
+  padding: 4px 8px;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 2px;
+  text-align: center;
+  user-select: all;
+}
+
+.buttonRow {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.secondaryButton {
+  flex: 1;
+  padding: 8px 12px;
+  background: #fff;
+  color: #000;
+  border: 1px solid #000;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.ack {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.primaryButton {
+  width: 100%;
+  padding: 10px 16px;
+  background: #000;
+  color: #fff;
+  border: 1px solid #000;
+  border-radius: 3px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.primaryButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.secondaryButton:focus-visible,
+.primaryButton:focus-visible {
+  outline: 2px solid var(--selection, #000080);
+  outline-offset: 2px;
+}
+
+@media (max-width: 420px) {
+  .codes {
+    grid-template-columns: 1fr;
+  }
+
+  .buttonRow {
+    flex-direction: column;
+  }
+}

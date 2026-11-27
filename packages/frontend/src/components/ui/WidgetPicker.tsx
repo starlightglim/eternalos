@@ -5,7 +5,8 @@
  * Users select a widget type, optionally configure it, then add to desktop.
  */
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useId, useRef } from 'react';
+import { isNativeEnterTarget, useFocusTrap } from '../../hooks/useFocusTrap';
 import type { WidgetType, WidgetConfig, StickyNoteConfig, GuestbookConfig, MusicPlayerConfig, PixelCanvasConfig, LinkBoardConfig } from '../../types';
 import { STICKY_NOTE_COLORS } from '../widgets/StickyNote';
 import { getWidgetDefaultSize } from './widgetDefaults';
@@ -84,19 +85,34 @@ export function WidgetPicker({ onSelect, onClose }: WidgetPickerProps) {
     onClose();
   }, [selectedWidget, widgetName, onSelect, onClose]);
 
-  // Handle keyboard navigation
+  // Escape closes, Tab stays inside, focus moves in on open and back on close.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useFocusTrap(dialogRef, { onEscape: onClose });
+
+  // Picking a widget (click, or Enter/Space on its card) moves focus to the
+  // name field, so the next Enter adds it. autoFocus alone only covers the
+  // first pick: the field stays mounted when switching widgets.
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (selectedWidget) nameInputRef.current?.focus();
+  }, [selectedWidget]);
+
+  // Enter adds the selected widget — except on a button, which Enter
+  // activates natively (Cancel must not add).
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        onClose();
-      } else if (e.key === 'Enter' && selectedWidget && widgetName.trim()) {
+      if (e.key !== 'Enter' || e.isComposing || isNativeEnterTarget(e.target)) return;
+      if (!dialogRef.current?.contains(e.target as Node)) return;
+      if (selectedWidget && widgetName.trim()) {
+        e.preventDefault();
         handleAdd();
       }
     }
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [onClose, selectedWidget, widgetName, handleAdd]);
+  }, [selectedWidget, widgetName, handleAdd]);
 
   // Handle overlay click
   const handleOverlayClick = useCallback(
@@ -115,10 +131,10 @@ export function WidgetPicker({ onSelect, onClose }: WidgetPickerProps) {
 
   return (
     <div className={styles.overlay} onClick={handleOverlayClick}>
-      <div className={styles.dialog}>
+      <div className={styles.dialog} ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId}>
         {/* Header */}
         <div className={styles.header}>
-          <span className={styles.title}>Add Widget</span>
+          <span className={styles.title} id={titleId}>Add Widget</span>
         </div>
 
         {/* Widget Grid */}
@@ -150,7 +166,7 @@ export function WidgetPicker({ onSelect, onClose }: WidgetPickerProps) {
                 value={widgetName}
                 onChange={(e) => setWidgetName(e.target.value)}
                 placeholder="Enter a name..."
-                autoFocus
+                ref={nameInputRef}
               />
             </label>
           </div>
