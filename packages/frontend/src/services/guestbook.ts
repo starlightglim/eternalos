@@ -3,19 +3,17 @@
  * (no auth required, rate limited server-side).
  */
 
-import { API_URL } from './transport';
+import type { GuestbookEntry } from '../types';
+import { ApiError, apiRequest } from './transport';
+
+// The one definition lives in @eternalos/contracts; re-exported for `./api`.
+export type { GuestbookEntry };
 
 // ============ Guestbook API ============
 
 export interface GuestbookEntryInput {
   name: string;
   message: string;
-}
-
-export interface GuestbookEntry {
-  name: string;
-  message: string;
-  timestamp: number;
 }
 
 export interface GuestbookPostResponse {
@@ -35,22 +33,20 @@ export async function postGuestbookEntry(
   itemId: string,
   entry: GuestbookEntryInput
 ): Promise<GuestbookPostResponse> {
-  const response = await fetch(`${API_URL}/api/guestbook/${encodeURIComponent(ownerUid)}/${encodeURIComponent(itemId)}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(entry),
-  });
-
-  if (!response.ok) {
-    if (response.status === 429) {
-      const error = await response.json().catch(() => ({ error: 'Rate limit exceeded' }));
-      return { success: false, error: error.error || 'You can only sign once per hour. Please try again later.' };
+  try {
+    return await apiRequest<GuestbookPostResponse>(
+      `/api/guestbook/${encodeURIComponent(ownerUid)}/${encodeURIComponent(itemId)}`,
+      { method: 'POST', body: JSON.stringify(entry) },
+    );
+  } catch (err) {
+    if (err instanceof ApiError) {
+      // A 429 from a layer that sends no JSON error still gets a readable hint.
+      const generic = !err.detail || err.detail === 'Request failed' || err.detail === 'Too Many Requests';
+      if (err.status === 429 && generic) {
+        return { success: false, error: 'You can only sign once per hour. Please try again later.' };
+      }
+      return { success: false, error: err.detail };
     }
-    const error = await response.json().catch(() => ({ error: 'Request failed' }));
-    return { success: false, error: error.error || `HTTP ${response.status}` };
+    throw err;
   }
-
-  return response.json();
 }

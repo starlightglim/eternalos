@@ -5,13 +5,15 @@
  * "Publish Your Own" opens a simple form to upload and share packs.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { bazaarBrowse, bazaarInstall, bazaarPublish, bazaarMyPacks, bazaarDelete, createItem, type BazaarPack, getApiUrl } from '../../services/api';
 import { useAppearanceStore } from '../../stores/appearanceStore';
 import type { CustomAppearance } from '../../stores/appearanceStore';
 import { useAuthStore } from '../../stores/authStore';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { useWindowStore } from '../../stores/windowStore';
+import { AlertDialog } from '../ui/AlertDialog';
+import { errorText, isAbortError, SEARCH_DEBOUNCE_MS } from './bazaarRequests';
 import styles from './BazaarWindow.module.css';
 
 type PackType = 'cursor' | 'icon' | 'sound' | 'effect' | 'skin' | 'game';
@@ -46,34 +48,67 @@ export function BazaarWindow() {
   const [activeType, setActiveType] = useState<PackType | 'all'>('all');
   const [packs, setPacks] = useState<BazaarPack[]>([]);
   const [loading, setLoading] = useState(false);
+  const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
+  const [pageSize, setPageSize] = useState(20);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const browseRequest = useRef<AbortController | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const { user } = useAuthStore();
 
+  // Only the newest browse request may update state: each call aborts the
+  // previous one, so a slow earlier response can't overwrite newer results.
   const loadPacks = useCallback(async () => {
+    browseRequest.current?.abort();
+    const controller = new AbortController();
+    browseRequest.current = controller;
     setLoading(true);
+    setLoadError(null);
     try {
       const result = await bazaarBrowse({
         type: activeType === 'all' ? undefined : activeType,
         q: searchQuery || undefined,
         page,
+        signal: controller.signal,
       });
-      setPacks(result.packs || []);
-      setTotal(result.total || 0);
-    } catch {
+      if (controller.signal.aborted) return;
+      setPacks(result.packs);
+      setTotal(result.total);
+      setPageSize(result.pageSize);
+    } catch (err) {
+      if (controller.signal.aborted || isAbortError(err)) return;
       setPacks([]);
+      setTotal(0);
+      setLoadError(errorText(err, 'Could not load packs'));
     }
-    setLoading(false);
+    if (browseRequest.current === controller) {
+      browseRequest.current = null;
+      setLoading(false);
+    }
   }, [activeType, searchQuery, page]);
 
   useEffect(() => {
     const request = window.setTimeout(() => { void loadPacks(); }, 0);
     return () => window.clearTimeout(request);
   }, [loadPacks]);
+
+  // Cancel any in-flight browse when the window closes.
+  useEffect(() => () => browseRequest.current?.abort(), []);
+
+  // Debounce typing: the query (and page reset) follows the input after a pause.
+  useEffect(() => {
+    const next = searchInput.trim();
+    if (next === searchQuery) return;
+    const timer = window.setTimeout(() => {
+      setSearchQuery(next);
+      setPage(1);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [searchInput, searchQuery]);
 
   const handleInstall = useCallback(async (packId: string) => {
     if (!user) {
@@ -152,8 +187,9 @@ export function BazaarWindow() {
             className={styles.search}
             type="text"
             placeholder="Search..."
-            value={searchQuery}
-            onChange={e => { setSearchQuery(e.target.value); setPage(1); }}
+            aria-label="Search packs"
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
           />
         )}
       </div>
@@ -171,7 +207,8 @@ export function BazaarWindow() {
           packs={packs} loading={loading} activeType={activeType}
           setActiveType={t => { setActiveType(t); setPage(1); }}
           onInstall={handleInstall} installing={installing}
-          page={page} setPage={setPage} total={total}
+          page={page} setPage={setPage} total={total} pageSize={pageSize}
+          error={loadError} onRetry={() => { void loadPacks(); }}
         />}
         {view === 'publish' && <PublishView onPublished={() => { setView('browse'); loadPacks(); }} />}
         {view === 'my-packs' && <MyPacksView onDeleted={loadPacks} />}
@@ -184,13 +221,13 @@ export function BazaarWindow() {
 // Browse view
 // ---------------------------------------------------------------------------
 
-function BrowseView({ packs, loading, activeType, setActiveType, onInstall, installing, page, setPage, total }: {
+function BrowseView({ packs, loading, activeType, setActiveType, onInstall, installing, page, setPage, total, pageSize, error, onRetry }: {
   packs: BazaarPack[]; loading: boolean; activeType: PackType | 'all';
   setActiveType: (t: PackType | 'all') => void;
   onInstall: (id: string) => void; installing: string | null;
-  page: number; setPage: (p: number) => void; total: number;
+  page: number; setPage: (p: number) => void; total: number; pageSize: number;
+  error: string | null; onRetry: () => void;
 }) {
-  const pageSize = 20;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
@@ -211,6 +248,12 @@ function BrowseView({ packs, loading, activeType, setActiveType, onInstall, inst
       {/* Grid */}
       {loading ? (
         <div className={styles.loading}>Loading packs...</div>
+      ) : error ? (
+        <div className={styles.emptyState} role="alert">
+          <strong>Couldn't load the Bazaar</strong>
+          <span>{error}</span>
+          <button className={styles.navButton} onClick={onRetry}>Try Again</button>
+        </div>
       ) : packs.length === 0 ? (
         <div className={styles.emptyState}>
           <div className={styles.emptyIcon}>✦</div>
@@ -226,7 +269,7 @@ function BrowseView({ packs, loading, activeType, setActiveType, onInstall, inst
       )}
 
       {/* Pagination */}
-      {totalPages > 1 && (
+      {totalPages > 1 && !error && (
         <div className={styles.pagination}>
           <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page === 1} className={styles.navButton}>Prev</button>
           <span className={styles.paginationLabel}>Page {page} of {totalPages}</span>
@@ -395,28 +438,66 @@ function PublishView({ onPublished }: { onPublished: () => void }) {
 function MyPacksView({ onDeleted }: { onDeleted: () => void }) {
   const [packs, setPacks] = useState<BazaarPack[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<BazaarPack | null>(null);
+  const mounted = useRef(true);
 
   useEffect(() => {
-    bazaarMyPacks().then(result => {
-      setPacks(result.packs || []);
-      setLoading(false);
-    }).catch(() => setLoading(false));
+    mounted.current = true;
+    return () => { mounted.current = false; };
   }, []);
 
-  const handleDelete = async (packId: string) => {
-    setDeleting(packId);
-    await bazaarDelete(packId);
-    setPacks(packs.filter(p => p.packId !== packId));
+  const load = useCallback(() => {
+    setLoading(true);
+    setLoadError(null);
+    bazaarMyPacks().then(result => {
+      if (!mounted.current) return;
+      setPacks(result.packs);
+      setLoading(false);
+    }).catch((err: unknown) => {
+      if (!mounted.current) return;
+      setLoadError(errorText(err, 'Could not load your packs'));
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => {
+    const request = window.setTimeout(load, 0);
+    return () => window.clearTimeout(request);
+  }, [load]);
+
+  const handleDelete = async (pack: BazaarPack) => {
+    setConfirming(null);
+    setDeleting(pack.packId);
+    setDeleteError(null);
+    const result = await bazaarDelete(pack.packId);
+    if (!mounted.current) return;
     setDeleting(null);
+    if (!result.success) {
+      setDeleteError(`Couldn't delete "${pack.name}": ${result.error || 'Delete failed'}`);
+      return;
+    }
+    setPacks(prev => prev.filter(p => p.packId !== pack.packId));
     onDeleted();
   };
 
   if (loading) return <div className={styles.loading}>Loading your packs...</div>;
+  if (loadError) {
+    return (
+      <div className={styles.emptyState} role="alert">
+        <strong>Couldn't load your packs</strong>
+        <span>{loadError}</span>
+        <button className={styles.navButton} onClick={load}>Try Again</button>
+      </div>
+    );
+  }
   if (packs.length === 0) return <div className={styles.emptyState}><div className={styles.emptyIcon}>✦</div><strong>No published packs yet</strong><span>Your shared customizations will appear here.</span></div>;
 
   return (
     <div className={styles.myPacks}>
+      {deleteError && <div className={`${styles.message} ${styles.formError}`} role="alert">{deleteError}</div>}
       {packs.map(pack => (
         <div className={styles.myPack} key={pack.packId}>
           <img className={styles.myPackPreview} src={pack.previewUrl?.startsWith('/') ? getApiUrl(pack.previewUrl) : pack.previewUrl} alt={pack.name} />
@@ -424,11 +505,23 @@ function MyPacksView({ onDeleted }: { onDeleted: () => void }) {
             <div className={styles.packName}>{pack.name}</div>
             <div className={styles.packMeta}>{pack.type} &middot; {pack.installs} installs</div>
           </div>
-          <button onClick={() => handleDelete(pack.packId)} disabled={deleting === pack.packId} className={`${styles.actionButton} ${styles.deleteButton}`}>
+          <button onClick={() => setConfirming(pack)} disabled={deleting !== null} className={`${styles.actionButton} ${styles.deleteButton}`}>
             {deleting === pack.packId ? '...' : 'Delete'}
           </button>
         </div>
       ))}
+      {confirming && (
+        <AlertDialog
+          type="warning"
+          title="Delete this pack?"
+          message={`"${confirming.name}" will be removed from the Bazaar for everyone. This can't be undone.`}
+          onClose={() => setConfirming(null)}
+          buttons={[
+            { label: 'Cancel', onClick: () => setConfirming(null), primary: true },
+            { label: 'Delete', onClick: () => void handleDelete(confirming) },
+          ]}
+        />
+      )}
     </div>
   );
 }
