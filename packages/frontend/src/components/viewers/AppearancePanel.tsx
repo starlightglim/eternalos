@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useAlertStore } from '../../stores/alertStore';
+import { addUnloadGuard, setContentTypeCloseGuard } from '../../hooks/useUnsavedGuard';
 import { useAppearanceStore, type CustomAppearance, APPEARANCE_PROFILE_KEYS, buildTokenUpdate, getTokenValue } from '../../stores/appearanceStore';
 import { useAuthStore } from '../../stores/authStore';
 import { useWindowStore } from '../../stores/windowStore';
@@ -671,17 +673,45 @@ function appearanceMatchesPreset(appearance: CustomAppearance, preset: CustomApp
   });
 }
 
+let appearanceGuardsInstalled = false;
+/**
+ * Installed once, on first open, and never removed: a collapsed window
+ * unmounts this panel, but closing it or reloading must still ask.
+ */
+function installAppearanceGuards() {
+  if (appearanceGuardsInstalled || typeof window === 'undefined') return;
+  appearanceGuardsInstalled = true;
+  // An .estheme preview has its own Keep/Revert banner; don't second-guess it.
+  const hasUnsavedLook = () =>
+    useAppearanceStore.getState().hasUnsavedChanges && useEsthemePreviewStore.getState().status !== 'active';
+  addUnloadGuard(window, hasUnsavedLook);
+  setContentTypeCloseGuard('appearance', (proceed) => {
+    if (!hasUnsavedLook()) return false;
+    useAlertStore.getState().showConfirm(
+      'Your desktop is previewing changes you have not saved. Close Appearance and go back to your last saved look?',
+      () => {
+        useAppearanceStore.getState().discardChanges();
+        proceed();
+      },
+      undefined,
+      'Discard unsaved appearance?',
+    );
+    return true;
+  });
+}
+
 export function AppearancePanel() {
-  const {
-    appearance,
-    updateAppearance,
-    setFontSmoothing,
-    resetAppearance,
-    discardChanges,
-    saveAppearance,
-    isLoading,
-    hasUnsavedChanges,
-  } = useAppearanceStore();
+  const appearance = useAppearanceStore((state) => state.appearance);
+  const updateAppearance = useAppearanceStore((state) => state.updateAppearance);
+  const setFontSmoothing = useAppearanceStore((state) => state.setFontSmoothing);
+  const resetAppearance = useAppearanceStore((state) => state.resetAppearance);
+  const discardChanges = useAppearanceStore((state) => state.discardChanges);
+  const saveAppearance = useAppearanceStore((state) => state.saveAppearance);
+  const isLoading = useAppearanceStore((state) => state.isLoading);
+  const hasUnsavedChanges = useAppearanceStore((state) => state.hasUnsavedChanges);
+
+  // Unsaved preview: leaving the page or closing this window asks first.
+  useEffect(installAppearanceGuards, []);
 
   const [activeTab, setActiveTabState] = useState<TabId>(initialTab);
   const setActiveTab = useCallback((tab: TabId) => {
@@ -1075,7 +1105,12 @@ export function AppearancePanel() {
                 type="button"
                 className={`${styles.secondaryButton} ${styles.dangerButton}`}
                 onClick={() => {
-                  if (window.confirm('Reset every color, font, layout and style to the defaults? Nothing is saved until you press Save.')) resetAppearance();
+                  useAlertStore.getState().showConfirm(
+                    'Reset every color, font, layout and style to the defaults? Nothing is saved until you press Save.',
+                    resetAppearance,
+                    undefined,
+                    'Reset appearance?',
+                  );
                 }}
               >
                 Reset to defaults…

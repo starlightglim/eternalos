@@ -3,6 +3,8 @@ import { useDesktopStore } from '../../stores/desktopStore';
 import { useWindowStore } from '../../stores/windowStore';
 import { isApiConfigured } from '../../services/api';
 import { ContextMenu, type ContextMenuItem } from '../ui';
+import { useUnsavedGuard } from '../../hooks/useUnsavedGuard';
+import { createAutosave } from '../../utils/autosave';
 import styles from './TextViewer.module.css';
 
 interface TextViewerProps {
@@ -15,13 +17,15 @@ interface TextViewerProps {
 
 // 100KB character limit to prevent browser/storage performance issues
 const MAX_TEXT_LENGTH = 100_000;
+// Save this long after typing stops.
+const AUTOSAVE_DELAY_MS = 1500;
 
 /**
  * TextViewer - SimpleText clone
  * Features:
  * - Monaco font, white background, black text
  * - Editable for owner, read-only for visitor
- * - Auto-save on blur or Cmd+S
+ * - Auto-save after typing stops, on blur, on close, or Cmd+S
  * - Classic Mac scrollable text area
  */
 export function TextViewer({
@@ -37,9 +41,11 @@ export function TextViewer({
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
+  // After a failed save, stop autosaving (each failure raises a global
+  // "Sync Failed" alert) until the user retries or presses Cmd+S.
+  const saveFailedRef = useRef(false);
   const contentRef = useRef(content);
   const isDirtyRef = useRef(isDirty);
-  const savingRef = useRef(false);
   contentRef.current = content;
   isDirtyRef.current = isDirty;
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
@@ -99,42 +105,58 @@ export function TextViewer({
     [handleRename, name]
   );
 
-  // Save handler
-  const saveContent = useCallback(async () => {
-    if (!isDirty || !isOwner || savingRef.current) return;
-
-    savingRef.current = true;
+  // Save handler. Reads refs so the debounced autosave always saves the
+  // latest text; one save runs at a time (see createAutosave).
+  const fileNameRef = useRef(fileName);
+  fileNameRef.current = fileName;
+  const saveNow = useCallback(async () => {
+    if (!isDirtyRef.current || !isOwner) return;
+    const saving = contentRef.current;
     setIsSaving(true);
     setSaveFailed(false);
+    saveFailedRef.current = false;
     try {
       // Update the desktop item with new content
-      const saved = await updateItem(itemId, { textContent: content });
+      const saved = await updateItem(itemId, { textContent: saving });
       if (!saved) {
+        saveFailedRef.current = true;
         setSaveFailed(true);
         return;
       }
       // A completed save must not mark newer typing as saved.
-      if (contentRef.current === content) {
+      if (contentRef.current === saving) {
         isDirtyRef.current = false;
         setIsDirty(false);
-        updateWindowTitle(windowId, fileName);
+        updateWindowTitle(windowId, fileNameRef.current);
       }
     } catch (error) {
       console.error('Failed to save:', error);
+      saveFailedRef.current = true;
+      setSaveFailed(true);
     } finally {
-      savingRef.current = false;
       setIsSaving(false);
     }
-  }, [content, isDirty, isOwner, itemId, updateItem, windowId, fileName, updateWindowTitle]);
+  }, [isOwner, itemId, updateItem, windowId, updateWindowTitle]);
+
+  const saveNowRef = useRef(saveNow);
+  saveNowRef.current = saveNow;
+  const [autosave] = useState(() => createAutosave(() => saveNowRef.current(), AUTOSAVE_DELAY_MS));
+  const saveContent = useCallback(() => autosave.flush(), [autosave]);
+
+  // Leaving the page with unsaved text asks first.
+  useUnsavedGuard(isDirty);
 
   // Auto-save on unmount (e.g., when window is closed) if there are unsaved changes
   useEffect(() => {
     return () => {
+      autosave.cancel();
+      // flush() queues behind a save already running, so closing mid-save
+      // sends one more write, not two.
       if (isDirtyRef.current && isOwner) {
-        updateItem(itemId, { textContent: contentRef.current });
+        void autosave.flush().catch(() => {});
       }
     };
-  }, [itemId, isOwner, updateItem]);
+  }, [autosave, isOwner]);
 
   // Handle keyboard shortcuts — only save if this editor's textarea is focused
   useEffect(() => {
@@ -144,7 +166,7 @@ export function TextViewer({
         // Only handle if our textarea is focused (prevents saving ALL open editors)
         if (document.activeElement === textareaRef.current) {
           e.preventDefault();
-          saveContent();
+          void saveContent();
         }
       }
     };
@@ -162,18 +184,18 @@ export function TextViewer({
     setContent(newValue);
     contentRef.current = newValue;
     isDirtyRef.current = true;
-    setSaveFailed(false);
     if (!isDirty) {
       // First edit — show unsaved indicator in window title bar
       updateWindowTitle(windowId, `• ${fileName}`);
     }
     setIsDirty(true);
+    if (!saveFailedRef.current) autosave.schedule();
   };
 
   // Auto-save on blur
   const handleBlur = () => {
-    if (isDirty) {
-      saveContent();
+    if (isDirtyRef.current && !saveFailedRef.current) {
+      void saveContent();
     }
   };
 
@@ -237,7 +259,7 @@ export function TextViewer({
         )}
         {isDirty && <span className={styles.unsaved}>•</span>}
         {isSaving && <span className={styles.saving}>Saving...</span>}
-        {saveFailed && <button onClick={saveContent}>Save failed — Retry</button>}
+        {saveFailed && <button type="button" onClick={() => void saveContent()}>Save failed — Retry</button>}
         {!isOwner && <span className={styles.readOnly}>Read Only</span>}
       </div>
 

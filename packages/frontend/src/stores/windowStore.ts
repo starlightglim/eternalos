@@ -3,6 +3,7 @@ import type { WindowState } from '../types';
 import { useSoundStore } from './soundStore';
 import { isApiConfigured, getAuthToken, saveWindowsToServer, type SavedWindowState } from '../services/api';
 import { getMenuBarHeight } from '../utils/layout';
+import { interceptWindowClose } from '../hooks/useUnsavedGuard';
 
 const WINDOW_STATE_KEY = 'eternalos-window-state';
 
@@ -186,6 +187,10 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
   },
 
   closeWindow: (id) => {
+    // A viewer with unsaved work (e.g. Appearance) may ask first.
+    const closing = get().windows.find((w) => w.id === id);
+    if (interceptWindowClose(id, () => get().closeWindow(id), closing?.contentType)) return;
+
     // Play window close sound
     useSoundStore.getState().playSound('windowClose');
 
