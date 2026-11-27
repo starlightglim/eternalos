@@ -71,11 +71,34 @@ function isTextControlTarget(target: EventTarget | null): boolean {
  *   shortcuts.
  */
 export function MenuBar() {
-  const { windows, closeWindow, getTopWindow, openWindow } = useWindowStore();
-  const { selectedIds, addItem, items, deselectAll, selectAll, cleanUp, sortByName, sortByDate, sortByKind, pasteItems, duplicateItems, emptyTrash, getTrashCount } = useDesktopStore();
-  const { profile, logout } = useAuthStore();
-  const { clipboard, cut, copy, clear: clearClipboard, hasItems: hasClipboardItems } = useClipboardStore();
-  const { showConfirm } = useAlertStore();
+  // Field-level selectors: a whole-store subscription re-rendered the menu
+  // bar on every unrelated store change (drag frames, upload progress...).
+  // Store actions are stable references, so selecting them is free.
+  const windows = useWindowStore((s) => s.windows);
+  const closeWindow = useWindowStore((s) => s.closeWindow);
+  const getTopWindow = useWindowStore((s) => s.getTopWindow);
+  const openWindow = useWindowStore((s) => s.openWindow);
+  const selectedIds = useDesktopStore((s) => s.selectedIds);
+  const items = useDesktopStore((s) => s.items);
+  const addItem = useDesktopStore((s) => s.addItem);
+  const deselectAll = useDesktopStore((s) => s.deselectAll);
+  const selectAll = useDesktopStore((s) => s.selectAll);
+  const cleanUp = useDesktopStore((s) => s.cleanUp);
+  const sortByName = useDesktopStore((s) => s.sortByName);
+  const sortByDate = useDesktopStore((s) => s.sortByDate);
+  const sortByKind = useDesktopStore((s) => s.sortByKind);
+  const pasteItems = useDesktopStore((s) => s.pasteItems);
+  const duplicateItems = useDesktopStore((s) => s.duplicateItems);
+  const emptyTrash = useDesktopStore((s) => s.emptyTrash);
+  const getTrashCount = useDesktopStore((s) => s.getTrashCount);
+  const profile = useAuthStore((s) => s.profile);
+  const logout = useAuthStore((s) => s.logout);
+  const clipboard = useClipboardStore((s) => s.clipboard);
+  const cut = useClipboardStore((s) => s.cut);
+  const copy = useClipboardStore((s) => s.copy);
+  const clearClipboard = useClipboardStore((s) => s.clear);
+  const hasClipboardItems = clipboard !== null && clipboard.itemIds.length > 0;
+  const showConfirm = useAlertStore((s) => s.showConfirm);
   const navigate = useNavigate();
 
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
@@ -840,7 +863,7 @@ export function MenuBar() {
     edit: [
       { label: 'Cut', shortcut: '⌘X', action: handleCut, disabled: selectedIds.size === 0 },
       { label: 'Copy', shortcut: '⌘C', action: handleCopy, disabled: selectedIds.size === 0 },
-      { label: 'Paste', shortcut: '⌘V', action: handlePaste, disabled: !hasClipboardItems() },
+      { label: 'Paste', shortcut: '⌘V', action: handlePaste, disabled: !hasClipboardItems },
       { label: 'Duplicate', shortcut: '⌘D', action: handleDuplicate, disabled: selectedIds.size === 0 || selectionIsOnlyApps },
       { divider: true, label: '' },
       { label: 'Select All', shortcut: '⌘A', action: handleSelectAll },

@@ -6,6 +6,7 @@ import { renderCustomIcon, CUSTOM_ICON_LIBRARY, type CustomIconId } from './cust
 import { getCustomIconUrl, getApiUrl } from '../../services/api';
 import { getItemExtension } from '../../utils/itemSelectors';
 import { slugify } from '../../utils/slugify';
+import { desktopIconDomId } from '../desktop/desktopSurface';
 import styles from './DesktopIcon.module.css';
 
 interface DesktopIconProps {
@@ -14,13 +15,15 @@ interface DesktopIconProps {
   gridCellSize: number;
   onSelect: (id: string, addToSelection: boolean) => void;
   onDoubleClick: (item: DesktopItem) => void;
-  onContextMenu?: (e: React.MouseEvent) => void;
+  onContextMenu?: (item: DesktopItem, e: React.MouseEvent) => void;
   onDragStart?: (id: string, e: React.PointerEvent) => void;
   onDragMove?: (e: React.PointerEvent) => void;
   onDragEnd?: (e: React.PointerEvent) => void;
   isDragging: boolean;
   isDropTarget?: boolean;
   isCut?: boolean; // Item is cut and pending paste (shows faded)
+  /** Render as a listbox option (parent is a role="listbox"). */
+  listboxOption?: boolean;
 }
 
 /**
@@ -44,6 +47,7 @@ function DesktopIconInner({
   isDragging,
   isDropTarget,
   isCut,
+  listboxOption = false,
 }: DesktopIconProps) {
   const clickTimeoutRef = useRef<number | null>(null);
   const clickCountRef = useRef(0);
@@ -189,6 +193,11 @@ function DesktopIconInner({
     [item, onDoubleClick]
   );
 
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent) => onContextMenu?.(item, e),
+    [item, onContextMenu]
+  );
+
   const iconClasses = [
     styles.desktopIcon,
     'desktopIcon', // Plain class for user custom CSS targeting
@@ -205,6 +214,9 @@ function DesktopIconInner({
       ref={iconRef}
       className={iconClasses}
       data-item-id={item.id}
+      {...(listboxOption
+        ? { id: desktopIconDomId(item.id), role: 'option', 'aria-selected': isSelected }
+        : {})}
       data-item-type={item.type}
       eos-name={slugify(item.name)}
       eos-type={item.type}
@@ -222,7 +234,7 @@ function DesktopIconInner({
       onPointerCancel={handlePointerCancel}
       onLostPointerCapture={handleLostPointerCapture}
       onClick={handleClick}
-      onContextMenu={onContextMenu}
+      onContextMenu={onContextMenu ? handleContextMenu : undefined}
     >
       <div className={styles.iconImage} eos-part="icon" style={{ position: 'relative' }}>
         {!item.isPublic && (
@@ -293,26 +305,10 @@ function DesktopIconInner({
 }
 
 /**
- * Memoized DesktopIcon - only re-renders when its specific props change.
- * This is crucial for performance with 30+ items on the desktop.
+ * Memoized DesktopIcon - only re-renders when its props change.
+ * Shallow comparison: `item` by reference (the store replaces an item
+ * object whenever any of its fields change, so every visible field —
+ * isPublic, customIcon, cartridge art... — re-renders), and callbacks by
+ * identity (the Desktop passes stable ones, so this never goes stale).
  */
-export const DesktopIcon = memo(DesktopIconInner, (prevProps, nextProps) => {
-  // Custom comparison for performance - only re-render when relevant props change
-  return (
-    prevProps.item.id === nextProps.item.id &&
-    prevProps.item.name === nextProps.item.name &&
-    prevProps.item.type === nextProps.item.type &&
-    prevProps.item.position.x === nextProps.item.position.x &&
-    prevProps.item.position.y === nextProps.item.position.y &&
-    prevProps.item.r2Key === nextProps.item.r2Key &&
-    prevProps.item.thumbnailKey === nextProps.item.thumbnailKey &&
-    prevProps.item.customIcon === nextProps.item.customIcon &&
-    prevProps.isSelected === nextProps.isSelected &&
-    prevProps.isDragging === nextProps.isDragging &&
-    prevProps.isDropTarget === nextProps.isDropTarget &&
-    prevProps.isCut === nextProps.isCut &&
-    prevProps.gridCellSize === nextProps.gridCellSize
-    // Note: callback props (onSelect, onDoubleClick, etc.) are not compared
-    // because they should be stable useCallback refs from the parent
-  );
-});
+export const DesktopIcon = memo(DesktopIconInner);
