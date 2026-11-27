@@ -702,7 +702,7 @@ export const ROUTES: RouteDefinition[] = [
     method: 'POST',
     match: exact('/api/auth/signup'),
     policy: { auth: 'none', rateLimit: RATE_LIMIT_AUTH, rateLimitHeaders: true },
-    handler: (c) => handleSignup(c.request, c.env),
+    handler: (c) => handleSignup(c.request, c.env, c.ctx),
   },
   {
     name: 'auth-login',
@@ -730,7 +730,7 @@ export const ROUTES: RouteDefinition[] = [
     method: 'POST',
     match: exact('/api/auth/forgot-password'),
     policy: { auth: 'none', rateLimit: RATE_LIMIT_AUTH, rateLimitHeaders: true },
-    handler: (c) => handleForgotPassword(c.request, c.env),
+    handler: (c) => handleForgotPassword(c.request, c.env, c.ctx),
   },
   {
     name: 'auth-reset-password',
@@ -760,7 +760,7 @@ export const ROUTES: RouteDefinition[] = [
     method: 'POST',
     match: exact('/api/auth/change-username'),
     policy: { auth: 'required', rateLimit: RATE_LIMIT_AUTH, rateLimitHeaders: true },
-    handler: (c) => handleChangeUsername(c.request, c.env, requireAuthContext(c)),
+    handler: (c) => handleChangeUsername(c.request, c.env, requireAuthContext(c), c.ctx),
   },
   // Send verification email (authenticated)
   {

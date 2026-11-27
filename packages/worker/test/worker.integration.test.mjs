@@ -3442,6 +3442,37 @@ describe('worker integration', () => {
     assert.deepEqual(JSON.parse(noOrigin.text), { error: 'Unauthorized' });
   });
 
+  it('accepts an agent chat wsToken once and rejects a replay', async () => {
+    const user = await signupUser();
+    const ip = () => ({ 'CF-Connecting-IP': `ws-replay-${Date.now()}-${Math.random().toString(36).slice(2)}` });
+    const minted = await expectOk('/api/agent/chat/ws-token', { method: 'POST', headers: authHeaders(user.token, ip()) });
+    const path = `/api/agent/chat?threadId=replay&wsToken=${encodeURIComponent(minted.token)}`;
+    const first = await wsUpgrade(path, ip());
+    assert.equal(first.status, 101, `first use should upgrade: ${first.text}`);
+    const replay = await wsUpgrade(path, ip());
+    assert.equal(replay.status, 401);
+  });
+
+  it('answers forgot-password identically for known and unknown emails', async () => {
+    const user = await signupUser();
+    const unknown = await fetchJson('/api/auth/forgot-password', {
+      method: 'POST',
+      headers: freshAuthIp('forgot'),
+      body: JSON.stringify({ email: `nobody-${Date.now()}@example.com` }),
+    });
+    const known = await fetchJson('/api/auth/forgot-password', {
+      method: 'POST',
+      headers: freshAuthIp('forgot'),
+      body: JSON.stringify({ email: user.email }),
+    });
+    assert.equal(unknown.response.status, 200);
+    assert.equal(known.response.status, 200);
+    assert.equal(known.body.message, unknown.body.message);
+    // Development returns the token for local flows; it must be usable at once.
+    assert.ok(known.body.resetToken);
+    assert.equal(unknown.body.resetToken, undefined);
+  });
+
   it('degrades agent chat provider failure to a legible, terminated stream', async () => {
     const user = await signupUser();
     const socket = await openAgentChatSocket(user, 'provider-failure');
@@ -4370,6 +4401,17 @@ describe('worker integration', () => {
     const afterPurge = await login();
     assert.equal(afterPurge.response.status, 401, `expected invalid-credentials after purge, got ${afterPurge.response.status}`);
     assert.notEqual(afterPurge.body?.accountDeletionPending, true);
+
+    // Old credentials stay dead after the purge: neither the session nor the
+    // refresh token can mint anything for the purged account.
+    const oldSession = await fetchJson('/api/quota', { headers: authHeaders(user.token) });
+    assert.equal(oldSession.response.status, 401);
+    const oldRefresh = await fetchJson('/api/auth/refresh', {
+      method: 'POST',
+      headers: ipHeaders(),
+      body: JSON.stringify({ refreshToken: user.refreshToken }),
+    });
+    assert.equal(oldRefresh.response.status, 401);
 
     // The purged email/username can be reused — signup with them succeeds,
     // confirming the account indices (user:{email}, username:{username}) were freed.

@@ -144,7 +144,7 @@ export async function sendEmail(
 ): Promise<boolean> {
   const fromEmail = env.FROM_EMAIL;
   if (!fromEmail) {
-    console.warn('sendEmail: FROM_EMAIL is not configured — skipping send to', params.to);
+    console.warn('sendEmail: FROM_EMAIL is not configured — skipping send');
     return false;
   }
 
@@ -164,8 +164,7 @@ export async function sendEmail(
   }
 
   console.warn(
-    'sendEmail: no email backend configured (SEND_EMAIL binding + RESEND_API_KEY both missing). Skipping send to',
-    params.to,
+    'sendEmail: no email backend configured (SEND_EMAIL binding + RESEND_API_KEY both missing). Skipping send',
   );
   return false;
 }
