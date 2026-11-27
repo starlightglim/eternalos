@@ -17,6 +17,7 @@ const VARIANT_CLASS: Record<string, string> = {
 
 export function WindowTitleBar({
   title,
+  titleId,
   isActive,
   collapsed,
   onDragStart,
@@ -66,7 +67,7 @@ export function WindowTitleBar({
         {showStripes && <div className={`${styles.titleBarStripes} titleBarStripes`} />}
 
         {/* Title Text */}
-        <span className={`${styles.titleText} titleText`} eos-part="title">{title}</span>
+        <span id={titleId} className={`${styles.titleText} titleText`} eos-part="title">{title}</span>
       </div>
     </div>
   );

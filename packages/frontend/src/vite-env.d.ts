@@ -14,6 +14,9 @@ interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
 
+/** Frontend package version, injected by Vite's `define` (absent under Vitest). */
+declare const __APP_VERSION__: string;
+
 // Custom eos-* attributes for CSS Element Picker targeting
 declare namespace React {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars

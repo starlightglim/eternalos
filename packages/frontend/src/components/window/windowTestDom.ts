@@ -435,7 +435,7 @@ export interface TestDom {
   /** A container element appended to <body>, ready for createRoot(). */
   root: TestElement;
   /** Dispatch a pointer event (bubbles, cancelable) on `target`. */
-  pointer(target: TestElement, type: 'pointerdown' | 'pointermove' | 'pointerup', init?: PointerInit): TestEvent;
+  pointer(target: TestElement, type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel', init?: PointerInit): TestEvent;
   /**
    * Dispatch the click that a browser would produce for the most recent
    * pointerdown/pointerup pair: on the nearest common inclusive ancestor of
@@ -537,7 +537,7 @@ export function installTestDom(): TestDom {
   let releasedAt: TestElement | null = null;
   let clickSuppressed = false;
 
-  const pointer = (target: TestElement, type: 'pointerdown' | 'pointermove' | 'pointerup', init: PointerInit = {}): TestEvent => {
+  const pointer = (target: TestElement, type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel', init: PointerInit = {}): TestEvent => {
     const pointerId = init.pointerId ?? DEFAULT_POINTER_ID;
     // A capture set during a previous event retargets subsequent pointer
     // events for that pointer, as in browsers.
@@ -569,6 +569,10 @@ export function installTestDom(): TestDom {
       releasedAt = effectiveTarget;
       if (event.defaultPrevented) clickSuppressed = true;
       // Pointer capture is implicitly released when the pointer goes up.
+      document.pointerCapture.delete(pointerId);
+    } else if (type === 'pointercancel') {
+      // A cancelled pointer never clicks and loses its capture.
+      clickSuppressed = true;
       document.pointerCapture.delete(pointerId);
     }
     return event;

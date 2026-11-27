@@ -1,9 +1,10 @@
-import { lazy, Suspense } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo } from 'react';
 import { Window } from './Window';
 import { useWindowStore } from '../../stores/windowStore';
 import { useDesktopStore } from '../../stores/desktopStore';
 import { slugify } from '../../utils/slugify';
 import { getItemExtension } from '../../utils/itemSelectors';
+import { openAppearance } from '../../utils/openAppearance';
 import { Calculator } from '../viewers/Calculator';
 import { Clock } from '../viewers/Clock';
 import { FetchCard } from '../viewers/FetchCard';
@@ -11,7 +12,9 @@ import { FetchCard } from '../viewers/FetchCard';
 import { FolderView } from './FolderView';
 import { TrashView } from './TrashView';
 import { WidgetRenderer } from '../widgets';
-import type { DesktopItem } from '../../types';
+import { WindowErrorBoundary } from './WindowErrorBoundary';
+import { APP_VERSION } from './appVersion';
+import type { DesktopItem, WindowState } from '../../types';
 
 const ImageViewer = lazy(() => import('../viewers/ImageViewer').then(({ ImageViewer: component }) => ({ default: component })));
 const TextViewer = lazy(() => import('../viewers/TextViewer').then(({ TextViewer: component }) => ({ default: component })));
@@ -22,7 +25,6 @@ const VideoPlayer = lazy(() => import('../viewers/VideoPlayer').then(({ VideoPla
 const PDFViewer = lazy(() => import('../viewers/PDFViewer').then(({ PDFViewer: component }) => ({ default: component })));
 const WebsiteViewer = lazy(() => import('../viewers/WebsiteViewer').then(({ WebsiteViewer: component }) => ({ default: component })));
 const GetInfo = lazy(() => import('../viewers/GetInfo').then(({ GetInfo: component }) => ({ default: component })));
-const WallpaperPicker = lazy(() => import('../viewers/WallpaperPicker').then(({ WallpaperPicker: component }) => ({ default: component })));
 const WelcomeReadMe = lazy(() => import('../viewers/WelcomeReadMe').then(({ WelcomeReadMe: component }) => ({ default: component })));
 const SearchWindow = lazy(() => import('../viewers/SearchWindow').then(({ SearchWindow: component }) => ({ default: component })));
 const PreferencesWindow = lazy(() => import('../viewers/PreferencesWindow').then(({ PreferencesWindow: component }) => ({ default: component })));
@@ -60,54 +62,103 @@ export function WindowManager({ isVisitorMode = false, visitorItems, folderWindo
       ? visibleWindows.reduce((top, w) => (w.zIndex > top.zIndex ? w : top)).id
       : null;
 
+  // One id -> item index per items change instead of two linear scans per
+  // window per render (renders happen on every drag frame).
+  const sourceItems = isVisitorMode && visitorItems ? visitorItems : items;
+  const itemsById = useMemo(() => new Map(sourceItems.map((item) => [item.id, item])), [sourceItems]);
+
   return (
     <>
       {windows.map((win) => {
-        // Compute eos- values for the window
-        const sourceItems = isVisitorMode && visitorItems ? visitorItems : items;
-        const item = win.contentId ? sourceItems.find((i) => i.id === win.contentId) : undefined;
-        const eosName = item ? slugify(item.name) : slugify(win.title);
-        const eosType = item?.type || win.contentType;
-        const eosExtension = item ? getItemExtension(item) : undefined;
-        const parentItem = item?.parentId ? sourceItems.find((i) => i.id === item.parentId) : undefined;
-        const eosFolder = parentItem ? slugify(parentItem.name) : undefined;
-
+        const item = win.contentId ? itemsById.get(win.contentId) : undefined;
+        const parentItem = item?.parentId ? itemsById.get(item.parentId) : undefined;
         return (
-        <Window
-          key={win.id}
-          id={win.id}
-          title={win.title}
-          position={win.position}
-          size={win.size}
-          zIndex={win.zIndex}
-          minimized={win.minimized}
-          collapsed={win.collapsed}
-          isActive={win.id === activeWindowId}
-          contentType={win.contentType}
-          contentId={win.contentId}
-          eosName={eosName}
-          eosType={eosType}
-          eosExtension={eosExtension}
-          eosFolder={eosFolder}
-        >
-          {/* Window content will be rendered based on contentType */}
-          <Suspense fallback={<WindowContentFallback />}>
-            <WindowContent
-              windowId={win.id}
-              contentType={win.contentType}
-              contentId={win.contentId}
-              isVisitorMode={isVisitorMode}
-              visitorItems={visitorItems}
-              folderWindowDropTargetId={folderWindowDropTargetId}
-              ownerUid={ownerUid}
-            />
-          </Suspense>
-        </Window>
+          <ManagedWindow
+            key={win.id}
+            win={win}
+            item={item}
+            // Visitor mode without visitor items has no content source.
+            contentItem={isVisitorMode && !visitorItems ? undefined : item}
+            parentName={parentItem?.name}
+            isActive={win.id === activeWindowId}
+            isVisitorMode={isVisitorMode}
+            visitorItems={visitorItems}
+            folderWindowDropTargetId={folderWindowDropTargetId}
+            ownerUid={ownerUid}
+          />
         );
       })}
     </>
   );
 }
+
+interface ManagedWindowProps {
+  win: WindowState;
+  item?: DesktopItem;
+  contentItem?: DesktopItem;
+  parentName?: string;
+  isActive: boolean;
+  isVisitorMode: boolean;
+  visitorItems?: DesktopItem[];
+  folderWindowDropTargetId?: string | null;
+  ownerUid?: string;
+}
+
+/**
+ * One window plus its content. Memoized on stable props (the store keeps the
+ * object identity of windows that didn't change), so dragging one window
+ * re-renders only that window.
+ */
+const ManagedWindow = memo(function ManagedWindow({
+  win,
+  item,
+  contentItem,
+  parentName,
+  isActive,
+  isVisitorMode,
+  visitorItems,
+  folderWindowDropTargetId,
+  ownerUid,
+}: ManagedWindowProps) {
+  const closeWindow = useWindowStore((state) => state.closeWindow);
+  const handleClose = useCallback(() => closeWindow(win.id), [closeWindow, win.id]);
+
+  return (
+    <Window
+      id={win.id}
+      title={win.title}
+      position={win.position}
+      size={win.size}
+      zIndex={win.zIndex}
+      minimized={win.minimized}
+      collapsed={win.collapsed}
+      isActive={isActive}
+      contentType={win.contentType}
+      contentId={win.contentId}
+      eosName={item ? slugify(item.name) : slugify(win.title)}
+      eosType={item?.type || win.contentType}
+      eosExtension={item ? getItemExtension(item) : undefined}
+      eosFolder={parentName ? slugify(parentName) : undefined}
+    >
+      {/* A crashing viewer (or a lazy chunk gone after a deploy) breaks only its own window. */}
+      <WindowErrorBoundary title={win.title} onClose={handleClose}>
+        <Suspense fallback={<WindowContentFallback />}>
+          <WindowContent
+            windowId={win.id}
+            contentType={win.contentType}
+            contentId={win.contentId}
+            launchFileId={win.launchFileId}
+            item={contentItem}
+            isVisitorMode={isVisitorMode}
+            visitorItems={visitorItems}
+            folderWindowDropTargetId={folderWindowDropTargetId}
+            ownerUid={ownerUid}
+          />
+        </Suspense>
+      </WindowErrorBoundary>
+    </Window>
+  );
+});
 
 function WindowContentFallback() {
   return (
@@ -154,10 +205,12 @@ function MissingContent({ message, dark = false }: { message: string; dark?: boo
  * Renders content inside a window based on its type
  * Uses real viewers for images and text, folder view for folders
  */
-function WindowContent({
+const WindowContent = memo(function WindowContent({
   windowId,
   contentType,
   contentId,
+  launchFileId,
+  item,
   isVisitorMode = false,
   visitorItems,
   folderWindowDropTargetId,
@@ -166,22 +219,14 @@ function WindowContent({
   windowId: string;
   contentType: string;
   contentId?: string;
+  launchFileId?: string;
+  /** The window's desktop item, looked up by WindowManager (re-renders when it changes). */
+  item?: DesktopItem;
   isVisitorMode?: boolean;
   visitorItems?: DesktopItem[];
   folderWindowDropTargetId?: string | null;
   ownerUid?: string;
 }) {
-  // Subscribe to the specific item by contentId so the component re-renders
-  // when the item data changes (e.g., after API fetch replaces cached items).
-  // Using getItem(fn ref) alone won't trigger re-renders on item changes.
-  const win = useWindowStore((state) => state.windows.find((w) => w.id === windowId));
-  
-  const item = useDesktopStore((state) =>
-    contentId && !isVisitorMode ? state.items.find((i) => i.id === contentId) : undefined
-  ) ?? (contentId && isVisitorMode && visitorItems
-    ? visitorItems.find((i) => i.id === contentId)
-    : undefined);
-
   switch (contentType) {
     case 'folder':
       return (
@@ -279,13 +324,14 @@ function WindowContent({
               marginTop: '12px',
             }}
           >
-            Version 0.1.0
+            Version {APP_VERSION}
           </p>
         </div>
       );
 
     case 'wallpaper':
-      return <WallpaperPicker />;
+      // Legacy saved windows: the wallpaper picker lives in Appearance now.
+      return <LegacyWallpaperWindow windowId={windowId} isVisitorMode={isVisitorMode} />;
 
     case 'welcome':
       return <WelcomeReadMe />;
@@ -363,7 +409,7 @@ function WindowContent({
 
     case 'app':
       if (!item?.appManifest?.appId) return <MissingContent message="App not found" dark />;
-      return <AppViewer appId={item.appManifest.appId} windowId={windowId} launchFileId={win?.launchFileId} isVisitor={isVisitorMode} />;
+      return <AppViewer appId={item.appManifest.appId} windowId={windowId} launchFileId={launchFileId} isVisitor={isVisitorMode} />;
 
     case 'app-preview':
       if (!contentId) return <MissingContent message="Preview not found" dark />;
@@ -372,4 +418,19 @@ function WindowContent({
     default:
       return null;
   }
+});
+
+/**
+ * A `wallpaper` window saved before the picker moved into the Appearance hub:
+ * the owner's is swapped for Appearance at its Wallpaper section.
+ */
+function LegacyWallpaperWindow({ windowId, isVisitorMode }: { windowId: string; isVisitorMode: boolean }) {
+  useEffect(() => {
+    if (isVisitorMode) return;
+    useWindowStore.getState().closeWindow(windowId);
+    openAppearance('desktop');
+  }, [windowId, isVisitorMode]);
+
+  if (isVisitorMode) return <MissingContent message="Wallpaper settings moved to Appearance." />;
+  return <WindowContentFallback />;
 }
