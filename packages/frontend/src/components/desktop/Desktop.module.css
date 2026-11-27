@@ -85,3 +85,24 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Desktop icon listbox: an overlay matching the desktop box so icon
+   coordinates are unchanged. Transparent to the pointer (icons opt back
+   in) so empty-area clicks still target the desktop itself. */
+.iconList {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Zero specificity so an icon's own `.dragging { pointer-events: none }`
+   still wins (drop-target hit tests look through the dragged icon). */
+:where(.iconList > *) {
+  pointer-events: auto;
+}
+
+/* Focus is shown by the selected icon (the active descendant), not by a
+   ring around the whole desktop. */
+.iconList:focus {
+  outline: none;
+}

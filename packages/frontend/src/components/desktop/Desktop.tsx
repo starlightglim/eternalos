@@ -2,7 +2,7 @@ import { openAppearance } from '../../utils/openAppearance';
 import { takePendingRice } from '../../estheme/pendingRice';
 import { ConkyLayer } from './ConkyLayer';
 import { useTiling } from '../../hooks/useTiling';
-import { useCallback, useRef, useState, useEffect, useMemo } from 'react';
+import { useCallback, useRef, useState, useEffect, useLayoutEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { WindowManager } from '../window';
 import { DesktopIcon, Trash } from '../icons';
@@ -21,6 +21,7 @@ import { useCSSPickerStore } from '../../stores/cssPickerStore';
 import { useDesktopSync } from '../../hooks/useDesktopSync';
 import { isApiConfigured, getWallpaperUrl } from '../../services/api';
 import { createStickerFromFile } from './stickerUpload';
+import { clientToDesktopPoint, clientToGridCell, countTrashed, activeDescendantId } from './desktopSurface';
 import { useEsthemePreviewStore } from '../../estheme/themePreviewStore';
 import { EsthemePreviewBanner } from '../appearance/EsthemePreviewBanner';
 import { getTextFileContentType, type DesktopItem, type WidgetType, type WidgetConfig } from '../../types';
@@ -53,6 +54,21 @@ export type WallpaperId = typeof WALLPAPER_OPTIONS[number]['id'];
 
 const GRID_CELL_SIZE = 80; // 80x80 pixel grid cells
 
+/**
+ * A callback whose identity never changes but always runs the latest
+ * `fn`. The memoized DesktopIcon compares props shallowly, so handlers
+ * that close over `items`/`selectedIds`/`draggingId` would otherwise
+ * re-render every icon on each change (and a custom comparator that
+ * ignored them left icons calling stale closures).
+ */
+function useStableCallback<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  const ref = useRef(fn);
+  useLayoutEffect(() => {
+    ref.current = fn;
+  });
+  return useCallback((...args: A) => ref.current(...args), []);
+}
+
 interface DesktopProps {
   isVisitorMode?: boolean;
 }
@@ -65,21 +81,23 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
   // Sync desktop state with Firestore (if Firebase is enabled)
   useDesktopSync();
 
-  const { openWindow, windows, focusWindow, loadWindowState } = useWindowStore();
-  const { profile } = useAuthStore();
-  const {
-    items,
-    selectedIds,
-    selectItem,
-    deselectAll,
-    moveItem,
-    moveToTrash,
-    getTrashCount,
-    uploadFile,
-    loading,
-    cleanUp,
-    selectAll,
-  } = useDesktopStore();
+  // Field-level selectors (no whole-store subscriptions): the desktop only
+  // re-renders for the state it draws. Store actions are stable references.
+  const openWindow = useWindowStore((s) => s.openWindow);
+  const windows = useWindowStore((s) => s.windows);
+  const focusWindow = useWindowStore((s) => s.focusWindow);
+  const loadWindowState = useWindowStore((s) => s.loadWindowState);
+  const profile = useAuthStore((s) => s.profile);
+  const items = useDesktopStore((s) => s.items);
+  const selectedIds = useDesktopStore((s) => s.selectedIds);
+  const selectItem = useDesktopStore((s) => s.selectItem);
+  const deselectAll = useDesktopStore((s) => s.deselectAll);
+  const moveItem = useDesktopStore((s) => s.moveItem);
+  const moveToTrash = useDesktopStore((s) => s.moveToTrash);
+  const uploadFile = useDesktopStore((s) => s.uploadFile);
+  const loading = useDesktopStore((s) => s.loading);
+  const cleanUp = useDesktopStore((s) => s.cleanUp);
+  const selectAll = useDesktopStore((s) => s.selectAll);
 
   // Get clipboard state to show cut items as faded
   const clipboard = useClipboardStore((state) => state.clipboard);
@@ -185,7 +203,7 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
   // Trash state
   const [trashSelected, setTrashSelected] = useState(false);
   const [isDropTarget, setIsDropTarget] = useState(false);
-  const trashedItemCount = getTrashCount();
+  const trashedItemCount = useMemo(() => countTrashed(items), [items]);
 
   // File drag-drop state
   const [isFileDragOver, setIsFileDragOver] = useState(false);
@@ -523,11 +541,17 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
     [deselectAll]
   );
 
+  // Desktop icon listbox (the icon layer in the JSX).
+  const iconListRef = useRef<HTMLDivElement>(null);
+
   // Icon selection
   const handleIconSelect = useCallback(
     (id: string, addToSelection: boolean) => {
       selectItem(id, addToSelection);
       setTrashSelected(false);
+      // Clicking an icon puts the keyboard on the desktop: icon pointerdown
+      // prevents native focus, which could otherwise stay inside a window.
+      iconListRef.current?.focus({ preventScroll: true });
     },
     [selectItem]
   );
@@ -1199,9 +1223,12 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
   }, []);
 
   // In visitor mode, disable drag and drop
-  const dragStartHandler = isVisitorMode ? undefined : handleDragStart;
-  const dragMoveHandler = isVisitorMode ? undefined : handleDragMove;
-  const dragEndHandler = isVisitorMode ? undefined : handleDragEnd;
+  const stableDragStart = useStableCallback(handleDragStart);
+  const stableDragMove = useStableCallback(handleDragMove);
+  const stableDragEnd = useStableCallback(handleDragEnd);
+  const dragStartHandler = isVisitorMode ? undefined : stableDragStart;
+  const dragMoveHandler = isVisitorMode ? undefined : stableDragMove;
+  const dragEndHandler = isVisitorMode ? undefined : stableDragEnd;
 
   // File drag-drop handlers (for uploading files from OS or URLs from browser)
   const handleFileDragOver = useCallback(
@@ -1418,8 +1445,29 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
     [isVisitorMode, selectedIds, selectItem]
   );
 
+  // Stable identities for the memoized icons (see useStableCallback).
+  const iconOpenHandler = useStableCallback(handleIconDoubleClick);
+  const iconContextMenuHandler = useStableCallback(handleIconContextMenu);
+  const iconListActiveId = activeDescendantId(selectedIds, rootItems);
+  // aria-activedescendant only speaks while the listbox has focus. Icon
+  // pointerdown prevents default (no native focus), and the desktop
+  // shortcuts are document-level, so move focus to the list whenever the
+  // selection changes while focus is on nothing in particular.
+  useEffect(() => {
+    if (selectedIds.size === 0) return;
+    const active = document.activeElement;
+    if (!active || active === document.body) {
+      iconListRef.current?.focus({ preventScroll: true });
+    }
+  }, [selectedIds]);
+
   // Build context menu items based on target
   const getContextMenuItems = useCallback((): ContextMenuItem[] => {
+    // Context-menu positions are viewport coords; items are placed relative
+    // to the desktop (which starts below the menu bar).
+    const menuPoint = contextMenu?.position ?? null;
+    const menuGridCell = () =>
+      clientToGridCell(menuPoint, desktopRef.current?.getBoundingClientRect(), GRID_CELL_SIZE);
     const { addItem, updateItem } = useDesktopStore.getState();
 
     if (contextMenu?.targetItem?.type === 'sticker') {
@@ -1575,10 +1623,7 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
           shortcut: '⌘U',
           action: () => {
             if (!isApiConfigured) return;
-            uploadPositionRef.current = {
-              x: Math.floor((contextMenu?.position.x || 100) / GRID_CELL_SIZE),
-              y: Math.floor((contextMenu?.position.y || 100) / GRID_CELL_SIZE),
-            };
+            uploadPositionRef.current = menuGridCell();
             uploadInputRef.current?.click();
           },
         },
@@ -1588,10 +1633,7 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
           label: 'New Folder',
           shortcut: '⇧⌘N',
           action: () => {
-            const position = {
-              x: Math.floor((contextMenu?.position.x || 100) / GRID_CELL_SIZE),
-              y: Math.floor((contextMenu?.position.y || 100) / GRID_CELL_SIZE),
-            };
+            const position = menuGridCell();
             const finalPos = findNearestAvailablePosition(position.x, position.y);
             const now = Date.now();
             addItem({
@@ -1610,10 +1652,7 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
           id: 'new-text',
           label: 'New Text File',
           action: () => {
-            const position = {
-              x: Math.floor((contextMenu?.position.x || 100) / GRID_CELL_SIZE),
-              y: Math.floor((contextMenu?.position.y || 100) / GRID_CELL_SIZE),
-            };
+            const position = menuGridCell();
             const finalPos = findNearestAvailablePosition(position.x, position.y);
             const now = Date.now();
             addItem({
@@ -1633,10 +1672,7 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
           id: 'new-link',
           label: 'New Link...',
           action: () => {
-            const position = {
-              x: Math.floor((contextMenu?.position.x || 100) / GRID_CELL_SIZE),
-              y: Math.floor((contextMenu?.position.y || 100) / GRID_CELL_SIZE),
-            };
+            const position = menuGridCell();
             setLinkDialogPosition(position);
             setShowLinkDialog(true);
           },
@@ -1645,10 +1681,7 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
           id: 'new-widget',
           label: 'New Widget...',
           action: () => {
-            const position = {
-              x: Math.floor((contextMenu?.position.x || 100) / GRID_CELL_SIZE),
-              y: Math.floor((contextMenu?.position.y || 100) / GRID_CELL_SIZE),
-            };
+            const position = menuGridCell();
             setWidgetPickerPosition(position);
             setShowWidgetPicker(true);
           },
@@ -1670,8 +1703,12 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
               const file = input.files?.[0];
               if (!file || !isApiConfigured) return;
               // Stickers are pixel-positioned, not grid-snapped.
-              const pixelX = contextMenu?.position.x || 100;
-              const pixelY = contextMenu?.position.y || 100;
+              // Desktop-relative: the sticker layer lives inside the
+              // desktop, which starts below the menu bar.
+              const { x: pixelX, y: pixelY } = clientToDesktopPoint(
+                menuPoint,
+                desktopRef.current?.getBoundingClientRect(),
+              );
               // The upload and the sticker apply both go through the
               // store's queued actions and roll themselves back with a
               // surfaced error on refusal (Upload Failed / Sync Failed) —
@@ -1775,24 +1812,39 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
         {/* Effects overlay (skin system) */}
         <EffectsOverlay />
 
-        {/* Desktop Icons */}
-      {rootItems.map((item) => (
-        <DesktopIcon
-          key={item.id}
-          item={item}
-          isSelected={selectedIds.has(item.id)}
-          gridCellSize={GRID_CELL_SIZE}
-          onSelect={handleIconSelect}
-          onDoubleClick={handleIconDoubleClick}
-          onContextMenu={(e) => handleIconContextMenu(item, e)}
-          onDragStart={dragStartHandler}
-          onDragMove={dragMoveHandler}
-          onDragEnd={dragEndHandler}
-          isDragging={draggingId === item.id}
-          isDropTarget={item.type === 'folder' && folderDropTargetId === item.id}
-          isCut={cutItemIds.has(item.id)}
-        />
-      ))}
+        {/* Desktop Icons: a listbox of options. The document-level desktop
+            shortcuts move the selection; aria-activedescendant tells
+            assistive tech which icon is current. The list is a
+            pointer-transparent overlay so empty-area clicks still reach
+            the desktop (marquee, context menu). */}
+        <div
+          ref={iconListRef}
+          className={styles.iconList}
+          role="listbox"
+          aria-label="Desktop"
+          aria-multiselectable="true"
+          aria-activedescendant={iconListActiveId}
+          tabIndex={0}
+        >
+          {rootItems.map((item) => (
+            <DesktopIcon
+              key={item.id}
+              item={item}
+              isSelected={selectedIds.has(item.id)}
+              gridCellSize={GRID_CELL_SIZE}
+              listboxOption
+              onSelect={handleIconSelect}
+              onDoubleClick={iconOpenHandler}
+              onContextMenu={iconContextMenuHandler}
+              onDragStart={dragStartHandler}
+              onDragMove={dragMoveHandler}
+              onDragEnd={dragEndHandler}
+              isDragging={draggingId === item.id}
+              isDropTarget={item.type === 'folder' && folderDropTargetId === item.id}
+              isCut={cutItemIds.has(item.id)}
+            />
+          ))}
+        </div>
 
       {/* Trash Icon - hidden in visitor mode */}
       {!isVisitorMode && (
@@ -1860,14 +1912,21 @@ export function Desktop({ isVisitorMode = false }: DesktopProps) {
             accept="image/*,video/*,audio/*,.pdf,.txt,.md"
             style={{ display: 'none' }}
             onChange={async (e) => {
-              const files = Array.from(e.target.files || []);
-              if (!files.length) return;
-              const basePos = uploadPositionRef.current || { x: 1, y: 1 };
-              for (let i = 0; i < files.length; i++) {
-                const pos = findNearestAvailablePosition(basePos.x + i, basePos.y);
-                await uploadFile(files[i], null, pos);
+              const input = e.currentTarget;
+              const files = Array.from(input.files || []);
+              try {
+                if (!files.length) return;
+                const basePos = uploadPositionRef.current ?? { x: 1, y: 1 };
+                for (let i = 0; i < files.length; i++) {
+                  const pos = findNearestAvailablePosition(basePos.x + i, basePos.y);
+                  await uploadFile(files[i], null, pos);
+                }
+              } finally {
+                // Always reset, even when an upload throws: otherwise picking
+                // the same file again fires no change event.
+                input.value = '';
+                uploadPositionRef.current = null;
               }
-              e.target.value = '';
             }}
           />
         )}
