@@ -33,6 +33,7 @@
 import type { Env } from '../index';
 import { checkRateLimit, type RateLimitConfig, type RateLimitResult } from '../middleware/rateLimit';
 import type { RouteContext } from './router';
+import { isAccountSoftDeleted } from './visit';
 
 export const GUESTBOOK_NAME_MAX = 50;
 export const GUESTBOOK_MESSAGE_MAX = 500;
@@ -111,6 +112,12 @@ function tooMany(error: string, result: RateLimitResult): Response {
 export async function handleGuestbookSign(c: RouteContext): Promise<Response> {
   const [ownerUid, itemId] = c.params;
   if (!ownerUid || !itemId || ownerUid.length > MAX_PARAM_LENGTH || itemId.length > MAX_PARAM_LENGTH) {
+    return Response.json({ error: 'Widget not found' }, { status: 404 });
+  }
+
+  // A soft-deleted desktop is gone for visitors (see handleVisit): its
+  // guestbook takes no entries, and no rate-limit slot is spent on it.
+  if (await isAccountSoftDeleted(c.env, ownerUid)) {
     return Response.json({ error: 'Widget not found' }, { status: 404 });
   }
 

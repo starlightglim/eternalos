@@ -3896,6 +3896,39 @@ describe('worker integration', () => {
     assert.equal(analytics.totalViews, 1);
   });
 
+  it('refuses guestbook posts to soft-deleted accounts without spending a slot', async () => {
+    const user = await signupUser();
+    const widget = await createDesktopItem(user.token, {
+      type: 'widget', widgetType: 'guestbook', name: 'Guestbook', parentId: null,
+      position: { x: 0, y: 0 }, isPublic: true, widgetConfig: { entries: [] },
+    });
+    const sign = () => fetchJson(`/api/guestbook/${user.user.uid}/${widget.id}`, {
+      method: 'POST',
+      headers: { ...JSON_HEADERS, 'CF-Connecting-IP': '10.5.0.1' },
+      body: JSON.stringify({ name: 'Ada', message: 'hi' }),
+    });
+
+    await expectOk('/api/auth/delete-account', {
+      method: 'POST',
+      headers: authHeaders(user.token, freshAuthIp('softdelete')),
+      body: JSON.stringify({ password: user.password }),
+    });
+    for (let i = 0; i < 2; i++) {
+      const refused = await sign();
+      assert.equal(refused.response.status, 404);
+      assert.equal(refused.body.error, 'Widget not found');
+    }
+
+    // After cancelling, the same IP can still sign: no cooldown slot was used.
+    await expectOk('/api/auth/cancel-deletion', {
+      method: 'POST',
+      headers: freshAuthIp('cancel'),
+      body: JSON.stringify({ email: user.email, password: user.password }),
+    });
+    const ok = await sign();
+    assert.equal(ok.response.status, 200, JSON.stringify(ok.body));
+  });
+
   it('validates guestbook entries and enforces the per-visitor and per-guestbook limits', async () => {
     const user = await signupUser();
     const widget = await createDesktopItem(user.token, {
