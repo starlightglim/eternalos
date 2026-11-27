@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /
+Disallow: /desktop
+Disallow: /login
+Disallow: /signup
+Disallow: /forgot-password
+Disallow: /reset-password
+Disallow: /verify-email
+Disallow: /auth/
+
+Sitemap: https://eternalos.me/sitemap.xml

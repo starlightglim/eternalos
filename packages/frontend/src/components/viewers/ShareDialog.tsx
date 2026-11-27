@@ -117,11 +117,12 @@ export function ShareDialog({ isOwner = true }: ShareDialogProps) {
     if (!ogImageUrl) return;
     try {
       const response = await fetch(ogImageUrl);
+      if (!response.ok) throw new Error(`Preview image request failed (${response.status})`);
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `${username}-desktop.svg`;
+      link.download = `${username}-desktop.${blob.type === 'image/svg+xml' ? 'svg' : 'png'}`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
