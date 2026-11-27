@@ -2,8 +2,8 @@
 //
 // Domain types shared with the worker live in @eternalos/contracts and are
 // re-exported here so existing `from '../types'` imports keep working.
-// Frontend-only types (window state, cartridges, menu bar, auth session
-// user) stay local.
+// Frontend-only types (window state, cartridge draft summaries, menu bar,
+// auth session user) stay local.
 
 export type {
   DesktopItemType,
@@ -27,30 +27,15 @@ export type {
   AppGrantedPermissions,
   AppGrantApproval,
   UserProfile,
+  SoundType,
+  SoundPack,
+  CursorState,
+  CustomCSSVersion,
+  CartridgeMeta,
+  Cartridge,
 } from '@eternalos/contracts';
+export { CARTRIDGE_LIMITS } from '@eternalos/contracts';
 
-/**
- * Cartridge format for the fantasy game console.
- * Mirrors packages/worker/src/utils/cartridge.ts.
- */
-export interface CartridgeMeta {
-  name: string;
-  description?: string;
-  author: string;
-  version: string;
-}
-
-export interface Cartridge {
-  formatVersion: 1;
-  meta: CartridgeMeta;
-  code: string;
-  /** 128 rows x 128 hex nibbles (one palette index per pixel), '\n'-joined */
-  spritesheet: string;
-  /** Optional 16-entry hex color palette override */
-  palette?: string[];
-  /** Optional 512 hex chars of per-sprite flags */
-  flags?: string;
-}
 
 export interface CartridgeDraftSummary {
   cartId: string;

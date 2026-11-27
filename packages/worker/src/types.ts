@@ -3,8 +3,7 @@
  *
  * Domain types shared with the frontend live in @eternalos/contracts and are
  * re-exported here so existing `from '../types'` imports keep working.
- * Worker-only types (auth records, bazaar, sound/cursor asset metadata,
- * OAuth) stay local.
+ * Worker-only types (auth records, bazaar, OAuth) stay local.
  */
 
 export type {
@@ -29,84 +28,14 @@ export type {
   AppGrantedPermissions,
   AppGrantApproval,
   UserProfile,
+  SoundType,
+  SoundPack,
+  SoundAssetMeta,
+  CursorState,
+  CursorAssetMeta,
+  CustomCSSVersion,
 } from '@eternalos/contracts';
 
-// ---------------------------------------------------------------------------
-// Sound & Cursor Skin System
-// ---------------------------------------------------------------------------
-
-/**
- * All sound types available in the OS.
- * Each can be mapped to a custom audio file via SoundPack.
- */
-export type SoundType =
-  | 'click'
-  | 'windowOpen'
-  | 'windowClose'
-  | 'folderOpen'
-  | 'drop'
-  | 'trash'
-  | 'emptyTrash'
-  | 'alert'
-  | 'error'
-  | 'startup'
-  | 'select';
-
-/**
- * A sound pack maps sound types to custom audio file URLs.
- * Sounds not in the map fall back to built-in synthesized sounds.
- */
-export interface SoundPack {
-  name: string; // e.g. "Custom", "Sci-Fi", "Retro"
-  sounds: Partial<Record<SoundType, string>>; // SoundType → URL path
-}
-
-/**
- * Metadata for an uploaded sound asset stored in R2.
- */
-export interface SoundAssetMeta {
-  soundId: string;
-  filename: string;
-  mimeType: string;
-  size: number;
-  uploadedAt: number;
-  soundType?: SoundType; // Which sound slot this is assigned to
-}
-
-/**
- * Cursor states that can be customized with images.
- */
-export type CursorState =
-  | 'default'
-  | 'pointer'
-  | 'grab'
-  | 'grabbing'
-  | 'text'
-  | 'wait'
-  | 'move'
-  | 'nwse-resize';
-
-/**
- * Metadata for an uploaded cursor asset stored in R2.
- */
-export interface CursorAssetMeta {
-  cursorId: string;
-  filename: string;
-  mimeType: string;
-  size: number;
-  uploadedAt: number;
-  cursorState?: CursorState; // Which cursor slot this is assigned to
-  hotspotX?: number; // Cursor hotspot X coordinate
-  hotspotY?: number; // Cursor hotspot Y coordinate
-}
-
-export interface CustomCSSVersion {
-  id: string;
-  css: string;
-  createdAt: number;
-  source: 'manual' | 'assistant' | 'revert';
-  summary?: string;
-}
 
 export interface OAuthProvider {
   provider: 'google';

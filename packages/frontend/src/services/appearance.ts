@@ -167,13 +167,9 @@ export async function updateProfile(updates: ProfileUpdateRequest): Promise<Prof
 
 // ============ CSS History API ============
 
-export interface CustomCSSVersion {
-  id: string;
-  css: string;
-  createdAt: number;
-  source: 'manual' | 'assistant' | 'revert';
-  summary?: string;
-}
+import type { CustomCSSVersion } from '@eternalos/contracts';
+
+export type { CustomCSSVersion };
 
 export async function listCSSVersions(): Promise<CustomCSSVersion[]> {
   const response = await apiRequest<{ versions: CustomCSSVersion[] }>('/api/css-history');

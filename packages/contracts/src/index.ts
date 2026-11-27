@@ -7,9 +7,9 @@
  * `src/types.ts` (plus `utils/jwt.ts` for `AppGrantedPermissions`), so
  * existing import sites keep working.
  *
- * Types only — no runtime code and no zod schemas (yet). Runtime validation
- * at network boundaries is planned follow-up work (design/RELEASE-READINESS.md,
- * "Structure" item 1).
+ * Types only (plus the frozen CARTRIDGE_LIMITS literal) — no logic and no zod
+ * schemas (yet). Runtime validation at network boundaries is planned
+ * follow-up work (design/RELEASE-READINESS.md, "Structure" item 1).
  *
  * Reconciliation of the previously independent frontend/worker declarations
  * (2026-11) — every difference is listed here, none was changed silently:
@@ -353,3 +353,125 @@ export interface UserProfile {
   // deliberately not constrained to a fixed enum here.
   soundPack?: { name: string; sounds: Partial<Record<string, string>> };
 }
+
+// ---------------------------------------------------------------------------
+// Sound & cursor skins
+// ---------------------------------------------------------------------------
+
+/**
+ * All sound slots available in the OS. Each can be mapped to a custom audio
+ * file via `SoundPack`; unmapped slots fall back to built-in synthesized
+ * sounds. (`UserProfile.soundPack` stays loosely keyed — see the header.)
+ */
+export type SoundType =
+  | 'click'
+  | 'windowOpen'
+  | 'windowClose'
+  | 'folderOpen'
+  | 'drop'
+  | 'trash'
+  | 'emptyTrash'
+  | 'alert'
+  | 'error'
+  | 'startup'
+  | 'select';
+
+/** Maps sound slots to custom audio file URLs. */
+export interface SoundPack {
+  name: string; // e.g. "Custom", "Sci-Fi", "Retro"
+  sounds: Partial<Record<SoundType, string>>; // SoundType → URL path
+}
+
+/** Metadata for an uploaded sound asset stored in R2. */
+export interface SoundAssetMeta {
+  soundId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  uploadedAt: number;
+  soundType?: SoundType; // Which sound slot this is assigned to
+}
+
+/** Cursor states that can be customized with images. */
+export type CursorState =
+  | 'default'
+  | 'pointer'
+  | 'grab'
+  | 'grabbing'
+  | 'text'
+  | 'wait'
+  | 'move'
+  | 'nwse-resize';
+
+/** Metadata for an uploaded cursor asset stored in R2. */
+export interface CursorAssetMeta {
+  cursorId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  uploadedAt: number;
+  cursorState?: CursorState; // Which cursor slot this is assigned to
+  hotspotX?: number; // Cursor hotspot X coordinate
+  hotspotY?: number; // Cursor hotspot Y coordinate
+}
+
+// ---------------------------------------------------------------------------
+// Custom CSS history
+// ---------------------------------------------------------------------------
+
+/** One saved revision of the user's custom CSS (`GET /api/css-history`). */
+export interface CustomCSSVersion {
+  id: string;
+  css: string;
+  createdAt: number;
+  source: 'manual' | 'assistant' | 'revert';
+  summary?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Fantasy console cartridges
+// ---------------------------------------------------------------------------
+
+/**
+ * Cartridge format for the EternalOS fantasy console. Validated by the
+ * worker (`utils/cartridge.ts`) on every write path.
+ *
+ *   - 128x128 screen, 16-color palette
+ *   - sprite sheet: 128 rows x 128 hex nibbles (one palette index per pixel),
+ *     rows joined by '\n' — 16x16 grid of 8x8 sprites, indices 0-255
+ *   - optional per-sprite flags: 256 hex bytes (512 chars) for fget/fset
+ */
+export interface CartridgeMeta {
+  name: string;
+  description?: string;
+  author: string;
+  version: string;
+}
+
+export interface Cartridge {
+  formatVersion: 1;
+  meta: CartridgeMeta;
+  code: string;
+  /** 128 rows x 128 hex nibbles (one palette index per pixel), '\n'-joined */
+  spritesheet: string;
+  /** Optional 16-entry hex color palette override */
+  palette?: string[];
+  /** Optional 512 hex chars of per-sprite flags */
+  flags?: string;
+}
+
+/**
+ * Limits the worker enforces on cartridges, exported so the editor can
+ * enforce the same limits before a save is rejected. This is the package's
+ * only runtime value: a frozen literal with no logic.
+ */
+export const CARTRIDGE_LIMITS = Object.freeze({
+  maxCodeBytes: 256 * 1024,
+  maxTotalBytes: 512 * 1024,
+  maxNameLength: 80,
+  maxDescriptionLength: 500,
+  maxVersionLength: 32,
+  screenSize: 128,
+  paletteSize: 16,
+  flagsHexLength: 512, // 256 sprites x 2 hex chars
+} as const);

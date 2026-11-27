@@ -5,7 +5,7 @@
  * Handles errors gracefully — failed loads are silently skipped (fall back to synthesized).
  */
 
-type SoundType = string;
+import type { SoundType } from '@eternalos/contracts';
 
 /** Map of preloaded audio elements keyed by sound type */
 export type PreloadedAudioMap = Map<SoundType, HTMLAudioElement>;
@@ -18,11 +18,13 @@ export type PreloadedAudioMap = Map<SoundType, HTMLAudioElement>;
  * @param apiBase - Base URL for resolving relative paths (e.g., 'https://api.eternalos.app')
  */
 export async function preloadSounds(
-  soundUrls: Record<string, string>,
+  soundUrls: Partial<Record<SoundType, string>>,
   apiBase?: string
 ): Promise<PreloadedAudioMap> {
   const audioMap: PreloadedAudioMap = new Map();
-  const entries = Object.entries(soundUrls);
+  const entries = (Object.entries(soundUrls) as [SoundType, string | undefined][]).filter(
+    (entry): entry is [SoundType, string] => typeof entry[1] === 'string' && entry[1].length > 0
+  );
 
   if (entries.length === 0) return audioMap;
 
