@@ -3838,6 +3838,112 @@ describe('worker integration', () => {
     assert.equal(analytics.dailyViews[0].count, 2);
   });
 
+  it('counts analytics across shards and returns 30 days in the existing format', async () => {
+    const user = await signupUser();
+    await patchProfile(user.token, { analyticsEnabled: true });
+
+    // Distinct IPs land in different shards (picked from the visitor hash).
+    const ips = Array.from({ length: 6 }, (_, i) => `10.9.0.${i + 1}`);
+    for (const ip of ips) {
+      await expectOk(`/api/visit/${user.user.username}`, { headers: { 'CF-Connecting-IP': ip } });
+    }
+
+    const analytics = await waitFor(async () => {
+      const result = await expectOk('/api/analytics', { headers: authHeaders(user.token) });
+      assert.equal(result.totalViews, ips.length);
+      return result;
+    }, { timeoutMs: 3000 });
+
+    assert.equal(analytics.dailyViews.length, 30);
+    assert.equal(analytics.dailyViews[0].date, new Date().toISOString().slice(0, 10));
+    assert.equal(analytics.dailyViews[0].count, ips.length);
+    for (const day of analytics.dailyViews) {
+      assert.match(day.date, /^\d{4}-\d{2}-\d{2}$/);
+      assert.equal(typeof day.count, 'number');
+    }
+  });
+
+  it('hides soft-deleted desktops from visitors and stops counting their views', async () => {
+    const user = await signupUser();
+    await patchProfile(user.token, { analyticsEnabled: true });
+    await expectOk(`/api/visit/${user.user.username}`);
+
+    await expectOk('/api/auth/delete-account', {
+      method: 'POST',
+      headers: authHeaders(user.token, freshAuthIp('softdelete')),
+      body: JSON.stringify({ password: user.password }),
+    });
+
+    const visit = await fetchJson(`/api/visit/${user.user.username}`, {
+      headers: { 'CF-Connecting-IP': '10.8.0.1' },
+    });
+    assert.equal(visit.response.status, 404);
+    assert.equal(visit.body.error, 'User not found');
+
+    // Cancelling the deletion brings the desktop back.
+    await expectOk('/api/auth/cancel-deletion', {
+      method: 'POST',
+      headers: freshAuthIp('cancel'),
+      body: JSON.stringify({ email: user.email, password: user.password }),
+    });
+    await expectOk(`/api/visit/${user.user.username}`);
+
+    // Only the pre-deletion visit counted (the post-cancel one is the same
+    // visitor, deduped); the 404'd visit from 10.8.0.1 was not tracked.
+    const relogin = await loginUser(user.email, user.password);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const analytics = await expectOk('/api/analytics', { headers: authHeaders(relogin.token) });
+    assert.equal(analytics.totalViews, 1);
+  });
+
+  it('validates guestbook entries and enforces the per-visitor and per-guestbook limits', async () => {
+    const user = await signupUser();
+    const widget = await createDesktopItem(user.token, {
+      type: 'widget', widgetType: 'guestbook', name: 'Guestbook', parentId: null,
+      position: { x: 0, y: 0 }, isPublic: true, widgetConfig: { entries: [] },
+    });
+    const url = `/api/guestbook/${user.user.uid}/${widget.id}`;
+    const sign = (ip, body) => fetchJson(url, {
+      method: 'POST',
+      headers: { ...JSON_HEADERS, 'CF-Connecting-IP': ip },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    });
+
+    // Malformed bodies are 400s, never 500s, and don't burn the cooldown.
+    for (const bad of [null, [], 42, { name: null, message: 'hi' }, { name: 'a', message: 7 },
+      { name: '   ', message: 'hi' }, { name: 'a'.repeat(51), message: 'hi' },
+      { name: 'a', message: 'b'.repeat(501) }]) {
+      const res = await sign('10.7.0.1', bad);
+      assert.equal(res.response.status, 400, `expected 400 for ${JSON.stringify(bad)}`);
+    }
+
+    // Valid entry (trimmed), then an immediate repeat from the same IP is 429.
+    const ok = await sign('10.7.0.1', { name: '  Ada  ', message: '  hello  ' });
+    assert.equal(ok.response.status, 200, JSON.stringify(ok.body));
+    assert.equal(ok.body.entries.at(-1).name, 'Ada');
+    assert.equal(ok.body.entries.at(-1).message, 'hello');
+
+    const repeat = await sign('10.7.0.1', { name: 'Ada', message: 'again' });
+    assert.equal(repeat.response.status, 429);
+    assert.ok(Number(repeat.response.headers.get('retry-after')) > 0);
+
+    // Concurrent repeats from one fresh IP: exactly one gets through.
+    const burst = await Promise.all(
+      Array.from({ length: 5 }, () => sign('10.7.0.2', { name: 'Bob', message: 'hi' }))
+    );
+    assert.equal(burst.filter((r) => r.response.status === 200).length, 1);
+    assert.equal(burst.filter((r) => r.response.status === 429).length, 4);
+
+    // Rotating IPs: the guestbook cap (10/hour) stops the flood.
+    const statuses = [];
+    for (let i = 0; i < 12; i++) {
+      statuses.push((await sign(`10.6.0.${i + 1}`, { name: `V${i}`, message: 'flood' })).response.status);
+    }
+    // Two entries already landed, so 8 more are admitted, then 429s.
+    assert.deepEqual(statuses.slice(0, 8), Array(8).fill(200));
+    assert.deepEqual(statuses.slice(8), Array(4).fill(429));
+  });
+
   it('returns an SVG og:image for public desktops', async () => {
     const user = await signupUser();
 

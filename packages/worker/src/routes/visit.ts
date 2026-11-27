@@ -8,7 +8,23 @@
  */
 
 import type { Env } from '../index';
-import type { DesktopItem, UserProfile, SoundPack } from '../types';
+import type { DesktopItem, UserProfile, SoundPack, UserRecord } from '../types';
+
+/**
+ * True when the account behind `uid` is soft-deleted (`deletedAt` set on its
+ * user record). A soft-deleted desktop must disappear from public view for
+ * the whole grace period, exactly as if it were already purged — the owner
+ * can't sign in, so they couldn't take anything down in the meantime.
+ *
+ * A missing uid index or user record is not treated as deleted here: the
+ * username index is the authority for existence, and a purge removes it.
+ */
+export async function isAccountSoftDeleted(env: Env, uid: string): Promise<boolean> {
+  const index = await env.AUTH_KV.get<{ email?: string }>(`uid:${uid}`, 'json');
+  if (!index?.email) return false;
+  const user = await env.AUTH_KV.get<Pick<UserRecord, 'deletedAt'>>(`user:${index.email}`, 'json');
+  return Boolean(user?.deletedAt);
+}
 
 interface SavedWindowState {
   id: string;
@@ -123,6 +139,15 @@ export async function handleVisit(
     }
 
     const { uid } = usernameData;
+
+    // Soft-deleted accounts are gone for visitors: same 404 as an unknown
+    // username, so the response doesn't reveal a pending deletion.
+    if (await isAccountSoftDeleted(env, uid)) {
+      return Response.json(
+        { error: 'User not found' },
+        { status: 404 }
+      );
+    }
 
     // Try KV cache first for fast visitor reads. The cache holds the raw
     // snapshot shape (written by UserDesktop.syncPublicSnapshot); flatten it the
