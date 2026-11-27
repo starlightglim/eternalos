@@ -6,13 +6,15 @@
  *
  * Storage:
  *   R2: bazaar/{packId}/{filename}  — asset files + preview image
- *   KV: bazaar:pack:{packId}        — pack metadata (JSON)
- *       bazaar:type:{type}          — array of packIds sorted by installs
- *       bazaar:author:{uid}         — array of packIds by author
+ *   KV: bazaar:pack:{packId}        — full pack record (JSON)
+ *   BazaarCoordinator ("catalog")   — summary rows, type/author listings,
+ *                                     per-user install counts, tombstones.
+ *       (The legacy KV `bazaar:type:*` / `bazaar:author:*` indexes are only
+ *       read once, to seed the catalogue.)
  *
  * Routes:
  *   POST   /api/bazaar/publish               — Publish a pack
- *   GET    /api/bazaar/browse?type=&q=        — Browse/search packs
+ *   GET    /api/bazaar/browse?type=&q=&page=&limit=&cursor= — Browse/search packs
  *   GET    /api/bazaar/pack/:packId           — Get pack details
  *   POST   /api/bazaar/install/:packId        — Install (increment counter + return config)
  *   DELETE /api/bazaar/pack/:packId           — Unpublish (author only)
@@ -28,6 +30,12 @@ import { validateCartridge } from '../utils/cartridge';
 import { setDraftPublishedPack } from './games';
 import { validateManifestAgainstFiles, validateManifest, formatValidationErrors } from '../utils/estheme';
 import type { EsthemeManifest } from '../utils/estheme';
+import {
+  BAZAAR_CATALOG_NAME,
+  BROWSE_DEFAULT_LIMIT,
+  BROWSE_MAX_LIMIT,
+  type BazaarPackSummary,
+} from '../durable-objects/BazaarCoordinator';
 
 // Path within the zip — forward slashes, no `..`, no leading slash. Mirrors
 // `bundlePathRegex` in utils/estheme so this file doesn't need a new export.
@@ -63,11 +71,55 @@ async function deleteR2Keys(env: Env, keys: string[]): Promise<void> {
   await Promise.allSettled(keys.map((key) => env.ETERNALOS_FILES.delete(key)));
 }
 
-async function removePackFromIndex(env: Env, key: string, packId: string): Promise<void> {
-  const indexStr = await env.DESKTOP_KV.get(key);
-  if (!indexStr) return;
-  const index = JSON.parse(indexStr) as string[];
-  await env.DESKTOP_KV.put(key, JSON.stringify(index.filter((id) => id !== packId)));
+// ---------------------------------------------------------------------------
+// Catalogue (BazaarCoordinator) access
+// ---------------------------------------------------------------------------
+
+interface CatalogResult<T> {
+  ok: boolean;
+  status: number;
+  data: T;
+}
+
+async function catalogCall<T>(
+  env: Env, path: string, body?: Record<string, unknown>,
+): Promise<CatalogResult<T>> {
+  const stub = env.BAZAAR_COORDINATOR.get(env.BAZAAR_COORDINATOR.idFromName(BAZAAR_CATALOG_NAME));
+  const response = await stub.fetch(`https://bazaar-catalog${path}`, body === undefined
+    ? { method: 'GET' }
+    : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let data: T;
+  try {
+    data = await response.json() as T;
+  } catch {
+    data = {} as T;
+  }
+  return { ok: response.ok, status: response.status, data };
+}
+
+async function catalogAuthorCount(env: Env, uid: string): Promise<number> {
+  const result = await catalogCall<{ count?: number }>(env, `/count?uid=${encodeURIComponent(uid)}`);
+  if (!result.ok) throw new Error(`Bazaar catalogue count failed (${result.status})`);
+  return result.data.count ?? 0;
+}
+
+/**
+ * Write the pack record and list it in the catalogue. The per-author limit is
+ * re-checked atomically by the catalogue; returns a 400 response (after
+ * undoing the KV write) when it's hit, or null on success.
+ */
+async function storeAndListPack(env: Env, pack: BazaarPack): Promise<Response | null> {
+  await env.DESKTOP_KV.put(`bazaar:pack:${pack.packId}`, JSON.stringify(pack));
+  const listed = await catalogCall<{ error?: string; code?: string }>(env, '/add', {
+    summary: pack,
+    maxPerAuthor: MAX_PACKS_PER_USER,
+  });
+  if (listed.ok) return null;
+  if (listed.data.code === 'pack_limit') {
+    await env.DESKTOP_KV.delete(`bazaar:pack:${pack.packId}`).catch(() => {});
+    return Response.json({ error: `Max ${MAX_PACKS_PER_USER} packs per user` }, { status: 400 });
+  }
+  throw new Error(`Bazaar catalogue add failed (${listed.status})`);
 }
 
 async function cleanupPublishedPack(
@@ -79,9 +131,37 @@ async function cleanupPublishedPack(
   await Promise.allSettled([
     env.DESKTOP_KV.delete(`bazaar:pack:${packId}`),
     type === 'game' ? env.DESKTOP_KV.delete(`game:${packId}`) : Promise.resolve(),
-    removePackFromIndex(env, `bazaar:type:${type}`, packId),
-    removePackFromIndex(env, `bazaar:author:${authorUid}`, packId),
+    catalogCall(env, '/remove', { packId, authorUid }),
   ]);
+}
+
+/**
+ * Account purge: unlist every pack the author has in the catalogue and return
+ * their ids (the caller deletes records and R2 assets).
+ */
+export async function removeAuthorFromBazaarCatalog(env: Env, uid: string): Promise<string[]> {
+  const result = await catalogCall<{ packIds?: string[] }>(env, '/remove-author', { uid });
+  if (!result.ok) throw new Error(`Bazaar catalogue purge failed (${result.status})`);
+  return result.data.packIds ?? [];
+}
+
+/**
+ * Pick an R2 filename within a pack that no other file in this publish uses,
+ * so two assets that sanitize to the same name (or to the preview's name)
+ * can't overwrite each other. Adds "-2", "-3", ... before the extension.
+ */
+function uniqueFilename(name: string, used: Set<string>): string {
+  const dot = name.lastIndexOf('.');
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  let candidate = name;
+  for (let n = 2; used.has(candidate); n++) candidate = `${base}-${n}${ext}`;
+  used.add(candidate);
+  return candidate;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -106,29 +186,45 @@ export async function handleBazaarPublish(
       return Response.json({ error: 'Missing preview image' }, { status: 400 });
     }
 
-    let manifest: {
-      type: PackType; name: string; description: string;
-      tags: string[]; config: Record<string, string | number | boolean>;
-    };
+    let parsedManifest: unknown;
     try {
-      manifest = JSON.parse(manifestStr);
+      parsedManifest = JSON.parse(manifestStr);
     } catch {
       return Response.json({ error: 'Invalid manifest JSON' }, { status: 400 });
     }
+    if (!isPlainObject(parsedManifest)) {
+      return Response.json({ error: 'Manifest must be a JSON object' }, { status: 400 });
+    }
+    const manifest = parsedManifest as {
+      type: PackType; name: unknown; description?: unknown;
+      tags?: unknown; config?: unknown;
+    };
 
-    // Validate manifest
+    // Validate manifest. Every field is client-supplied JSON, so check types
+    // before calling string/array methods (a non-string name used to 500).
     if (!VALID_PACK_TYPES.includes(manifest.type)) {
       return Response.json({ error: `Invalid type. Must be: ${VALID_PACK_TYPES.join(', ')}` }, { status: 400 });
     }
     publishedType = manifest.type;
-    if (!manifest.name || manifest.name.length > MAX_NAME_LENGTH) {
+    if (typeof manifest.name !== 'string' || !manifest.name.trim() || manifest.name.length > MAX_NAME_LENGTH) {
       return Response.json({ error: `Name required, max ${MAX_NAME_LENGTH} chars` }, { status: 400 });
     }
-    if (manifest.description && manifest.description.length > MAX_DESCRIPTION_LENGTH) {
+    const name = manifest.name.trim();
+    if (manifest.description !== undefined && manifest.description !== null && typeof manifest.description !== 'string') {
+      return Response.json({ error: 'Description must be a string' }, { status: 400 });
+    }
+    const description = typeof manifest.description === 'string' ? manifest.description : '';
+    if (description.length > MAX_DESCRIPTION_LENGTH) {
       return Response.json({ error: `Description max ${MAX_DESCRIPTION_LENGTH} chars` }, { status: 400 });
     }
+    if (manifest.tags !== undefined && manifest.tags !== null && !Array.isArray(manifest.tags)) {
+      return Response.json({ error: 'Tags must be an array' }, { status: 400 });
+    }
+    if (manifest.config !== undefined && manifest.config !== null && !isPlainObject(manifest.config)) {
+      return Response.json({ error: 'Config must be an object' }, { status: 400 });
+    }
 
-    const tags = (manifest.tags || []).slice(0, MAX_TAGS).map(t =>
+    const tags = ((manifest.tags as unknown[] | null | undefined) || []).slice(0, MAX_TAGS).map(t =>
       String(t).trim().toLowerCase().slice(0, 32)
     ).filter(Boolean);
 
@@ -138,10 +234,8 @@ export async function handleBazaarPublish(
       return Response.json({ error: 'Preview too large (max 1MB)' }, { status: 400 });
     }
 
-    // Check user's pack count
-    const authorPacksStr = await env.DESKTOP_KV.get(`bazaar:author:${auth.uid}`);
-    const authorPacks: string[] = authorPacksStr ? JSON.parse(authorPacksStr) : [];
-    if (authorPacks.length >= MAX_PACKS_PER_USER) {
+    // Check user's pack count (fail fast; the catalogue re-checks atomically)
+    if (await catalogAuthorCount(env, auth.uid) >= MAX_PACKS_PER_USER) {
       return Response.json({ error: `Max ${MAX_PACKS_PER_USER} packs per user` }, { status: 400 });
     }
 
@@ -168,8 +262,10 @@ export async function handleBazaarPublish(
     const packId = crypto.randomUUID();
     publishedPackId = packId;
 
-    // Upload preview to R2
-    const previewName = sanitizeFilename(previewBlob.name || 'preview.png');
+    // Upload preview to R2. Every file in the pack gets a distinct name so
+    // colliding sanitized names can't overwrite each other.
+    const usedNames = new Set<string>();
+    const previewName = uniqueFilename(sanitizeFilename(previewBlob.name || 'preview.png'), usedNames);
     const previewR2Key = `bazaar/${packId}/${previewName}`;
     await env.ETERNALOS_FILES.put(previewR2Key, await previewBlob.arrayBuffer(), {
       httpMetadata: { contentType: previewBlob.type },
@@ -181,7 +277,7 @@ export async function handleBazaarPublish(
     // Upload assets to R2
     const assets: Record<string, string> = {};
     for (const entry of assetEntries) {
-      const filename = sanitizeFilename(entry.file.name || `${entry.key}.png`);
+      const filename = uniqueFilename(sanitizeFilename(entry.file.name || `${entry.key}.png`), usedNames);
       const r2Key = `bazaar/${packId}/${filename}`;
       await env.ETERNALOS_FILES.put(r2Key, await entry.file.arrayBuffer(), {
         httpMetadata: { contentType: entry.file.type },
@@ -192,7 +288,7 @@ export async function handleBazaarPublish(
     }
 
     // Rewrite config URLs — replace placeholder asset keys with real URLs
-    const config = { ...manifest.config };
+    const config = { ...(manifest.config as Record<string, string | number | boolean> | null | undefined) };
     for (const [configKey, configVal] of Object.entries(config)) {
       if (typeof configVal === 'string') {
         // Replace {asset:KEY} placeholders with actual URLs
@@ -242,8 +338,8 @@ export async function handleBazaarPublish(
     const pack: BazaarPack = {
       packId,
       type: manifest.type,
-      name: manifest.name.trim().slice(0, MAX_NAME_LENGTH),
-      description: (manifest.description || '').trim().slice(0, MAX_DESCRIPTION_LENGTH),
+      name: name.slice(0, MAX_NAME_LENGTH),
+      description: description.trim().slice(0, MAX_DESCRIPTION_LENGTH),
       authorUid: auth.uid,
       authorUsername,
       version: '1.0.0',
@@ -256,18 +352,12 @@ export async function handleBazaarPublish(
       config,
     };
 
-    // Store in KV
-    await env.DESKTOP_KV.put(`bazaar:pack:${packId}`, JSON.stringify(pack));
-
-    // Update type index
-    const typeIndexStr = await env.DESKTOP_KV.get(`bazaar:type:${manifest.type}`);
-    const typeIndex: string[] = typeIndexStr ? JSON.parse(typeIndexStr) : [];
-    typeIndex.unshift(packId);
-    await env.DESKTOP_KV.put(`bazaar:type:${manifest.type}`, JSON.stringify(typeIndex));
-
-    // Update author index
-    authorPacks.unshift(packId);
-    await env.DESKTOP_KV.put(`bazaar:author:${auth.uid}`, JSON.stringify(authorPacks));
+    // Store in KV + list in the catalogue (serialized type/author indexes)
+    const limitError = await storeAndListPack(env, pack);
+    if (limitError) {
+      await deleteR2Keys(env, uploadedR2Keys);
+      return limitError;
+    }
 
     return Response.json({ success: true, pack });
   } catch (error) {
@@ -379,6 +469,17 @@ export async function handleBazaarPublishGame(
       pack.version = cartridge.meta.version;
       pack.updatedAt = Date.now();
 
+      // Refresh the catalogue row first: if the pack was deleted meanwhile,
+      // its tombstone stops us from writing the KV record back.
+      const updated = await catalogCall<{ deleted?: boolean; installs?: number }>(env, '/update', { summary: pack });
+      if (updated.ok && typeof updated.data.installs === 'number') pack.installs = updated.data.installs;
+      if (!updated.ok && (updated.status !== 404 || updated.data.deleted)) {
+        await deleteR2Keys(env, uploadedR2Keys);
+        return updated.status === 404 || updated.status === 403
+          ? Response.json({ error: updated.status === 404 ? 'Pack not found' : 'Not authorized' }, { status: updated.status })
+          : Response.json({ error: 'Failed to publish game' }, { status: 500 });
+      }
+
       await env.DESKTOP_KV.put(`bazaar:pack:${existingPackId}`, JSON.stringify(pack));
       await env.DESKTOP_KV.put(`game:${existingPackId}`, JSON.stringify({
         uid: auth.uid, version: nextVersion, r2Key,
@@ -400,9 +501,7 @@ export async function handleBazaarPublishGame(
       return Response.json({ error: 'Preview too large (max 1MB)' }, { status: 400 });
     }
 
-    const authorPacksStr = await env.DESKTOP_KV.get(`bazaar:author:${auth.uid}`);
-    const authorPacks: string[] = authorPacksStr ? JSON.parse(authorPacksStr) : [];
-    if (authorPacks.length >= MAX_PACKS_PER_USER) {
+    if (await catalogAuthorCount(env, auth.uid) >= MAX_PACKS_PER_USER) {
       return Response.json({ error: `Max ${MAX_PACKS_PER_USER} packs per user` }, { status: 400 });
     }
 
@@ -416,7 +515,10 @@ export async function handleBazaarPublishGame(
     });
     uploadedR2Keys.push(r2Key);
 
-    const previewName = sanitizeFilename(previewBlob.name || 'cover.png');
+    // A cover named like a cartridge file (cartridge.json, cartridge.v2.json)
+    // would overwrite — or later be overwritten by — the cartridge itself.
+    const coverName = sanitizeFilename(previewBlob.name || 'cover.png');
+    const previewName = /^cartridge/i.test(coverName) ? `cover-${coverName}` : coverName;
     await env.ETERNALOS_FILES.put(`bazaar/${packId}/${previewName}`, await previewBlob.arrayBuffer(), {
       httpMetadata: { contentType: previewBlob.type },
       customMetadata: { type: 'bazaar-preview', packId },
@@ -440,16 +542,13 @@ export async function handleBazaarPublishGame(
       config: {},
     };
 
-    await env.DESKTOP_KV.put(`bazaar:pack:${packId}`, JSON.stringify(pack));
     await env.DESKTOP_KV.put(`game:${packId}`, JSON.stringify({ uid: auth.uid, version: 1, r2Key }));
-
-    const typeIndexStr = await env.DESKTOP_KV.get('bazaar:type:game');
-    const typeIndex: string[] = typeIndexStr ? JSON.parse(typeIndexStr) : [];
-    typeIndex.unshift(packId);
-    await env.DESKTOP_KV.put('bazaar:type:game', JSON.stringify(typeIndex));
-
-    authorPacks.unshift(packId);
-    await env.DESKTOP_KV.put(`bazaar:author:${auth.uid}`, JSON.stringify(authorPacks));
+    const limitError = await storeAndListPack(env, pack);
+    if (limitError) {
+      await env.DESKTOP_KV.delete(`game:${packId}`).catch(() => {});
+      await deleteR2Keys(env, uploadedR2Keys);
+      return limitError;
+    }
 
     if (draftId && typeof draftId === 'string') {
       await setDraftPublishedPack(env, auth.uid, draftId, packId);
@@ -483,50 +582,36 @@ export async function handleBazaarBrowse(
   try {
     const url = new URL(request.url);
     const type = url.searchParams.get('type') as PackType | null;
-    const query = url.searchParams.get('q')?.toLowerCase();
-    const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
-    const pageSize = 20;
+    const query = url.searchParams.get('q')?.trim().slice(0, 100);
+    const parsedPage = parseInt(url.searchParams.get('page') || '1', 10);
+    const page = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+    const parsedLimit = parseInt(url.searchParams.get('limit') || '', 10);
+    const pageSize = Number.isFinite(parsedLimit) && parsedLimit > 0
+      ? Math.min(parsedLimit, BROWSE_MAX_LIMIT)
+      : BROWSE_DEFAULT_LIMIT;
+    const cursor = url.searchParams.get('cursor');
 
-    let packIds: string[] = [];
+    // One catalogue call: the summary rows are paged/filtered in SQLite, so
+    // no per-pack KV reads (an unknown type still means "all types").
+    const params = new URLSearchParams({ limit: String(pageSize) });
+    if (type && BROWSE_PACK_TYPES.includes(type)) params.set('type', type);
+    if (query) params.set('q', query);
+    if (cursor) params.set('cursor', cursor.slice(0, 512));
+    else params.set('offset', String((page - 1) * pageSize));
 
-    if (type && BROWSE_PACK_TYPES.includes(type)) {
-      const indexStr = await env.DESKTOP_KV.get(`bazaar:type:${type}`);
-      packIds = indexStr ? JSON.parse(indexStr) : [];
-    } else {
-      // All types — merge all type indexes
-      for (const t of BROWSE_PACK_TYPES) {
-        const indexStr = await env.DESKTOP_KV.get(`bazaar:type:${t}`);
-        if (indexStr) packIds.push(...JSON.parse(indexStr));
-      }
-    }
+    const result = await catalogCall<{ packs: BazaarPackSummary[]; total: number; nextCursor?: string }>(
+      env, `/browse?${params}`,
+    );
+    if (!result.ok) throw new Error(`Bazaar catalogue browse failed (${result.status})`);
 
-    // Fetch pack details
-    const packs: BazaarPack[] = [];
-    for (const id of packIds) {
-      const packStr = await env.DESKTOP_KV.get(`bazaar:pack:${id}`);
-      if (packStr) packs.push(JSON.parse(packStr));
-    }
-
-    // Sort by installs descending
-    packs.sort((a, b) => b.installs - a.installs);
-
-    // Search filter
-    let filtered = packs;
-    if (query) {
-      filtered = packs.filter(p =>
-        p.name.toLowerCase().includes(query) ||
-        p.description.toLowerCase().includes(query) ||
-        p.tags.some(t => t.includes(query)) ||
-        p.authorUsername.toLowerCase().includes(query)
-      );
-    }
-
-    // Paginate
-    const total = filtered.length;
-    const start = (page - 1) * pageSize;
-    const results = filtered.slice(start, start + pageSize);
-
-    return Response.json({ packs: results, total, page, pageSize });
+    const body: Record<string, unknown> = {
+      packs: result.data.packs,
+      total: result.data.total,
+      page,
+      pageSize,
+    };
+    if (result.data.nextCursor) body.nextCursor = result.data.nextCursor;
+    return Response.json(body);
   } catch (error) {
     console.error('Bazaar browse error:', error);
     return Response.json({ error: 'Failed to browse' }, { status: 500 });
@@ -540,9 +625,19 @@ export async function handleBazaarBrowse(
 export async function handleBazaarGetPack(
   request: Request, env: Env, packId: string
 ): Promise<Response> {
-  const packStr = await env.DESKTOP_KV.get(`bazaar:pack:${packId}`);
-  if (!packStr) return Response.json({ error: 'Pack not found' }, { status: 404 });
+  const [packStr, state] = await Promise.all([
+    env.DESKTOP_KV.get(`bazaar:pack:${packId}`),
+    catalogCall<{ listed?: boolean; deleted?: boolean; installs?: number }>(
+      env, `/state?packId=${encodeURIComponent(packId)}`,
+    ),
+  ]);
+  // A tombstoned pack stays gone even if a racing write left its KV record.
+  if (!packStr || (state.ok && state.data.deleted)) {
+    return Response.json({ error: 'Pack not found' }, { status: 404 });
+  }
   const pack = JSON.parse(packStr) as BazaarPack & { manifestVersion?: number };
+  // The catalogue owns install counts; the KV copy is no longer updated.
+  if (state.ok && typeof state.data.installs === 'number') pack.installs = state.data.installs;
 
   // If this is a .estheme pack (manifestVersion set at publish), also return
   // the manifest so the client can apply it without a second round trip.
@@ -575,18 +670,24 @@ export async function handleBazaarGetPack(
 export async function handleBazaarInstall(
   request: Request, env: Env, auth: AuthContext, packId: string
 ): Promise<Response> {
-  const coordinatorId = env.BAZAAR_COORDINATOR.idFromName(`pack:${packId}`);
-  const coordinator = env.BAZAAR_COORDINATOR.get(coordinatorId);
-  const response = await coordinator.fetch('https://bazaar-coordinator/increment-install', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ packId }),
+  // Counted once per user; deleted or unlisted packs are a 404. The catalogue
+  // never writes the KV pack record, so it can't clobber an author update or
+  // resurrect a deleted pack.
+  const counted = await catalogCall<{ installs?: number; error?: string }>(env, '/install', {
+    packId, uid: auth.uid,
   });
+  if (!counted.ok) {
+    return Response.json(
+      { error: counted.data.error || 'Install failed' },
+      { status: counted.status === 404 ? 404 : counted.status === 400 ? 400 : 500 },
+    );
+  }
 
-  if (!response.ok) return response;
-
-  const result = await response.json() as { pack: BazaarPack };
-  return Response.json({ success: true, config: result.pack.config, pack: result.pack });
+  const packStr = await env.DESKTOP_KV.get(`bazaar:pack:${packId}`);
+  if (!packStr) return Response.json({ error: 'Pack not found' }, { status: 404 });
+  const pack = JSON.parse(packStr) as BazaarPack;
+  if (typeof counted.data.installs === 'number') pack.installs = counted.data.installs;
+  return Response.json({ success: true, config: pack.config, pack });
 }
 
 // ---------------------------------------------------------------------------
@@ -597,37 +698,40 @@ export async function handleBazaarDelete(
   request: Request, env: Env, auth: AuthContext, packId: string
 ): Promise<Response> {
   const packStr = await env.DESKTOP_KV.get(`bazaar:pack:${packId}`);
-  if (!packStr) return Response.json({ error: 'Pack not found' }, { status: 404 });
+  if (!packStr) {
+    // No record, but a stale catalogue row may remain (e.g. an interrupted
+    // delete): let the author clear it.
+    const removed = await catalogCall<{ removed?: boolean }>(env, '/remove', { packId, authorUid: auth.uid });
+    if (removed.ok && removed.data.removed) return Response.json({ success: true });
+    if (removed.status === 403) return Response.json({ error: 'Not authorized' }, { status: 403 });
+    return Response.json({ error: 'Pack not found' }, { status: 404 });
+  }
 
   const pack: BazaarPack = JSON.parse(packStr);
   if (pack.authorUid !== auth.uid) {
     return Response.json({ error: 'Not authorized' }, { status: 403 });
   }
 
-  // Delete assets from R2
-  const r2List = await env.ETERNALOS_FILES.list({ prefix: `bazaar/${packId}/` });
-  for (const obj of r2List.objects) {
-    await env.ETERNALOS_FILES.delete(obj.key);
+  // Unlist + tombstone first, so no install or republish can bring it back
+  // while the record and assets are being deleted.
+  const removed = await catalogCall(env, '/remove', { packId, authorUid: auth.uid });
+  if (!removed.ok) {
+    return removed.status === 403
+      ? Response.json({ error: 'Not authorized' }, { status: 403 })
+      : Response.json({ error: 'Failed to delete pack' }, { status: 500 });
   }
+
+  // Delete assets from R2
+  let listCursor: string | undefined;
+  do {
+    const r2List = await env.ETERNALOS_FILES.list({ prefix: `bazaar/${packId}/`, cursor: listCursor });
+    const keys = r2List.objects.map((obj) => obj.key);
+    if (keys.length > 0) await env.ETERNALOS_FILES.delete(keys);
+    listCursor = r2List.truncated ? r2List.cursor : undefined;
+  } while (listCursor);
 
   // Remove from KV
   await env.DESKTOP_KV.delete(`bazaar:pack:${packId}`);
-
-  // Remove from type index
-  const typeIndexStr = await env.DESKTOP_KV.get(`bazaar:type:${pack.type}`);
-  if (typeIndexStr) {
-    const typeIndex: string[] = JSON.parse(typeIndexStr);
-    const updated = typeIndex.filter(id => id !== packId);
-    await env.DESKTOP_KV.put(`bazaar:type:${pack.type}`, JSON.stringify(updated));
-  }
-
-  // Remove from author index
-  const authorIndexStr = await env.DESKTOP_KV.get(`bazaar:author:${auth.uid}`);
-  if (authorIndexStr) {
-    const authorIndex: string[] = JSON.parse(authorIndexStr);
-    const updated = authorIndex.filter(id => id !== packId);
-    await env.DESKTOP_KV.put(`bazaar:author:${auth.uid}`, JSON.stringify(updated));
-  }
 
   // Game packs also have a play-route pointer
   if (pack.type === 'game') {
@@ -686,14 +790,12 @@ export async function handleBazaarServeAsset(
 export async function handleBazaarMyPacks(
   request: Request, env: Env, auth: AuthContext
 ): Promise<Response> {
-  const authorIndexStr = await env.DESKTOP_KV.get(`bazaar:author:${auth.uid}`);
-  const packIds: string[] = authorIndexStr ? JSON.parse(authorIndexStr) : [];
-
-  const packs: BazaarPack[] = [];
-  for (const id of packIds) {
-    const packStr = await env.DESKTOP_KV.get(`bazaar:pack:${id}`);
-    if (packStr) packs.push(JSON.parse(packStr));
-  }
+  // Summary rows from the catalogue (newest first) — one call, no per-pack reads.
+  const result = await catalogCall<{ packs?: BazaarPackSummary[] }>(
+    env, `/author?uid=${encodeURIComponent(auth.uid)}`,
+  );
+  if (!result.ok) return Response.json({ error: 'Failed to list packs' }, { status: 500 });
+  const packs = result.data.packs ?? [];
 
   return Response.json({ packs });
 }
@@ -782,6 +884,9 @@ export async function handleBazaarPublishEstheme(
           { status: 400 }
         );
       }
+      if (assetFields.some((a) => a.path === path)) {
+        return Response.json({ error: `Duplicate asset path: ${path}` }, { status: 400 });
+      }
       assetFields.push({ path, file });
     }
     if (assetFields.length > MAX_PACK_ASSETS) {
@@ -828,10 +933,8 @@ export async function handleBazaarPublishEstheme(
       );
     }
 
-    // 6. Pack count limit per author
-    const authorPacksStr = await env.DESKTOP_KV.get(`bazaar:author:${auth.uid}`);
-    const authorPacks: string[] = authorPacksStr ? JSON.parse(authorPacksStr) : [];
-    if (authorPacks.length >= MAX_PACKS_PER_USER) {
+    // 6. Pack count limit per author (fail fast; re-checked atomically on list)
+    if (await catalogAuthorCount(env, auth.uid) >= MAX_PACKS_PER_USER) {
       return Response.json(
         { error: `Max ${MAX_PACKS_PER_USER} packs per user` },
         { status: 400 }
@@ -843,7 +946,10 @@ export async function handleBazaarPublishEstheme(
     publishedPackId = packId;
     const r2Prefix = `bazaar/${packId}`;
 
-    const previewFilename = sanitizeFilename(preview.name || 'preview.png');
+    // The preview must not share a key with an asset or the manifest, or one
+    // upload would overwrite the other.
+    const usedPaths = new Set<string>([...RESERVED_ESTHEME_PATHS, ...assetFields.map((a) => a.path)]);
+    const previewFilename = uniqueFilename(sanitizeFilename(preview.name || 'preview.png'), usedPaths);
     const previewR2Key = `${r2Prefix}/${previewFilename}`;
     await env.ETERNALOS_FILES.put(previewR2Key, await preview.arrayBuffer(), {
       httpMetadata: { contentType: preview.type },
@@ -896,16 +1002,12 @@ export async function handleBazaarPublishEstheme(
       parentPackId: manifest.extends,
     };
 
-    // 9. Persist indexes
-    await env.DESKTOP_KV.put(`bazaar:pack:${packId}`, JSON.stringify(pack));
-
-    const typeIndexStr = await env.DESKTOP_KV.get(`bazaar:type:skin`);
-    const typeIndex: string[] = typeIndexStr ? JSON.parse(typeIndexStr) : [];
-    typeIndex.unshift(packId);
-    await env.DESKTOP_KV.put(`bazaar:type:skin`, JSON.stringify(typeIndex));
-
-    authorPacks.unshift(packId);
-    await env.DESKTOP_KV.put(`bazaar:author:${auth.uid}`, JSON.stringify(authorPacks));
+    // 9. Persist record + catalogue listing
+    const limitError = await storeAndListPack(env, pack);
+    if (limitError) {
+      await deleteR2Keys(env, uploadedR2Keys);
+      return limitError;
+    }
 
     return Response.json({ success: true, pack, manifest });
   } catch (error) {
