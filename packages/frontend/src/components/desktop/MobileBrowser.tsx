@@ -14,7 +14,8 @@ import { WindowManager } from '../window';
 import { FolderIcon, TextFileIcon, ImageFileIcon, LinkIcon, AudioFileIcon, VideoFileIcon, PDFFileIcon, WidgetIcon } from '../icons/PixelIcons';
 import { renderCustomIcon, CUSTOM_ICON_LIBRARY, type CustomIconId } from '../icons/customIconUtils';
 import { getCustomIconUrl } from '../../services/api';
-import { getTextFileContentType, type DesktopItem } from '../../types';
+import type { DesktopItem } from '../../types';
+import { mobileTapAction, visibleMobileItems } from './mobileItems';
 import styles from './MobileBrowser.module.css';
 
 interface MobileBrowserProps {
@@ -22,33 +23,33 @@ interface MobileBrowserProps {
   visitorItems?: DesktopItem[];
   username?: string;
   ownerUid?: string;
+  /** Overrides the desktop store's loading flag (e.g. a page that fetches its own items). */
+  loading?: boolean;
+  /** Message shown instead of the list when the items couldn't be loaded. */
+  error?: string | null;
+  onRetry?: () => void;
 }
 
-export function MobileBrowser({ isVisitorMode = false, visitorItems, username, ownerUid }: MobileBrowserProps) {
-  const { items: storeItems, getItemsByParent } = useDesktopStore();
-  const { openWindow } = useWindowStore();
-  const { profile, logout } = useAuthStore();
+export function MobileBrowser({ isVisitorMode = false, visitorItems, username, ownerUid, loading: loadingProp, error, onRetry }: MobileBrowserProps) {
+  const storeItems = useDesktopStore((s) => s.items);
+  const storeLoading = useDesktopStore((s) => s.loading);
+  const openWindow = useWindowStore((s) => s.openWindow);
+  const profile = useAuthStore((s) => s.profile);
+  const logout = useAuthStore((s) => s.logout);
 
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [breadcrumbs, setBreadcrumbs] = useState<{ id: string | null; name: string }[]>([
     { id: null, name: 'Desktop' },
   ]);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Use visitor items if in visitor mode, otherwise store items
   const items = isVisitorMode && visitorItems ? visitorItems : storeItems;
+  const loading = loadingProp ?? (!isVisitorMode && storeLoading);
 
-  // Get items in current folder
-  const currentItems = isVisitorMode
-    ? items.filter((item) => item.parentId === currentFolderId)
-    : getItemsByParent(currentFolderId);
+  // Items in the current folder (no trash, no stickers), folders first
+  const sortedItems = visibleMobileItems(items, currentFolderId);
   const currentFolderName = breadcrumbs[breadcrumbs.length - 1]?.name || 'this folder';
-
-  // Sort: folders first, then by name
-  const sortedItems = [...currentItems].sort((a, b) => {
-    if (a.type === 'folder' && b.type !== 'folder') return -1;
-    if (a.type !== 'folder' && b.type === 'folder') return 1;
-    return a.name.localeCompare(b.name);
-  });
 
   // Navigate into a folder
   const navigateToFolder = useCallback((folder: DesktopItem) => {
@@ -66,91 +67,21 @@ export function MobileBrowser({ isVisitorMode = false, visitorItems, username, o
   // Handle item tap
   const handleItemTap = useCallback(
     (item: DesktopItem) => {
-      // Calculate full-screen size for mobile viewers
-      const fullWidth = window.innerWidth;
-      const fullHeight = window.innerHeight - 100; // Leave room for chrome
-
-      if (item.type === 'folder') {
-        navigateToFolder(item);
-      } else if (item.type === 'text') {
-        // Open in appropriate viewer based on file extension
-        const contentType = getTextFileContentType(item.name);
-        openWindow({
-          id: `mobile-text-${item.id}`,
-          title: item.name,
-          position: { x: 0, y: 0 },
-          size: { width: fullWidth, height: fullHeight },
-          minimized: false,
-          maximized: true,
-          contentType,
-          contentId: item.id,
-        });
-      } else if (item.type === 'image') {
-        openWindow({
-          id: `mobile-image-${item.id}`,
-          title: item.name,
-          position: { x: 0, y: 0 },
-          size: { width: fullWidth, height: fullHeight },
-          minimized: false,
-          maximized: true,
-          contentType: 'image',
-          contentId: item.id,
-        });
-      } else if (item.type === 'video') {
-        openWindow({
-          id: `mobile-video-${item.id}`,
-          title: item.name,
-          position: { x: 0, y: 0 },
-          size: { width: fullWidth, height: fullHeight },
-          minimized: false,
-          maximized: true,
-          contentType: 'video',
-          contentId: item.id,
-        });
-      } else if (item.type === 'audio') {
-        openWindow({
-          id: `mobile-audio-${item.id}`,
-          title: item.name,
-          position: { x: 0, y: 0 },
-          size: { width: fullWidth, height: 200 }, // Shorter for audio player
-          minimized: false,
-          maximized: false,
-          contentType: 'audio',
-          contentId: item.id,
-        });
-      } else if (item.type === 'pdf') {
-        openWindow({
-          id: `mobile-pdf-${item.id}`,
-          title: item.name,
-          position: { x: 0, y: 0 },
-          size: { width: fullWidth, height: fullHeight },
-          minimized: false,
-          maximized: true,
-          contentType: 'pdf',
-          contentId: item.id,
-        });
-      } else if (item.type === 'link' && item.url) {
-        openExternalUrl(item.url);
-      } else if (item.type === 'widget' && item.widgetType) {
-        // Get default size based on widget type
-        const widgetSizes: Record<string, { width: number; height: number }> = {
-          'sticky-note': { width: fullWidth, height: 250 },
-          'guestbook': { width: fullWidth, height: 400 },
-          'music-player': { width: fullWidth, height: 350 },
-          'pixel-canvas': { width: fullWidth, height: 380 },
-          'link-board': { width: fullWidth, height: 300 },
-        };
-        const size = widgetSizes[item.widgetType] || { width: fullWidth, height: 300 };
-        openWindow({
-          id: `mobile-widget-${item.id}`,
-          title: item.name,
-          position: { x: 0, y: 0 },
-          size,
-          minimized: false,
-          maximized: false,
-          contentType: 'widget',
-          contentId: item.id,
-        });
+      setNotice(null);
+      const action = mobileTapAction(item, window.innerWidth, window.innerHeight);
+      switch (action.kind) {
+        case 'folder':
+          navigateToFolder(item);
+          break;
+        case 'link':
+          openExternalUrl(action.url);
+          break;
+        case 'window':
+          openWindow(action.window);
+          break;
+        case 'unsupported':
+          setNotice(action.message);
+          break;
       }
     },
     [navigateToFolder, openWindow]
@@ -242,9 +173,32 @@ export function MobileBrowser({ isVisitorMode = false, visitorItems, username, o
         ))}
       </nav>
 
+      {notice && (
+        <div className={styles.notice} role="status" aria-live="polite">
+          <span>{notice}</span>
+          <button type="button" className={styles.noticeDismiss} onClick={() => setNotice(null)} aria-label="Dismiss">
+            ×
+          </button>
+        </div>
+      )}
+
       {/* Item list */}
       <div className={styles.itemList}>
-        {sortedItems.length === 0 ? (
+        {error ? (
+          <div className={styles.emptyState} role="alert">
+            <strong>Couldn't load this desktop</strong>
+            <p>{error}</p>
+            {onRetry && (
+              <button type="button" className={styles.retryButton} onClick={onRetry}>
+                Try Again
+              </button>
+            )}
+          </div>
+        ) : loading && sortedItems.length === 0 ? (
+          <div className={styles.emptyState} role="status" aria-live="polite" aria-busy="true">
+            <strong>Loading…</strong>
+          </div>
+        ) : sortedItems.length === 0 ? (
           <div className={styles.emptyState} role="status" aria-live="polite">
             <strong>No items here yet</strong>
             <p>{currentFolderName} is empty</p>

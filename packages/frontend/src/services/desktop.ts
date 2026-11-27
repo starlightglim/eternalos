@@ -70,10 +70,15 @@ export async function emptyTrashApi(): Promise<{ deleted: number; r2Keys: string
 
 // ============ Window State API ============
 
-export async function saveWindowsToServer(windows: SavedWindowState[]): Promise<void> {
+export async function saveWindowsToServer(
+  windows: SavedWindowState[],
+  options: { keepalive?: boolean } = {},
+): Promise<void> {
   await apiRequest('/api/desktop/windows', {
     method: 'PUT',
     body: JSON.stringify(windows),
+    // keepalive lets a save sent from `pagehide` finish after the page is gone.
+    ...(options.keepalive ? { keepalive: true } : {}),
   });
 }
 
