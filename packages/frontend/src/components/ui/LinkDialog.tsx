@@ -6,6 +6,7 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { isNativeEnterTarget, useFocusTrap } from '../../hooks/useFocusTrap';
 import styles from './LinkDialog.module.css';
 
 interface LinkDialogProps {
@@ -24,11 +25,6 @@ export function LinkDialog({ onSubmit, onCancel }: LinkDialogProps) {
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const urlInputRef = useRef<HTMLInputElement>(null);
-
-  // Auto-focus URL input on mount
-  useEffect(() => {
-    urlInputRef.current?.focus();
-  }, []);
 
   // Validate URL
   const validateUrl = useCallback((urlString: string): boolean => {
@@ -80,23 +76,23 @@ export function LinkDialog({ onSubmit, onCancel }: LinkDialogProps) {
     onSubmit(finalUrl, finalName);
   }, [url, name, validateUrl, onSubmit]);
 
-  // Handle keyboard events
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onCancel();
-      } else if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        handleSubmit();
-      }
-    },
-    [onCancel, handleSubmit]
-  );
+  // Escape cancels, Tab stays inside, the URL field gets focus on open and
+  // focus returns to the opener on close.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, { onEscape: onCancel, initialFocus: urlInputRef });
 
+  // Enter in a text field submits. Enter on a button (Cancel!) runs that
+  // button natively instead of submitting.
   useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' || e.shiftKey || e.isComposing || isNativeEnterTarget(e.target)) return;
+      if (!dialogRef.current?.contains(e.target as Node)) return;
+      e.preventDefault();
+      handleSubmit();
+    };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [handleKeyDown]);
+  }, [handleSubmit]);
 
   // Prevent background interaction
   const handleOverlayClick = useCallback(
@@ -110,7 +106,7 @@ export function LinkDialog({ onSubmit, onCancel }: LinkDialogProps) {
 
   return (
     <div className={styles.overlay} onClick={handleOverlayClick}>
-      <div className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby="link-dialog-title">
+      <div className={styles.dialog} ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="link-dialog-title">
         <div className={styles.header}>
           <div className={styles.icon}>
             <svg width="32" height="32" viewBox="0 0 32 32">

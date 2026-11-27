@@ -6,7 +6,8 @@
  * Features the classic beveled button style.
  */
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 import styles from './AlertDialog.module.css';
 
 export type AlertType = 'error' | 'warning' | 'info' | 'confirm';
@@ -56,13 +57,8 @@ export function AlertDialog({
   const titleId = useId();
   const messageId = useId();
 
-  // Remember what had focus before the dialog opened so we can restore it on
-  // close (captured in a lazy initializer, before the primary button's
-  // autoFocus runs, so it points at the real opener).
-  const [opener] = useState<HTMLElement | null>(() =>
-    typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null
-  );
-  useEffect(() => () => { opener?.focus?.(); }, [opener]);
+  // Escape closes, Tab is trapped, and focus returns to the opener on close.
+  useFocusTrap(dialogRef, { onEscape: onClose });
 
   // Default buttons based on type
   const defaultButtons = useMemo<AlertButton[]>(
@@ -96,43 +92,12 @@ export function AlertDialog({
     (buttonEls.current[primaryIndex] ?? focusables[0]).focus();
   }, [defaultButtons]);
 
-  // Escape closes; Tab is trapped inside the dialog.
-  //
   // Enter is deliberately NOT handled here. A global Enter handler used to
   // click the primary button regardless of what was focused — so pressing
   // Enter while Cancel (or any other control) was focused still fired the
   // primary, often-destructive action. Native <button> activation runs the
   // FOCUSED button on Enter/Space instead, and the primary button's autoFocus
   // preserves "Enter confirms" when nothing else has been tabbed to.
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose?.();
-        return;
-      }
-      if (e.key === 'Tab') {
-        const focusables = getFocusableElements(buttonEls.current);
-        if (focusables.length === 0) return;
-        const first = focusables[0];
-        const last = focusables[focusables.length - 1];
-        const active = document.activeElement as HTMLElement | null;
-        const inside = active !== null && (dialogRef.current?.contains(active) ?? false);
-        if (e.shiftKey && (active === first || !inside)) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && (active === last || !inside)) {
-          e.preventDefault();
-          first.focus();
-        }
-      }
-    },
-    [onClose]
-  );
-
-  useEffect(() => {
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [handleKeyDown]);
 
   // Prevent background interaction
   const handleOverlayClick = useCallback(

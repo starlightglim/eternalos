@@ -5,7 +5,8 @@
  * Users can select a built-in icon, upload a custom PNG, or reset to the default.
  */
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useId, useRef } from 'react';
+import { isNativeEnterTarget, useFocusTrap } from '../../hooks/useFocusTrap';
 import { getIconsByCategory } from '../icons/customIconUtils';
 import { uploadCustomIcon, getCustomIconUrl } from '../../services/api';
 import styles from './IconPicker.module.css';
@@ -54,15 +55,23 @@ export function IconPicker({ currentIcon, itemId, onSelect, onClose }: IconPicke
     }
   }, [currentIcon, isUploadedIcon]);
 
-  // Handle keyboard navigation
+  // Escape closes, Tab stays inside, focus moves in on open and back on close.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useFocusTrap(dialogRef, { onEscape: onClose });
+
+  // Enter applies: on an icon, that icon; elsewhere, the selection. Enter
+  // on Cancel, Reset or a category tab runs that button natively instead.
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        onClose();
-      } else if (e.key === 'Enter' && !isUploading) {
-        onSelect(selectedIcon);
-        onClose();
-      }
+      if (e.key !== 'Enter' || e.isComposing || isUploading) return;
+      const target = e.target as Element | null;
+      if (!target || !dialogRef.current?.contains(target)) return;
+      const iconId = target.getAttribute?.('data-icon-id');
+      if (!iconId && isNativeEnterTarget(target)) return;
+      e.preventDefault();
+      onSelect(iconId || selectedIcon);
+      onClose();
     }
 
     document.addEventListener('keydown', handleKeyDown);
@@ -138,10 +147,10 @@ export function IconPicker({ currentIcon, itemId, onSelect, onClose }: IconPicke
 
   return (
     <div className={styles.overlay} onClick={handleOverlayClick}>
-      <div className={styles.dialog}>
+      <div className={styles.dialog} ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId}>
         {/* Header */}
         <div className={styles.header}>
-          <span className={styles.title}>Choose an Icon</span>
+          <span className={styles.title} id={titleId}>Choose an Icon</span>
         </div>
 
         {/* Category Tabs */}
@@ -212,6 +221,7 @@ export function IconPicker({ currentIcon, itemId, onSelect, onClose }: IconPicke
                     type="button"
                     className={`${styles.iconButton} ${isSelected ? styles.iconSelected : ''}`}
                     onClick={() => handleIconClick(icon.id)}
+                    data-icon-id={icon.id}
                     title={icon.label}
                     aria-pressed={isSelected}
                   >
