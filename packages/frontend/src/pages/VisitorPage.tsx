@@ -14,12 +14,16 @@ import { useDocumentMeta } from '../hooks/useDocumentMeta';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { isApiConfigured, fetchVisitorDesktop, getWallpaperUrl, type SavedWindowState } from '../services/api';
 import { useVisitorSync } from '../hooks/useVisitorSync';
-import { applyAppearance, clearAppearance, profileToAppearance, profileHasAppearance, useAppearanceStore } from '../stores/appearanceStore';
-import { useSoundStore } from '../stores/soundStore';
+import { APPEARANCE_PROFILE_KEYS, applyAppearance, clearAppearance, profileToAppearance, profileHasAppearance, useAppearanceStore } from '../stores/appearanceStore';
+import { useSoundStore, type SoundPack } from '../stores/soundStore';
+import { mergeLiveProfile, visitorLookKey, visitorUsernameFrom } from '../utils/visitorView';
 import { getTextFileContentType, type DesktopItem, type UserProfile } from '../types';
 import styles from './VisitorPage.module.css';
 
 const GRID_CELL_SIZE = 80;
+
+// Profile fields a live push replaces outright (absent = cleared by the owner)
+const LIVE_LOOK_KEYS: readonly string[] = [...APPEARANCE_PROFILE_KEYS, 'designTokens', 'variants', 'soundPack'];
 
 type LoadingState = 'loading' | 'loaded' | 'not_found' | 'empty' | 'error';
 
@@ -63,7 +67,7 @@ export function VisitorPage() {
   // Extract username from URL pathname manually since React Router v6
   // can't match /@:username (params must be full path segments).
   const { username: routeUsername } = useParams<{ username: string }>();
-  const username = routeUsername || window.location.pathname.slice(2).split('?')[0] || undefined;
+  const username = visitorUsernameFrom(routeUsername, window.location.pathname);
   const { openWindow, loadVisitorWindows } = useWindowStore();
   const isMobile = useIsMobile();
 
@@ -73,6 +77,7 @@ export function VisitorPage() {
   const [savedWindows, setSavedWindows] = useState<SavedWindowState[] | undefined>();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const hasRestoredWindows = useRef(false);
 
   // Build meta config based on current state
@@ -82,7 +87,7 @@ export function VisitorPage() {
 
     // Generate og:image URL pointing to our dynamic image endpoint on the API
     const apiBase = import.meta.env.VITE_API_URL || '';
-    const ogImageUrl = `${apiBase}/api/og/${username}.png`;
+    const ogImageUrl = `${apiBase}/api/og/${encodeURIComponent(username || "")}.png`;
 
     // Use custom shareDescription > bio > default
     const customDesc = profile?.shareDescription || profile?.bio || '';
@@ -107,38 +112,52 @@ export function VisitorPage() {
   // Store reference to user's own appearance to restore when leaving
   const userAppearance = useRef(useAppearanceStore.getState().appearance);
 
-  // Apply owner's custom appearance when profile is loaded
+  // The owner's look and sound pack, keyed by value: live profile updates
+  // (and every snapshot on reconnect) arrive as new objects, and re-applying
+  // an unchanged look flashes the default theme and reloads the sounds.
+  const ownerProfile = profile as unknown as Record<string, unknown> | null;
+  const appearanceKey = ownerProfile ? visitorLookKey(profileToAppearance(ownerProfile)) : null;
+  const soundPackKey = ownerProfile?.soundPack ? visitorLookKey(ownerProfile.soundPack) : null;
+
+  // Apply the owner's appearance (incl. custom CSS) only when it actually
+  // changes. The cleanup puts the visitor's own look back — on leaving, and
+  // when the profile goes away (another username, a failed retry) so an old
+  // owner's theme never dresses the next page. A key change swaps looks in
+  // one synchronous step, with no paint in between.
   useEffect(() => {
-    if (!profile) return;
+    if (appearanceKey === null) return;
     const savedAppearance = userAppearance.current;
-
-    // Build appearance object from owner's profile (including customCSS)
-    const ownerAppearance = profileToAppearance(profile as unknown as Record<string, unknown>);
-
-    // Apply owner's appearance settings (including custom CSS)
-    applyAppearance(ownerAppearance);
-
-    // Load owner's custom sounds if they have a sound pack
-    const ownerProfile = profile as unknown as Record<string, unknown>;
-    if (ownerProfile.soundPack) {
-      useSoundStore.getState().loadVisitorSounds(ownerProfile.soundPack as import('../stores/soundStore').SoundPack);
-    }
-
-    // Cleanup: restore user's own appearance when leaving visitor mode
+    clearAppearance();
+    applyAppearance(JSON.parse(appearanceKey));
     return () => {
-      // First clear the owner's appearance
       clearAppearance();
-      // Clear visitor sounds
-      useSoundStore.getState().clearVisitorSounds();
-      // Then restore the user's own appearance if they had any
       if (savedAppearance && Object.keys(savedAppearance).length > 0) {
         applyAppearance(savedAppearance);
       }
     };
-  }, [profile]);
+  }, [appearanceKey]);
 
-  // Fetch user data on mount
+  // Load the owner's sound pack when it actually changes
   useEffect(() => {
+    if (soundPackKey === null) return;
+    void useSoundStore.getState().loadVisitorSounds(JSON.parse(soundPackKey) as SoundPack);
+    return () => {
+      useSoundStore.getState().clearVisitorSounds();
+    };
+  }, [soundPackKey]);
+
+  // Fetch the visited desktop; re-runs when the username changes or on Retry
+  useEffect(() => {
+    // A new desktop (or a retry) starts from a clean slate: nothing from the
+    // previous owner may show on, or leak into, this one.
+    setProfile(null);
+    setItems([]);
+    setSavedWindows(undefined);
+    setSelectedIds(new Set());
+    setErrorMessage(null);
+    hasRestoredWindows.current = false;
+    useWindowStore.setState({ windows: [], nextZIndex: 1 });
+
     if (!username) {
       setLoadingState('not_found');
       return;
@@ -158,12 +177,15 @@ export function VisitorPage() {
       return;
     }
 
-    // API mode - fetch real data
+    // API mode - fetch real data. `cancelled` drops a response that lands
+    // after the username changed (or the page unmounted), so a slow earlier
+    // visit can't overwrite the desktop being shown now.
+    let cancelled = false;
+    setLoadingState('loading');
     const loadVisitorData = async () => {
       try {
-        setLoadingState('loading');
-
         const data = await fetchVisitorDesktop(username);
+        if (cancelled) return;
 
         setProfile(data.profile);
 
@@ -176,6 +198,7 @@ export function VisitorPage() {
           setLoadingState('loaded');
         }
       } catch (error) {
+        if (cancelled) return;
         console.error('Error loading visitor data:', error);
         if (error instanceof Error && error.message === 'User not found') {
           setLoadingState('not_found');
@@ -186,8 +209,11 @@ export function VisitorPage() {
       }
     };
 
-    loadVisitorData();
-  }, [username]);
+    void loadVisitorData();
+    return () => {
+      cancelled = true;
+    };
+  }, [username, loadAttempt]);
 
   // Restore owner's saved windows once items are loaded
   useEffect(() => {
@@ -233,7 +259,7 @@ export function VisitorPage() {
   }, [loadVisitorWindows]);
 
   const handleLiveProfile = useCallback((newProfile: UserProfile) => {
-    setProfile((prev) => prev ? { ...prev, ...newProfile } : newProfile);
+    setProfile((prev) => mergeLiveProfile(prev, newProfile, LIVE_LOOK_KEYS));
   }, []);
 
   useVisitorSync({
@@ -375,7 +401,7 @@ export function VisitorPage() {
     return (
       <div className={styles.container}>
         <div className={styles.errorDialog}>
-          <div className={styles.errorIcon}>⚠️</div>
+          <div className={styles.errorIcon}><CautionIcon /></div>
           <div className={styles.errorTitle}>User Not Found</div>
           <div className={styles.errorMessage}>
             The desktop for "@{username}" could not be found.
@@ -391,12 +417,22 @@ export function VisitorPage() {
     return (
       <div className={styles.container}>
         <div className={styles.errorDialog}>
-          <div className={styles.errorIcon}>⚠️</div>
+          <div className={styles.errorIcon}><CautionIcon /></div>
           <div className={styles.errorTitle}>Error</div>
-          <div className={styles.errorMessage}>
+          <div className={styles.errorMessage} role="alert">
             {errorMessage || 'An unexpected error occurred.'}
           </div>
-          <Link to="/" className={styles.errorButton}>OK</Link>
+          <div className={styles.errorButtons}>
+            <Link to="/" className={styles.errorButton}>OK</Link>
+            <button
+              type="button"
+              className={`${styles.errorButton} ${styles.errorButtonDefault}`}
+              onClick={() => setLoadAttempt((n) => n + 1)}
+              autoFocus
+            >
+              Retry
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -573,6 +609,34 @@ function StealThemeButton({ profile }: { profile: UserProfile }) {
       </button>
       {error && <span className={styles.riceError}>{error}</span>}
     </span>
+  );
+}
+
+/**
+ * Classic Mac "caution" alert icon, drawn on a 16px pixel grid.
+ */
+function CautionIcon() {
+  return (
+    <svg
+      width="32"
+      height="32"
+      viewBox="0 0 16 16"
+      shapeRendering="crispEdges"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {/* Triangle: black outline, filled rows widening downward */}
+      <path
+        fill="var(--black, #000)"
+        d="M7 1h2v2h1v2h1v2h1v2h1v2h1v2h1v3H1v-3h1v-2h1V9h1V7h1V5h1V3h1V1z"
+      />
+      <path
+        fill="var(--caution-fill, #ffcc00)"
+        d="M7 3h2v2h1v2h1v2h1v2h1v2h1v2H2v-2h1v-2h1V9h1V7h1V5h1V3z"
+      />
+      {/* Exclamation mark */}
+      <path fill="var(--black, #000)" d="M7 5h2v5H7zM7 12h2v2H7z" />
+    </svg>
   );
 }
 

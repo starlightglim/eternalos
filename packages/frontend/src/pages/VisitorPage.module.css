@@ -52,8 +52,27 @@
 }
 
 .errorIcon {
-  font-size: 32px;
+  display: flex;
+  justify-content: center;
   margin-bottom: 12px;
+}
+
+.errorIcon svg {
+  image-rendering: pixelated;
+}
+
+.errorButtons {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/* Classic default-button ring around Retry */
+.errorButtonDefault {
+  line-height: normal;
+  outline: 2px solid var(--control-border, var(--black));
+  outline-offset: 2px;
 }
 
 .errorTitle {
